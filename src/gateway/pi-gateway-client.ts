@@ -745,6 +745,16 @@ export class PiGatewayClient implements GatewayClient {
       harnessVersion: PI_HARNESS_VERSION,
       // issue #138: this gateway always dispatches through the pi transport.
       transport: 'pi',
+      // issue #145: pi has no separate "the model could see this skill" confirmation the way the
+      // sdk gateway's CLI init message gives (claude-agent-sdk-client.ts sets `skillsExposed` from
+      // that) — but the SKILL_REQUIRES_READ_TOOL refusal above already guarantees any dispatch that
+      // reaches this point and materialized a skill has read or bash in its tool set, which is
+      // exactly pi's own (undocumented-elsewhere, read straight off the installed package)
+      // condition for listing a skill in the system prompt at all. So `materialized.skills` IS the
+      // exposed-skills list here; `skillsExposed` was always `[]` before this fix (never set at
+      // all, agent-executor.ts's own `descriptor.skillsExposed ?? []` fallback silently papered over
+      // it).
+      skillsExposed: materialized?.skills ?? [],
       ...(plantedConfigRemoved.length > 0 ? { plantedConfigRemoved } : {}),
       ...(materialized !== undefined ? { materialized } : {}),
       ...(mapped.piNames.includes('bash')
@@ -941,14 +951,24 @@ export class PiGatewayClient implements GatewayClient {
         // registered) and fed through the SAME `summarizeMcpInit` the sdk gateway uses — one
         // MCP_SERVER_NOT_CONNECTED warning shape for both gateways.
         const declared = mcpCtx.baseDescriptor.mcpServers;
+        // issue #145: pi's REAL sanitizer (`@earendil-works/pi-coding-agent`'s
+        // `extensions/mcp/tools.js`: `` `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, '_') ``)
+        // replaces EVERY character outside [A-Za-z0-9_] — including a hyphen — unlike the Claude
+        // CLI's own rule (`[^A-Za-z0-9_-]`, which keeps a hyphen; see `summarizeMcpInit`'s own doc
+        // comment). A hyphenated server name ('tooltest-memory') therefore produced active tool
+        // names like `mcp__tooltest_memory__read_graph`, which the old (CLI-shaped) prefix never
+        // matched — a real, working connection was misreported 'unknown' with a false
+        // MCP_SERVER_NOT_CONNECTED warning. `hasToolsFor` now applies pi's own rule, and
+        // `summarizeMcpInit`'s own prefix match (passed below) is told to use it too.
+        const piSanitize = (name: string): string => name.replace(/[^A-Za-z0-9_]/g, '_');
         const hasToolsFor = (name: string): boolean => {
-          const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+          const prefixes = [`mcp__${name}__`, `mcp__${piSanitize(name)}__`];
           return event.activeTools.some((t) => prefixes.some((p) => t.startsWith(p)));
         };
         const { mcpStatus, warnings } = summarizeMcpInit(declared, {
           tools: event.activeTools,
           mcp_servers: declared.map((name) => ({ name, status: hasToolsFor(name) ? 'connected' : 'unknown' })),
-        });
+        }, piSanitize);
         void req.onHarness?.({ ...mcpCtx.baseDescriptor, mcpStatus, ...(warnings.length > 0 ? { warnings } : {}) });
         for (const w of warnings) {
           const tools = mcpStatus.find((m) => m.server === w.server)?.tools.length ?? 0;

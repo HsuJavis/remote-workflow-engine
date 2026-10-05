@@ -590,8 +590,17 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     // tool active, or the window elapses, whichever comes first (never waits longer than it has to).
     await session.bindExtensions({});
     const declaredNames = Object.keys(config.mcp ?? {});
+    // issue #145: pi's OWN tool-name sanitizer (`@earendil-works/pi-coding-agent`'s
+    // `extensions/mcp/tools.js`: `` `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, '_') ``)
+    // replaces EVERY character outside [A-Za-z0-9_] — including a hyphen — unlike the Claude CLI's
+    // rule this used to (wrongly) borrow (`[^A-Za-z0-9_-]`, which keeps a hyphen). A hyphenated
+    // server name ('tooltest-memory') produces `mcp__tooltest_memory__<tool>`, which the old regex
+    // never matched: this loop gave up only at the full 10s deadline (never found a match) and the
+    // parent then misreported a real, working connection as 'unknown' with a false
+    // MCP_SERVER_NOT_CONNECTED warning (pi-gateway-client.ts applies the SAME corrected rule to its
+    // own copy of this check, built from the `mcp_init` event this loop emits below).
     const hasToolsFor = (name: string, active: readonly string[]): boolean => {
-      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`];
       return active.some((t) => prefixes.some((p) => t.startsWith(p)));
     };
     const deadline = Date.now() + 10_000;

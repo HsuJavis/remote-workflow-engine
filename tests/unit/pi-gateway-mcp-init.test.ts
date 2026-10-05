@@ -83,6 +83,41 @@ describe('PiGatewayClient — mcp_init -> summarizeMcpInit (slice g, issue #106 
     expect(notConnected).toEqual([{ kind: 'agent.mcp_not_connected', runId: 'r1', agentId: 'a1', attempt: 1, server: 'everything', status: 'unknown', tools: 0 }]);
   });
 
+  // issue #145: pi's REAL tool-name sanitizer (`@earendil-works/pi-coding-agent`'s
+  // `extensions/mcp/tools.js`: `mcp__<server>__<tool>`.replace(/[^A-Za-z0-9_]/g, '_')) replaces a
+  // hyphen too — unlike the Claude CLI's own rule (which keeps `-`, see `summarizeMcpInit`'s own
+  // doc comment in claude-agent-sdk-client.ts). A hyphenated server name ('tooltest-memory',
+  // 'tooltest-everything' — both real repro names from the issue) therefore produces active tool
+  // names like `mcp__tooltest_memory__read_graph`, which the OLD `[^A-Za-z0-9_-]` prefix regex
+  // (preserving the hyphen) never matched — a real, working MCP connection was reported 'unknown'
+  // with a false MCP_SERVER_NOT_CONNECTED warning.
+  it('a hyphenated server name whose SANITIZED tools showed up is "connected", no false alarm (issue #145)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({
+      spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+      resolveMcp: async (_wf, names) => ({ configs: Object.fromEntries(names.map((n) => [n, { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] }])), missing: [] }),
+    });
+    const events: EngineEvent[] = [];
+    gw.bindEventSink((ev) => events.push(ev));
+    const harnessCalls: unknown[] = [];
+    const promise = gw.invoke(req({
+      opts: { model: 'ollama/qwen2.5:7b', mcp: ['tooltest-memory'] } as AgentOpts,
+      assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: [], mcp: ['tooltest-memory'] }, workflow: 'wf' },
+      onHarness: async (h) => { harnessCalls.push(h); },
+    }));
+    await new Promise((r) => setTimeout(r, 10));
+    // pi's real sanitizer turns the hyphen into an underscore — this is what a real pi child emits.
+    f.sendLine({ t: 'mcp_init', servers: ['tooltest-memory'], activeTools: ['mcp__tooltest_memory__read_graph'] });
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+
+    const refined = harnessCalls[1] as { mcpStatus?: Array<{ server: string; status: string; tools: string[] }>; warnings?: unknown[] };
+    expect(refined.mcpStatus).toEqual([{ server: 'tooltest-memory', status: 'connected', tools: ['mcp__tooltest_memory__read_graph'] }]);
+    expect(refined.warnings).toBeUndefined();
+    expect(events.filter((e) => e.kind === 'agent.mcp_not_connected')).toEqual([]);
+  });
+
   it('no mcp_init event at all (no MCP declared) -> onHarness called exactly once, no agent.mcp_not_connected', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
