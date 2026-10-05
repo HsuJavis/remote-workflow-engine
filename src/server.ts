@@ -20,7 +20,7 @@ import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
-import type { BindableGateway, GatewayClient } from './gateway/client.js';
+import type { BindableGateway, GatewayClient, TransportTagged } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import type { RefusalReason, RunSummary } from './types.js';
@@ -68,7 +68,7 @@ import { projectToolsList, ENVELOPE_NOTE, TOOL_SPECS } from './tool-specs.js';
 import { authorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
-import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
+import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, harnessFilteredProbeLookup, harnessFilteredProbeStore, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
 import { RunStoreObservedStats, type ObservedStatsProvider } from './models/observed-stats.js';
 import type { Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
@@ -940,19 +940,43 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // `store/`), so they survive a restart. The prober needs the deployment's REAL gateway — the same
   // object every agent() call dispatches through — so it exists only when one is configured.
   const probeStore = new ModelProbeStore(join(workRoot, 'store', 'index.db'));
-  const probeLookup = (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model);
+  // issue #138 review L-138-3: prefer the DIRECT signal — the fixed `transport` identity property
+  // each real `GatewayClient` implementation carries (`TransportTagged`, gateway/client.ts) — over
+  // the INDIRECT `harnessProviders` proxy (a provider allow-list set only by composeConfig() for a
+  // `gateway:"pi"` deployment, which a hand-built `createServer({gateway: new PiGatewayClient(...)})`
+  // can omit, hiding every real pi probe). Falls back to the old proxy for a gateway that carries no
+  // such signal at all (a plain test fake implementing the bare `GatewayClient` interface) — the
+  // SAME two-way `'sdk'|'pi'` distinction `harness-info.ts`'s `HarnessAnnounce.name` discloses.
+  const gatewayTransport = (gateway as unknown as TransportTagged | undefined)?.transport;
+  const activeHarness: 'sdk' | 'pi' =
+    gatewayTransport !== undefined ? (gatewayTransport === 'pi' ? 'pi' : 'sdk') : config?.harnessProviders !== undefined ? 'pi' : 'sdk';
+  // issue #138: `harnessFilteredProbeLookup` hides a probe recorded under a DIFFERENT harness than
+  // the one THIS deployment is actively running — every consumer sharing this one closure
+  // (run-manager's run_start warning, models_list enrichment below and in call-tool.ts, the
+  // dashboard) gets the fix at once, since each already treats `undefined` as "never probed" (null
+  // fields, rule-tier stability, no warning).
+  const probeLookup = harnessFilteredProbeLookup(
+    (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model),
+    activeHarness,
+  );
   // Issue #104: models_list's `observed` field — the SAME `store` (SqliteRunStore) and `probeStore`
   // instances every other read in this file uses; constructed once (TTL-cached internally), never
   // per-request.
-  const observedStats = new RunStoreObservedStats({ source: store, probes: probeStore, clock });
+  // issue #138 review M-138-1: wrapped the SAME way `probeLookup` is, above — unfiltered, this read
+  // a cross-harness probe's stale `probeLatencyMs` straight through (models-query.ts's own
+  // `sortBy:'latency'` fallback and latency filters read it), even though `toolUseVerified` on the
+  // SAME row was already correctly nulled via `probeLookup`.
+  const observedStats = new RunStoreObservedStats({ source: store, probes: harnessFilteredProbeStore(probeStore, activeHarness), clock });
   // 2026-09-26 (owner decision 10): probe targets are the distinct full refs registered workflow
   // versions declare — a LIVE accessor (never memoized), so a fresh registration is probed without
   // a restart.
   // review M7: `harnessProviders` forwarded so the prober (both the admin `models_probe({model})`
   // door and its own periodic sweep) never probes a legacy anthropic ref left in the catalog from
   // before this deployment switched to gateway:"pi" — see `ModelProber`'s own field doc.
+  // issue #138 review M-138-2: `activeHarness` forwarded so `dueTargets()` re-probes a cross-harness
+  // row on the very next periodic tick instead of waiting out its (possibly fresh) `probedAt` age.
   const modelProber = gateway
-    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false }, harnessProviders: config?.harnessProviders })
+    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false }, harnessProviders: config?.harnessProviders, activeHarness })
     : undefined;
   modelProber?.start();
   // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the

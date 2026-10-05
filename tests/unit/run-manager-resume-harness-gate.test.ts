@@ -25,6 +25,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
+import { ModelBook } from '../../src/models/model-book.js';
 import type { AgentSpawner } from '../../src/agent-executor.js';
 import { startScript, registerPublished, DEFAULT_FIXTURE_MODEL } from '../helpers/workflow-fixtures.js';
 
@@ -64,6 +65,36 @@ describe('RunManager.resume() re-checks the pinned model against THIS deployment
     const piMgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), harnessProviders: ['openrouter', 'ollama'] });
     await expect(piMgr.resume(runId)).rejects.toMatchObject({ code: 'PROVIDER_UNSUPPORTED_BY_HARNESS' });
     // Refused before dispatch — status is never flipped back to running.
+    expect((await piMgr.status(runId)).status).toBe('suspended');
+  });
+
+  // issue #136 review L-136-1: resume's own PROVIDER_UNSUPPORTED_BY_HARNESS check used to pass
+  // `checkModelRef` an EMPTY `entries` catalog (never a live one), so the refusal always carried the
+  // generic "check models_list" hint, even when the deployment's REAL catalog has a specific,
+  // catalog-linked OpenRouter ref to suggest instead — the fix now reads `this._modelBook` (the SAME
+  // live, TTL'd snapshot `start()`'s own admission already uses), purely to build a better message;
+  // it must NOT reintroduce existence re-verification on resume (rule 12's own standing ban) — this
+  // loop still only ever throws for the PROVIDER_UNSUPPORTED_BY_HARNESS code, never UNKNOWN_MODEL.
+  it('names a real catalog-linked OpenRouter ref in the resume refusal, when the live catalog has one', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    const store = new InMemoryRunStore(CLOCK);
+    const sdkMgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner() });
+    expect(DEFAULT_FIXTURE_MODEL).toBe('anthropic/claude-haiku-4-5-20251001');
+    const runId = await startScript(sdkMgr, `phase('p'); return await agent('a', {});`, { principal: null });
+    await sdkMgr.suspend(runId);
+
+    const modelBook = new ModelBook(
+      async () => [
+        { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', sameModelAs: ['openrouter/anthropic/claude-haiku-4.5'] },
+        { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5' },
+      ],
+      { clock: CLOCK },
+    );
+    const piMgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), harnessProviders: ['openrouter', 'ollama'], modelBook });
+    await expect(piMgr.resume(runId)).rejects.toMatchObject({
+      code: 'PROVIDER_UNSUPPORTED_BY_HARNESS',
+      message: expect.stringContaining('"openrouter/anthropic/claude-haiku-4.5"'),
+    });
     expect((await piMgr.status(runId)).status).toBe('suspended');
   });
 

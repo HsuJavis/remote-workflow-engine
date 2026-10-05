@@ -461,6 +461,13 @@ function resolveOpenrouterKey(config: PiGatewayConfig): string | undefined {
 }
 
 export class PiGatewayClient implements GatewayClient {
+  /** issue #138 review L-138-3: a fixed, structural identity property (the SAME literal every
+   *  dispatch's own `GatewayResult.transport`/`HarnessDescriptor.transport` carries) — lets a
+   *  caller (`server.ts`'s active-harness detection) know WHICH gateway this is directly, without
+   *  an `instanceof` branch (this codebase's own established pattern for a second `GatewayClient`
+   *  implementation — see `BindableGateway`'s doc in server.ts) and without depending on a SEPARATE,
+   *  indirect proxy signal (`ServerConfig.harnessProviders`) that a hand-built server can omit. */
+  readonly transport = 'pi' as const;
   private readonly _cliLifecycle = new RealCliLifecycle({});
   // research doc §3.1 "generalize the late binds": mirrors ClaudeAgentSdkGatewayClient's own
   // `_eventSink` exactly — a no-op default (nothing bound yet is NEVER confused with "did it"),
@@ -736,6 +743,8 @@ export class PiGatewayClient implements GatewayClient {
         skills: materialized?.skills ?? [],
       }),
       harnessVersion: PI_HARNESS_VERSION,
+      // issue #138: this gateway always dispatches through the pi transport.
+      transport: 'pi',
       ...(plantedConfigRemoved.length > 0 ? { plantedConfigRemoved } : {}),
       ...(materialized !== undefined ? { materialized } : {}),
       ...(mapped.piNames.includes('bash')

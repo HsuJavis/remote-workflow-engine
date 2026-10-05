@@ -753,6 +753,9 @@ function sanitizeSubtype(subtype: unknown): string {
 /** One @anthropic-ai/claude-agent-sdk headless session per agent() call: reads only the final
  *  `result` message off the session's own async-generator agent loop. */
 export class ClaudeAgentSdkGatewayClient implements GatewayClient {
+  /** issue #138 review L-138-3: same fixed structural identity property as `PiGatewayClient.transport`
+   *  / `LiteLLMGatewayClient.transport` — see `PiGatewayClient`'s own doc on this field. */
+  readonly transport = 'claude-agent-sdk' as const;
   private readonly _query: QueryImpl;
   // v37 (DES-256, ARCH-178): late-bound, mirrors `bindResolveMcp` below — the gateway is constructed
   // in `composeConfig()` BEFORE the sink's owner (server.ts's `store`) exists. A NO-OP sink at
@@ -1337,6 +1340,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           // `effortApplied`'s `{reason}` branch; empty ⇒ the field is not emitted at all.
           unresolvedMcp: mcpMissing,
         });
+        // issue #138: this gateway always dispatches through the claude-agent-sdk transport — never
+        // inferred, set at the same site every other descriptor field is.
+        descriptor.transport = 'claude-agent-sdk';
         // v24 (ARCH-104/DES-160, TASK-145): the materialized set rides the descriptor itself (the ONE
         // decoration site downstream, `agent-executor.ts`, fills the honest empty set for a dispatch
         // that never sets `req.assets` at all — e.g. the direct-fetch gateway).

@@ -193,9 +193,17 @@ export function reachableModels(params: RunParams): string[] {
 export function toModelCatalogSnapshot(
   snapshot: BookSnapshot,
   harnessProviders?: readonly Provider[],
-): { entries: Array<{ provider: string; model: string }>; source: BookSnapshot['source']; harnessProviders?: readonly Provider[] } {
+): { entries: Array<{ provider: string; model: string; sameModelAs?: readonly string[] }>; source: BookSnapshot['source']; harnessProviders?: readonly Provider[] } {
   return {
-    entries: snapshot.entries.map((e) => ({ provider: e.provider, model: e.model })),
+    // issue #136: `sameModelAs` is carried through when present — the SAME "really a superset"
+    // relationship this file's own `entries` doc-comment already notes for `CatalogSourceRow[]` vs.
+    // the production `ModelEntry[]` it really holds — so `checkModelRef`'s PROVIDER_UNSUPPORTED_BY_
+    // HARNESS hint can name a real, catalog-linked OpenRouter ref (providers.ts's
+    // `harnessUnsupportedSuggestion`) rather than a hard-coded example.
+    entries: snapshot.entries.map((e) => {
+      const sameModelAs = (e as { sameModelAs?: readonly string[] }).sameModelAs;
+      return { provider: e.provider, model: e.model, ...(sameModelAs !== undefined ? { sameModelAs } : {}) };
+    }),
     source: snapshot.source,
     ...(harnessProviders !== undefined ? { harnessProviders } : {}),
   };

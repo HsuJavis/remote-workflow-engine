@@ -79,7 +79,12 @@ export const ERROR_CATALOG = {
   // model ref is validated (checkModelRef's own harnessProviders gate): workflow_register, run_start/
   // run_resume admission, and nested workflow() admission. An existing registered version that still
   // pins anthropic/* fails with this code at run time — never a silent fallback to another provider.
-  PROVIDER_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this engine runs the pi harness, which supports only openrouter/ollama models — use an openrouter/anthropic/... model instead (e.g. "openrouter/anthropic/claude-sonnet-4-5") or an ollama/* model, never "anthropic/*" directly' },
+  // issue #136: no hard-coded example ref here any more — Anthropic hyphenates a version
+  // (`claude-sonnet-4-5`) where OpenRouter dots it (`claude-sonnet-4.5`), so a static example drifts
+  // out of date and sends an author straight into a SECOND error (UNKNOWN_MODEL) after they copy it.
+  // The actual refusal (providers.ts's `checkModelRef`) names a real, catalog-linked ref when one
+  // exists; this static guide text can't do that lookup, so it points at models_list instead.
+  PROVIDER_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness, which supports only openrouter/ollama models — use an openrouter/anthropic/... model instead (check models_list({query:'anthropic/'}) or models_list({provider:'openrouter'}) for the exact id) or an ollama/* model, never \"anthropic/*\" directly" },
   // pi harness v1 (spec "Tool mapping"): an agent declares a tool the pi harness has no mapping for
   // (WebFetch, WebSearch, Task, NotebookEdit, or any other name outside Read/Write/Edit/Bash/Grep/
   // Glob/LS) — refused at registration AND dispatch, never silently dropped from the tool surface.

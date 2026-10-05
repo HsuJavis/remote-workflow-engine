@@ -453,7 +453,12 @@ export async function callTool(
       // `models_list`'s filter apply (owner decision 2, above), so an explicit anthropic/* ref under
       // gateway:"pi" is never probed, regardless of whether a prober is even wired on this engine.
       if (model !== undefined) {
-        const verdict = checkModelRef(model, { entries: [], harnessProviders: deps.harnessProviders });
+        // issue #136: the SAME TTL'd, single-flight snapshot `models_list` reads just above (not a
+        // second live fetch) — so a PROVIDER_UNSUPPORTED_BY_HARNESS hint here can name a real,
+        // catalog-linked OpenRouter ref (providers.ts's `harnessUnsupportedSuggestion`) instead of
+        // the `{entries:[]}` placeholder, which could only ever fall back to generic guidance.
+        const snapshot = await deps.modelBook.snapshot();
+        const verdict = checkModelRef(model, { entries: snapshot.entries as ModelEntry[], source: snapshot.source, harnessProviders: deps.harnessProviders });
         if (!verdict.ok && verdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
           return refusalEnvelope('PROVIDER_UNSUPPORTED_BY_HARNESS', verdict.message);
         }

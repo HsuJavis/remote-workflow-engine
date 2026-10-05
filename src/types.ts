@@ -599,6 +599,14 @@ export interface HarnessDescriptor {
    *  dispatch and on a raw `openrouter/<id>` passthrough, where there is no cloak to report.
    *  Mirrors `AgentRecord.proxyModel`/`GatewayResult.proxyModel`, one meaning across all three. */
   proxyModel?: string;
+  /** issue #138: which wire actually carried this call — mirrors `AgentRecord.transport`/
+   *  `GatewayResult.transport` (same three literals), but those are populated straight from the
+   *  `GatewayResult` the call returns, never from this descriptor — `run_agent_log`'s `harness`
+   *  object (built from THIS type) had no transport of its own even though the sibling `record`
+   *  object right beside it did, so a reader had to cross-reference two objects to see which gateway
+   *  actually ran a call. Set by each of the three `GatewayClient` implementations at the SAME site
+   *  they already build the rest of the descriptor (never inferred downstream). */
+  transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
   /** Resolved provider for `model` (e.g. 'anthropic'/'ollama'/'openrouter'). Emitted at session-build
    *  time so workflow_status can show WHICH backend a still-running agent is waiting on — before the
    *  first token, so a hung/slow backend is diagnosable rather than a blank `provider:""` (issue #20). */

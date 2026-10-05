@@ -64,6 +64,26 @@ export function validateModelProbeConfig(raw: unknown): { ok: true; value: Model
 
 export interface ProbeTarget { provider: string; model: string }
 
+/** issue #138: which wire actually ran a probe. `'claude-agent-sdk'`/`'direct-fetch'`/`'pi'` are the
+ *  precise values `runProbe` reads straight off the probed `GatewayResult.transport` (the SAME three
+ *  literals `GatewayClient`/`AgentRecord`/`HarnessDescriptor` already use elsewhere) — never a guess
+ *  from deployment config. `'sdk'` is reserved for a row migrated from before this column existed:
+ *  every such row necessarily predates the pi harness's existence, so "not pi" is a known fact, but
+ *  the finer claude-agent-sdk-vs-direct-fetch split is unrecoverable (documented default, see
+ *  `ModelProbeStore`'s own migration) — it is FILTERED exactly like a precise sdk-family recording.
+ *  `'unknown'` is different in kind, not just in precision: it is what a FRESH probe gets when the
+ *  gateway it actually ran through reported no `transport` at all on its `GatewayResult` — a real,
+ *  common case (`GatewayResult.transport` is optional precisely because ~30 existing call sites,
+ *  including hand-rolled `config.gateway` overrides and test fakes, never set it — see that field's
+ *  own doc in gateway/client.ts). Unlike `'sdk'`, this carries NO negative knowledge ("definitely not
+ *  pi") — picking EITHER family to filter it against would invalidate probes that were always valid
+ *  for whatever harness actually ran them, which is a regression `'unknown'` existing at all must not
+ *  cause. So `probeEffectiveForHarness` treats `'unknown'` (and an entirely absent `harness`) as
+ *  compatible with EVERY active harness — the same "no tracking, always honoured" behavior probes had
+ *  before this issue — while `'sdk'`/`'pi'`/a precise sdk-family value carry real, filterable
+ *  evidence. */
+export type ProbeHarness = 'claude-agent-sdk' | 'direct-fetch' | 'pi' | 'sdk' | 'unknown';
+
 export interface ProbeResult extends ProbeTarget {
   proseVerified: boolean;
   toolUseVerified: boolean;
@@ -71,6 +91,74 @@ export interface ProbeResult extends ProbeTarget {
   latencyMs: { prose: number; tools: number };
   /** Short, human-readable outcome of both legs (capped at `DETAIL_CAP`). */
   detail: string;
+  /** issue #138: optional so every pre-existing `ProbeResult` literal across the codebase (tests,
+   *  fixtures) keeps type-checking unchanged — a REAL probe (`runProbe`) and a REAL stored row
+   *  (`ModelProbeStore.get`/`all`) always set it, going forward. Absent is treated identically to
+   *  `'unknown'` by `probeEffectiveForHarness` (honoured regardless of the active harness). */
+  harness?: ProbeHarness;
+}
+
+const SDK_FAMILY: ReadonlySet<ProbeHarness> = new Set(['claude-agent-sdk', 'direct-fetch', 'sdk']);
+
+/** issue #138: is a RECORDED probe's harness still good evidence for the harness this deployment is
+ *  ACTIVELY running (`'sdk'`/`'pi'` — the same two-way distinction `harness-info.ts`'s
+ *  `HarnessAnnounce.name` already discloses; the deployment runs exactly one `GatewayClient`
+ *  implementation at a time, so this is a FIXED fact for the deployment's lifetime, never re-derived
+ *  per call)? `'unknown'` (or an entirely absent `harness`) carries NO negative knowledge — it is
+ *  honoured for EVERY active harness, preserving the pre-#138 "no tracking at all" behavior for a
+ *  probe whose own gateway never reported a transport (see `ProbeHarness`'s own doc for why this
+ *  must stay fail-open rather than fail-closed). A precise sdk-family recording
+ *  (`'claude-agent-sdk'`/`'direct-fetch'`) OR the legacy `'sdk'` migration default both count as real
+ *  "this is sdk, not pi" evidence and are filtered out once the active harness is `'pi'`; `'pi'`
+ *  itself counts only for `'pi'`. Callers that need this (`harnessFilteredProbeLookup`, below) are
+ *  the ONLY place that cares about harnesses at all; everything downstream (`enrichModelEntry`,
+ *  `toolProbeWarnings`) already treats an absent probe as "never probed", so hiding a mismatched row
+ *  before it reaches them is the entire fix — no downstream code needs to change. */
+export function probeEffectiveForHarness(recorded: ProbeHarness | undefined, active: 'sdk' | 'pi'): boolean {
+  if (recorded === undefined || recorded === 'unknown') return true;
+  return active === 'pi' ? recorded === 'pi' : SDK_FAMILY.has(recorded);
+}
+
+/** issue #138: wraps a raw per-(provider,model) probe lookup (e.g. `ModelProbeStore.get`) so every
+ *  consumer `server.ts` shares it with (`run-manager.ts`'s `toolProbeWarnings` for the run_start
+ *  warning, `call-tool.ts`'s `models_list` enrichment, the dashboard) automatically stops honouring a
+ *  probe recorded under a DIFFERENT harness than the one this deployment is actively running — the
+ *  #137 scenario (an sdk-era probe still driving MODEL_TOOL_USE_UNVERIFIED after the deployment
+ *  switched to pi). One wrapper, composed once at the point `server.ts` already builds its probe
+ *  lookup closure, rather than re-checking harnesses at every call site. */
+export function harnessFilteredProbeLookup(
+  raw: (provider: string, model: string) => ProbeResult | undefined,
+  active: 'sdk' | 'pi',
+): (provider: string, model: string) => ProbeResult | undefined {
+  return (provider, model) => {
+    const row = raw(provider, model);
+    if (!row) return undefined;
+    return probeEffectiveForHarness(row.harness, active) ? row : undefined;
+  };
+}
+
+/** issue #138 review M-138-1: `harnessFilteredProbeLookup` above only covers a bare `(provider,
+ *  model) => ProbeResult | undefined` lookup — `RunStoreObservedStats` (observed-stats.ts) instead
+ *  reads a `{get, all}` pair straight off `ModelProbeStore` (its own `probes` dep), bypassing that
+ *  wrapper entirely. Left unfiltered, a cross-harness row kept showing `observed.source:'probe'`
+ *  with a stale `probeLatencyMs` next to an otherwise-correctly-nulled `toolUseVerified` on the SAME
+ *  models_list row — and `models-query.ts`'s `sortBy:'latency'` fallback and its latency filters
+ *  both read `probeLatencyMs`, so foreign-harness timing kept driving selection. This wraps the SAME
+ *  `{get, all}` shape with the SAME `probeEffectiveForHarness` rule: `all()` DROPS a mismatched row
+ *  outright (not just nulls a field), so an enumeration of "every probed ref" (`getAll()`'s own
+ *  fallback loop) never treats one as probed at all — the observed-stats row then falls through to
+ *  `source:'none'`, exactly as if it had never been probed under this harness. */
+export function harnessFilteredProbeStore(
+  store: Pick<ModelProbeStore, 'get' | 'all'>,
+  active: 'sdk' | 'pi',
+): Pick<ModelProbeStore, 'get' | 'all'> {
+  return {
+    get: (provider: string, model: string) => {
+      const row = store.get(provider, model);
+      return row && probeEffectiveForHarness(row.harness, active) ? row : undefined;
+    },
+    all: () => store.all().filter((r) => probeEffectiveForHarness(r.harness, active)),
+  };
 }
 
 export const DETAIL_CAP = 200;
@@ -180,7 +268,12 @@ export async function runProbe(
     rmSync(workspace, { recursive: true, force: true });
   }
   const c = classifyProbe(prose.r, tools.r, nonce);
-  return { ...target, ...c, probedAt: clock.isoNow(), latencyMs: { prose: prose.ms, tools: tools.ms } };
+  // issue #138: read straight off whichever leg's own GatewayResult carried a transport (both legs
+  // go through the SAME gateway/call, so they always agree when either reports one) — never guessed
+  // from deployment config. Neither leg reporting one (a pre-v26 gateway, or a test fake) is recorded
+  // honestly as 'unknown', not silently assigned to a specific harness.
+  const harness: ProbeHarness = prose.r.transport ?? tools.r.transport ?? 'unknown';
+  return { ...target, ...c, harness, probedAt: clock.isoNow(), latencyMs: { prose: prose.ms, tools: tools.ms } };
 }
 
 /** Latest probe result per (provider, model), in a sqlite table. Production puts it in the run
@@ -189,6 +282,12 @@ export async function runProbe(
  *  alone, which was always the real primary key. A pre-existing db from before this change is
  *  migrated by DROPPING the old table (the spec's own call: "old rows may be dropped") — probe
  *  results are a cache the periodic prober repopulates on its own schedule, never load-bearing. */
+// issue #138: the documented migration default for a row written before the `harness` column
+// existed — see `ProbeHarness`'s own doc for why 'sdk' (not 'unknown') is the right default: these
+// rows provably predate the pi harness's existence.
+const LEGACY_HARNESS_DEFAULT: ProbeHarness = 'sdk';
+const KNOWN_HARNESSES: ReadonlySet<string> = new Set(['claude-agent-sdk', 'direct-fetch', 'pi', 'sdk', 'unknown']);
+
 export class ModelProbeStore {
   private readonly _db: Database.Database;
   constructor(dbPath: string) {
@@ -199,11 +298,32 @@ export class ModelProbeStore {
       provider TEXT NOT NULL, model TEXT NOT NULL,
       prose_ok INTEGER NOT NULL, tools_ok INTEGER NOT NULL, probed_at TEXT NOT NULL,
       prose_ms INTEGER NOT NULL, tools_ms INTEGER NOT NULL, detail TEXT NOT NULL,
+      harness TEXT NOT NULL DEFAULT '${LEGACY_HARNESS_DEFAULT}',
       PRIMARY KEY (provider, model))`);
+    // issue #138: a db that already existed before this column — an ADDITIVE migration (unlike the
+    // `alias` hard-reset above): existing rows are PRESERVED, backfilled with the same documented
+    // default `CREATE TABLE`'s own `DEFAULT` would have given a fresh table.
+    const cols2 = (this._db.prepare("PRAGMA table_info(model_probes)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!cols2.includes('harness')) {
+      try {
+        this._db.exec(`ALTER TABLE model_probes ADD COLUMN harness TEXT NOT NULL DEFAULT '${LEGACY_HARNESS_DEFAULT}'`);
+      } catch (err) {
+        // issue #138 review L-138-1: the PRAGMA check above and this ALTER are two separate
+        // statements, not one atomic operation — a concurrent second process's OWN migration can
+        // complete in the gap between them (review's own repro: 4 processes opening the same
+        // pre-migration db at once, 15/20 boots failed here). `server.ts` builds `ModelProbeStore`
+        // unguarded, so an uncaught failure here fails the whole boot. SQLite reports both "the
+        // column is already there" cases (a genuine race, or this same check racing a PARALLEL
+        // in-process no-op) with the identical "duplicate column name" message; anything else is a
+        // real failure and must still surface, never silently swallowed.
+        if (!/duplicate column name/i.test((err as Error).message)) throw err;
+      }
+    }
   }
   put(r: ProbeResult): void {
-    this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?)`).run(
+    this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?,?)`).run(
       r.provider, r.model, r.proseVerified ? 1 : 0, r.toolUseVerified ? 1 : 0, r.probedAt, r.latencyMs.prose, r.latencyMs.tools, r.detail,
+      r.harness ?? 'unknown',
     );
   }
   get(provider: string, model: string): ProbeResult | undefined {
@@ -216,11 +336,12 @@ export class ModelProbeStore {
   close(): void { this._db.close(); }
 }
 
-interface Row { provider: string; model: string; prose_ok: number; tools_ok: number; probed_at: string; prose_ms: number; tools_ms: number; detail: string }
+interface Row { provider: string; model: string; prose_ok: number; tools_ok: number; probed_at: string; prose_ms: number; tools_ms: number; detail: string; harness: string }
 function fromRow(r: Row): ProbeResult {
   return {
     provider: r.provider, model: r.model, proseVerified: r.prose_ok === 1, toolUseVerified: r.tools_ok === 1,
     probedAt: r.probed_at, latencyMs: { prose: r.prose_ms, tools: r.tools_ms }, detail: r.detail,
+    harness: KNOWN_HARNESSES.has(r.harness) ? (r.harness as ProbeHarness) : 'unknown',
   };
 }
 
@@ -250,6 +371,16 @@ export class ModelProber {
        *  under pi: a LEGACY row from before the deployment switched gateways can still be sitting in
        *  the catalog. Omitted (the sdk gateway): unchanged. */
       harnessProviders?: readonly string[];
+      /** issue #138 review M-138-2: the SAME two-way `'sdk' | 'pi'` distinction `server.ts` derives
+       *  for `harnessFilteredProbeLookup` — `dueTargets()` uses it so a row recorded under a
+       *  DIFFERENT harness counts as due IMMEDIATELY, not after `config.intervalMs` (default 7 days)
+       *  of additional waiting. Without this, every reader already treats a cross-harness row as
+       *  unprobed (`harnessFilteredProbeLookup`), but the periodic prober would not actually refresh
+       *  it until its OLD `probedAt` aged out on its own — exactly the gap #137's reported scenario
+       *  hit (an sdk-era probe only 7 days old at the moment of the gateway switch). Optional and
+       *  omitted entirely skips this check (never defaulted to either value) — every pre-#138 call
+       *  site, none of which pass it, keeps its EXACT prior behavior: due-ness gated on age alone. */
+      activeHarness?: 'sdk' | 'pi';
     },
   ) {}
 
@@ -278,9 +409,16 @@ export class ModelProber {
 
   dueTargets(): ProbeTarget[] {
     const now = this._deps.clock.now();
+    const activeHarness = this._deps.activeHarness;
     return probeTargets(this._deps.modelRefs(), this._deps.harnessProviders).filter((t) => {
       const last = this._deps.store.get(t.provider, t.model);
-      return last === undefined || now - Date.parse(last.probedAt) >= this._deps.config.intervalMs;
+      if (last === undefined) return true;
+      // issue #138 review M-138-2: a row recorded under a harness other than the one actively
+      // running is due NOW, regardless of age — see this field's own doc above for why age alone
+      // is not enough. `activeHarness` omitted (every pre-#138 call site) skips this check
+      // entirely — age alone, byte-identical to the pre-#138 rule — never a guessed default.
+      if (activeHarness !== undefined && !probeEffectiveForHarness(last.harness, activeHarness)) return true;
+      return now - Date.parse(last.probedAt) >= this._deps.config.intervalMs;
     });
   }
 
