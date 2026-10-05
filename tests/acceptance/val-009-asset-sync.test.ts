@@ -99,7 +99,8 @@ describe('Asset sync via MCP (REQ-009, VAL-009)', () => {
 
   // REQ-009 clause 3 (D4 recursion guard) — see header note 3 for the v24 re-spelling. The engine's
   // own plugin/guidance identity lives under the reserved `rwe-` prefix; an asset allowed to claim
-  // that prefix would be materialized into a run as `.claude/skills/rwe-…`, impersonating it.
+  // that prefix would be materialized into a dispatch's skill plugin (issue #144: outside the
+  // workspace, but still discovered/activated through the same `rwe-…` name) impersonating it.
   it('an asset NAME claiming the reserved rwe- prefix is refused RESERVED_PREFIX, not stored', async () => {
     const r = await mcpCall('workspace_push', {
       scope: 'global', kind: 'skill',

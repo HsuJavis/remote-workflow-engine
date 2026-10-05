@@ -327,8 +327,19 @@ export async function walkDir(dir: string, base: string, out: string[], ignore: 
  *  containment is checked against an ABSOLUTE path regardless), then refuses with a thrown error
  *  (pi's tool-call pipeline turns a thrown Operations error into a tool-result error, matching
  *  `toolUsePreCheck`'s own refusal shape on the sdk gateway) unless BOTH: (a) contained within
- *  `config.cwd`, and (b) not equal to / inside any of `config.protectedFiles`. */
-export function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps): void {
+ *  `config.cwd` OR (when `opts.readOnly`) one of `config.skillReadRoots`, and (b) not equal to /
+ *  inside any of `config.protectedFiles`.
+ *
+ *  Issue #144: `opts.readOnly` is set by every READ operation below (`read`/`grep`/`find`/`ls`, and
+ *  edit's own `readFile`/`access` half) and OMITTED by every WRITE operation (`write`'s `writeFile`/
+ *  `mkdir`, edit's own `writeFile`) — a declared skill's materialized directory is readable to the
+ *  model (pi tells it to `read` the skill's own `SKILL.md` by absolute path, outside `cwd` since
+ *  issue #144 moved skill materialization out of the workspace; `formatSkillsForPrompt`'s own
+ *  `<location>` field is that path) but never writable: `config.skillReadRoots` only widens the
+ *  containment check below, never which root `config.protectedFiles` or a write op is checked
+ *  against. `config.cwd` ITSELF stays checked unconditionally either way — `skillReadRoots` only ever
+ *  ADDS an extra allowed root for a read, never removes `cwd`. */
+export function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps, opts?: { readOnly?: boolean }): void {
   const root = resolve(config.cwd);
   const target = resolve(absolutePath);
   // review B3: `landing` is where this path ACTUALLY resolves once every symlink (including a
@@ -337,7 +348,9 @@ export function assertJailed(absolutePath: string, config: PiChildConfig, deps: 
   // alone would miss nothing dangling ever existing in the first place, but checking both is cheap
   // and matches `protectedConfigTarget`'s own "lexical AND landing" discipline exactly).
   const landing = resolve(deps.resolveLanding(target));
-  if (!deps.isPathContained(target, root) || !deps.isPathContained(landing, root)) {
+  const containedIn = (r: string): boolean => deps.isPathContained(target, r) && deps.isPathContained(landing, r);
+  const skillReadRoots = opts?.readOnly ? (config.skillReadRoots ?? []) : [];
+  if (!containedIn(root) && !skillReadRoots.some(containedIn)) {
     throw new Error(`PATH_ESCAPES_WORKSPACE: "${absolutePath}" is outside this run's workspace`);
   }
   for (const protectedPath of config.protectedFiles) {
@@ -449,8 +462,8 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
   if (want.has('read')) {
     tools.push(createReadToolDefinition(config.cwd, {
       operations: {
-        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p); },
-        access: async (p) => { assertJailed(p, config, deps); await access(p); },
+        readFile: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readFile(p); },
+        access: async (p) => { assertJailed(p, config, deps, { readOnly: true }); await access(p); },
       },
     }));
   }
@@ -465,17 +478,17 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
   if (want.has('edit') && config.bashMode !== 'readonly') {
     tools.push(createEditToolDefinition(config.cwd, {
       operations: {
-        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p); },
+        readFile: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readFile(p); },
         writeFile: async (p, content) => { assertJailed(p, config, deps); await writeFile(p, content); },
-        access: async (p) => { assertJailed(p, config, deps); await access(p); },
+        access: async (p) => { assertJailed(p, config, deps, { readOnly: true }); await access(p); },
       },
     }));
   }
   if (want.has('grep')) {
     tools.push(createGrepToolDefinition(config.cwd, {
       operations: {
-        isDirectory: async (p) => { assertJailed(p, config, deps); return (await stat(p)).isDirectory(); },
-        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p, 'utf8'); },
+        isDirectory: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return (await stat(p)).isDirectory(); },
+        readFile: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readFile(p, 'utf8'); },
       },
     }));
   }
@@ -483,11 +496,11 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
     tools.push(createFindToolDefinition(config.cwd, {
       operations: {
         exists: async (p) => {
-          assertJailed(p, config, deps);
+          assertJailed(p, config, deps, { readOnly: true });
           try { await access(p); return true; } catch { return false; }
         },
         glob: async (pattern, cwd, options) => {
-          assertJailed(cwd, config, deps);
+          assertJailed(cwd, config, deps, { readOnly: true });
           const all: string[] = [];
           await walkDir(cwd, cwd, all, options.ignore, options.limit * 20); // overcollect, then filter
           const re = globToRegExp(pattern);
@@ -500,11 +513,11 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
     tools.push(createLsToolDefinition(config.cwd, {
       operations: {
         exists: async (p) => {
-          assertJailed(p, config, deps);
+          assertJailed(p, config, deps, { readOnly: true });
           try { await access(p); return true; } catch { return false; }
         },
-        stat: async (p) => { assertJailed(p, config, deps); return stat(p); },
-        readdir: async (p) => { assertJailed(p, config, deps); return readdir(p); },
+        stat: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return stat(p); },
+        readdir: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readdir(p); },
       },
     }));
   }

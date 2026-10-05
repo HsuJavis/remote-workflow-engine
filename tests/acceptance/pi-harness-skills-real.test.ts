@@ -1,10 +1,11 @@
 // pi harness v1, slice (h) real-tier evidence: a REAL PiGatewayClient.invoke() dispatch, through a
 // REAL spawned pi child, to a REAL local Ollama (qwen2.5:7b), with a REAL materialized skill
-// (SKILL.md copied into <ws>/.claude/skills/<name>) — proves the DefaultResourceLoader +
-// additionalSkillPaths branch (session-runner.ts's buildResourceLoader) actually boots a real pi
-// session without crashing; the unit tests (pi-gateway-client.test.ts) only prove the file
-// materialization and the childConfig wire shape against a FAKE child, which cannot catch a
-// pi-internal runtime error (wrong export, wrong option shape) the way a real spawned child can.
+// (issue #144: SKILL.md copied into this dispatch's own private directory under `tmpDir`, never
+// `<ws>/.claude/skills/<name>`) — proves the DefaultResourceLoader + additionalSkillPaths branch
+// (session-runner.ts's buildResourceLoader) actually boots a real pi session without crashing; the
+// unit tests (pi-gateway-client.test.ts) only prove the file materialization and the childConfig
+// wire shape against a FAKE child, which cannot catch a pi-internal runtime error (wrong export,
+// wrong option shape) the way a real spawned child can.
 //
 // review B2 (HIGH): gated on the EXPLICIT opt-in RWE_PI_REAL_TESTS=1, never on host reachability
 // alone (see tests/helpers/pi-real-gate.ts's own header for why).
@@ -50,7 +51,11 @@ describe('pi harness v1 — REAL skill materialization + real ollama (slice h)',
       });
       expect(result.ok).toBe(true);
       if (result.ok) expect(String(result.content).toUpperCase()).toContain('PONG');
-      expect(existsSync(join(ws, '.claude', 'skills', 'greeting', 'SKILL.md'))).toBe(true);
+      // Issue #144: the skill never touches the run workspace at all (materialized into a private
+      // per-dispatch directory instead, already removed by the time `invoke()` has resolved) — this
+      // is the real-tier proof that a real pi session still boots and runs successfully with it
+      // materialized OUTSIDE `ws`.
+      expect(existsSync(join(ws, '.claude', 'skills'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
       await new Promise((r) => setTimeout(r, 300));

@@ -766,9 +766,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants " +
         'no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared ' +
         "skill can still activate it. Only the agent's own declared skills can be activated (other " +
-        "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In " +
-        "`run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; " +
-        '`harness.materialized` only records which files were copied into the workspace.\n\n' +
+        "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. " +
+        "A declared skill's files are PRIVATE to the dispatch that declared it: they materialize into a " +
+        "directory outside the run workspace for the lifetime of that one dispatch only, never into " +
+        '`.claude/skills/` or anywhere else inside the workspace — another agent in the same run ' +
+        '(parallel or later, sharing that workspace) cannot read them with Read/Bash/Glob, they are ' +
+        "never visible to `workspace_pull`/`workspace_list`, and they are gone once the dispatch ends. " +
+        "If a skill's own instructions reference a supporting file by relative path, resolve it against " +
+        "the base directory the Skill tool itself reports when activating it (or, under `gateway:\"pi\"`, " +
+        'the path in the skill listing pi\'s own prompt shows) — never a hand-written `.claude/skills/...` ' +
+        "path, which will not exist. In `run_agent_log`, `harness.skillsExposed` lists the skills the " +
+        "model could activate (by the plain name you declared); `harness.materialized` records which " +
+        'ones were actually found and materialized for this dispatch (also by plain name) — neither ' +
+        'field, and nothing else in this run, exposes WHERE a materialized skill lives on disk.\n\n' +
         // Issue #106: MCP tools were missing from the first turn; authors could not see it.
         '**MCP servers.** `mcp: [name, ...]` names MCP servers pushed with `workspace_push` (`kind: ' +
         "'mcp'`). Every tool of a declared server is on that agent's tool surface from its FIRST turn, " +
