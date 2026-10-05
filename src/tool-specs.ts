@@ -1317,7 +1317,10 @@ export const TOOL_SPECS = [
       "- Probe results (see models_probe): `toolUseVerified` / `proseVerified` are OBSERVED by the engine's own probe of each configured model — true/false from the last probe, null when never probed — " +
       "with `lastProbedAt`, a short `probeDetail`, and probeFailureReason {leg: prose|tools, kind: timeout|unreachable|error|empty-reply|no-tool-use|wrong-answer, hint} (null when never probed or passing). " +
       "`stabilitySource` says where `stability` came from: 'probe' (prose failed -> 'unavailable'; tools failed -> 'degraded'; both passed -> the rule tier) " +
-      "or 'rule' (never probed: 'best-effort' for free tiers, 'variable' for local, else 'stable'). `catalogFetchedAt` is per-row catalog provenance (string timestamp, or null).\n" +
+      "or 'rule' (never probed: 'best-effort' for free tiers, 'variable' for local, else 'stable'). `catalogFetchedAt` is per-row catalog provenance (string timestamp, or null). " +
+      "PER-HARNESS (issue #138): a probe only counts as evidence for the gateway/transport that actually ran it — after this deployment switches gateway (e.g. sdk -> pi), " +
+      "toolUseVerified/proseVerified read null again (stabilitySource back to 'rule') for every model until re-probed under the NEW harness; this is 'never probed under THIS harness', not 'this model is untrustworthy'. " +
+      "The periodic prober catches up on its own next tick, or run an admin models_probe() immediately.\n" +
       'FILTERS (all optional, AND-ed; a row whose value is null never passes a min/max filter). ' +
       `SORT: sortBy ${SORT_KEYS.join('|')} (observed keys — latency, successRate, avgCostPerCall — read the callKind bucket, default tools; latency falls back to probe latency); ` +
       'order asc|desc (default: cheapest/fastest/best first — asc for price, costLevel, latency, avgCostPerCall; desc for the rest); nulls sort last whatever the order.\n' +
@@ -1393,9 +1396,15 @@ export const TOOL_SPECS = [
       'string from models_list, e.g. "anthropic/claude-haiku-4-5-20251001"), one prose call and one ' +
       'call allowed only the Read tool that must read a file and report its unguessable content. ' +
       'Returns one row per model: provider, model, proseVerified, toolUseVerified, probedAt, ' +
-      'latencyMs {prose, tools}, detail. Results are stored and appear on models_list ' +
+      'latencyMs {prose, tools}, detail, harness. Results are stored and appear on models_list ' +
       '(toolUseVerified/proseVerified/lastProbedAt/probeDetail/stabilitySource). Takes up to two probe ' +
-      "timeouts per model; the engine also re-probes on its own every modelProbe.intervalMs (default weekly).",
+      "timeouts per model; the engine also re-probes on its own every modelProbe.intervalMs (default weekly). " +
+      "PER-HARNESS (issue #138): harness records which gateway/transport ('claude-agent-sdk', 'direct-fetch' or " +
+      "'pi') actually ran THIS probe — a result recorded under one harness is never shown as verified evidence " +
+      "once the deployment is running a different one. After a gateway switch (e.g. sdk -> pi), every model's " +
+      'toolUseVerified/proseVerified read null again (stabilitySource falls back to the rule tier) until it is ' +
+      're-probed under the NEW harness — either automatically on the periodic prober\'s next tick, or immediately ' +
+      'via this tool.',
     inputSchema: {
       ...schema({
         model: {

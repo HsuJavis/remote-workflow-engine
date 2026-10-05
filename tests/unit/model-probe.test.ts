@@ -419,6 +419,45 @@ describe('ModelProber (#73) — probeNow over all distinct refs, or one; malform
     } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });
 
+  // issue #138 review M-138-2: a row recorded under a DIFFERENT harness than the one this deployment
+  // is actively running must count as due IMMEDIATELY, regardless of `probedAt` age — otherwise, per
+  // the review's own finding, a gateway switch leaves toolUseVerified null for up to `intervalMs`
+  // (7 days default) before the periodic prober catches up, even though every reader already treats
+  // the row as unprobed right now.
+  it('dueTargets: a fresh row recorded under a MISMATCHED harness is due immediately (issue #138 M-138-2)', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const clock = new FixedClock(new Date('2026-09-25T00:00:00.000Z'));
+      const prober = new ModelProber({
+        gateway: recordingGateway('good').gw, store, workRoot, clock, config: MODEL_PROBE_DEFAULTS,
+        modelRefs: () => ['ollama/freshSdk', 'ollama/freshPi'],
+        activeHarness: 'pi',
+      });
+      // Both rows probed one second ago (nowhere near the 7-day interval) — the sdk one is due only
+      // because it was recorded under a harness other than the active 'pi'.
+      store.put({ ...RESULT, model: 'freshSdk', harness: 'claude-agent-sdk', probedAt: '2026-09-24T23:59:59.000Z' });
+      store.put({ ...RESULT, model: 'freshPi', harness: 'pi', probedAt: '2026-09-24T23:59:59.000Z' });
+      expect(prober.dueTargets().map((t) => `${t.provider}/${t.model}`)).toEqual(['ollama/freshSdk']);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('dueTargets: activeHarness omitted (the sdk gateway, every pre-#138 call site) behaves exactly as before — only age gates due-ness', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const clock = new FixedClock(new Date('2026-09-25T00:00:00.000Z'));
+      const prober = new ModelProber({
+        gateway: recordingGateway('good').gw, store, workRoot, clock, config: MODEL_PROBE_DEFAULTS,
+        modelRefs: () => ['ollama/fresh'],
+      });
+      store.put({ ...RESULT, model: 'fresh', harness: 'pi', probedAt: '2026-09-24T23:59:59.000Z' });
+      expect(prober.dueTargets()).toEqual([]);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
   // review M7: a `harnessProviders`-scoped prober (the pi deployment's own) must not probe — or
   // return — an anthropic ref even when one still sits in the catalog (a version registered back
   // when this same deployment ran gateway:"sdk", before switching to "pi" — review L2's exact

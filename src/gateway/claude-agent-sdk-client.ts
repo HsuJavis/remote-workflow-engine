@@ -753,6 +753,9 @@ function sanitizeSubtype(subtype: unknown): string {
 /** One @anthropic-ai/claude-agent-sdk headless session per agent() call: reads only the final
  *  `result` message off the session's own async-generator agent loop. */
 export class ClaudeAgentSdkGatewayClient implements GatewayClient {
+  /** issue #138 review L-138-3: same fixed structural identity property as `PiGatewayClient.transport`
+   *  / `LiteLLMGatewayClient.transport` — see `PiGatewayClient`'s own doc on this field. */
+  readonly transport = 'claude-agent-sdk' as const;
   private readonly _query: QueryImpl;
   // v37 (DES-256, ARCH-178): late-bound, mirrors `bindResolveMcp` below — the gateway is constructed
   // in `composeConfig()` BEFORE the sink's owner (server.ts's `store`) exists. A NO-OP sink at

@@ -223,6 +223,17 @@ export interface BindableGateway {
   bindEventSink?(sink: (event: any) => void): void;
 }
 
+/** issue #138 review L-138-3: the SAME structural-capability pattern as `BindableGateway` above
+ *  (never an `instanceof` branch) — a `GatewayClient` MAY carry a fixed, per-class `transport`
+ *  identity (`PiGatewayClient`/`ClaudeAgentSdkGatewayClient`/`LiteLLMGatewayClient` all do). Used
+ *  ONLY by `server.ts`'s active-harness detection, which prefers this DIRECT signal over the
+ *  indirect `ServerConfig.harnessProviders` proxy when it is present, and falls back to that proxy
+ *  for a gateway that implements neither (a plain test fake implementing the bare `GatewayClient`
+ *  interface) — omitting it is a complete, valid implementation, same as `BindableGateway`. */
+export interface TransportTagged {
+  readonly transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
+}
+
 export interface GatewayClient {
   /** `signal` (D-F9a): an optional external AbortSignal — RunManager's own per-run
    *  abortController, threaded through AgentExecutor — that a real implementation should honor to
@@ -521,6 +532,10 @@ async function callViaLiteLLMProxy(
 }
 
 export class LiteLLMGatewayClient implements GatewayClient {
+  /** issue #138 review L-138-3: same fixed structural identity property as `PiGatewayClient.transport`
+   *  — see that field's own doc. This class is a `direct-fetch` transport regardless of its own
+   *  LiteLLM-proxy-or-not branch (the SAME fact its own `stamp()` below already carries per call). */
+  readonly transport = 'direct-fetch' as const;
   private readonly _proxy: LiteLLMProxyManager | undefined;
 
   constructor(private readonly _config: GatewayConfig) {

@@ -960,7 +960,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "`stabilitySource:'probe'` means `stability` reflects that probe ('unavailable' = no prose " +
         "answer, 'degraded' = no tool use). If an agent needs tools, pick a model whose row says " +
         '`toolUseVerified: true` — `run_start` answers a non-fatal `warnings` entry ' +
-        '(MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none.\n\n' +
+        '(MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none. ' +
+        "Probe results are PER HARNESS (issue #138): a result only counts as evidence for the gateway/" +
+        'transport that actually produced it, so after this deployment switches `gateway` (e.g. `"sdk"` to ' +
+        '`"pi"`), every model\'s `toolUseVerified`/`proseVerified` read `null` again (`stabilitySource` falls ' +
+        'back to the rule tier) until re-probed under the new harness — automatically on the periodic ' +
+        "prober's next tick, or immediately via an admin `models_probe()` call.\n\n" +
         // Issue #104: the selection surface — the tool description itself documents every field.
         'To CHOOSE a model, `models_list` answers one page `{ models, nextCursor, total }` of compact ' +
         "rows (`fields: ['*']` for every field; pass `nextCursor` back as `cursor`). Filter by " +

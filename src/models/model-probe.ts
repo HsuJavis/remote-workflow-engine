@@ -137,6 +137,30 @@ export function harnessFilteredProbeLookup(
   };
 }
 
+/** issue #138 review M-138-1: `harnessFilteredProbeLookup` above only covers a bare `(provider,
+ *  model) => ProbeResult | undefined` lookup — `RunStoreObservedStats` (observed-stats.ts) instead
+ *  reads a `{get, all}` pair straight off `ModelProbeStore` (its own `probes` dep), bypassing that
+ *  wrapper entirely. Left unfiltered, a cross-harness row kept showing `observed.source:'probe'`
+ *  with a stale `probeLatencyMs` next to an otherwise-correctly-nulled `toolUseVerified` on the SAME
+ *  models_list row — and `models-query.ts`'s `sortBy:'latency'` fallback and its latency filters
+ *  both read `probeLatencyMs`, so foreign-harness timing kept driving selection. This wraps the SAME
+ *  `{get, all}` shape with the SAME `probeEffectiveForHarness` rule: `all()` DROPS a mismatched row
+ *  outright (not just nulls a field), so an enumeration of "every probed ref" (`getAll()`'s own
+ *  fallback loop) never treats one as probed at all — the observed-stats row then falls through to
+ *  `source:'none'`, exactly as if it had never been probed under this harness. */
+export function harnessFilteredProbeStore(
+  store: Pick<ModelProbeStore, 'get' | 'all'>,
+  active: 'sdk' | 'pi',
+): Pick<ModelProbeStore, 'get' | 'all'> {
+  return {
+    get: (provider: string, model: string) => {
+      const row = store.get(provider, model);
+      return row && probeEffectiveForHarness(row.harness, active) ? row : undefined;
+    },
+    all: () => store.all().filter((r) => probeEffectiveForHarness(r.harness, active)),
+  };
+}
+
 export const DETAIL_CAP = 200;
 const cap = (s: string): string => (s.length > DETAIL_CAP ? s.slice(0, DETAIL_CAP - 1) + '…' : s);
 
@@ -281,7 +305,19 @@ export class ModelProbeStore {
     // default `CREATE TABLE`'s own `DEFAULT` would have given a fresh table.
     const cols2 = (this._db.prepare("PRAGMA table_info(model_probes)").all() as Array<{ name: string }>).map((c) => c.name);
     if (!cols2.includes('harness')) {
-      this._db.exec(`ALTER TABLE model_probes ADD COLUMN harness TEXT NOT NULL DEFAULT '${LEGACY_HARNESS_DEFAULT}'`);
+      try {
+        this._db.exec(`ALTER TABLE model_probes ADD COLUMN harness TEXT NOT NULL DEFAULT '${LEGACY_HARNESS_DEFAULT}'`);
+      } catch (err) {
+        // issue #138 review L-138-1: the PRAGMA check above and this ALTER are two separate
+        // statements, not one atomic operation — a concurrent second process's OWN migration can
+        // complete in the gap between them (review's own repro: 4 processes opening the same
+        // pre-migration db at once, 15/20 boots failed here). `server.ts` builds `ModelProbeStore`
+        // unguarded, so an uncaught failure here fails the whole boot. SQLite reports both "the
+        // column is already there" cases (a genuine race, or this same check racing a PARALLEL
+        // in-process no-op) with the identical "duplicate column name" message; anything else is a
+        // real failure and must still surface, never silently swallowed.
+        if (!/duplicate column name/i.test((err as Error).message)) throw err;
+      }
     }
   }
   put(r: ProbeResult): void {
@@ -335,6 +371,16 @@ export class ModelProber {
        *  under pi: a LEGACY row from before the deployment switched gateways can still be sitting in
        *  the catalog. Omitted (the sdk gateway): unchanged. */
       harnessProviders?: readonly string[];
+      /** issue #138 review M-138-2: the SAME two-way `'sdk' | 'pi'` distinction `server.ts` derives
+       *  for `harnessFilteredProbeLookup` — `dueTargets()` uses it so a row recorded under a
+       *  DIFFERENT harness counts as due IMMEDIATELY, not after `config.intervalMs` (default 7 days)
+       *  of additional waiting. Without this, every reader already treats a cross-harness row as
+       *  unprobed (`harnessFilteredProbeLookup`), but the periodic prober would not actually refresh
+       *  it until its OLD `probedAt` aged out on its own — exactly the gap #137's reported scenario
+       *  hit (an sdk-era probe only 7 days old at the moment of the gateway switch). Optional and
+       *  omitted entirely skips this check (never defaulted to either value) — every pre-#138 call
+       *  site, none of which pass it, keeps its EXACT prior behavior: due-ness gated on age alone. */
+      activeHarness?: 'sdk' | 'pi';
     },
   ) {}
 
@@ -363,9 +409,16 @@ export class ModelProber {
 
   dueTargets(): ProbeTarget[] {
     const now = this._deps.clock.now();
+    const activeHarness = this._deps.activeHarness;
     return probeTargets(this._deps.modelRefs(), this._deps.harnessProviders).filter((t) => {
       const last = this._deps.store.get(t.provider, t.model);
-      return last === undefined || now - Date.parse(last.probedAt) >= this._deps.config.intervalMs;
+      if (last === undefined) return true;
+      // issue #138 review M-138-2: a row recorded under a harness other than the one actively
+      // running is due NOW, regardless of age — see this field's own doc above for why age alone
+      // is not enough. `activeHarness` omitted (every pre-#138 call site) skips this check
+      // entirely — age alone, byte-identical to the pre-#138 rule — never a guessed default.
+      if (activeHarness !== undefined && !probeEffectiveForHarness(last.harness, activeHarness)) return true;
+      return now - Date.parse(last.probedAt) >= this._deps.config.intervalMs;
     });
   }
 

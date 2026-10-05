@@ -19,7 +19,7 @@ import Database from 'better-sqlite3';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { Clock } from '../../src/clock.js';
-import { ModelProbeStore, type ProbeResult } from '../../src/models/model-probe.js';
+import { ModelProbeStore, harnessFilteredProbeStore, type ProbeResult } from '../../src/models/model-probe.js';
 import {
   RunStoreObservedStats,
   aggregateFacts,
@@ -315,6 +315,47 @@ describe('ObservedStats — probe fallback (issue #104)', () => {
       const all = provider.getAll();
       expect(all.get('anthropic/claude-x')?.source).toBe('runs');
       expect(all.get('ollama/llama3')?.source).toBe('probe');
+      probeStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Issue #138 review M-138-1: RunStoreObservedStats read the raw ModelProbeStore directly — a
+  // probe recorded under a DIFFERENT harness than the one actively running kept showing
+  // `observed.source:'probe'` with a stale `probeLatencyMs` (which models-query.ts's
+  // `sortBy:'latency'` fallback and latency filters, and the dashboard, both read), even though the
+  // SAME row's `toolUseVerified`/`stabilitySource` were already correctly nulled elsewhere via
+  // `harnessFilteredProbeLookup`. Wrapping the SAME `{get, all}` pair with `harnessFilteredProbeStore`
+  // closes that gap: a mismatched row is dropped outright, so the ref falls through to `source:'none'`
+  // exactly as if it had never been probed under this harness.
+  it('a probe recorded under a DIFFERENT harness than the active one is dropped entirely (source:"none"), not shown as source:"probe" with stale latency', async () => {
+    const { store, dir } = newStore();
+    try {
+      const probeStore = new ModelProbeStore(join(dir, 'probes.db'));
+      probeStore.put({
+        provider: 'ollama', model: 'qwen2.5:7b', proseVerified: true, toolUseVerified: false,
+        probedAt: '2026-09-28T00:00:00.000Z', latencyMs: { prose: 500, tools: 700 }, detail: 'sdk-era probe',
+        harness: 'claude-agent-sdk',
+      });
+      const clock = new MutableClock(NOW.getTime());
+
+      // Unfiltered (the pre-M-138-1 shape): the sdk-recorded row still surfaces as source:'probe'
+      // with its stale latency — this is the exact defect, pinned here as the "before" baseline.
+      const unfiltered = new RunStoreObservedStats({ source: store, probes: probeStore, clock });
+      expect(unfiltered.get('ollama/qwen2.5:7b')).toMatchObject({ source: 'probe', probeLatencyMs: 600 });
+
+      // Filtered for an active 'pi' deployment: the row is dropped entirely.
+      const filteredForPi = new RunStoreObservedStats({ source: store, probes: harnessFilteredProbeStore(probeStore, 'pi'), clock });
+      const piView = filteredForPi.get('ollama/qwen2.5:7b');
+      expect(piView.source).toBe('none');
+      expect(piView.probeLatencyMs).toBeUndefined();
+      expect(filteredForPi.getAll().has('ollama/qwen2.5:7b')).toBe(false);
+
+      // Filtered for an active 'sdk' deployment: the SAME row is honoured, unchanged.
+      const filteredForSdk = new RunStoreObservedStats({ source: store, probes: harnessFilteredProbeStore(probeStore, 'sdk'), clock });
+      expect(filteredForSdk.get('ollama/qwen2.5:7b')).toMatchObject({ source: 'probe', probeLatencyMs: 600 });
+
       probeStore.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
