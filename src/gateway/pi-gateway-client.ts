@@ -62,6 +62,22 @@ function isMcpToolName(name: string): boolean {
   return name.startsWith('mcp__');
 }
 
+/** issue #139(a): the inverse of `TOOL_NAME_MAP`, computed from it (never a second hand-written
+ *  table that could drift) — turns a pi-native tool name ('read', 'bash', ...) back into the ENGINE
+ *  name ('Read', 'Bash', ...) every transcript consumer (model-probe.ts's `classifyProbe`, dashboard,
+ *  run_agent_log) already expects from the sdk gateway. An `mcp__*` name passes through unchanged
+ *  (it was never translated going in — see `isMcpToolName`'s own doc). Any OTHER unrecognized name
+ *  (a future pi tool this map does not yet know about) also passes through UNCHANGED rather than
+ *  being dropped or nulled — an unmapped base tool can never reach dispatch at all (`mapTools`
+ *  refuses TOOL_UNSUPPORTED_BY_HARNESS before a child is ever spawned), so this can only be a name
+ *  pi itself produces that this map has not been taught yet; losing the name would make the
+ *  transcript strictly less useful than keeping pi's own spelling. */
+const ENGINE_TOOL_NAME: Record<string, string> = Object.fromEntries(Object.entries(TOOL_NAME_MAP).map(([engine, pi]) => [pi, engine]));
+function engineToolName(piName: string): string {
+  if (isMcpToolName(piName)) return piName;
+  return ENGINE_TOOL_NAME[piName] ?? piName;
+}
+
 function mapTools(engineNames: readonly string[]): { ok: true; piNames: string[] } | { ok: false; unmapped: string[] } {
   const piNames: string[] = [];
   const unmapped: string[] = [];
@@ -110,6 +126,37 @@ function buildChildEnv(agentDir: string): NodeJS.ProcessEnv {
 }
 
 const ZERO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+/** issue #139(b): every effort level `AgentOpts['effort']` can be, lowest first — used to pick the
+ *  lowest level a MANDATORY-reasoning model actually advertises (`caps.reasoningEfforts`) when a
+ *  dispatch asked for no effort at all. */
+const EFFORT_LEVELS: ReadonlyArray<NonNullable<AgentOpts['effort']>> = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** issue #139(b): the probe (and any other effort-less dispatch) used to leave `effort` unset for
+ *  EVERY call — under pi that collapses to `thinkingLevel:'off'` -> OpenRouter `reasoning.effort:
+ *  'none'`, which a mandatory-reasoning endpoint (glm-5.3-flash, gemini-3.8-flash) rejects with a
+ *  terminal 400 ("Reasoning is mandatory for this endpoint and cannot be disabled"). `'low'` is the
+ *  floor when the catalog names no narrower list (every mandatory-reasoning endpoint seen so far
+ *  supports it); when the catalog DOES name specific levels (`caps.reasoningEfforts`,
+ *  OpenRouter's own `supported_efforts`), the lowest one it actually lists wins instead, so this
+ *  never requests a level the model does not advertise. */
+function lowestSupportedEffort(efforts: readonly string[] | undefined): NonNullable<AgentOpts['effort']> {
+  if (!efforts || efforts.length === 0) return 'low';
+  return EFFORT_LEVELS.find((level) => efforts.includes(level)) ?? 'low';
+}
+
+/** issue #139(b): the ONE place this gateway decides what effort actually goes out — the caller's
+ *  own `opts.effort` always wins; only when it asked for NOTHING AT ALL and the PINNED catalog
+ *  capability says this openrouter model's endpoint REQUIRES reasoning does this synthesize the
+ *  floor level instead of leaving it off. Scoped to openrouter only: ollama has no reasoning dial at
+ *  all (PROVIDER_CAPS.ollama.effort is null), so "mandatory" can never apply to it. Every
+ *  effort-less dispatch through this gateway goes through this function — the probe (model-probe.ts)
+ *  is just one caller among the rest, not special-cased. */
+function effectiveEffort(requested: AgentOpts['effort'], provider: string, caps: Caps | undefined): AgentOpts['effort'] {
+  if (requested !== undefined) return requested;
+  if (provider !== 'openrouter' || caps?.reasoningMandatory !== true) return undefined;
+  return lowestSupportedEffort(caps.reasoningEfforts);
+}
 
 // residual fix (srt-mux socket leak): `sweepSrtMuxSockets` moved to its own module
 // (srt-mux-sweep.ts) so `pi-confinement-probe.ts` can apply the SAME belt-and-suspenders sweep to
@@ -725,11 +772,16 @@ export class PiGatewayClient implements GatewayClient {
     // (tests/acceptance/pi-harness-openrouter-fake-server.test.ts), stronger than pi-spike-report.md
     // S8's raw completeSimple() check. ollama has no reasoning dial at all (PROVIDER_CAPS.ollama.effort
     // is null) — effort is accepted but never reaches the wire.
+    // issue #139(b): `effort` below is the EFFECTIVE effort (`effectiveEffort`'s own doc) — the
+    // caller's request, or a synthesized floor level for a mandatory-reasoning openrouter model that
+    // asked for none at all. Every consumer from here down (the harness record, childConfig) reads
+    // this ONE resolved value, never `req.opts.effort` directly, so they can never disagree.
+    const effort = effectiveEffort(req.opts.effort, parsed.provider, req.caps);
     const effortApplied: { applied: true; param: string; restPath: string[]; value: unknown } | { applied: false; reason: string } | undefined =
-      req.opts.effort === undefined
+      effort === undefined
         ? undefined
         : parsed.provider === 'openrouter'
-          ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: req.opts.effort }
+          ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: effort }
           : { applied: false, reason: 'ollama has no reasoning dial' };
 
     // Captured (not just dispatched) so the SECOND onHarness call below — once the child's `mcp_init`
@@ -745,6 +797,16 @@ export class PiGatewayClient implements GatewayClient {
       harnessVersion: PI_HARNESS_VERSION,
       // issue #138: this gateway always dispatches through the pi transport.
       transport: 'pi',
+      // issue #145: pi has no separate "the model could see this skill" confirmation the way the
+      // sdk gateway's CLI init message gives (claude-agent-sdk-client.ts sets `skillsExposed` from
+      // that) — but the SKILL_REQUIRES_READ_TOOL refusal above already guarantees any dispatch that
+      // reaches this point and materialized a skill has read or bash in its tool set, which is
+      // exactly pi's own (undocumented-elsewhere, read straight off the installed package)
+      // condition for listing a skill in the system prompt at all. So `materialized.skills` IS the
+      // exposed-skills list here; `skillsExposed` was always `[]` before this fix (never set at
+      // all, agent-executor.ts's own `descriptor.skillsExposed ?? []` fallback silently papered over
+      // it).
+      skillsExposed: materialized?.skills ?? [],
       ...(plantedConfigRemoved.length > 0 ? { plantedConfigRemoved } : {}),
       ...(materialized !== undefined ? { materialized } : {}),
       ...(mapped.piNames.includes('bash')
@@ -772,7 +834,7 @@ export class PiGatewayClient implements GatewayClient {
       protectedFiles: [...(this._config.confinement?.protectedFiles ?? [])],
       ...(sandbox !== undefined ? { sandbox } : {}),
       ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
-      ...(req.opts.effort !== undefined ? { effort: req.opts.effort } : {}),
+      ...(effort !== undefined ? { effort } : {}),
       ...(this._config.openrouterBaseUrl !== undefined ? { openrouterBaseUrl: this._config.openrouterBaseUrl } : {}),
       ...(Object.keys(mcpConfigs).length > 0 ? { mcp: mcpConfigs } : {}),
       ...((materialized?.skills.length ?? 0) > 0 ? { skillPaths: materialized!.skills.map((name) => join(workspace, '.claude', 'skills', name)) } : {}),
@@ -930,9 +992,13 @@ export class PiGatewayClient implements GatewayClient {
           ...(cumulative.input > 0 || cumulative.output > 0 ? { partial: true as const } : {}),
         };
       } else if (event.t === 'tool_call') {
-        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_call', data: { toolCallId: event.toolCallId, toolName: event.toolName, args: safeParse(event.argsJson) } });
+        // issue #139(a): the SAME shape + ENGINE tool names the sdk gateway's own `extractEvents`
+        // emits from a real `tool_use` content block (claude-agent-sdk-client.ts) — one shape, every
+        // consumer (model-probe.ts's `classifyProbe` in particular checks `data.name === 'Read'`;
+        // it used to see pi's lowercase `toolName` and never matched, a real false negative).
+        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_call', data: { type: 'tool_use', id: event.toolCallId, name: engineToolName(event.toolName), input: safeParse(event.argsJson) } });
       } else if (event.t === 'tool_result') {
-        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_result', data: { toolCallId: event.toolCallId, toolName: event.toolName, result: safeParse(event.resultJson), isError: event.isError } });
+        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_result', data: { type: 'tool_result', tool_use_id: event.toolCallId, content: safeParse(event.resultJson), is_error: event.isError } });
       } else if (event.t === 'mcp_init' && mcpCtx !== undefined) {
         // Issue #106 parity, pi shape: the child's ONLY observable turn-1 signal (spike S5 — no
         // connection-status API exists) is which `mcp__<server>__*` tools are active. A synthetic
@@ -941,14 +1007,24 @@ export class PiGatewayClient implements GatewayClient {
         // registered) and fed through the SAME `summarizeMcpInit` the sdk gateway uses — one
         // MCP_SERVER_NOT_CONNECTED warning shape for both gateways.
         const declared = mcpCtx.baseDescriptor.mcpServers;
+        // issue #145: pi's REAL sanitizer (`@earendil-works/pi-coding-agent`'s
+        // `extensions/mcp/tools.js`: `` `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, '_') ``)
+        // replaces EVERY character outside [A-Za-z0-9_] — including a hyphen — unlike the Claude
+        // CLI's own rule (`[^A-Za-z0-9_-]`, which keeps a hyphen; see `summarizeMcpInit`'s own doc
+        // comment). A hyphenated server name ('tooltest-memory') therefore produced active tool
+        // names like `mcp__tooltest_memory__read_graph`, which the old (CLI-shaped) prefix never
+        // matched — a real, working connection was misreported 'unknown' with a false
+        // MCP_SERVER_NOT_CONNECTED warning. `hasToolsFor` now applies pi's own rule, and
+        // `summarizeMcpInit`'s own prefix match (passed below) is told to use it too.
+        const piSanitize = (name: string): string => name.replace(/[^A-Za-z0-9_]/g, '_');
         const hasToolsFor = (name: string): boolean => {
-          const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+          const prefixes = [`mcp__${name}__`, `mcp__${piSanitize(name)}__`];
           return event.activeTools.some((t) => prefixes.some((p) => t.startsWith(p)));
         };
         const { mcpStatus, warnings } = summarizeMcpInit(declared, {
           tools: event.activeTools,
           mcp_servers: declared.map((name) => ({ name, status: hasToolsFor(name) ? 'connected' : 'unknown' })),
-        });
+        }, piSanitize);
         void req.onHarness?.({ ...mcpCtx.baseDescriptor, mcpStatus, ...(warnings.length > 0 ? { warnings } : {}) });
         for (const w of warnings) {
           const tools = mcpStatus.find((m) => m.server === w.server)?.tools.length ?? 0;

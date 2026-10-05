@@ -622,3 +622,136 @@ describe('harnessFilteredProbeLookup (#138) — the wrapper server.ts composes a
     });
   });
 });
+
+// issue #139(b): the probe used to dispatch with NO effort at all — under pi that collapses to
+// OpenRouter `reasoning.effort:'none'`, which a mandatory-reasoning endpoint (glm-5.3-flash,
+// gemini-3.8-flash) rejects with a terminal 400. `runProbe` must thread the run's own pinned `caps`
+// through to BOTH legs, unchanged, so `PiGatewayClient`'s own `effectiveEffort` (the thing that
+// actually picks the floor level) has the capability data it needs.
+describe('runProbe (issue #139b) — threads opts.caps through to both legs', () => {
+  it('a supplied caps object reaches gateway.invoke on both the prose and the tools leg, unchanged', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-probe-caps-'));
+    try {
+      const seenCaps: Array<unknown> = [];
+      const gw: GatewayClient = {
+        async invoke(req) {
+          seenCaps.push(req.caps);
+          return ok('PONG');
+        },
+      };
+      const caps = { reasoning: true as const, tools: true as const, source: 'upstream' as const, reasoningMandatory: true, reasoningEfforts: ['low', 'medium'] };
+      await runProbe(gw, { provider: 'openrouter', model: 'glm-5.3-flash' }, { workRoot, timeoutMs: 500, clock: new FixedClock(new Date(0)), caps });
+      expect(seenCaps).toEqual([caps, caps]);
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('omitted caps -> req.caps is undefined on both legs (unchanged pre-#139(b) behavior)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-probe-caps-'));
+    try {
+      const seenCaps: Array<unknown> = [];
+      const gw: GatewayClient = {
+        async invoke(req) {
+          seenCaps.push(req.caps);
+          return ok('PONG');
+        },
+      };
+      await runProbe(gw, { provider: 'openrouter', model: 'gpt-4.1' }, { workRoot, timeoutMs: 500, clock: new FixedClock(new Date(0)) });
+      expect(seenCaps).toEqual([undefined, undefined]);
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+});
+
+// issue #139(c): ollama/qwen2.5:7b (used by a registered workflow) stayed unprobed more than 1h
+// after deploy. Root cause: ModelProber.start() only ever scheduled the periodic
+// `setInterval(..., min(intervalMs, 1h))` — NEVER an immediate pass — so after a fresh
+// deploy/restart, EVERY due target (not just ollama) waited out up to a full hour before the first
+// probe ever ran. The two openrouter models in the original report were probed anyway because an
+// admin manually ran `models_probe({model})`; ollama's was not, surfacing the gap.
+describe('ModelProber.start() (issue #139c) — probes DUE targets promptly, not only on the first interval tick', () => {
+  it('a never-probed target is probed shortly after start(), without waiting out intervalMs', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-start-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)),
+        // The REAL default interval (7 days) — if start() only probed on the periodic tick, nothing
+        // would be probed for min(7 days, 1h) = 1 hour, which this test's short real wait below
+        // would never reach.
+        config: { ...MODEL_PROBE_DEFAULTS },
+        modelRefs: () => ['ollama/qwen2.5:7b'],
+      });
+      expect(store.get('ollama', 'qwen2.5:7b')).toBeUndefined();
+      prober.start();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(store.get('ollama', 'qwen2.5:7b')).toBeDefined();
+      prober.stop();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('start() called twice does not double-probe (the existing re-entrancy guard is unaffected)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-start-twice-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw, reqs } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS },
+        modelRefs: () => ['ollama/only'],
+      });
+      prober.start();
+      prober.start();
+      await new Promise((r) => setTimeout(r, 30));
+      // One target, two legs (prose + tools) — not four.
+      expect(reqs).toHaveLength(2);
+      prober.stop();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('config.enabled:false never probes at start() either', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-start-disabled-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw, reqs } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS, enabled: false },
+        modelRefs: () => ['ollama/only'],
+      });
+      prober.start();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(reqs).toHaveLength(0);
+      prober.stop();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+});
+
+// issue #139(c): `runProbe` itself never throws (a gateway exception is already caught into a
+// failed leg, by its own doc) — but `_probe`'s surrounding per-target work (the injected `capsFor`
+// lookup, the store write) is NOT inside that same guarantee. One target's OWN failure there must
+// not abort every target QUEUED AFTER it in the same sweep.
+describe('ModelProber — one target\'s own failure does not abort the rest of the sweep (issue #139c)', () => {
+  it('a capsFor lookup that throws for one target does not prevent a LATER target from being probed', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-isolate-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS, timeoutMs: 500 },
+        modelRefs: () => ['ollama/bad', 'ollama/good'],
+        capsFor: async (provider, model) => {
+          if (model === 'bad') throw new Error('boom: capability lookup failed');
+          return undefined;
+        },
+      });
+      const results = await prober.probeNow();
+      // 'bad' is skipped (its own lookup threw); 'good' — queued AFTER it — is still probed and
+      // persisted, proving one target's failure does not abort the whole sweep.
+      expect(results!.map((r) => `${r.provider}/${r.model}`)).toEqual(['ollama/good']);
+      expect(store.get('ollama', 'good')).toBeDefined();
+      expect(store.get('ollama', 'bad')).toBeUndefined();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+});

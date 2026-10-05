@@ -194,9 +194,29 @@ async function resolveModel(config: PiChildConfig, runtime: ModelRuntime) {
     return model;
   }
   // openrouter (slice i extends this arm with openrouterBaseUrl / recording-fake-server support).
+  // issue #142: `api: 'openai-completions'` is REQUIRED here, not implied by baseUrl. pi's own
+  // built-in 'openrouter' provider (providers/openrouter.js) ships a static catalog with TWO api
+  // shapes — most ids are 'openai-completions', but 15 chat ids under the vendor namespace
+  // `anthropic/*` (including `anthropic/claude-sonnet-5.5` and `anthropic/claude-haiku-4.5`, both
+  // reported 404ing) are catalogued as 'anthropic-messages'. `registerProvider()`'s composition
+  // (`provider-composer.js`'s `extensionModelFromDefinition`/`findExtensionModelDefaults`) looks up
+  // DEFAULTS for our one-model registration by matching the model ID against that SAME builtin
+  // catalog FIRST — so an id that happens to collide with one of those 15 silently inherited
+  // 'anthropic-messages' (since `buildModelConfig` sets no `api` of its own), and pi dispatched it
+  // through the Anthropic Messages wire shape against our OpenRouter baseUrl. Reproduced via the
+  // recording fake server (tests/acceptance/pi-harness-openrouter-fake-server.test.ts): the outbound
+  // request landed at `POST <baseUrl>/v1/messages` (the Anthropic SDK client's own path, appended a
+  // SECOND `v1` on top of the already-versioned OpenRouter baseUrl) with an Anthropic-shaped body
+  // (`system`, `thinking`, content-block `messages`) instead of OpenAI chat-completions' `/chat/
+  // completions` + flat `messages`. Setting `api` explicitly at the PROVIDER level here wins before
+  // any builtin-catalog default is ever consulted (provider-composer.js's own `definition.api ??
+  // config.api ?? defaults?.api` order) — every openrouter model this engine dispatches now always
+  // uses the OpenAI-completions wire shape, independent of whatever vendor namespace its id happens
+  // to share with pi's static catalog.
   runtime.registerProvider('openrouter', {
     baseUrl: config.openrouterBaseUrl ?? 'https://openrouter.ai/api/v1',
     apiKey: config.apiKey,
+    api: 'openai-completions',
     models: [buildModelConfig(config.model.model, true)],
   });
   const model = runtime.getModel('openrouter', config.model.model);
@@ -590,8 +610,17 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     // tool active, or the window elapses, whichever comes first (never waits longer than it has to).
     await session.bindExtensions({});
     const declaredNames = Object.keys(config.mcp ?? {});
+    // issue #145: pi's OWN tool-name sanitizer (`@earendil-works/pi-coding-agent`'s
+    // `extensions/mcp/tools.js`: `` `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, '_') ``)
+    // replaces EVERY character outside [A-Za-z0-9_] — including a hyphen — unlike the Claude CLI's
+    // rule this used to (wrongly) borrow (`[^A-Za-z0-9_-]`, which keeps a hyphen). A hyphenated
+    // server name ('tooltest-memory') produces `mcp__tooltest_memory__<tool>`, which the old regex
+    // never matched: this loop gave up only at the full 10s deadline (never found a match) and the
+    // parent then misreported a real, working connection as 'unknown' with a false
+    // MCP_SERVER_NOT_CONNECTED warning (pi-gateway-client.ts applies the SAME corrected rule to its
+    // own copy of this check, built from the `mcp_init` event this loop emits below).
     const hasToolsFor = (name: string, active: readonly string[]): boolean => {
-      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`];
       return active.some((t) => prefixes.some((p) => t.startsWith(p)));
     };
     const deadline = Date.now() + 10_000;

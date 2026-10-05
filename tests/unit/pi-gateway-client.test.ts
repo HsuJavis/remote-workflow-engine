@@ -391,7 +391,52 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     }
   });
 
-  it('maps tool_call/tool_result child events onto TranscriptEvent kind:tool_call/tool_result (slice f)', async () => {
+  // issue #145: skillsExposed was always `[]` for the pi gateway, even when a skill was really
+  // materialized and handed to the child — unlike the sdk gateway (which fills it from the CLI's
+  // own init message, claude-agent-sdk-client.ts:1351), pi has no separate signal: once
+  // SKILL_REQUIRES_READ_TOOL's own gate (read/bash present) has let the dispatch through, pi lists
+  // every materialized skill in its system prompt unconditionally — so `materialized.skills` IS the
+  // exposed-skills list here.
+  it('skillsExposed lists the skills pi was given (issue #145)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-skill-unit-exposed-'));
+    try {
+      const ws = join(root, 'ws');
+      mkdirSync(ws, { recursive: true });
+      mkdirSync(join(root, 'wf', 'skill', 'my-skill'), { recursive: true });
+      writeFileSync(join(root, 'wf', 'skill', 'my-skill', 'SKILL.md'), '---\nname: my-skill\n---\nBody');
+      const f = fakeChild();
+      const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+      const harnessCalls: unknown[] = [];
+      const promise = gw.invoke(req({
+        workspace: ws,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read'] } as AgentOpts,
+        assets: { roots: { workflow: join(root, 'wf'), global: join(root, 'gl') }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+        onHarness: async (h: unknown) => { harnessCalls.push(h); },
+      }));
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+
+      const eager = harnessCalls[0] as { skillsExposed?: string[]; materialized?: { skills: string[] } };
+      expect(eager.materialized?.skills).toEqual(['my-skill']);
+      expect(eager.skillsExposed).toEqual(['my-skill']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // issue #139(a): the child's own `toolName`/`toolCallId`/`args`/`result` field names and pi's
+  // lowercase tool names used to pass straight through onto the TranscriptEvent — a DIFFERENT shape
+  // and vocabulary than the sdk gateway emits (Anthropic content-block shape: `{type:'tool_use',
+  // id, name, input}` / `{type:'tool_result', tool_use_id, content, is_error}`, ENGINE tool names
+  // like 'Read'/'Bash'). Every consumer of these events (model-probe.ts's `classifyProbe`,
+  // run_agent_log, the dashboard) reads the SDK's shape; a probe or any other shape-sensitive reader
+  // against a pi-run model saw NO tool_use ever, regardless of what the model actually did (issue
+  // #137's exact false-negative). Fixed at the source: every kind:'tool_call'/'tool_result' this
+  // gateway emits now carries the SAME shape and ENGINE tool names the sdk gateway emits, so every
+  // consumer sees one shape independent of harness.
+  it('maps tool_call/tool_result child events onto the SAME shape + ENGINE tool names the sdk gateway emits (issue #139a)', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
     const events: unknown[] = [];
@@ -404,8 +449,23 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     await promise;
     const call = events.find((e: any) => e.kind === 'tool_call') as any;
     const result = events.find((e: any) => e.kind === 'tool_result') as any;
-    expect(call.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', args: { command: 'echo hi' } });
-    expect(result.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', result: { exitCode: 0 }, isError: false });
+    expect(call.data).toEqual({ type: 'tool_use', id: 'tc1', name: 'Bash', input: { command: 'echo hi' } });
+    expect(result.data).toEqual({ type: 'tool_result', tool_use_id: 'tc1', content: { exitCode: 0 }, is_error: false });
+  });
+
+  it('a pi tool name outside the base TOOL_NAME_MAP (mcp__*, or any unrecognized name) passes through unchanged, never dropped (issue #139a)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const events: unknown[] = [];
+    const promise = gw.invoke(req({ onEvent: (ev) => { events.push(ev); } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'tool_call', toolCallId: 'tc1', toolName: 'mcp__everything__echo', argsJson: '{}' });
+    f.sendLine({ t: 'tool_call', toolCallId: 'tc2', toolName: 'some_unknown_tool', argsJson: '{}' });
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    const calls = events.filter((e: any) => e.kind === 'tool_call') as any[];
+    expect(calls.map((c) => c.data.name)).toEqual(['mcp__everything__echo', 'some_unknown_tool']);
   });
 
   it('claims effortApplied:true for openrouter (verified on the real wire) and false for ollama (no dial)', async () => {

@@ -517,7 +517,17 @@ const MAX_MCP_NAME_CHARS = 128;
  *  use on its first turn — not `connected`, or none of its `mcp__<server>__*` tools in the init tool
  *  list (a server that only offers resources/prompts trips the second arm too; the message says
  *  so). `declared` is the servers actually handed to the CLI (`options.mcpServers`). */
-export function summarizeMcpInit(declared: string[], init: { tools?: unknown; mcp_servers?: unknown }): { mcpStatus: McpServerStatus[]; warnings: HarnessWarning[] } {
+/** issue #145: `sanitizeServerName` defaults to the Claude CLI's own rule (keeps a hyphen) — the
+ *  sdk gateway's call site below never passes one, so its behavior is byte-identical to before this
+ *  param existed. The pi gateway passes its OWN rule (pi's real sanitizer replaces a hyphen too —
+ *  see pi-gateway-client.ts's own call site doc) — the two harnesses build `mcp__<server>__<tool>`
+ *  tool names differently, so one hardcoded regex here was silently wrong for whichever harness
+ *  did NOT write it. */
+export function summarizeMcpInit(
+  declared: string[],
+  init: { tools?: unknown; mcp_servers?: unknown },
+  sanitizeServerName: (name: string) => string = (name) => name.replace(/[^A-Za-z0-9_-]/g, '_'),
+): { mcpStatus: McpServerStatus[]; warnings: HarnessWarning[] } {
   const initTools = Array.isArray(init.tools) ? init.tools.filter((t): t is string => typeof t === 'string') : [];
   const servers = Array.isArray(init.mcp_servers) ? (init.mcp_servers as Array<{ name?: unknown; status?: unknown }>) : [];
   const mcpStatus: McpServerStatus[] = [];
@@ -526,8 +536,8 @@ export function summarizeMcpInit(declared: string[], init: { tools?: unknown; mc
     const entry = servers.find((s) => s?.name === server);
     const status = typeof entry?.status === 'string' ? entry.status.slice(0, 32) : 'absent';
     // The CLI builds tool names as mcp__<server>__<tool>, with characters outside [A-Za-z0-9_-]
-    // in the server name replaced by `_`.
-    const prefixes = [`mcp__${server}__`, `mcp__${server.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+    // in the server name replaced by `_`. (pi: see `sanitizeServerName`'s own doc above.)
+    const prefixes = [`mcp__${server}__`, `mcp__${sanitizeServerName(server)}__`];
     const matched = initTools.filter((t) => prefixes.some((p) => t.startsWith(p)));
     const tools = matched.slice(0, MAX_MCP_TOOLS_RECORDED).map((t) => t.slice(0, MAX_MCP_NAME_CHARS));
     mcpStatus.push({ server, status, tools });
