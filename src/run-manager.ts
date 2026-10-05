@@ -1769,11 +1769,16 @@ export class RunManager {
     // anthropic arm admits unconditionally) can be suspended, the deployment restarted under
     // gateway:"pi", and resumed — without this, it would reach pi-gateway-client.ts's own
     // dispatch-time defense-in-depth refusal (a confusing internal error, by its own comment "should
-    // have been refused at admission") instead of this typed admission refusal. `checkModelRef` is
-    // given an EMPTY entries catalog deliberately — paired with `harnessProviders`, its ONLY possible
-    // refusal is PROVIDER_UNSUPPORTED_BY_HARNESS (an empty `entries` can never trigger its
-    // existence-based UNKNOWN_MODEL arm — see its own "listing unavailable -> accept with warning"
-    // rule), so this cannot silently turn into the re-verification rule 12 forbids.
+    // have been refused at admission") instead of this typed admission refusal.
+    // issue #136 review L-136-1: the catalog passed here is now the REAL live snapshot (the SAME
+    // `this._modelBook.snapshot()` `start()`'s own admission already fetches), not an empty one —
+    // purely so a PROVIDER_UNSUPPORTED_BY_HARNESS refusal here can name a real, catalog-linked
+    // OpenRouter ref (providers.ts's `harnessUnsupportedSuggestion`) instead of generic guidance.
+    // This does NOT reintroduce the existence re-check rule 12 bans: this loop only ever throws for
+    // the PROVIDER_UNSUPPORTED_BY_HARNESS code below — an openrouter/ollama ref's own UNKNOWN_MODEL
+    // verdict (now reachable again since `entries` is non-empty) is still silently ignored here,
+    // exactly as the empty-catalog version was built to guarantee.
+    const resumeCatalog = toModelCatalogSnapshot(await this._modelBook.snapshot(), this._harnessProviders);
     for (const m of reachableModels(effectiveParams)) {
       if (parseModelRef(m) === undefined) {
         throw codedError(
@@ -1782,7 +1787,7 @@ export class RunManager {
           { runId, supplied: m },
         );
       }
-      const harnessVerdict = checkModelRef(m, { entries: [], harnessProviders: this._harnessProviders });
+      const harnessVerdict = checkModelRef(m, resumeCatalog);
       if (!harnessVerdict.ok && harnessVerdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
         throw codedError('PROVIDER_UNSUPPORTED_BY_HARNESS', harnessVerdict.message, { runId, supplied: m });
       }

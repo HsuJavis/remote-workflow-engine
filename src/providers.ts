@@ -13,7 +13,7 @@
 // `checkModelRef`'s catalog-existence arm takes an already-fetched `ModelCatalogSnapshot` (data, not
 // a promise) — the live/last-good/static fetch itself happens elsewhere (ModelBook), keeping this
 // file itself I/O-free.
-import { STATIC_ANTHROPIC_RATES } from './models/model-catalog.js';
+import { STATIC_ANTHROPIC_RATES, anthropicCanonicalKey } from './models/model-catalog.js';
 
 export const PROVIDERS = ['anthropic', 'openrouter', 'ollama'] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -127,6 +127,20 @@ function harnessUnsupportedSuggestion(provider: Provider, model: string, catalog
       if (parsed && catalog.entries.some((e) => e.provider === parsed.provider && e.model === parsed.model)) {
         return `use "${ref}" instead`;
       }
+    }
+    // issue #136 review L-136-2: no catalog row for this id at all (e.g. a dated id, or any id
+    // outside the 4-row static table) has no precomputed `sameModelAs` to read above — fall back to
+    // the SAME canonical-identity rule the catalog itself uses to BUILD `sameModelAs` in the first
+    // place (model-catalog.ts's `linkSameModels`/`anthropicCanonicalKey`), scanning the catalog's
+    // own openrouter rows directly rather than depending on a link already having been computed for
+    // this exact id. Still only ever suggests a ref ACTUALLY present in `catalog.entries` — never a
+    // guess — and still skips a `:batch` variant.
+    const key = anthropicCanonicalKey(model);
+    if (key) {
+      const match = catalog.entries.find(
+        (e) => e.provider === 'openrouter' && e.model.startsWith('anthropic/') && !e.model.includes(':') && anthropicCanonicalKey(e.model) === key,
+      );
+      if (match) return `use "openrouter/${match.model}" instead`;
     }
   }
   return `check models_list({query:'anthropic/'}) or models_list({provider:'openrouter'}) for the exact openrouter id to use instead`;

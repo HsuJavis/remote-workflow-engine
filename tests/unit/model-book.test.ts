@@ -4,7 +4,7 @@
 // failure.
 // Mock policy (unit): pure lookups + one loader class; inject a fake `source()` and a FakeClock.
 import { describe, it, expect } from 'vitest';
-import { ModelBook } from '../../src/models/model-book.js';
+import { ModelBook, toModelCatalogSnapshot } from '../../src/models/model-book.js';
 import { STATIC_ANTHROPIC_RATES } from '../../src/models/model-catalog.js';
 import { FixedClock } from '../../src/clock.js';
 
@@ -137,5 +137,35 @@ describe('ModelBook — a duplicate (provider,model) row must not un-price a mod
       const snap = await book.snapshot();
       expect(snap.lookup('anthropic', 'claude-haiku-4-5-20251001').price).toEqual(rates);
     }
+  });
+});
+
+// Issue #136 review guard gap: the review found that no test anywhere exercises
+// `toModelCatalogSnapshot` itself (the production adapter providers.ts's PROVIDER_UNSUPPORTED_BY_
+// HARNESS hint and every admission door actually consume) — only the raw `ModelEntry[]` shape,
+// bypassing the adapter. If a regression dropped `sameModelAs` in the adapter, every production
+// hint would quietly turn generic (never wrong, but never specific either) and no test would catch
+// it, since `model-catalog-selection.test.ts`'s own guard works directly against `ModelEntry[]`.
+describe('toModelCatalogSnapshot — forwards sameModelAs through (issue #136 guard)', () => {
+  it('a row carrying sameModelAs (the real catalog shape post-linkSameModels) keeps it in the adapter output', async () => {
+    const clock = new FixedClock(new Date('2026-09-08T00:00:00Z'));
+    const rows = [
+      { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', sameModelAs: ['openrouter/anthropic/claude-haiku-4.5'] },
+      { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', sameModelAs: ['anthropic/claude-haiku-4-5-20251001'] },
+    ];
+    const book = new ModelBook(async () => rows, { ttlMs: 3_600_000, clock });
+    const snapshot = await book.snapshot();
+    const adapted = toModelCatalogSnapshot(snapshot, ['openrouter', 'ollama']);
+    const anthropicRow = adapted.entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-haiku-4-5-20251001');
+    expect(anthropicRow?.sameModelAs).toEqual(['openrouter/anthropic/claude-haiku-4.5']);
+    expect(adapted.harnessProviders).toEqual(['openrouter', 'ollama']);
+  });
+
+  it('a row with no sameModelAs at all (no catalog-level link) carries no such key — unchanged pre-#136 shape', async () => {
+    const clock = new FixedClock(new Date('2026-09-08T00:00:00Z'));
+    const book = new ModelBook(async () => [{ provider: 'ollama', model: 'qwen2.5:7b' }], { ttlMs: 3_600_000, clock });
+    const snapshot = await book.snapshot();
+    const adapted = toModelCatalogSnapshot(snapshot);
+    expect(adapted.entries[0]).not.toHaveProperty('sameModelAs');
   });
 });

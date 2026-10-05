@@ -239,6 +239,60 @@ describe('checkModelRef — harnessProviders gate (pi harness v1, owner decision
         expect(v.message).not.toContain('"openrouter/anthropic/claude-haiku-4.5"');
       }
     });
+
+    // issue #136 review L-136-2: an id OUTSIDE the 4-row static table (so it never appears as a
+    // `provider:'anthropic'` row in `catalog.entries` at all, and so has no precomputed `sameModelAs`
+    // to read) still gets a real suggestion when OpenRouter actually has the model — derived via the
+    // SAME canonical-identity rule the catalog itself uses to BUILD sameModelAs in the first place
+    // (model-catalog.ts's `anthropicCanonicalKey`), scanning the catalog's own openrouter rows
+    // directly rather than depending on a link having already been computed.
+    describe('issue #136 review L-136-2 — canonical-key fallback for an id missing from catalog.entries entirely', () => {
+      it('an id not in the static table (claude-sonnet-4-5) still names the live OpenRouter equivalent (claude-sonnet-4.5)', () => {
+        const catalog: ModelCatalogSnapshot = {
+          source: 'live',
+          harnessProviders: ['openrouter', 'ollama'],
+          entries: [
+            // No `provider:'anthropic'` row for claude-sonnet-4-5 at all — it is refused before
+            // ever being looked up in a catalog row, so checkModelRef's provider-gate gets no help
+            // from a `sameModelAs` link that was never computed for an id outside the static table.
+            { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5' },
+            { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5:batch' },
+          ],
+        };
+        const v = checkModelRef('anthropic/claude-sonnet-4-5', catalog);
+        expect(v.ok).toBe(false);
+        if (!v.ok) {
+          expect(v.code).toBe('PROVIDER_UNSUPPORTED_BY_HARNESS');
+          expect(v.message).toContain('"openrouter/anthropic/claude-sonnet-4.5"');
+          expect(v.message).not.toContain('claude-sonnet-4.5:batch');
+        }
+      });
+
+      it('a dated id outside the static table (claude-3-5-sonnet-20241022) maps the SAME way', () => {
+        const catalog: ModelCatalogSnapshot = {
+          source: 'live',
+          harnessProviders: ['openrouter', 'ollama'],
+          entries: [{ provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' }],
+        };
+        const v = checkModelRef('anthropic/claude-3-5-sonnet-20241022', catalog);
+        expect(v.ok).toBe(false);
+        if (!v.ok) expect(v.message).toContain('"openrouter/anthropic/claude-3.5-sonnet"');
+      });
+
+      it('an id with no OpenRouter row anywhere in the catalog (even via canonical key) still falls back to generic guidance, never a guess', () => {
+        const catalog: ModelCatalogSnapshot = {
+          source: 'live',
+          harnessProviders: ['openrouter', 'ollama'],
+          entries: [{ provider: 'openrouter', model: 'openai/gpt-4.1' }],
+        };
+        const v = checkModelRef('anthropic/claude-made-up-9', catalog);
+        expect(v.ok).toBe(false);
+        if (!v.ok) {
+          expect(v.message).toMatch(/models_list/);
+          expect(v.message).not.toMatch(/use "openrouter/);
+        }
+      });
+    });
   });
 
   it('still accepts openrouter/ollama refs when harnessProviders is the pi set', () => {
