@@ -360,6 +360,13 @@ function piTmpDirParent(workRoot: string | undefined): string {
   return verifiedScratchParent(workRoot, 'pi-tmp');
 }
 
+/** Issue #144: a per-dispatch, per-process-VERIFIED scratch for declared-skill materialization —
+ *  the SAME shape as `piAgentDirParent`/`piTmpDirParent`, its own verified parent so it can be
+ *  granted `allowRead`-only (never `allowWrite`, unlike `tmpDir`) for confined Bash. */
+function piSkillDirParent(workRoot: string | undefined): string {
+  return verifiedScratchParent(workRoot, 'pi-skills');
+}
+
 /** Reused for BOTH the per-dispatch agentDir (under `piAgentDirParent()`) and the per-dispatch TMPDIR
  *  scratch (under `piTmpDirParent()`, review round 3 R3-1) — `mkdtempSync` is itself what makes this
  *  safe for either purpose (atomically unique, created 0700 by the OS already; the explicit
@@ -538,11 +545,32 @@ export class PiGatewayClient implements GatewayClient {
       removePiAgentDir(agentDir);
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `TMPDIR_SCRATCH_UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` };
     }
+    // Issue #144: a THIRD private per-dispatch directory, the SAME verified-parent shape again —
+    // deliberately NOT nested under `tmpDir` (which is on BOTH `allowRead` and `allowWrite` for
+    // confined Bash, since it is also `CLAUDE_CODE_TMPDIR`'s own scratch) and NOT nested under
+    // `agentDir` either. A declared skill's materialized copy must be READABLE but never WRITABLE to
+    // this dispatch's own Bash — only a SIBLING of both, under its own verified parent (which is on
+    // `denyRead` for every OTHER dispatch, same as `agentDirParent`/`tmpDirParent` already are), lets
+    // `allowRead`-only (never `allowWrite`) express that. Created ONLY when a skill name was actually
+    // declared — the common case (no skill) pays no extra mkdir/mkdtemp/chmod/rm per dispatch.
+    let skillDirParent: string | undefined;
+    let skillDir: string | undefined;
+    if (req.assets !== undefined && req.assets.declared.skills.length > 0) {
+      try {
+        skillDirParent = piSkillDirParent(this._config.confinement?.workRoot);
+        skillDir = buildPiAgentDirIn(skillDirParent);
+      } catch (err) {
+        removePiAgentDir(agentDir);
+        removePiAgentDir(tmpDir);
+        return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `SKILL_DIR_UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
     try {
-      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent, tmpDir, tmpDirParent);
+      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent, tmpDir, tmpDirParent, skillDir, skillDirParent);
     } finally {
       removePiAgentDir(agentDir);
       removePiAgentDir(tmpDir);
+      if (skillDir !== undefined) removePiAgentDir(skillDir);
     }
   }
 
@@ -564,6 +592,8 @@ export class PiGatewayClient implements GatewayClient {
     agentDirParent: string,
     tmpDir: string,
     tmpDirParent: string,
+    skillDir: string | undefined,
+    skillDirParent: string | undefined,
   ): Promise<GatewayResult> {
     // Project configuration another agent (or Bash on an unconfined host) left in the workspace is
     // removed before this child can ever be spawned — the SAME `sweepPlantedConfig`/
@@ -619,7 +649,15 @@ export class PiGatewayClient implements GatewayClient {
           : undefined;
         const mcpResolved = await resolveMcpConfigs({ resolveMcp: this._config.resolveMcp, secretSource }, req.assets.workflow, req.assets.declared.mcp, req.runId, workspace);
         mcpConfigs = mcpResolved.configs;
-        materialized = await materializeAssets(req.assets.roots, workspace, req.assets.declared, async () => mcpResolved);
+        // Issue #144: materialize into THIS dispatch's own private `skillDir` (never the run
+        // workspace, and never `tmpDir` either — `tmpDir` is on BOTH `allowRead`/`allowWrite` for
+        // confined Bash, since it also backs `CLAUDE_CODE_TMPDIR`; `skillDir` is a SEPARATE sibling,
+        // granted `allowRead`-ONLY below, so this dispatch's own Bash can run a skill's exec:true
+        // file but never modify the materialized copy). `skillDir` is `undefined` exactly when no
+        // skill was declared (`invoke()` above) — the `?? workspace` fallback is never actually
+        // written to in that case (the loop over `declared.skills` is empty), only a placeholder
+        // satisfying `materializeAssets`'s required string param.
+        materialized = await materializeAssets(req.assets.roots, skillDir ?? workspace, req.assets.declared, async () => mcpResolved);
       } catch (err) {
         // Fail-loud contract (mcp-config-resolver.ts's own doc): an unresolved `${secret:...}` handle
         // on a provisioned MCP server is a clear, typed error — never a silent partial dispatch.
@@ -708,11 +746,17 @@ export class PiGatewayClient implements GatewayClient {
         // channel between runs. Issue #131: `fs.denyWrite` already carries `HOST_SHARED_TMPDIR` —
         // `buildBashConfinement()` itself puts it there now, for both gateways — so this no longer
         // appends it a second time (it used to, before the fix moved into the shared builder).
+        // Issue #144: `skillDir` (when one was built — a declared skill this dispatch materialized)
+        // goes on `allowRead` ONLY, never `allowWrite` — the one asymmetry `tmpDir` above does not
+        // have, deliberately: a skill's own exec:true file (issue #105) must still run from inside
+        // it, but confined Bash may not modify the materialized copy. `skillDirParent` joins
+        // `denyRead` the same way `agentDirParent`/`tmpDirParent` already do, so a sibling dispatch's
+        // own skill materialization stays invisible regardless.
         filesystem: {
           ...fs,
-          allowRead: [...fs.allowRead, tmpDir],
+          allowRead: [...fs.allowRead, tmpDir, ...(skillDir !== undefined ? [skillDir] : [])],
           allowWrite: [...fs.allowWrite, tmpDir],
-          denyRead: [...fs.denyRead, agentDirParent, tmpDirParent],
+          denyRead: [...fs.denyRead, agentDirParent, tmpDirParent, ...(skillDirParent !== undefined ? [skillDirParent] : [])],
         },
         credentials: settings.credentials as PiChildSandboxConfig['credentials'],
         ripgrepOverride,
@@ -775,7 +819,19 @@ export class PiGatewayClient implements GatewayClient {
       ...(req.opts.effort !== undefined ? { effort: req.opts.effort } : {}),
       ...(this._config.openrouterBaseUrl !== undefined ? { openrouterBaseUrl: this._config.openrouterBaseUrl } : {}),
       ...(Object.keys(mcpConfigs).length > 0 ? { mcp: mcpConfigs } : {}),
-      ...((materialized?.skills.length ?? 0) > 0 ? { skillPaths: materialized!.skills.map((name) => join(workspace, '.claude', 'skills', name)) } : {}),
+      // Issue #144: both paths point at the private `skillDir` (above), never the workspace and never
+      // `tmpDir`. `skillReadRoots` is what lets the model's OWN `read`/`grep`/`find`/`ls` tools (jailed
+      // to `cwd` by default — `assertJailed`, session-runner.ts) follow the absolute `<location>` path
+      // pi's own skill-prompt rendering gives it (`formatSkillsForPrompt`) — without it, that `read`
+      // call would refuse `PATH_ESCAPES_WORKSPACE` the instant the skill moved outside the workspace.
+      // `skillDir` is guaranteed defined here — `(materialized?.skills.length ?? 0) > 0` can only be
+      // true when `invoke()` actually built one (gated on the same `declared.skills.length > 0`).
+      ...((materialized?.skills.length ?? 0) > 0
+        ? {
+            skillPaths: materialized!.skills.map((name) => join(skillDir!, 'skills', name)),
+            skillReadRoots: [skillDir!],
+          }
+        : {}),
     };
 
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;

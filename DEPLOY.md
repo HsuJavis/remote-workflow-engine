@@ -719,10 +719,16 @@ children`（Linux-only，跟本檔其他假設一致）遞迴列出 pi 子行程
 `workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 admin-only 限制不變（見下方角色表）。
 
 **Skills（`agent(..., {skills:[...]})`）**：已接上。`materializeAssets`（跟 `gateway:"sdk"` 同一份函式）
-把宣告的技能複製進 `<ws>/.claude/skills/<name>/`，路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
+把宣告的技能複製進**該次派工私有、run workspace 之外**的目錄（issue #144 修復：不再是
+`<ws>/.claude/skills/<name>/`——那是共用 workspace，同一 run 裡沒宣告該技能的 agent 光靠
+Read/Bash/Glob 就讀得到，且派工結束後也不會清掉；現在的私有目錄隨該次派工建立、派工結束
+〔成功/失敗/abort/timeout 皆同〕立刻刪除），路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
 `DefaultResourceLoader`（`noContextFiles`/`noExtensions`/`noSkills`/`noPromptTemplates`/`noThemes`
 全部 `true`——「不discovery、全權交給引擎」的精神不變，`extensionFactories`/`additionalSkillPaths`
-是文件明載的兩個例外，不受那些旗標影響）。**skill-only agent 的決定**：讀過 pi 自己的
+是文件明載的兩個例外，不受那些旗標影響）。模型要讀技能本身（SKILL.md）或其附帶檔案時會呼叫
+`read`/`bash`，走的是 pi 檔案 jail 的 `assertJailed`——issue #144 另外加了 `skillReadRoots`
+（唯讀，只開放這次派工自己的私有目錄，從不給 `write`/`edit` 用）才能讀到 workspace 之外的這份
+拷貝，否則一律 `PATH_ESCAPES_WORKSPACE`。**skill-only agent 的決定**：讀過 pi 自己的
 `system-prompt.js`原始碼確認，系統提示詞裡的技能清單只在工具集含 `read` **或** `bash` 其中之一時
 才會出現（`skillFileReadTool = ["read","bash"].find(tool => selectedTools.includes(tool))`——按
 「名字」比對這個會話實際選用的工具清單，不是跟 pi 內建工具物件做 identity 比對，所以我們自訂、同名的
@@ -1427,14 +1433,27 @@ port 直接暴露在公開網路上。**
 > ⚠ **「寫入後會被執行」這個風險是真的成立的**：
 > `gateway:"sdk"` 路徑上，一次 `agent()` 呼叫如果同時有 run workspace 和資產資訊，就會用
 > `materializeAssets()` 把**該 agent label 在契約裡宣告的**（`meta.params.agents.<label>.skills`／
-> `.mcp`）skill 展開進該次 run 的 workspace（`.claude/skills/<name>/`，以
-> `settingSources:['project']` 載入），MCP 設定只經由 `options.mcpServers`（`strictMcpConfig`）交給 CLI——
+> `.mcp`）skill 展開進**該次派工私有、run workspace 之外**的目錄（issue #144：不再是
+> `.claude/skills/<name>/`，改以 SDK 的 `Options.plugins`〔local plugin〕載入，派工結束即刪除），
+> MCP 設定只經由 `options.mcpServers`（`strictMcpConfig`）交給 CLI——
 > 引擎不會把解析後的 MCP 設定（含已代換的 `${secret:}` 值）寫進 workspace；workspace 裡任何 `.mcp.json`
-> 都會在派發前被清除（issue #128）。
+> 都會在派發前被清除（issue #128），`.claude/skills` 若因舊版引擎殘留也一併清除（issue #144，同一套
+> `sweepPlantedConfig`）。
 > 換句話說：**推送的 skill/MCP config 會真的被 agent 載入並執行**——沒被宣告的資產不會被展開，
 > 但「推送」與「被宣告」都在同一個 `author` 手上。引擎自己的 `rwe-` 前綴是保留字
 > （`RESERVED_PREFIX`），防止推送的資產冒充引擎內建的技能。`gateway:"direct-fetch"` 從不帶資產，
 > 這條路徑不受影響。
+>
+> **殘留風險（issue #144 修復後仍然成立）**：Read/Glob/Grep 這幾個檔案工具的 workspace 邊界檢查
+> （`toolUsePreCheck`）與 pi 的檔案 jail（`assertJailed`）都已經個別加開一個「只准讀、該次派工自己
+> 的私有技能目錄」的例外，所以另一個 agent（無論平行跑或晚一點跑）即使有 Read/Glob/Grep 也讀不到；
+> 這對 confined 與 unconfined 兩種姿態都成立（純 app 層判斷，不靠 kernel）。Bash 則不同：confined
+> 姿態下私有目錄只掛進這次派工自己的 `allowRead`（sdk：`allowReadPaths`；pi：`sandbox.filesystem.
+> allowRead`），其餘 dispatch 連同該目錄的「上層」都在 `denyRead`，所以另一個 confined dispatch 的
+> Bash 一樣讀不到。**唯一殘留的縫是本機未設限（`confinementPosture:'unconfined'`）時**：這個姿態下
+> Bash 本來就跟引擎 process 同一份主機檔案系統權限，私有技能目錄只是「路徑隨機、不公開」帶來的隱蔽
+> 性，不是真正的存取控制——跟這份文件別處對 unconfined Bash 的既有警語（§1b2／`AUTHORING.md`
+> 「Unconfined」小節）同一個已接受的代價，不是這次修復新增的缺口。
 
 **`GET /api/system`（Dashboard 的儀表板端點，不需要認證）一次回傳最多 20 筆主機 process 列，
 `bind:"0.0.0.0"` 時任何能連到這台主機的人都看得到——每筆只有 `comm`（process 名稱）這一個欄位，

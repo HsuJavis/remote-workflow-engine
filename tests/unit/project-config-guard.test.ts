@@ -12,9 +12,9 @@
 // Mock policy (unit): the injected `queryImpl` seam stands in for the SDK; the workspace is a real
 // temp dir because the check resolves symlinks on disk and the sweep removes real files.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, lstatSync, readFileSync, chmodSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, readFileSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
 import { buildBashConfinement, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from '../../src/gateway/bash-confinement.js';
 import { prepareReadonlyMountTargets, sweepPlantedConfig } from '../../src/gateway/project-config-guard.js';
@@ -194,7 +194,7 @@ describe('before every dispatch the engine removes agent-planted project configu
     return { result, events, descriptor, queryImpl };
   }
 
-  it('planted settings/hooks/agents/launch.json are gone when the CLI spawns; skills still materialize; no .mcp.json is ever written; the removal is logged and on the harness', async () => {
+  it('planted settings/hooks/agents/launch.json are gone when the CLI spawns; skills still materialize (never into the workspace); no .mcp.json is ever written; the removal is logged and on the harness', async () => {
     mkdirSync(join(ws, '.claude', 'hooks'), { recursive: true });
     mkdirSync(join(ws, '.claude', 'agents'), { recursive: true });
     writeFileSync(join(ws, '.claude', 'settings.json'), '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/pwned"}]}]}}');
@@ -206,7 +206,7 @@ describe('before every dispatch the engine removes agent-planted project configu
     let atSpawn: Record<string, boolean> = {};
     const { result, events, descriptor } = await dispatch(() => {
       atSpawn = Object.fromEntries(
-        ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/launch.json', '.claude/skills/moonfish/SKILL.md', '.mcp.json', 'CLAUDE.md'].map((p) => [p, existsSync(join(ws, p))]),
+        ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/launch.json', '.claude/skills', '.mcp.json', 'CLAUDE.md'].map((p) => [p, existsSync(join(ws, p))]),
       );
     });
     expect(result.ok).toBe(true);
@@ -216,7 +216,9 @@ describe('before every dispatch the engine removes agent-planted project configu
       '.claude/hooks': false,
       '.claude/agents': false,
       '.claude/launch.json': false,
-      '.claude/skills/moonfish/SKILL.md': true,
+      // issue #144: the declared skill is materialized OUTSIDE the workspace now — the workspace's
+      // own `.claude/skills` is never written at all, not even transiently at spawn time.
+      '.claude/skills': false,
       // issue #128: nothing plants `.mcp.json` in this fixture, and the engine itself no longer
       // writes one either (this dispatch declares `mcp: []`) — so it is simply absent, not "swept
       // then re-created" the way the removed project-config entries are.
@@ -228,6 +230,7 @@ describe('before every dispatch the engine removes agent-planted project configu
     expect(ev).toMatchObject({ kind: 'agent.planted_config_removed', runId: 'r1', agentId: 'agent-2', root: ws });
     expect([...(ev as { removed: string[] }).removed].sort()).toEqual(removed);
     expect([...(descriptor?.plantedConfigRemoved ?? [])].sort()).toEqual(removed);
+    // The skill still reached the model (materialization succeeded) even though it never touched ws.
     expect(descriptor?.skillsExposed).toEqual(['moonfish']);
   });
 
@@ -248,18 +251,25 @@ describe('before every dispatch the engine removes agent-planted project configu
     expect(descriptor?.plantedConfigRemoved).toContain('.mcp.json');
   });
 
-  it('a .claude that is a symlink out of the workspace is unlinked (its target untouched) before skills materialize through it', async () => {
+  // issue #144: this used to read "...before skills materialize through it" — skills materialized
+  // INTO `.claude/skills` at the time, so a `.claude` symlink could carry them out to wherever it
+  // pointed. Skills no longer materialize anywhere under the workspace at all (private per-dispatch
+  // directory instead), so the symlink sweep below is purely about PROJECT CONFIGURATION now
+  // (settings.json etc.) — skill materialization is unaffected by it either way, which this test
+  // now proves by checking `descriptor.skillsExposed` instead of a workspace path.
+  it('a .claude that is a symlink out of the workspace is unlinked (its target untouched); skills still materialize — never through it, never into the workspace', async () => {
     const outside = join(base, 'outside');
     mkdirSync(outside);
     writeFileSync(join(outside, 'settings.json'), '{"hooks":{}}');
     symlinkSync(outside, join(ws, '.claude'));
-    const { result, events } = await dispatch();
+    const { result, events, descriptor } = await dispatch();
     expect(result.ok).toBe(true);
-    expect(lstatSync(join(ws, '.claude')).isSymbolicLink()).toBe(false);
-    expect(existsSync(join(ws, '.claude', 'settings.json'))).toBe(false);
+    // The symlink entry itself is gone (unlinked, not followed) — nothing under the workspace
+    // re-creates `.claude` any more (skill materialization used to; it no longer touches ws at all).
+    expect(existsSync(join(ws, '.claude'))).toBe(false);
     expect(readFileSync(join(outside, 'settings.json'), 'utf8')).toBe('{"hooks":{}}');
     expect(existsSync(join(outside, 'skills'))).toBe(false);
-    expect(existsSync(join(ws, '.claude', 'skills', 'moonfish', 'SKILL.md'))).toBe(true);
+    expect(descriptor?.skillsExposed).toEqual(['moonfish']);
     expect((events.find((e) => e.kind === 'agent.planted_config_removed') as { removed: string[] }).removed).toContain('.claude');
   });
 
@@ -288,12 +298,13 @@ describe('before every dispatch the engine removes agent-planted project configu
     }
   });
 
-  it('nothing planted: no removal event, no harness field, skills still materialize', async () => {
+  it('nothing planted: no removal event, no harness field, skills still materialize (never into the workspace)', async () => {
     const { result, events, descriptor } = await dispatch();
     expect(result.ok).toBe(true);
     expect(events.some((e) => e.kind === 'agent.planted_config_removed')).toBe(false);
     expect(descriptor && 'plantedConfigRemoved' in descriptor).toBe(false);
-    expect(existsSync(join(ws, '.claude', 'skills', 'moonfish', 'SKILL.md'))).toBe(true);
+    expect(descriptor?.skillsExposed).toEqual(['moonfish']);
+    expect(existsSync(join(ws, '.claude', 'skills'))).toBe(false);
   });
 });
 
@@ -366,5 +377,62 @@ describe('prepareReadonlyMountTargets (issue #95) — pre-creates the paths bwra
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, '.claude'), 'not a directory');
     expect(() => prepareReadonlyMountTargets(root)).toThrow();
+  });
+});
+
+// Issue #144: `toolUsePreCheck`'s workspace-boundary check (`makeCanUseTool`/`makePreToolUseHook`,
+// claude-agent-sdk-client.ts) is widened for THIS dispatch's own private skill-materialization
+// directory — Read-only (Read/Glob/Grep/NotebookRead), never Write/Edit. Exercised here rather than
+// in sdk-gateway-skill-exposure.test.ts because it needs the SAME `canUseTool`/`hooks.PreToolUse`
+// seams this file's own `seams()` helper already captures, applied to a dispatch that actually
+// declares a skill (so a private directory gets built at all).
+describe('the per-dispatch skill directory is readable (never writable) through the SAME workspace-boundary check (issue #144)', () => {
+  let assets: string;
+  let pluginPath: string;
+
+  beforeEach(async () => {
+    assets = join(base, 'assets');
+    mkdirSync(join(assets, 'wf', 'skill', 'moonfish'), { recursive: true });
+    writeFileSync(join(assets, 'wf', 'skill', 'moonfish', 'SKILL.md'), '---\nname: moonfish\ndescription: t\n---\nbody\n');
+    const queryImpl = vi.fn(() => okSession());
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:1', queryImpl: queryImpl as never });
+    await client.invoke({
+      prompt: 'p',
+      opts: { allowedTools: ['Read', 'Write'] },
+      runId: 'r3',
+      agentId: 'agent-3',
+      workspace: ws,
+      assets: { roots: { workflow: join(assets, 'wf'), global: join(assets, 'global') }, declared: { skills: ['moonfish'], mcp: [] }, workflow: 'wf' },
+    });
+    const options = (queryImpl.mock.calls[0] as unknown as [{ options: { canUseTool: CanUseTool; hooks: { PreToolUse: Array<{ hooks: Hook[] }> }; plugins?: Array<{ path: string }> } }])[0].options;
+    pluginPath = options.plugins![0]!.path;
+    seamsOverride = { canUseTool: options.canUseTool, hook: options.hooks.PreToolUse[0]!.hooks[0]! };
+  });
+
+  let seamsOverride: { canUseTool: CanUseTool; hook: Hook } | undefined;
+
+  async function decideAt(tool: string, input: Record<string, unknown>): Promise<{ viaCallback: Decision; viaHook: string | undefined }> {
+    const { canUseTool, hook } = seamsOverride!;
+    const viaCallback = await canUseTool(tool, input, opt);
+    const out = await hook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input });
+    return { viaCallback, viaHook: out.hookSpecificOutput?.permissionDecision ?? 'allow' };
+  }
+
+  it('Read inside the private skill directory is allowed', async () => {
+    const d = await decideAt('Read', { file_path: join(pluginPath, 'skills', 'moonfish', 'SKILL.md') });
+    expect(d.viaCallback.behavior).toBe('allow');
+    expect(d.viaHook).toBe('allow');
+  });
+
+  it('Write to the SAME path is still denied — read-only widening, never write', async () => {
+    const d = await decideAt('Write', { file_path: join(pluginPath, 'skills', 'moonfish', 'SKILL.md'), content: 'tampered' });
+    expect(d.viaCallback.behavior).toBe('deny');
+    expect(d.viaHook).toBe('deny');
+  });
+
+  it('a path outside BOTH the workspace and the skill directory is still denied', async () => {
+    const d = await decideAt('Read', { file_path: join(dirname(pluginPath), 'somewhere-else', 'secret.txt') });
+    expect(d.viaCallback.behavior).toBe('deny');
+    expect(d.viaHook).toBe('deny');
   });
 });

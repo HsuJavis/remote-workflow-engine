@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
 import type { AgentOpts } from '../../src/types.js';
 
@@ -336,8 +336,20 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
       const result = await promise;
       expect(result.ok).toBe(true);
       const sent = JSON.parse(f.stdinWritten.join(''));
-      expect(sent.skillPaths).toEqual([join(ws, '.claude', 'skills', 'my-skill')]);
-      expect(existsSync(join(ws, '.claude', 'skills', 'my-skill', 'SKILL.md'))).toBe(true);
+      // Issue #144: the skill materializes into THIS dispatch's own private `tmpDir`, never under
+      // the run workspace — `skillPaths` points outside `ws` entirely, and `ws/.claude/skills` is
+      // never created at all.
+      expect(sent.skillPaths).toHaveLength(1);
+      expect(sent.skillPaths[0].startsWith(ws)).toBe(false);
+      expect(sent.skillPaths[0].endsWith(join('skills', 'my-skill'))).toBe(true);
+      expect(existsSync(join(ws, '.claude', 'skills'))).toBe(false);
+      // `skillReadRoots` widens the pi file-jail (session-runner.ts's `assertJailed`) so the model's
+      // own read/grep/find/ls can follow the absolute path pi's skill-prompt listing gives it.
+      expect(sent.skillReadRoots).toEqual([dirname(dirname(sent.skillPaths[0]))]);
+      // The private per-dispatch directory (`tmpDir`, which `skill-assets` lives under) is removed
+      // once the call settles — `invoke()`'s own `removePiAgentDir(tmpDir)` finally, unconditional
+      // regardless of outcome. Checked here via the very path the child was told about.
+      expect(existsSync(sent.skillReadRoots[0])).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -363,7 +375,40 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
       const result = await promise;
       expect(result.ok).toBe(true);
       const sent = JSON.parse(f.stdinWritten.join(''));
-      expect(sent.skillPaths).toEqual([join(ws, '.claude', 'skills', 'my-skill')]);
+      expect(sent.skillPaths).toHaveLength(1);
+      expect(sent.skillPaths[0].startsWith(ws)).toBe(false);
+      expect(sent.skillPaths[0].endsWith(join('skills', 'my-skill'))).toBe(true);
+      expect(existsSync(join(ws, '.claude', 'skills'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Issue #144: the private skill directory (`skillDir`, a sibling of `tmpDir`/`agentDir`) is
+  // removed in `invoke()`'s own `finally` regardless of outcome — proven here on the ERROR path
+  // (success is already proven by the two tests above).
+  it("slice (h)/issue #144: the private skill directory is removed even when the child reports an error (not only on success)", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-skill-unit-errcleanup-'));
+    try {
+      const ws = join(root, 'ws');
+      mkdirSync(ws, { recursive: true });
+      mkdirSync(join(root, 'wf', 'skill', 'my-skill'), { recursive: true });
+      writeFileSync(join(root, 'wf', 'skill', 'my-skill', 'SKILL.md'), '---\nname: my-skill\n---\nBody');
+      const f = fakeChild();
+      const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+      const promise = gw.invoke(req({
+        workspace: ws,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read'] } as AgentOpts,
+        assets: { roots: { workflow: join(root, 'wf'), global: join(root, 'gl') }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+      }));
+      await new Promise((r) => setTimeout(r, 10));
+      const sentBeforeExit = JSON.parse(f.stdinWritten.join(''));
+      const skillDir = sentBeforeExit.skillReadRoots[0] as string;
+      f.sendLine({ t: 'error', message: 'MODEL_REGISTRATION_FAILED: boom' });
+      f.exit(1);
+      const result = await promise;
+      expect(result.ok).toBe(false);
+      expect(existsSync(skillDir)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

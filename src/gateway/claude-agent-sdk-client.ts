@@ -10,7 +10,7 @@
 // integration tier points the real export at a local stub /v1/messages server — IT-015).
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
@@ -174,34 +174,72 @@ function copyDirRecursive(src: string, dest: string): void {
 }
 
 /** Injected fs facade `materializeAssets` runs over (UT-156) — defaults to real fs so production
- *  callers never need to build one. */
+ *  callers never need to build one. `writeFile` (issue #144) is used ONLY for the local-plugin
+ *  manifest (`.claude-plugin/plugin.json`) that makes `skillsRoot` loadable by the SDK's `plugins`
+ *  option — never for anything content-bearing (skill bytes always go through `copyDir`). */
 export interface AssetFsFacade {
   exists(path: string): boolean;
   copyDir(src: string, dest: string): void;
+  writeFile(path: string, content: string): void;
+}
+
+function writeFileRecursive(path: string, content: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
 }
 
 const REAL_FS: AssetFsFacade = {
   exists: existsSync,
   copyDir: copyDirRecursive,
+  writeFile: writeFileRecursive,
 };
+
+/** Issue #144: the fixed `name` every per-dispatch local-plugin manifest declares (see
+ *  `materializeAssets` below) — a constant, not derived per dispatch, because nothing downstream
+ *  needs it to be unique (the plugin directory ITSELF is already private and per-dispatch; the CLI
+ *  only needs `plugin:skill` to be a stable, parseable qualifier). Exported so callers building
+ *  `Options.skills`'s qualified form, and tests asserting it, use the SAME string rather than a
+ *  second hand-copied literal. */
+export const RWE_SKILLS_PLUGIN_NAME = 'rwe-skills';
 
 /** v24 (ARCH-103/DES-154, TASK-145): SELECTIVE materialization — REPLACES the old copy-every-
  *  stored-asset loop (`materializeAssets(assetRoot, workspace)`, no `declared` set at all, every
- *  run got every author's skill). Copies ONLY `declared.skills` into
- *  `<workspace>/.claude/skills/<name>/` (workflow scope wins a name clash with global — checked
- *  first); a name absent from BOTH roots lands in `missing` and the run proceeds (owner 19.5.3 — no
- *  refusal). `resolveMcp(declared.mcp)`'s resolved configs (secrets already substituted) are
- *  returned to the caller for `options.mcpServers` ONLY — **issue #128**: nothing is ever written
- *  to `<workspace>/.mcp.json` any more. That file used to be REWRITTEN here (never merged) on every
+ *  run got every author's skill). Copies ONLY `declared.skills`.
+ *
+ *  **Issue #144 rewrite**: `skillsRoot` is no longer the run WORKSPACE — it is the caller's private,
+ *  per-dispatch directory OUTSIDE the workspace (`_invokeOnce` below creates one per call, removed in
+ *  its own `finally`; `pi-gateway-client.ts` reuses the SAME per-dispatch `tmpDir` it already owns).
+ *  Before this fix, a declared skill materialized at `<workspace>/.claude/skills/<name>/` — the run
+ *  WORKSPACE, shared by every agent in the run and `workspace_pull`-able by anyone who can read that
+ *  run — so an agent that never declared the skill (a sibling dispatched in parallel, or a later one
+ *  reusing the same workspace) could read it anyway with nothing but `Read`/`Bash`/`Glob`, and the
+ *  files outlived the run as leftover artifacts. Writing OUTSIDE the workspace instead, into a
+ *  directory that exists only for this ONE dispatch and is gone before the next one starts, closes
+ *  both: `workspace_pull`/`workspace_list` never see it (never inside the workspace to begin with),
+ *  and no sibling or later dispatch's own per-call root ever points at it (each dispatch gets its
+ *  own). Layout: `<skillsRoot>/skills/<name>/` (workflow scope wins a name clash with global —
+ *  checked first) plus `<skillsRoot>/.claude-plugin/plugin.json` (`{"name":"rwe-skills"}`, written
+ *  once skills.length > 0) — the shape the SDK's `Options.plugins` (`{type:'local', path:skillsRoot}`)
+ *  needs to load `skillsRoot` as a local plugin and discover the skills under it (verified against the
+ *  real bundled CLI — a plugin-sourced skill surfaces to the model as `plugin:skill`, here
+ *  `rwe-skills:<name>`; `_invokeOnce` is what actually qualifies the name for `Options.skills` — this
+ *  function's own `skills` return value stays the PLAIN author-facing name, used for
+ *  `descriptor.skillsExposed`/`harness.materialized` and (unaffected by this rewrite) pi's own
+ *  `skillPaths`, which loads directly off a directory path with no plugin indirection at all).
+ *
+ *  A name absent from BOTH roots lands in `missing` and the run proceeds (owner 19.5.3 — no refusal).
+ *  `resolveMcp(declared.mcp)`'s resolved configs (secrets already substituted) are returned to the
+ *  caller for `options.mcpServers` ONLY — **issue #128**: nothing is ever written to
+ *  `<workspace>/.mcp.json` any more. That file used to be REWRITTEN here (never merged) on every
  *  dispatch; it was pure belt-and-suspenders (the CLI never loads a project `.mcp.json` once
  *  `strictMcpConfig:true` is set — see `_invokeOnce` below) and the belt was itself a leak: any
  *  runner of the SAME run could `workspace_pull({path:'.mcp.json'})` an admin-pushed global
  *  server's resolved `command`/`args`/`env` — including a `${secret:NAME}` handle's real value —
  *  straight out of the workspace. Pure over the injected `fs` facade (unit tier: a fake;
- *  production: `REAL_FS`, the default) — now used for skill materialization only. */
+ *  production: `REAL_FS`, the default). */
 export async function materializeAssets(
   roots: { workflow: string; global: string },
-  workspace: string,
+  skillsRoot: string,
   declared: { skills: string[]; mcp: string[] },
   resolveMcp: (names: string[]) => Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }>,
   fs: AssetFsFacade = REAL_FS,
@@ -212,14 +250,17 @@ export async function materializeAssets(
     const workflowPath = join(roots.workflow, 'skill', name);
     const globalPath = join(roots.global, 'skill', name);
     if (fs.exists(workflowPath)) {
-      fs.copyDir(workflowPath, join(workspace, '.claude', 'skills', name));
+      fs.copyDir(workflowPath, join(skillsRoot, 'skills', name));
       skills.push(name);
     } else if (fs.exists(globalPath)) {
-      fs.copyDir(globalPath, join(workspace, '.claude', 'skills', name));
+      fs.copyDir(globalPath, join(skillsRoot, 'skills', name));
       skills.push(name);
     } else {
       missing.push(name);
     }
+  }
+  if (skills.length > 0) {
+    fs.writeFile(join(skillsRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: RWE_SKILLS_PLUGIN_NAME }));
   }
   const { configs, missing: mcpMissing } = await resolveMcp(declared.mcp);
   missing.push(...mcpMissing);
@@ -393,10 +434,32 @@ function resolveAgainstWorkspace(candidate: string, root: string): string {
  *  covered before anyone remembers to list it. */
 const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead']);
 
-function toolUsePreCheck(root: string | undefined, candidates: string[], toolName: string): { behavior: 'allow' } | { behavior: 'deny'; message: string } {
+/** Issue #144: `extraReadRoots` is THIS dispatch's own private skill-materialization directory
+ *  (`_invokeOnce`'s `skillsRoot`, when one declared skill or more got materialized) — outside the run
+ *  workspace, so without this it would be unreadable to the model's own Read/Glob/Grep/NotebookRead
+ *  tools even though the SDK's own Skill-activation turn tells the model exactly this path (verified
+ *  against the real bundled CLI: activating a plugin-sourced skill injects "Base directory for this
+ *  skill: <skillsRoot>/skills/<name>" into the conversation, and pi's own skill-prompt rendering does
+ *  the identical thing — `formatSkillsForPrompt`'s `<location>` — telling the model to `read` that
+ *  path directly). Granted READ-ONLY and ONLY to `READ_ONLY_FILE_TOOLS`: a write tool targeting it is
+ *  still denied (falls through to the workspace-only check below), so the declaring agent can read a
+ *  skill's own files but never rewrite the materialized copy. Each dispatch builds its OWN
+ *  `extraReadRoots` from its OWN `skillsRoot` (or omits it entirely) — a different agent's dispatch
+ *  constructs a wholly separate `toolUsePreCheck` closure over a different root, so this can never
+ *  leak one dispatch's skill directory into another's Read/Glob/Grep boundary. */
+function toolUsePreCheck(
+  root: string | undefined,
+  candidates: string[],
+  toolName: string,
+  extraReadRoots: readonly string[] = [],
+): { behavior: 'allow' } | { behavior: 'deny'; message: string } {
   if (root === undefined) return { behavior: 'allow' }; // no workspace known → nothing to enforce
+  const isReadOnlyTool = READ_ONLY_FILE_TOOLS.has(toolName);
   for (const candidate of candidates) {
-    if (!isInsideWorkspace(resolveAgainstWorkspace(candidate, root), root)) {
+    const resolved = resolveAgainstWorkspace(candidate, root);
+    const insideWorkspace = isInsideWorkspace(resolved, root);
+    const insideSkillRoot = isReadOnlyTool && extraReadRoots.some((r) => isPathContained(resolved, r));
+    if (!insideWorkspace && !insideSkillRoot) {
       // Issue #77: the SDK's own Write description says "must be absolute", so a model that only
       // hears "outside" keeps guessing absolute paths. Say where the workspace is and that a
       // relative path resolves inside it. The root is not new to the agent (it is its cwd, and a
@@ -412,7 +475,7 @@ function toolUsePreCheck(root: string | undefined, candidates: string[], toolNam
   }
   // The workspace is the CLI's project directory: configuration written here is loaded by the next
   // agent's CLI (hooks run commands, permissions/sandbox widen). See PROJECT_CONFIG_PATHS.
-  if (!READ_ONLY_FILE_TOOLS.has(toolName)) {
+  if (!isReadOnlyTool) {
     for (const candidate of candidates) {
       const hit = protectedConfigTarget(candidate, root);
       if (hit !== null) {
@@ -449,9 +512,9 @@ function toolUsePreCheck(root: string | undefined, candidates: string[], toolNam
 // differently is not inspected by this hook at all (same known limitation `PATH_ARG_FIELDS`'s own
 // docblock states for Bash). The deny branch is untouched — this only ever adds `updatedInput` to
 // an ALREADY-DECIDED allow.
-function makeCanUseTool(root: string | undefined): CanUseTool {
+function makeCanUseTool(root: string | undefined, extraReadRoots: readonly string[] = []): CanUseTool {
   return async (toolName, input, options) => {
-    const decision = toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath), toolName);
+    const decision = toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath), toolName, extraReadRoots);
     if (decision.behavior === 'deny') return decision;
     return { behavior: 'allow', updatedInput: input };
   };
@@ -460,10 +523,10 @@ function makeCanUseTool(root: string | undefined): CanUseTool {
 /** D-V2G8-1(d) real-execution corollary (see makeCanUseTool above): a `PreToolUse` hook fires for
  *  EVERY tool call regardless of whether a bare `allowedTools` entry already auto-approved it —
  *  the SDK's own suggested mechanism for gating a call `canUseTool` alone cannot reach. */
-function makePreToolUseHook(root: string | undefined): HookCallback {
+function makePreToolUseHook(root: string | undefined, extraReadRoots: readonly string[] = []): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return {};
-    const decision = toolUsePreCheck(root, extractCandidatePaths((input.tool_input ?? {}) as Record<string, unknown>), input.tool_name);
+    const decision = toolUsePreCheck(root, extractCandidatePaths((input.tool_input ?? {}) as Record<string, unknown>), input.tool_name, extraReadRoots);
     if (decision.behavior === 'deny') {
       return {
         hookSpecificOutput: {
@@ -932,12 +995,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
     // v24 (ARCH-103/DES-154, TASK-145): a known run workspace + a known `req.assets` (this call's
     // label declared skill/mcp names + the asset store's two scope roots, threaded by the executor
-    // from that label's registered AgentParamSpec) gets ONLY its declared skills materialized into
-    // `.claude/skills/<name>/`, loaded via `settingSources:['project']`, `cwd` re-scoped to THAT
-    // workspace — host-level sources ('user'/'local') stay excluded either way (D-F11 isolation).
-    // No workspace / no `req.assets` (e.g. a direct unit-tier invoke(), or the direct-fetch gateway,
-    // which never sets `req.assets` at all — DES-154's boundary) -> nothing materialized, the
-    // executor's decoration site reports the honest empty set (DES-160).
+    // from that label's registered AgentParamSpec) gets ONLY its declared skills materialized —
+    // **issue #144**: into a PRIVATE per-dispatch `skillsRoot` (below), never `<workspace>/.claude/
+    // skills/<name>/` any more, loaded as a local SDK plugin rather than through `settingSources:
+    // ['project']` (`cwd` is still re-scoped to the workspace for everything ELSE `'project'` still
+    // reaches — CLAUDE.md, `.claude/agents`, etc.) — host-level sources ('user'/'local') stay excluded
+    // either way (D-F11 isolation). No workspace / no `req.assets` (e.g. a direct unit-tier invoke(),
+    // or the direct-fetch gateway, which never sets `req.assets` at all — DES-154's boundary) ->
+    // nothing materialized, the executor's decoration site reports the honest empty set (DES-160).
     // issue #128: `materializeAssets` no longer writes anything to `<workspace>/.mcp.json` — its
     // resolved configs go ONLY to `options.mcpServers` below, under `strictMcpConfig: true` (which
     // also means a project `.mcp.json` would never have been READ even when one existed). Resolved
@@ -962,11 +1027,56 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     let materialized: { skills: string[]; mcp: string[]; missing: string[] } | undefined;
     let mcpConfigs: Record<string, McpServerConfig> = {};
     let mcpMissing: string[] = [];
+    // Issue #144: a declared skill's files used to be copied into `<workspace>/.claude/skills/<name>/`
+    // — the run WORKSPACE, shared by every agent dispatched into this run and `workspace_pull`-able by
+    // anyone who can read it, and never removed. `skillsRoot` is this dispatch's own PRIVATE directory
+    // instead — created only when there is at least one declared skill name to materialize, OUTSIDE
+    // the workspace, removed in the `finally` below alongside `cliScratch` (same lifecycle, same
+    // "leaked on a crash is swept at next boot" fallback for the confined arm). Confined + a known
+    // workRoot: a SIBLING of `cliScratch` under `<workRoot>/cli-tmp/` (never NESTED inside it).
+    // `withCliScratchEnv`'s own doc comment: the CLI DERIVES `<CLAUDE_CODE_TMPDIR>/claude-<uid>` (a
+    // CHILD of `cliScratch`, never `cliScratch` itself or its PARENT `cli-tmp`) and binds exactly that
+    // derived child writable — so a path that is merely a SIBLING of `cliScratch` under the same
+    // `cli-tmp` parent is outside that forced-writable bind entirely; nesting the skill files INSIDE
+    // `cliScratch` instead would have put them inside the writable region, reachable by this
+    // dispatch's own confined Bash for writes despite `allowReadPaths` below only ever asking for
+    // read. `workRoot` itself is already on `denyRead` (issue #101), so an unopened sibling is
+    // invisible to every OTHER dispatch's confined Bash the same way `cliScratch` already is, and
+    // `main.ts`'s own boot sweep removes the WHOLE `cli-tmp` directory, covering this sibling the same
+    // way it already covers `cliScratch`. Unconfined (or no workRoot known): a plain
+    // `os.tmpdir()` mkdtemp — Bash already sees the whole host unconfined, so this buys no NEW
+    // confinement there, only the (documented, residual) obscurity of a random per-dispatch path
+    // instead of the previous well-known `.claude/skills/<name>` inside the shared workspace.
+    let skillsRoot: string | undefined;
+    if (req.workspace !== undefined && req.assets !== undefined && req.assets.declared.skills.length > 0) {
+      try {
+        const workRootForSkills = this._config.confinement?.workRoot;
+        if (this._config.confinementPosture === 'confined' && workRootForSkills !== undefined) {
+          mkdirSync(join(workRootForSkills, CLI_SCRATCH_DIR), { recursive: true, mode: 0o700 });
+          skillsRoot = mkdtempSync(join(workRootForSkills, CLI_SCRATCH_DIR, 's'));
+        } else {
+          skillsRoot = mkdtempSync(join(tmpdir(), 'rwe-skills-'));
+        }
+      } catch (err) {
+        if (timer !== undefined) clearTimeout(timer);
+        req.signal?.removeEventListener('abort', onExternalAbort);
+        return { ok: false, provider: 'claude-agent-sdk', transport: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `SKILLS_ROOT_UNAVAILABLE: ${(err as Error).message} — refusing to start an agent whose declared skill(s) could not be materialized into a private directory` };
+      }
+    }
+    const dropSkillsRoot = (): void => {
+      if (skillsRoot === undefined) return;
+      try {
+        rmSync(skillsRoot, { recursive: true, force: true });
+      } catch {
+        // best-effort — the confined arm's leftover is swept at the next engine boot (main.ts), same
+        // fallback `dropCliScratch` already relies on
+      }
+    };
     if (req.workspace !== undefined && req.assets !== undefined) {
       const mcpResolved = await this._resolveMcpConfigs(req.assets.workflow, req.assets.declared.mcp, req.runId, req.workspace);
       mcpConfigs = mcpResolved.configs;
       mcpMissing = mcpResolved.missing;
-      materialized = await materializeAssets(req.assets.roots, req.workspace, req.assets.declared, async () => mcpResolved);
+      materialized = await materializeAssets(req.assets.roots, skillsRoot ?? req.workspace, req.assets.declared, async () => mcpResolved);
     }
     // Issue #106: every server is dispatched with `alwaysLoad: true` (sdk.d.ts: "blocks startup until
     // the server is connected (capped at the standard 5s connect timeout) … since the tools must be
@@ -988,6 +1098,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // exposed — a declared-but-missing name is not activatable.
     const exposedSkills = materialized?.skills ?? [];
     const wireTools = exposedSkills.length > 0 && !curatedTools.includes('Skill') ? [...curatedTools, 'Skill'] : curatedTools;
+    // Issue #144: `exposedSkills` stays the PLAIN author-facing name (descriptor.skillsExposed,
+    // harness.materialized — unaffected by where the bytes physically live). The SDK, though, now
+    // discovers them through a local PLUGIN (`options.plugins` below, since `skillsRoot` is outside
+    // the workspace and `settingSources` no longer reaches it) — a plugin-sourced skill's real
+    // identifier is `plugin:skill` (verified against the real bundled CLI: a BARE name filtered
+    // `Options.skills` down to an empty, non-matching set, silently exposing NOTHING), so only
+    // `qualifiedSkills` (never the plain form) goes on `Options.skills`/gets offered to the Skill tool.
+    const qualifiedSkills = exposedSkills.map((name) => `${RWE_SKILLS_PLUGIN_NAME}:${name}`);
 
     // REQ-037 — 2026-09-26 (alias mechanism removed): provider-aware routing off the full ref's own
     // prefix. `anthropic` dispatches DIRECT to the real Anthropic API (LiteLLM bypassed) — so its env
@@ -1033,6 +1151,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     if (!envResult.ok) {
       // A missing real key/oauth token for the chosen Anthropic auth mode is a typed terminal
       // failure — never a silent attempt with the dummy key against the real Anthropic API.
+      dropSkillsRoot();
       return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail: envResult.detail });
     }
 
@@ -1044,6 +1163,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     if (req.workspace !== undefined && this._config.confinement?.workRoot !== undefined) {
       const offender = findProjectMarkerAboveWorkspace(req.workspace, this._config.confinement.workRoot);
       if (offender !== null) {
+        dropSkillsRoot();
         return stamp({
           ok: false,
           provider: 'claude-agent-sdk',
@@ -1089,6 +1209,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // readonly shell to a writable one).
     const bashRefusal = readonlyBashRefusal({ bash: req.opts.bash, tools: curatedTools, posture: this._config.confinementPosture, root: confinementRoot });
     if (bashRefusal !== null) {
+      dropSkillsRoot();
       return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: bashRefusal });
     }
     // Issue #95: `bashRefusal === null` here already means `req.opts.bash === 'readonly'` implies a
@@ -1105,6 +1226,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       } catch (err) {
         if (timer !== undefined) clearTimeout(timer);
         req.signal?.removeEventListener('abort', onExternalAbort);
+        dropSkillsRoot();
         return stamp({
           ok: false,
           provider: 'claude-agent-sdk',
@@ -1134,6 +1256,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       if (detail !== null) {
         if (timer !== undefined) clearTimeout(timer);
         req.signal?.removeEventListener('abort', onExternalAbort);
+        dropSkillsRoot();
         return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail });
       }
     }
@@ -1173,7 +1296,13 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
               // Issue #101: default to the HOME this class hands the CLI subprocess (buildSubprocessEnv),
               // so a construction without the composed block is never less confined than one with it.
               homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
-              allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
+              // Issue #144: Bash is not covered by `toolUsePreCheck` (no `blockedPath` for it, see
+              // `extractCandidatePaths`'s own doc) — its access to `skillsRoot` is controlled here,
+              // not there. Read-only re-open (never `allowWrite`): a skill's own exec:true script
+              // (issue #105) can still run from inside it, but confined Bash cannot modify the
+              // materialized copy, matching the read-only widening `toolUsePreCheck` grants Read/Glob/
+              // Grep/NotebookRead above.
+              allowReadPaths: [...(this._config.confinement?.allowReadPaths ?? []), ...(skillsRoot !== undefined ? [skillsRoot] : [])],
               ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
               ...(cliScratch !== undefined ? { sharedCliScratch: sharedCliScratch(tmpdir(), process.getuid?.()) } : {}),
             })
@@ -1232,7 +1361,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         // tool call instead of bypassing arbitration entirely; canUseTool always resolves promptly
         // (never returns null), so this stays headless — no interactive prompt ever blocks a run.
         permissionMode: 'default',
-        canUseTool: makeCanUseTool(req.workspace ?? this._config.cwd),
+        canUseTool: makeCanUseTool(req.workspace ?? this._config.cwd, skillsRoot !== undefined ? [skillsRoot] : []),
         // D-V2G8-1(d) real-execution corollary: a BARE `allowedTools` entry auto-approves that tool
         // before `canUseTool` above is ever consulted (confirmed via the SDK's own
         // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED runtime warning) — D-F11/UT-024 still requires this list
@@ -1256,7 +1385,22 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         // actually narrows the built-in tool set sent to the model — set to the SAME curated list,
         // plus the Skill tool when this agent has a declared skill to activate (#81/#83, above).
         tools: wireTools,
-        skills: exposedSkills,
+        skills: qualifiedSkills,
+        // Issue #144: `skillsRoot` is OUTSIDE the workspace, so `settingSources:['project']` below
+        // (scoped to `cwd`) never discovers it — loaded instead as a local SDK plugin, the SAME
+        // mechanism `--plugin-dir` uses (verified against the real bundled CLI: a plugin-sourced
+        // skill activates, delivers its SKILL.md body inline, and states `skillsRoot` itself as the
+        // skill's own "base directory" for any supporting files). `skipMcpDiscovery: true` — this
+        // plugin carries no `.mcp.json`/manifest `mcpServers` of its own; MCP stays exclusively on
+        // `mcpServers` above, under `strictMcpConfig: true`. Omitted entirely when nothing
+        // materialized (no plugin directory was ever created — `skillsRoot` stays undefined).
+        // Gated on `exposedSkills.length` (not merely `skillsRoot !== undefined`): `skillsRoot` is
+        // created whenever a NAME was declared, but `materializeAssets` only writes the
+        // `.claude-plugin/plugin.json` manifest once something actually landed on disk — a
+        // declared-but-missing skill leaves `skillsRoot` an EMPTY, manifest-less directory, which the
+        // CLI's `--plugin-dir` loader would fail to load at all ("No plugin manifest found"). No
+        // skill materialized -> no `plugins` entry, same as before anything was declared.
+        ...(exposedSkills.length > 0 ? { plugins: [{ type: 'local' as const, path: skillsRoot!, skipMcpDiscovery: true }] } : {}),
         // #81/#83: a skill's inline `!`cmd`` would run through the CLI's own shell path at activation.
         // Skill text is instructions; anything it wants executed goes through the agent's tools.
         // (Serialized to --settings by the SDK, with `sandbox` below merged into the same object.)
@@ -1267,7 +1411,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         // any filesystem settings (user/project/local, including plugin/MCP config) and
         // `strictMcpConfig: true` restricts MCP servers to only what `mcpServers` explicitly passes
         // — together these make every agent() session's tool surface deterministically exactly
-        // `curatedTools` (+ whatever this run's own workspace-scoped `.claude/` materializes, D-V2V-1),
+        // `curatedTools` (+ this dispatch's own private `skillsRoot` plugin, when one was built,
+        // D-V2V-1/issue #144),
         // regardless of whatever Claude Code configuration happens to be present on the host machine
         // running this product.
         settingSources: req.workspace !== undefined ? ['project'] : [],
@@ -1278,7 +1423,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         mcpServers: mcpServers as Options['mcpServers'],
         // D-V2G8-1(d): belt-and-suspenders alongside canUseTool above — fires for every tool call
         // regardless of whether a bare allowedTools entry already auto-approved it.
-        hooks: { PreToolUse: [{ hooks: [makePreToolUseHook(req.workspace ?? this._config.cwd)] }] },
+        hooks: { PreToolUse: [{ hooks: [makePreToolUseHook(req.workspace ?? this._config.cwd, skillsRoot !== undefined ? [skillsRoot] : [])] }] },
         abortController: controller,
         // D-G8-5/REQ-037: an explicit allowlist plus the provider-aware routing/auth vars — never the
         // full host process.env (see buildSubprocessEnv). Resolved above so an auth-missing anthropic
@@ -1388,6 +1533,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         if (timer !== undefined) clearTimeout(timer);
         req.signal.removeEventListener('abort', onExternalAbort);
         dropCliScratch();
+        dropSkillsRoot();
         return abortedBeforeDispatch();
       }
       const session = this._query({ prompt: req.prompt, options });
@@ -1451,6 +1597,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // idempotent (a no-op if already aborted by the timer/external signal above).
       controller.abort();
       dropCliScratch();
+      dropSkillsRoot();
     }
   }
 

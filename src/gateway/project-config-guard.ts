@@ -9,7 +9,7 @@
 //    the CLI's OWN forced sandbox mount targets — see `READONLY_MOUNT_TARGETS`'s own doc comment.
 import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { ENGINE_OWNED_CONFIG_PATHS, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from './bash-confinement.js';
+import { PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from './bash-confinement.js';
 import { resolveLanding } from '../path-containment.js';
 
 /** `.git/config` (`core.fsmonitor`, `core.hooksPath`) and `.git/hooks/` run commands whenever git
@@ -18,7 +18,9 @@ import { resolveLanding } from '../path-containment.js';
  *  Bash denyWrite whenever they exist. */
 const GIT_EXEC_PATHS = ['.git/config', '.git/hooks'] as const;
 
-const TOOL_DENIED = [...PROJECT_CONFIG_PATHS, ...ENGINE_OWNED_CONFIG_PATHS, ...GIT_EXEC_PATHS].map((p) => p.toLowerCase());
+// Issue #144: `ENGINE_OWNED_CONFIG_PATHS` is gone (its one entry, `.claude/skills`, merged into
+// `PROJECT_CONFIG_PATHS`) — this no longer unions three lists, just the two.
+const TOOL_DENIED = [...PROJECT_CONFIG_PATHS, ...GIT_EXEC_PATHS].map((p) => p.toLowerCase());
 
 function matchUnder(abs: string, root: string): string | null {
   const rel = relative(root, abs);
@@ -57,12 +59,18 @@ function present(p: string): boolean {
 /** Removes agent-planted project configuration from `root` and returns what was removed
  *  (workspace-relative), or throws if something could not be removed — the caller must then refuse to
  *  dispatch rather than start a CLI that would load it. A `.claude` that is a symlink is unlinked
- *  first: the CLI would load settings through it, and the engine would materialize skills through it
- *  to wherever it points. Links are removed as links (`rmSync` never follows them). The one
- *  engine-owned entry (`.claude/skills`) is left for the engine's own per-dispatch rewrite —
- *  **issue #128**: `.mcp.json` used to be a second one (rewritten per dispatch, so a planted one
- *  never survived to be loaded); the engine stopped writing it at all, so it moved into
- *  `PROJECT_CONFIG_PATHS` (bash-confinement.ts) and is swept like everything else in this loop.
+ *  first: the CLI would load settings through it (and, pre-#144, the engine would have materialized
+ *  skills through it to wherever it points — moot now, see below). Links are removed as links
+ *  (`rmSync` never follows them). **Issue #128**: `.mcp.json` used to be left alone here (rewritten
+ *  per dispatch, so a planted one never survived to be loaded); the engine stopped writing it at all,
+ *  so it moved into `PROJECT_CONFIG_PATHS` (bash-confinement.ts) and is swept like everything else in
+ *  this loop. **Issue #144**: `.claude/skills` followed the identical path for the identical reason —
+ *  the engine no longer materializes a declared skill into the workspace at all (a private
+ *  per-dispatch directory outside it, loaded via the SDK's own `plugins` option, replaces it — see
+ *  `materializeAssets`'s doc comment), so there is no engine-owned entry left to exempt from this
+ *  sweep any more; every `PROJECT_CONFIG_PATHS` entry, including `.claude/skills`, is now treated the
+ *  same way. This also sweeps a leftover `.claude/skills` an OLDER (pre-#144) engine version left in
+ *  an existing workspace, before this dispatch's CLI could load it.
  *
  *  Issue #95: an EMPTY, real (non-symlink) directory at a `PROJECT_CONFIG_PATHS` entry is left alone
  *  — not removed, not reported. Two of those entries (`.claude/agents`, `.claude/commands`) are ALSO
