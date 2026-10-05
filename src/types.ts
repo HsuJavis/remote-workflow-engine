@@ -163,6 +163,19 @@ export interface Caps {
   reasoning: boolean | 'unknown';
   tools: boolean | 'unknown';
   source: 'upstream' | 'static' | 'unknown';
+  /** issue #139(b): true when the catalog says this model's endpoint REQUIRES a reasoning directive
+   *  (OpenRouter's own `reasoning.mandatory` / the catalog's `capabilities.reasoning.mandatory`) —
+   *  distinct from `reasoning` above (which only says a dial EXISTS, not that it is required).
+   *  Optional so every pre-existing `Caps` literal across this codebase (tests, `UNKNOWN_CAPS`)
+   *  keeps type-checking unchanged; absent/undefined is read as "not known to be mandatory", never
+   *  as a guessed `false` that could suppress a real requirement. */
+  reasoningMandatory?: boolean;
+  /** issue #139(b): the catalog's own declared effort levels (OpenRouter's `supported_efforts`), when
+   *  known — used to pick the LOWEST level this model actually advertises when a mandatory-reasoning
+   *  dispatch has no caller-requested effort, rather than guessing `'low'` for a model that might not
+   *  list it. Absent/empty -> the caller falls back to `'low'` (every provider this engine has ever
+   *  seen with a mandatory-reasoning endpoint supports it). */
+  reasoningEfforts?: readonly string[];
 }
 
 /** v26 (DES-178): one (provider,model)'s pinned price + capability — `price:null` and

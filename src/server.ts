@@ -975,8 +975,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // before this deployment switched to gateway:"pi" — see `ModelProber`'s own field doc.
   // issue #138 review M-138-2: `activeHarness` forwarded so `dueTargets()` re-probes a cross-harness
   // row on the very next periodic tick instead of waiting out its (possibly fresh) `probedAt` age.
+  // issue #139(b): `modelBook.snapshot()` is the SAME TTL-cached catalog read `run-manager.ts`'s own
+  // admission-time pin uses — `lookup()` is TOTAL (model-book.ts's own doc: never `undefined`, a
+  // `caps:{...:'unknown'}` entry for anything not found), so this never throws; `_probe`'s own
+  // per-target try/catch (model-probe.ts) is still the backstop for a snapshot FETCH itself failing.
   const modelProber = gateway
-    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false }, harnessProviders: config?.harnessProviders, activeHarness })
+    ? new ModelProber({
+        gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock,
+        config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false }, harnessProviders: config?.harnessProviders, activeHarness,
+        capsFor: async (provider, model) => (await modelBook.snapshot()).lookup(provider, model).caps,
+      })
     : undefined;
   modelProber?.start();
   // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the

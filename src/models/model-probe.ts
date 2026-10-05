@@ -24,6 +24,7 @@ import type { GatewayClient, GatewayResult } from '../gateway/client.js';
 import { parseModelRef } from '../providers.js';
 import type { Clock } from '../clock.js';
 import type { AgentCallScan } from '../workflow-meta.js';
+import type { Caps } from '../types.js';
 
 export interface ModelProbeConfig {
   /** Run the periodic probe. The admin `models_probe` tool works either way. */
@@ -207,7 +208,15 @@ export function classifyProbe(prose: GatewayResult, tools: GatewayResult, nonce:
   if (!tools.ok) {
     toolsDetail = failure(tools);
   } else {
-    const usedRead = (tools.events ?? []).some((e) => e.kind === 'tool_call' && (e.data as { name?: unknown } | undefined)?.name === 'Read');
+    // issue #139(a): the engine-canonical shape/name is what every gateway is now expected to emit
+    // (fixed at the source for pi — see pi-gateway-client.ts's `engineToolName`) — matched
+    // case-insensitively here too, defense in depth, so a future harness that gets the CASE wrong
+    // (but the right tool) still counts as real tool use rather than a silent false negative.
+    const usedRead = (tools.events ?? []).some((e) => {
+      if (e.kind !== 'tool_call') return false;
+      const name = (e.data as { name?: unknown } | undefined)?.name;
+      return typeof name === 'string' && name.toLowerCase() === 'read';
+    });
     const hasNonce = text(tools).includes(nonce);
     toolUseVerified = usedRead && hasNonce;
     toolsDetail = toolUseVerified ? 'ok' : !usedRead ? 'no Read tool_use in the reply' : 'Read ran but the answer lacks the nonce';
@@ -240,11 +249,19 @@ async function timed(clock: Clock, fn: () => Promise<GatewayResult>): Promise<{ 
 /** Probe one target through `gateway.invoke()`. Both legs run in a throwaway workspace UNDER
  *  workRoot — as every agent() call runs in its run workspace (the SDK gateway refuses one outside
  *  workRoot — WORKROOT_INSIDE_PROJECT) — removed afterwards. Never throws: a gateway exception is a
- *  failed leg. */
+ *  failed leg.
+ *
+ *  issue #139(b): `opts.caps`, when supplied, is the SAME pinned `Caps` a real agent() dispatch would
+ *  carry for this (provider, model) — threaded through to `gateway.invoke()` unchanged on BOTH legs
+ *  so a mandatory-reasoning endpoint (OpenRouter's own `reasoning.mandatory`) gets a real effort
+ *  level under pi instead of the terminal 400 an effort-less dispatch used to get
+ *  (`PiGatewayClient`'s own `effectiveEffort` is what actually applies it; this is just the wire that
+ *  reaches it). Omitted -> `req.caps` is undefined, byte-identical to this function's pre-#139(b)
+ *  behavior (every existing call site, and the sdk gateway, which never had this problem). */
 export async function runProbe(
   gateway: GatewayClient,
   target: ProbeTarget,
-  opts: { workRoot: string; timeoutMs: number; clock: Clock },
+  opts: { workRoot: string; timeoutMs: number; clock: Clock; caps?: Caps },
 ): Promise<ProbeResult> {
   const { clock, timeoutMs } = opts;
   const runId = `model-probe-${clock.now()}`;
@@ -258,11 +275,13 @@ export async function runProbe(
   try {
     prose = await timed(clock, () => gateway.invoke({
       prompt: PROSE_PROMPT, opts: { model: ref, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${ref}`, workspace,
+      ...(opts.caps !== undefined ? { caps: opts.caps } : {}),
     }));
     const noncePath = join(workspace, NONCE_FILE);
     writeFileSync(noncePath, `${nonce}\n`);
     tools = await timed(clock, () => gateway.invoke({
       prompt: toolsPrompt(noncePath), opts: { model: ref, allowedTools: ['Read'], timeoutMs }, runId, agentId: `probe-tools-${ref}`, workspace,
+      ...(opts.caps !== undefined ? { caps: opts.caps } : {}),
     }));
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -381,6 +400,14 @@ export class ModelProber {
        *  omitted entirely skips this check (never defaulted to either value) — every pre-#138 call
        *  site, none of which pass it, keeps its EXACT prior behavior: due-ness gated on age alone. */
       activeHarness?: 'sdk' | 'pi';
+      /** issue #139(b): resolves the SAME pinned `Caps` a real agent() dispatch for this
+       *  (provider, model) would carry (server.ts wires this from `modelBook.snapshot()`, which is
+       *  itself async — a TTL-cached fetch, not a free sync read) — threaded into `runProbe` so a
+       *  mandatory-reasoning model is probed WITH a real effort level instead of an effort-less
+       *  dispatch that a mandatory endpoint rejects outright. Omitted -> `runProbe` gets no `caps`,
+       *  byte-identical to this field's pre-#139(b) absence (every existing call site, and any
+       *  deployment that constructs `ModelProber` directly in a test). */
+      capsFor?: (provider: string, model: string) => Promise<Caps | undefined>;
     },
   ) {}
 
@@ -424,6 +451,13 @@ export class ModelProber {
 
   start(): void {
     if (!this._deps.config.enabled || this._timer) return;
+    // issue #139(c): `setInterval` alone only ever fires AFTER its own period elapses — never at
+    // registration — so every target due at boot (a fresh deploy/restart, or a workflow registered
+    // moments ago) waited out up to `min(intervalMs, 1h)` (an hour, by default) before the FIRST
+    // probe of this process's lifetime ever ran. `dueTargets()` already gates on `probedAt` age (or
+    // absence), so firing one pass immediately here never re-spends on a target probed only
+    // moments ago by a DIFFERENT process/restart — it only catches up whatever is ALREADY due.
+    void this._serial(() => this._probe(this.dueTargets())).catch((err) => console.error('[model-probe] initial probe failed:', err));
     this._timer = setInterval(() => {
       void this._serial(() => this._probe(this.dueTargets())).catch((err) => console.error('[model-probe] periodic probe failed:', err));
     }, Math.min(this._deps.config.intervalMs, HOUR_MS));
@@ -444,9 +478,21 @@ export class ModelProber {
   private async _probe(targets: ProbeTarget[], timeoutMs = this._deps.config.timeoutMs): Promise<ProbeResult[]> {
     const out: ProbeResult[] = [];
     for (const t of targets) {
-      const r = await runProbe(this._deps.gateway, t, { workRoot: this._deps.workRoot, timeoutMs, clock: this._deps.clock });
-      this._deps.store.put(r);
-      out.push(r);
+      // issue #139(c): one target's own failure (store.put/rmSync throwing — a full disk, a locked
+      // sqlite file) must not skip every target QUEUED AFTER it in this same sweep — `runProbe`
+      // itself already never throws (its own doc), so this is belt-and-suspenders around the
+      // store write, not the dispatch. Before this fix, an uncaught throw here aborted the whole
+      // `for` loop silently (the periodic caller's own `.catch` only logs — see `start()` below),
+      // which could leave a LATER target (e.g. an ollama ref queued after several openrouter refs)
+      // never even attempted this sweep.
+      try {
+        const caps = await this._deps.capsFor?.(t.provider, t.model);
+        const r = await runProbe(this._deps.gateway, t, { workRoot: this._deps.workRoot, timeoutMs, clock: this._deps.clock, ...(caps !== undefined ? { caps } : {}) });
+        this._deps.store.put(r);
+        out.push(r);
+      } catch (err) {
+        console.error(`[model-probe] probing ${t.provider}/${t.model} failed:`, err);
+      }
     }
     return out;
   }

@@ -426,7 +426,17 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     }
   });
 
-  it('maps tool_call/tool_result child events onto TranscriptEvent kind:tool_call/tool_result (slice f)', async () => {
+  // issue #139(a): the child's own `toolName`/`toolCallId`/`args`/`result` field names and pi's
+  // lowercase tool names used to pass straight through onto the TranscriptEvent — a DIFFERENT shape
+  // and vocabulary than the sdk gateway emits (Anthropic content-block shape: `{type:'tool_use',
+  // id, name, input}` / `{type:'tool_result', tool_use_id, content, is_error}`, ENGINE tool names
+  // like 'Read'/'Bash'). Every consumer of these events (model-probe.ts's `classifyProbe`,
+  // run_agent_log, the dashboard) reads the SDK's shape; a probe or any other shape-sensitive reader
+  // against a pi-run model saw NO tool_use ever, regardless of what the model actually did (issue
+  // #137's exact false-negative). Fixed at the source: every kind:'tool_call'/'tool_result' this
+  // gateway emits now carries the SAME shape and ENGINE tool names the sdk gateway emits, so every
+  // consumer sees one shape independent of harness.
+  it('maps tool_call/tool_result child events onto the SAME shape + ENGINE tool names the sdk gateway emits (issue #139a)', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
     const events: unknown[] = [];
@@ -439,8 +449,23 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     await promise;
     const call = events.find((e: any) => e.kind === 'tool_call') as any;
     const result = events.find((e: any) => e.kind === 'tool_result') as any;
-    expect(call.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', args: { command: 'echo hi' } });
-    expect(result.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', result: { exitCode: 0 }, isError: false });
+    expect(call.data).toEqual({ type: 'tool_use', id: 'tc1', name: 'Bash', input: { command: 'echo hi' } });
+    expect(result.data).toEqual({ type: 'tool_result', tool_use_id: 'tc1', content: { exitCode: 0 }, is_error: false });
+  });
+
+  it('a pi tool name outside the base TOOL_NAME_MAP (mcp__*, or any unrecognized name) passes through unchanged, never dropped (issue #139a)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const events: unknown[] = [];
+    const promise = gw.invoke(req({ onEvent: (ev) => { events.push(ev); } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'tool_call', toolCallId: 'tc1', toolName: 'mcp__everything__echo', argsJson: '{}' });
+    f.sendLine({ t: 'tool_call', toolCallId: 'tc2', toolName: 'some_unknown_tool', argsJson: '{}' });
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    const calls = events.filter((e: any) => e.kind === 'tool_call') as any[];
+    expect(calls.map((c) => c.data.name)).toEqual(['mcp__everything__echo', 'some_unknown_tool']);
   });
 
   it('claims effortApplied:true for openrouter (verified on the real wire) and false for ollama (no dial)', async () => {

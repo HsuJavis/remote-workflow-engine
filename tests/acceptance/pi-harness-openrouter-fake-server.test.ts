@@ -193,4 +193,73 @@ describe('pi harness v1 — OpenRouter request shape via a recording fake server
     // effort:'none' — matches pi-spike-report.md S8's own exact finding (`off -> {"effort":"none"}`).
     expect((noEffort!['reasoning'] as { effort?: string } | undefined)?.effort).toBe('none');
   }, 30_000);
+
+  // issue #139(b): an effort-less dispatch (the probe's own prose/tools legs; any agent() call that
+  // never sets `effort`) used to ALWAYS send `reasoning.effort:'none'` under pi — a mandatory-
+  // reasoning endpoint (OpenRouter's own `reasoning.mandatory`, e.g. glm-5.3-flash, gemini-3.8-flash)
+  // rejects that with a terminal 400 ("Reasoning is mandatory for this endpoint and cannot be
+  // disabled"). `req.caps.reasoningMandatory:true` (the SAME pinned `Caps` a real run threads through
+  // `agent-executor.ts`, or `runProbe`'s own `opts.caps`) must make this gateway synthesize the floor
+  // effort level instead.
+  it('a mandatory-reasoning model with NO requested effort gets a real floor level, never "none" (issue #139b)', async () => {
+    fake.requests.length = 0;
+    const gw = new PiGatewayClient({
+      secretSource: { resolve: () => 'fake-key-not-real' },
+      timeoutMs: 15_000,
+      openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`,
+    });
+    const result = await gw.invoke({
+      prompt: 'hi',
+      opts: { model: 'openrouter/z-ai/glm-5.3-flash', allowedTools: [] },
+      runId: 'fake-or-mandatory-r1',
+      agentId: 'fake-or-mandatory-a1',
+      workspace: ws,
+      caps: { reasoning: true, tools: true, source: 'upstream', reasoningMandatory: true },
+    });
+    expect(result.ok).toBe(true);
+    expect(fake.requests.length).toBeGreaterThan(0);
+    const body = fake.requests[0]!.body as Record<string, unknown>;
+    expect((body['reasoning'] as { effort?: string } | undefined)?.effort).toBe('low');
+  }, 20_000);
+
+  it('a mandatory-reasoning model picks the lowest level the catalog actually lists, when supplied', async () => {
+    fake.requests.length = 0;
+    const gw = new PiGatewayClient({
+      secretSource: { resolve: () => 'fake-key-not-real' },
+      timeoutMs: 15_000,
+      openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`,
+    });
+    const result = await gw.invoke({
+      prompt: 'hi',
+      opts: { model: 'openrouter/z-ai/glm-5.3-flash', allowedTools: [] },
+      runId: 'fake-or-mandatory-r2',
+      agentId: 'fake-or-mandatory-a2',
+      workspace: ws,
+      // 'low' is not advertised — the lowest one this model DOES advertise wins instead.
+      caps: { reasoning: true, tools: true, source: 'upstream', reasoningMandatory: true, reasoningEfforts: ['medium', 'high'] },
+    });
+    expect(result.ok).toBe(true);
+    const body = fake.requests[0]!.body as Record<string, unknown>;
+    expect((body['reasoning'] as { effort?: string } | undefined)?.effort).toBe('medium');
+  }, 20_000);
+
+  it('an EXPLICITLY requested effort always wins over the mandatory-reasoning floor', async () => {
+    fake.requests.length = 0;
+    const gw = new PiGatewayClient({
+      secretSource: { resolve: () => 'fake-key-not-real' },
+      timeoutMs: 15_000,
+      openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`,
+    });
+    const result = await gw.invoke({
+      prompt: 'hi',
+      opts: { model: 'openrouter/z-ai/glm-5.3-flash', allowedTools: [], effort: 'high' },
+      runId: 'fake-or-mandatory-r3',
+      agentId: 'fake-or-mandatory-a3',
+      workspace: ws,
+      caps: { reasoning: true, tools: true, source: 'upstream', reasoningMandatory: true },
+    });
+    expect(result.ok).toBe(true);
+    const body = fake.requests[0]!.body as Record<string, unknown>;
+    expect((body['reasoning'] as { effort?: string } | undefined)?.effort).toBe('high');
+  }, 20_000);
 });
