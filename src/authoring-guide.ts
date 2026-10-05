@@ -1220,7 +1220,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '(default 30). Separately, while the engine\'s disk is below its free-space floor every ' +
         'upload and every new run (run_start, run_resume, schedule/webhook firings, nested ' +
         '`workflow()`) is refused `DISK_LOW {freeBytes, floorBytes}` — transient (HTTP 503), retry ' +
-        'later; runs already in flight continue.',
+        'later; runs already in flight continue.\n\n' +
+        // Issue #144 / v0374 review L-1: a seeded `.claude/skills/**` was never activatable (the
+        // engine's own `Options.skills`/`plugins` wiring is an explicit list it builds itself, never
+        // scanned off the workspace), but before this engine also removed it entirely at the first
+        // dispatch (the same leftover-config sweep that already removed `.claude/settings.json`/
+        // `.claude/hooks`/`.mcp.json`), it just sat there unreachable; a cold author seeding one had
+        // no way to learn why it silently did nothing, and now also why it disappears from
+        // `workspace_pull` after the run\'s first agent() call.
+        '**A seeded `.claude/skills/**` is removed, not merely inert.** If your `seed`/`seedManifest` ' +
+        'includes files under `.claude/skills/`, the engine strips them from the run workspace before ' +
+        'the first `agent()` dispatch — the same sweep that already removes a planted `.claude/' +
+        'settings.json`, `.claude/hooks/`, or `.mcp.json` (leftover engine-owned config paths, never ' +
+        'something a seed is meant to control). They will not appear in `workspace_pull` after that ' +
+        'point, and were never activatable even before the sweep existed. Provision a skill with ' +
+        "`workspace_push({kind:'skill', workflow, name, files})` instead — see \"Provisioning skills " +
+        'and MCP servers\" below.',
     ),
   );
 

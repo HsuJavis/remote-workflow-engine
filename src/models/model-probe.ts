@@ -420,8 +420,13 @@ export const PROBE_INFLIGHT_COOLDOWN_MS = 5 * 60_000;
 export const DEFAULT_BOOT_PROBE_GRACE_MS = 2 * 60_000;
 
 /** Owns the admin "probe now" entry point and the periodic re-probe. The periodic check ticks every
- *  min(intervalMs, 1h) — never at boot — and probes only targets whose last result is older than
- *  intervalMs (or absent), so a restart does not re-spend on models probed yesterday.
+ *  min(intervalMs, 1h); `start({bootProbeDelayMs})` ALSO runs one immediate sweep, delayed by that
+ *  grace period (v0374 review M-1 — server.ts calls it after `http.listen()`, so this is no longer
+ *  "never at boot": it runs once at boot, after a short wait, then on the normal periodic cadence).
+ *  Either way, only targets whose last result is older than intervalMs (or absent) are probed, and a
+ *  target with a recent, uncompleted `markStarted` marker is skipped for `PROBE_INFLIGHT_COOLDOWN_MS`
+ *  — a restart does not re-spend on a model probed yesterday, or on one whose probe is still in
+ *  flight (or crashed moments ago) from a previous process.
  *  2026-09-26 (alias mechanism removed, owner decision 10): `modelRefs` replaces the old static
  *  `aliases` table — a LIVE accessor (called fresh on every `probeNow()`/`dueTargets()`, never
  *  cached at construction) over the distinct full refs registered workflow versions declare, so a
