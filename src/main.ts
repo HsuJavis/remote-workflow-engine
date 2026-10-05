@@ -20,7 +20,7 @@
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
-import { readFileSync, existsSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync, mkdtempSync, rmSync, readdirSync, lstatSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -726,6 +726,51 @@ export function sweepCliScratch(workRoot: string): void {
   rmSync(join(workRoot, CLI_SCRATCH_DIR), { recursive: true, force: true });
 }
 
+const UNCONFINED_SKILL_SCRATCH_PREFIX = 'rwe-skills-';
+const UNCONFINED_SKILL_SCRATCH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** v0374 integration review L-2: the SDK gateway's UNCONFINED-mode `skillsRoot`
+ *  (claude-agent-sdk-client.ts: `mkdtempSync(join(tmpdir(), 'rwe-skills-'))`) has no boot sweep the
+ *  way its confined sibling does — the confined arm nests INSIDE `<workRoot>/cli-tmp/`, already
+ *  wiped wholesale by `sweepCliScratch` above, but the unconfined arm sits in the SHARED system
+ *  `os.tmpdir()`, which nothing ever revisited before this fix; a crash between creating it and the
+ *  dispatch's own cleanup leaked it there permanently.
+ *
+ *  Unlike `sweepCliScratch`'s unconditional wipe — safe ONLY because `<workRoot>/cli-tmp` is
+ *  EXCLUSIVELY this process's own — `os.tmpdir()` is shared host-wide: a different uid, or even a
+ *  different engine instance under the SAME uid (this host's own dev-checkout-plus-`rwe`-service-user
+ *  split is exactly this shape), can have a LIVE `rwe-skills-*` dir of its own at this exact moment.
+ *  "Nothing is in flight" does not hold here, so this sweep is bounded by TWO conditions instead:
+ *  owned by THIS process's own uid, and older than `UNCONFINED_SKILL_SCRATCH_MAX_AGE_MS` (24h) — a
+ *  real agent() dispatch's skillsRoot lives for minutes at most, so age alone is strong evidence of
+ *  "abandoned," never a live one simply not finished yet. Best-effort throughout: a single entry's
+ *  stat/rm failure is skipped, never escalated to fail the whole boot over stale scratch cleanup. */
+export function sweepStaleUnconfinedSkillScratch(): void {
+  const dir = tmpdir();
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const ownUid = process.getuid?.();
+  const now = Date.now();
+  for (const name of entries) {
+    if (!name.startsWith(UNCONFINED_SKILL_SCRATCH_PREFIX)) continue;
+    const full = join(dir, name);
+    let st;
+    try {
+      st = lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue; // excludes a symlink too — lstat never follows one
+    if (ownUid !== undefined && st.uid !== ownUid) continue;
+    if (now - st.mtimeMs < UNCONFINED_SKILL_SCRATCH_MAX_AGE_MS) continue;
+    try { rmSync(full, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes('--check-config')) {
     await runCheckConfig();
@@ -753,6 +798,9 @@ async function main(): Promise<void> {
   // Issue #101 (CLI scratch): per-dispatch CLI scratch dirs a previous process left behind (crash,
   // kill) — nothing is in flight before createServer(), so the whole parent goes.
   if (config.workRoot !== undefined) sweepCliScratch(config.workRoot);
+  // v0374 integration review L-2: the SDK's unconfined-mode skillsRoot leftovers — see this
+  // function's own doc for why it is age/ownership-bounded rather than an unconditional wipe.
+  sweepStaleUnconfinedSkillScratch();
   const server = await createServer(config);
   // eslint-disable-next-line no-console
   console.log(

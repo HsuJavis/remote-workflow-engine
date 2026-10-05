@@ -23,7 +23,7 @@
 // Mock policy (unit): the injected `queryImpl` seam stands in for the SDK; asset roots/workspace
 // are real temp dirs because `_invokeOnce` materializes through the real fs facade.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAgentSdkGatewayClient, RWE_SKILLS_PLUGIN_NAME } from '../../src/gateway/claude-agent-sdk-client.js';
@@ -173,6 +173,32 @@ describe('the private skill directory is removed on every exit path, not only su
     expect(result.ok).toBe(false);
     expect(capturedPath).toBeDefined();
     expect(existsSync(capturedPath!)).toBe(false);
+  });
+
+  // v0374 integration review L-2: `skillsRoot` is created BEFORE `_resolveMcpConfigs`/
+  // `materializeAssets` run, but (before this fix) nothing cleaned it up if either of those two
+  // calls threw — the only `finally` in `_invokeOnce` starts later (wrapping `cliScratch`/`query()`),
+  // so a throw here propagated straight out of `invoke()` with the already-created `skillsRoot`
+  // directory never removed. An unresolved `${secret:NAME}` MCP handle (fail-loud by design) is the
+  // review's own named repro.
+  it('cleaned up when _resolveMcpConfigs throws (an unresolved ${secret:} handle) BEFORE the session is ever dispatched', async () => {
+    const before = readdirSync(tmpdir()).filter((n) => n.startsWith('rwe-skills-'));
+    const queryImpl = vi.fn(() => okSession());
+    const client = new ClaudeAgentSdkGatewayClient({
+      baseUrl: 'http://127.0.0.1:1',
+      queryImpl: queryImpl as never,
+      resolveMcp: async (_wf, names) => ({ configs: Object.fromEntries(names.map((n) => [n, { type: 'stdio', command: 'x', env: { TOKEN: '${secret:MISSING_SECRET}' } }])), missing: [] }),
+      secretSource: { resolve: () => undefined, names: () => [] },
+    });
+    await expect(client.invoke({
+      prompt: 'p', opts: {}, runId: 'r', agentId: 'a', workspace,
+      assets: { roots: { workflow: workflowRoot, global: join(root, 'assets', 'global') }, declared: { skills: ['moonfish'], mcp: ['badmcp'] }, workflow: 'wf' },
+    })).rejects.toThrow(/SECRET_MISSING/);
+    // The session is never dispatched (the throw happens before query() is ever reached) — read the
+    // leak back off the shared scratch dir directly instead of a captured plugin path.
+    expect(queryImpl).not.toHaveBeenCalled();
+    const after = readdirSync(tmpdir()).filter((n) => n.startsWith('rwe-skills-'));
+    expect(after).toEqual(before);
   });
 
   it('cleaned up when the call is aborted before dispatch (pre-aborted signal)', async () => {

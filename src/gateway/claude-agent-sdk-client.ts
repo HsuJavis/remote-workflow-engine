@@ -1082,11 +1082,26 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         // fallback `dropCliScratch` already relies on
       }
     };
+    // v0374 integration review L-2: `skillsRoot` (just above) is created BEFORE this block, but the
+    // ONLY `finally` in this method starts much later (the `dropCliScratch` one, below) — a throw
+    // from either call here (an unresolved `${secret:NAME}` handle, fail-loud by design; a
+    // `materializeAssets` copyDir failure such as ENOSPC/EACCES) used to propagate straight out of
+    // `_invokeOnce`, leaking the already-created `skillsRoot` directory: under `confined` it sits
+    // (denyRead, swept at the next boot) under `<workRoot>/cli-tmp`; unconfined, it sits in
+    // `os.tmpdir()/rwe-skills-*`, which nothing ever sweeps. Caught here and re-thrown unchanged —
+    // every caller sees the exact same rejection as before, just with `skillsRoot` already cleaned up
+    // first, the same "catch, clean up, rethrow" shape `dropCliScratch`'s own doc describes for its
+    // sibling leak.
     if (req.workspace !== undefined && req.assets !== undefined) {
-      const mcpResolved = await this._resolveMcpConfigs(req.assets.workflow, req.assets.declared.mcp, req.runId, req.workspace);
-      mcpConfigs = mcpResolved.configs;
-      mcpMissing = mcpResolved.missing;
-      materialized = await materializeAssets(req.assets.roots, skillsRoot ?? req.workspace, req.assets.declared, async () => mcpResolved);
+      try {
+        const mcpResolved = await this._resolveMcpConfigs(req.assets.workflow, req.assets.declared.mcp, req.runId, req.workspace);
+        mcpConfigs = mcpResolved.configs;
+        mcpMissing = mcpResolved.missing;
+        materialized = await materializeAssets(req.assets.roots, skillsRoot ?? req.workspace, req.assets.declared, async () => mcpResolved);
+      } catch (err) {
+        dropSkillsRoot();
+        throw err;
+      }
     }
     // Issue #106: every server is dispatched with `alwaysLoad: true` (sdk.d.ts: "blocks startup until
     // the server is connected (capped at the standard 5s connect timeout) … since the tools must be

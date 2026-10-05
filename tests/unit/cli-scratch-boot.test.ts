@@ -57,3 +57,43 @@ describe('issue #101 boot sweep of <workRoot>/cli-tmp', () => {
     rmSync(workRoot, { recursive: true, force: true });
   });
 });
+
+// v0374 integration review L-2: the SDK gateway's UNCONFINED-mode skillsRoot
+// (`mkdtempSync(join(tmpdir(), 'rwe-skills-'))`, claude-agent-sdk-client.ts) is NOT under
+// `<workRoot>/cli-tmp` (the confined arm's sibling IS, and is already covered by sweepCliScratch
+// above) — it sits in the SHARED system tmp dir, which main()'s boot never revisited before this
+// fix. Unlike sweepCliScratch's unconditional wipe (safe only because `<workRoot>/cli-tmp` is
+// exclusively this process's own), `os.tmpdir()` is shared host-wide, so this sweep is bounded by
+// age (not "nothing in flight", which does not hold for a shared directory) — a dispatch's real
+// skillsRoot lifetime is minutes, never the default 24h threshold.
+import { utimesSync } from 'node:fs';
+import { sweepStaleUnconfinedSkillScratch } from '../../src/main.js';
+
+describe('issue #144 / v0374 review L-2 — boot sweep of stale unconfined SDK skillsRoot scratch under os.tmpdir()', () => {
+  it('removes a stale (old mtime) rwe-skills-* dir owned by this process, leaves a fresh one and an unrelated dir alone', () => {
+    const stale = mkdtempSync(join(tmpdir(), 'rwe-skills-'));
+    writeFileSync(join(stale, 'SKILL.md'), 'stale');
+    const old = Date.now() / 1000 - 48 * 60 * 60; // 48h ago, well past the default 24h threshold
+    utimesSync(stale, old, old);
+
+    const fresh = mkdtempSync(join(tmpdir(), 'rwe-skills-'));
+    writeFileSync(join(fresh, 'SKILL.md'), 'fresh');
+
+    const unrelated = mkdtempSync(join(tmpdir(), 'rwe-other-scratch-'));
+
+    try {
+      sweepStaleUnconfinedSkillScratch();
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(unrelated)).toBe(true);
+    } finally {
+      rmSync(stale, { recursive: true, force: true });
+      rmSync(fresh, { recursive: true, force: true });
+      rmSync(unrelated, { recursive: true, force: true });
+    }
+  });
+
+  it('never throws when nothing matches, or tmpdir has unrelated entries', () => {
+    expect(() => sweepStaleUnconfinedSkillScratch()).not.toThrow();
+  });
+});
