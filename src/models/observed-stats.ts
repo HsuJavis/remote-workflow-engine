@@ -31,6 +31,17 @@
 //  - "tools" vs "prose": read off the harness event's `descriptor.tools` (the ACTUAL materialized
 //    tool surface for the dispatch, source-of-truth for "resolved allowedTools" per the spec) —
 //    non-empty -> 'tools', empty -> 'prose'.
+//  - Schema re-asks (issue #141): a `schema`-bearing `agent()` call that re-asks the model (D-V4's
+//    bounded retry-on-mismatch loop, up to SCHEMA_RETRY_ATTEMPTS) is still exactly ONE `AgentRecord`,
+//    exactly like before #141 — `successRate` is UNCHANGED by the fix: it keys on the SAME terminal
+//    `state` ('done' vs 'failed'), and re-asking does not change which one a call settles into
+//    (schema-exhausted still settles `'done'`, per `AgentExecutor._runTracked`'s own doc — the engine
+//    enforcing `schema` and failing to get a conforming reply is not a provider/harness failure).
+//    `inputTokens`/`outputTokens`/`costUsd` DO change, in the direction of accuracy: `#141` fixed a
+//    bug where the record kept only the LAST attempt's figures, so a re-asked call's cost/tokens used
+//    to be undercounted here too (this module reuses `deriveAgentRecords`, which reads that same
+//    record) — `avgCostUsdPerCall`/`avgInputTokens`/etc. now reflect the FULL cost of every attempt
+//    the engine actually made, which is the real cost of using this model/schema combination.
 //  - Success/failure: `AgentRecord.state === 'done'` -> success; `'failed'` -> failure (this is the
 //    state a timeout/gateway error settles into — see `deriveAgentRecords`'s own branch comment: "a
 //    failed call moves no counter", so its tokens/cost are a real, counted zero, not an absence).

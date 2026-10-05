@@ -33,6 +33,13 @@ export function capPrompt(prompt: string): string {
 
 const DETAIL_CAP_BYTES = 1024;
 
+/** issue #141: pure per-column `Tokens` addition — the one place a schema re-ask's per-attempt
+ *  usage is summed onto the running total `AgentTranscriptSink.capture` keeps on the live record
+ *  (never a bare `sumTokens` scalar add, which would lose the four-column split). */
+function addTokenVectors(a: Tokens, b: Tokens): Tokens {
+  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite };
+}
+
 /** v26 (H-3 send-back repair, ARCH-111, DES-171, INV-V26-5): the SAME redact-then-cap rule as
  *  `capPrompt` above, for a provider-authored error `detail` string. Used to run inside
  *  `claude-agent-sdk-client.ts`'s `_drain`, at BUILD time — before `redact()` ever saw the string —
@@ -191,6 +198,16 @@ const NULL_GATEWAY: GatewayClient = {
  */
 export class AgentTranscriptSink {
   private readonly _records = new Map<string, AgentRecord>();
+  /** issue #141: THIS attempt's own live-streamed usage, kept SEPARATE from the record's `tokens`
+   *  field (which, since this fix, is the running SUM of every already-resolved earlier schema
+   *  re-ask attempt). Before this split, `markUsage` overwrote the record's `tokens` directly — on
+   *  an abort mid-way through a re-ask, that clobbered the prior attempt's already-committed total
+   *  with just the in-flight attempt's own (smaller) figure, so `_finalizeAborted` under-reported. A
+   *  delta kept here lets `capture()`'s existing prior-merge (`prev.tokens` + this delta) do the
+   *  combining exactly once, the same way every other branch does. Cleared the moment this agentId's
+   *  current attempt resolves (`capture()`'s own first line) — there is no "live" figure for an
+   *  attempt that is no longer in flight. */
+  private readonly _liveAttemptUsage = new Map<string, Tokens>();
 
   constructor(
     private readonly _guard?: RunGuard,
@@ -319,14 +336,59 @@ export class AgentTranscriptSink {
    *  recorded), making the live record internally inconsistent with every other surface for no
    *  reason a caller could see. The figure `capture()` priced and charged is the one every surface
    *  reports — frozen, not "best effort so far". Always `partial:true` when it DOES apply: a figure
-   *  that reaches here came from an in-flight call that has not (yet) reported a finalized total. */
+   *  that reaches here came from an in-flight call that has not (yet) reported a finalized total.
+   *
+   *  issue #141: writes to the SEPARATE `_liveAttemptUsage` side channel, not `_records` directly —
+   *  see that field's own doc for why (a schema re-ask's committed prior-attempt total lives in
+   *  `_records`'s `tokens`, and this must never clobber it). `getLiveAttemptUsage` is the one reader
+   *  (`_finalizeAborted`). */
   markUsage(agentId: string, tokens: Tokens): void {
     const existing = this._records.get(agentId);
-    if (existing && existing.endedAt === undefined) this._records.set(agentId, { ...existing, tokens, partial: true });
+    if (existing && existing.endedAt === undefined) this._liveAttemptUsage.set(agentId, tokens);
   }
 
-  /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
-  async capture(runId: string, req: { agentId: string; label?: string }, result: GatewayResult, ts: string): Promise<void> {
+  /** issue #141: the current (possibly still in-flight) attempt's own live-streamed usage — see
+   *  `_liveAttemptUsage`'s own doc. `undefined` when nothing has streamed yet for this agentId's
+   *  current attempt (or it was never wired, e.g. LiteLLMGatewayClient). */
+  getLiveAttemptUsage(agentId: string): Tokens | undefined {
+    return this._liveAttemptUsage.get(agentId);
+  }
+
+  /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens.
+   *
+   *  issue #141 (schema re-ask undercounting): a `schema`-bearing `agent()` call MAY invoke the
+   *  gateway several times before it settles — once for every reply that parses but fails
+   *  `ajv.compile(schema)` (`_runTracked`'s bounded re-ask loop, D-V4). Before this fix EVERY attempt
+   *  called this method as if it were the last: each call REPLACED the live record's tokens/costUSD
+   *  instead of adding to it, so only the FINAL attempt's figures survived — the run's displayed
+   *  costUSD/tokens, and a resumed run's re-armed budget (both of which rehydrate from the SAME
+   *  folded `AgentRecord`s — `foldUsageFromRecords`/`foldUsage`), both silently undercounted every
+   *  earlier attempt (the issue's repro: 56% of the agent's true cost missing). The record also
+   *  flashed `state:'done'` with an `endedAt` after the FIRST (still-retrying) attempt, then got
+   *  rewritten — an observer polling `run_status` saw a "done" call come back to life.
+   *
+   *  Fix: `opts.final` (default `true` — every non-schema call and every call's LAST attempt is
+   *  unaffected) is `false` on a schema re-ask attempt that is going to retry again. `RunGuard.
+   *  addUsage` is still called ONCE PER ATTEMPT with THAT attempt's own delta (unchanged — the guard
+   *  already summed correctly across attempts; the bug was only in what the per-agent RECORD
+   *  remembered). `prev` (already read below for frame/startedAt/phase) doubles as the running total:
+   *  an intermediate (`final:false`) call merges this attempt's own usage onto `prev`'s and writes
+   *  BACK a `state:'running'` record with no `endedAt` and no `kind:'usage'` transcript event — a
+   *  still-retrying call is never observable as done, and emitting no event keeps exactly ONE usage
+   *  event per agentId (the final one, carrying the FULL sum), so `deriveAgentRecords` (which already
+   *  reads only the LATEST usage event per agentId) reconstructs the identical total after a restart
+   *  with no double counting, and "record ≡ usage event" (DES-177) keeps holding. Only the attempt
+   *  that actually ends the loop (conforms, the retry budget is exhausted, or the gateway call itself
+   *  failed) is `final`: it folds in `prev`'s running total, writes the terminal record, and emits the
+   *  one cumulative usage event. */
+  async capture(
+    runId: string,
+    req: { agentId: string; label?: string },
+    result: GatewayResult,
+    ts: string,
+    callOpts: { final?: boolean } = {},
+  ): Promise<void> {
+    const final = callOpts.final !== false;
     const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
     const frame = prev?.frame, startedAt = prev?.startedAt;
     // v26 (DES-175, ARCH-114, TASK-186): phase/phaseIndex are stamped ONCE, at markQueued (the
@@ -340,6 +402,19 @@ export class AgentTranscriptSink {
     const lastActivityAt = prev?.lastActivityAt;
     // Issue #106: harness warnings (markHarness) survive the terminal transition, like lastActivityAt.
     const warnings = prev?.warnings !== undefined ? { warnings: prev.warnings } : {};
+    // issue #141: this agentId's running total from any EARLIER (non-final) schema re-ask attempt —
+    // ZERO/false/[] on a fresh record (attempt 0), exactly like every other "not yet measured"
+    // default in this file (`markQueued`'s own doc).
+    const priorTokens: Tokens = prev?.tokens
+      ? { input: prev.tokens.input, output: prev.tokens.output, cacheRead: prev.tokens.cacheRead ?? 0, cacheWrite: prev.tokens.cacheWrite ?? 0 }
+      : ZERO_TOKENS;
+    const priorCostUSD = prev?.costUSD ?? 0;
+    const priorUnpriced = prev?.unpriced ?? false;
+    const priorPartial = prev?.partial === true;
+    const priorUnmapped = prev?.unmapped ?? [];
+    // issue #141: this agentId's current attempt resolved (whichever way) — no "live" partial figure
+    // survives it; `_finalizeAborted` only ever reads this for an attempt still in flight.
+    this._liveAttemptUsage.delete(req.agentId);
     if (result.ok) {
       // v26 (DES-180): GatewayResult.tokens keeps cacheRead/cacheWrite OPTIONAL (back-compat with
       // ~30 existing test-fake literals — see client.ts's own doc) — normalized to the strict
@@ -368,18 +443,65 @@ export class AgentTranscriptSink {
       // so the USD arm of `assertBudget()` was dead code and the two cache columns never counted
       // against a token budget either. `addUsage` folds its token total through `addTokens`, so
       // the per-call token delta stays observable exactly where it always was.
+      // issue #141: charged per ATTEMPT (this attempt's own delta), final or not — unchanged from
+      // before this fix (the guard already summed correctly across attempts; only the RECORD below
+      // used to forget everything but the last one).
       this._guard?.addUsage(tokens, costUSD, unpriced, result.unmapped);
+      const totalTokens = addTokenVectors(priorTokens, tokens);
+      const totalCostUSD = priorCostUSD + costUSD;
+      const totalUnpriced = priorUnpriced || unpriced;
+      // issue #141: the sum of two EXACT per-attempt totals is exact — `partial` propagates forward
+      // only if some attempt (this one or an earlier one) was itself a `partial` figure (the gateway's
+      // own OWN internal retry-merge, issue #127), never synthesized just because attempts were summed.
+      const totalPartial = priorPartial || result.partial === true;
+      // issue #141: unlike `partial`/`unpriced` (booleans, OR'd — true if ANY attempt qualifies),
+      // `unmapped` is a list of OCCURRENCES, not a fact about the call — `foldUsage`/
+      // `foldUsageFromRecords` both count one tick per array entry, so a subtype seen on TWO attempts
+      // is deliberately counted TWICE here (it really did occur twice — once per attempt that saw
+      // it), never deduplicated.
+      const totalUnmapped = [...priorUnmapped, ...(result.unmapped ?? [])];
+      if (!final) {
+        // issue #141: a schema re-ask attempt that is going to retry again — accumulate onto the SAME
+        // record and stay `running`: no `endedAt`, no usage transcript event (the attempt that
+        // actually ends the loop emits the one cumulative event, below). A still-retrying call must
+        // never be observable as `done`.
+        //
+        // `unpriced: totalUnpriced` IS written here even though v31/v32's rule for every OTHER
+        // running-record field is "not yet measured, so absent, never a provisional value" — the
+        // deliberate exception. Omitting it would lose whether an EARLIER attempt was unpriced (this
+        // method reads it back as `priorUnpriced` the next time `capture()` runs for this agentId —
+        // the FINAL attempt's own merge, a few lines above, depends on it to report the true combined
+        // `unpriced` even when IT, individually, priced fine). The cost: `foldUsageFromRecords`
+        // (no state filter) ticks `unpricedCalls` for a still-running call the instant one of its
+        // attempts was unpriced, slightly ahead of settlement — the same "live total, not final" the
+        // rest of this fix intentionally exposes for `tokens`/`costUSD`, not a new inconsistency.
+        this._records.set(req.agentId, {
+          agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt,
+          state: 'running', provider, model, tokens: totalTokens, costUSD: totalCostUSD, unpriced: totalUnpriced, ...warnings,
+          ...(totalPartial ? { partial: true as const } : {}),
+          ...(result.transport !== undefined ? { transport: result.transport } : {}),
+          ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
+          ...(totalUnmapped.length > 0 ? { unmapped: totalUnmapped } : {}),
+        });
+        // D-G8-2: forward this attempt's own message/tool_call/tool_result stream too — a
+        // nonconforming reply must stay visible in run_agent_log, not just the final attempt's.
+        for (const ev of result.events ?? []) {
+          await this._emit(runId, req.agentId, ev);
+        }
+        return;
+      }
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
-        state: 'done', provider, model, tokens, costUSD, unpriced, ...warnings,
+        state: 'done', provider, model, tokens: totalTokens, costUSD: totalCostUSD, unpriced: totalUnpriced, ...warnings,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
-        ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
-        // issue #127: an ok:true result CAN still be `partial` — `invoke()`'s retry loop sums a
-        // PRIOR failed attempt's own lower-bound tokens into this one's total when the FINAL attempt
-        // succeeds (ClaudeAgentSdkGatewayClient.invoke). The success itself is never in question;
-        // only the combined FIGURE is an estimate for the part contributed by the earlier attempt.
-        ...(result.partial === true ? { partial: true as const } : {}),
+        ...(totalUnmapped.length > 0 ? { unmapped: totalUnmapped } : {}),
+        // issue #127/#141: an ok:true result CAN still be `partial` — either `invoke()`'s OWN retry
+        // loop summed a prior failed attempt's lower-bound tokens into this one (issue #127), or an
+        // EARLIER schema re-ask attempt on this SAME agent() call was itself partial (issue #141).
+        // The success itself is never in question; only the combined FIGURE is an estimate for the
+        // part some attempt contributed.
+        ...(totalPartial ? { partial: true as const } : {}),
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
       // present — only ClaudeAgentSdkGatewayClient produces these today) BEFORE the terminal usage
@@ -396,12 +518,15 @@ export class AgentTranscriptSink {
       // subtypes it could not map and then the count died at this boundary, so REQ-127's "tell me
       // what the provider said that we did not understand" was unanswerable. Omitted when the
       // gateway reported none, so a pre-v26 event and an empty-array event stay the same shape.
+      // issue #141: `tokens`/`costUSD`/`unpriced`/`unmapped` are the TOTALS across every attempt —
+      // this is the ONE usage event this agentId will ever emit, so it must carry the full sum for
+      // `foldUsage`/`deriveAgentRecords` to reproduce the live total after a restart.
       await this._emit(runId, req.agentId, {
         ts, kind: 'usage',
         data: {
-          tokens, costUSD, unpriced, provider, model,
-          // issue #127: mirrors the record's own `partial` spread above — same rule, same source.
-          ...(result.partial === true ? { partial: true as const } : {}),
+          tokens: totalTokens, costUSD: totalCostUSD, unpriced: totalUnpriced, provider, model,
+          // issue #127/#141: mirrors the record's own `partial` spread above — same rule, same source.
+          ...(totalPartial ? { partial: true as const } : {}),
           // v26 integration (DES-177/DES-188, REQ-125): `transport`/`proxyModel` ride the event too.
           // They were written onto the LIVE record and onto the terminal snapshot (which is folded
           // from records) but NOT onto the durable event, so a snapshot-less read after a restart
@@ -411,7 +536,7 @@ export class AgentTranscriptSink {
           // is why nothing caught it).
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
           ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
-          ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+          ...(totalUnmapped.length > 0 ? { unmapped: totalUnmapped } : {}),
         },
       });
     } else {
@@ -446,16 +571,37 @@ export class AgentTranscriptSink {
       // `run_stop`/timeout/terminal failure was invisible to both the cost total and the budget.
       // `result.tokens` absent (the pre-#127 common case: refused before dispatch, or a gateway that
       // predates this fix) keeps the EXACT prior shape — ZERO_TOKENS, costUSD:0, unpriced:false, no
-      // `addUsage` call, no `partial` field.
-      const failUsage = result.tokens === undefined
+      // `addUsage` call, no `partial` field — UNLESS an EARLIER schema re-ask attempt on this SAME
+      // agentId already accumulated something (issue #141: `hasPrior`) before THIS attempt ended the
+      // loop with a genuine gateway failure; that prior total must not be lost just because the
+      // attempt that happened to end the loop reported nothing of its own.
+      const hasPrior = prev?.tokens !== undefined;
+      const failUsage = result.tokens === undefined && !hasPrior
         ? undefined
         : (() => {
-            const tokens = { input: result.tokens!.input, output: result.tokens!.output, cacheRead: result.tokens!.cacheRead ?? 0, cacheWrite: result.tokens!.cacheWrite ?? 0 };
-            const priced = priceCall(tokens, this._priceBook?.pinned[`${provider}/${prev?.model ?? ''}`]?.price ?? null);
-            const costUSD = priced ?? 0;
-            const unpriced = priced === null;
-            this._guard?.addUsage(tokens, costUSD, unpriced, result.unmapped);
-            return { tokens, costUSD, unpriced, partial: result.partial };
+            // issue #141: only THIS attempt's own tokens (if any) are priced/charged here — the prior
+            // total was already priced and charged at its own (non-final) capture() call; merging it
+            // again would double-count both the record and the guard.
+            const thisTokens = result.tokens === undefined
+              ? undefined
+              : { input: result.tokens.input, output: result.tokens.output, cacheRead: result.tokens.cacheRead ?? 0, cacheWrite: result.tokens.cacheWrite ?? 0 };
+            let thisCostUSD = 0;
+            let thisUnpriced = false;
+            if (thisTokens !== undefined) {
+              const priced = priceCall(thisTokens, this._priceBook?.pinned[`${provider}/${prev?.model ?? ''}`]?.price ?? null);
+              thisCostUSD = priced ?? 0;
+              thisUnpriced = priced === null;
+              this._guard?.addUsage(thisTokens, thisCostUSD, thisUnpriced, result.unmapped);
+            }
+            const tokens = addTokenVectors(priorTokens, thisTokens ?? ZERO_TOKENS);
+            const costUSD = priorCostUSD + thisCostUSD;
+            const unpriced = priorUnpriced || thisUnpriced;
+            const unmapped = [...priorUnmapped, ...(result.unmapped ?? [])];
+            // issue #141: the merge of two EXACT totals is exact — never synthesize `partial` just
+            // because a re-ask happened; only THIS attempt's own `result.partial` (issue #127's
+            // lower-bound-on-failure figure) or an earlier attempt's already-partial total propagate.
+            const partial = priorPartial || result.partial === true ? (true as const) : undefined;
+            return { tokens, costUSD, unpriced, unmapped, partial };
           })();
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
@@ -482,7 +628,9 @@ export class AgentTranscriptSink {
         // `unmapped` accumulation and so discarded the names this repair had just taught the event
         // below to carry. Both sites are closed; IT-156 deep-equals the two folds over a run
         // containing exactly this branch.
-        ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+        // issue #141: `failUsage.unmapped` is the MERGED total (prior re-ask attempts + this one),
+        // same convention as `tokens`/`costUSD` above — never `result.unmapped` raw.
+        ...(failUsage !== undefined && failUsage.unmapped.length > 0 ? { unmapped: failUsage.unmapped } : {}),
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
       // so a 0-token `terminal` is diagnosable (the error subtype/text) instead of opaque.
@@ -504,7 +652,8 @@ export class AgentTranscriptSink {
           // was built from — not `result.provider` raw (see that binding's own comment).
           reason: result.reason, provider, detail: result.detail,
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
-          ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+          // issue #141: the merged total, same as the record above — not `result.unmapped` raw.
+          ...(failUsage !== undefined && failUsage.unmapped.length > 0 ? { unmapped: failUsage.unmapped } : {}),
           ...(failUsage !== undefined ? { tokens: failUsage.tokens, costUSD: failUsage.costUSD, unpriced: failUsage.unpriced, ...(failUsage.partial === true ? { partial: true as const } : {}) } : {}),
         },
       });
@@ -591,14 +740,20 @@ export class AgentExecutor implements AgentSpawner {
     // issue #127: the gateway's own returned Promise is abandoned the instant the run's abort wins
     // `_invokeOnce`'s race (below) — whatever it would eventually report is lost UNLESS it already
     // streamed a live figure onto this agent's record via `onUsage`/`markUsage` before that happened.
-    // Read here, not re-derived: this call site has no SDK-layer visibility of its own, by design.
-    const live = this._sink.getRecord(req.agentId);
+    //
+    // issue #141: read via `getLiveAttemptUsage`, NOT `getRecord(...).tokens` — on a call aborted
+    // mid-way through a schema re-ask, the record's own `tokens` is the COMMITTED total from every
+    // already-resolved earlier attempt (this method's caller, `capture()`'s own `prev`-merge, adds
+    // that in). Passing the record's `tokens` here too would double it in. `getLiveAttemptUsage`
+    // carries ONLY the currently in-flight attempt's own live-streamed delta, exactly what
+    // `capture()`'s failed branch expects to merge onto the committed total.
+    const liveAttempt = this._sink.getLiveAttemptUsage(req.agentId);
     await this._sink.capture(
       req.runId,
       { agentId: req.agentId, label: req.opts.label },
       {
         ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
-        ...(live?.tokens !== undefined ? { tokens: live.tokens, partial: true as const } : {}),
+        ...(liveAttempt !== undefined ? { tokens: liveAttempt, partial: true as const } : {}),
       },
       this._clock.isoNow(),
     );
@@ -726,23 +881,41 @@ export class AgentExecutor implements AgentSpawner {
         attempt === 0
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
-      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff);
+      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff, attempt);
       if (outcome === 'aborted') return this._finalizeAborted(req);
       const result = outcome;
 
-      await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
-
-      if (!result.ok) return { kind: 'null' };
-      if (!validate) return { kind: 'text', value: String(result.content) };
+      if (!result.ok) {
+        // A genuine gateway failure always ends the loop — `capture()`'s default `final:true` is
+        // correct here unchanged (it also folds in any earlier re-ask attempt's committed total —
+        // see `capture()`'s own doc).
+        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
+        return { kind: 'null' };
+      }
+      if (!validate) {
+        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
+        return { kind: 'text', value: String(result.content) };
+      }
 
       const parsed = parseJsonContent(result.content);
-      if (parsed !== undefined && validate(parsed)) return { kind: 'object', value: parsed as object };
-      // nonconforming (or unparsable) response — loop retries up to `attempts`
+      const conforms = parsed !== undefined && validate(parsed);
+      const isLastAttempt = attempt === attempts - 1;
+      // issue #141: `final` is the attempt that ENDS the loop — conforms, or the retry budget is
+      // exhausted (schema-exhausted outcome, unchanged: still resolves `null`, record still `done`).
+      // Every earlier nonconforming attempt accumulates onto the SAME record instead of replacing it
+      // (`capture()`'s own doc) and stays `running`, never observably `done`.
+      await this._sink.capture(
+        req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow(),
+        { final: conforms || isLastAttempt },
+      );
+      if (conforms) return { kind: 'object', value: parsed as object };
+      if (isLastAttempt) return { kind: 'null' };
+      // nonconforming, attempts remain — loop retries up to `attempts`
     }
     return { kind: 'null' };
   }
 
-  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams): Promise<GatewayResult | 'aborted'> {
+  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams, attempt: number): Promise<GatewayResult | 'aborted'> {
     // issue #53: a schema-retry attempt that begins after the abort must not dispatch — the race
     // below adds its listener to an already-aborted signal, which never fires.
     if (req.signal.aborted) return 'aborted';
@@ -790,6 +963,10 @@ export class AgentExecutor implements AgentSpawner {
         // #81/#83: a gateway that exposes no skill (e.g. direct-fetch) leaves this unset -> none.
         skillsExposed: descriptor.skillsExposed ?? [],
         ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
+        // issue #141: see `HarnessDescriptor.reaskCount`'s own doc for why `prompt` (the gateway's
+        // verbatim echo, ADR-061/TASK-229) is left untouched here instead of being pinned back to
+        // attempt 0's — absent on the first attempt, never `0`.
+        ...(attempt > 0 ? { reaskCount: attempt } : {}),
       };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,
