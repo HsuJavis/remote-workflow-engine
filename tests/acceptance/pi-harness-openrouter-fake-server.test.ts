@@ -116,6 +116,52 @@ describe('pi harness v1 — OpenRouter request shape via a recording fake server
     expect((body['reasoning'] as { effort?: string } | undefined)?.effort).toBe('high');
   }, 20_000);
 
+  // issue #142: OpenRouter publicly lists `anthropic/claude-sonnet-5.5` and `anthropic/claude-
+  // haiku-4.5` with live endpoints, but both 404'd (probe and a real agent dispatch). Root cause:
+  // pi's own BUILTIN openrouter catalog (providers/openrouter.js + its generated data) catalogues
+  // exactly these ids under an 'anthropic-messages' api shape (Anthropic Messages wire format,
+  // dispatched via an Anthropic SDK client), while every other vendor's ids use 'openai-completions'
+  // (OpenAI chat-completions wire format). `registerProvider()`'s composition looks up per-model
+  // DEFAULTS by matching our one-model registration's id against that SAME builtin catalog first —
+  // so an id that collides with one of the 15 'anthropic-messages' ids silently inherited that api
+  // shape and dispatched against the WRONG path (`<baseUrl>/v1/messages`, doubling the already-
+  // versioned OpenRouter baseUrl's own `/v1` segment) with an Anthropic-shaped body instead of
+  // OpenAI's `/chat/completions` + flat `messages`. `claude-3.5-sonnet` above is NOT one of the 15
+  // colliding ids, so it always worked — masking the bug for every id except this vendor's.
+  it('an id that collides with pi\'s builtin anthropic-messages catalog still dispatches OpenAI-completions-shaped (issue #142)', async () => {
+    for (const modelId of ['anthropic/claude-sonnet-5.5', 'anthropic/claude-haiku-4.5']) {
+      fake.requests.length = 0;
+      const gw = new PiGatewayClient({
+        secretSource: { resolve: () => 'fake-key-not-real' },
+        timeoutMs: 15_000,
+        openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`,
+      });
+      // Not asserting result.ok: the fake server always answers with an OpenAI-shaped SSE stream,
+      // so a dispatch that (wrongly) went out Anthropic-Messages-shaped would fail to parse it as a
+      // completion — the point of this test is the OUTBOUND request shape, not the response.
+      await gw.invoke({
+        prompt: 'hi',
+        opts: { model: `openrouter/${modelId}`, allowedTools: [] },
+        runId: `fake-or-anthropic-ns-${modelId}`,
+        agentId: 'fake-or-a3',
+        workspace: ws,
+      });
+      expect(fake.requests.length).toBeGreaterThan(0);
+      const request = fake.requests[0]!;
+      const body = request.body as Record<string, unknown>;
+      // OpenAI-completions' own path — never the Anthropic SDK client's `/v1/messages` (which would
+      // double up the OpenRouter baseUrl's own already-present `/v1` segment: `/api/v1/v1/messages`,
+      // a real, reproduced 404 against the actual recording fake server before this fix).
+      expect(request.url).toBe('/api/v1/chat/completions');
+      expect(body['model']).toBe(modelId);
+      // OpenAI chat-completions' own flat message shape, never Anthropic's separate top-level
+      // `system` + `thinking` fields.
+      expect(Array.isArray(body['messages'])).toBe(true);
+      expect(body['system']).toBeUndefined();
+      expect(body['thinking']).toBeUndefined();
+    }
+  }, 30_000);
+
   it('thinkingLevel varies the outbound reasoning.effort field (off vs high are NOT byte-identical) — pi-spike-report.md S8 re-verified end to end', async () => {
     const bodies: Record<string, unknown>[] = [];
     for (const effort of [undefined, 'low', 'high'] as const) {
