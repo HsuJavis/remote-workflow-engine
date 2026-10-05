@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { buildCatalog, enrichModelEntry, anthropicCanonicalKey, type ModelEntry } from '../../src/models/model-catalog.js';
 import type { ObservedForRef } from '../../src/models/observed-stats.js';
 import type { ProbeResult } from '../../src/models/model-probe.js';
+import { checkModelRef, parseModelRef, type ModelCatalogSnapshot } from '../../src/providers.js';
 
 const FIX = join(__dirname, '..', 'fixtures', 'models');
 const OR = JSON.parse(readFileSync(join(FIX, 'openrouter-models-sample.json'), 'utf8')) as { data: Array<Record<string, unknown>> };
@@ -256,5 +257,34 @@ describe('observed + probe failure reason on the enriched row', () => {
     };
     const r = enrichModelEntry(base(), FETCHED_AT, probe);
     expect(r.probeFailureReason).toMatchObject({ leg: 'tools', kind: 'no-tool-use' });
+  });
+});
+
+// Issue #136: the PROVIDER_UNSUPPORTED_BY_HARNESS hint (providers.ts's checkModelRef) suggests a
+// specific OpenRouter ref drawn from THIS catalog's own sameModelAs linking (issue #104's
+// anthropic<->openrouter mapping) rather than a hard-coded example — a fixture/catalog-shape change
+// here must not be able to silently reintroduce a hint that names a ref this catalog can't produce.
+describe('issue #136 — every PROVIDER_UNSUPPORTED_BY_HARNESS suggestion names a ref present in the catalog it was computed from', () => {
+  it('for every anthropic row in the real (fixture-backed) catalog, a named suggestion resolves in that same catalog', async () => {
+    const entries = await catalog();
+    const anthropicRows = entries.filter((e) => e.provider === 'anthropic');
+    expect(anthropicRows.length).toBeGreaterThan(0);
+    const snapshot: ModelCatalogSnapshot = { source: 'live', harnessProviders: ['openrouter', 'ollama'], entries };
+
+    let sawASuggestion = false;
+    for (const row of anthropicRows) {
+      const v = checkModelRef(`anthropic/${row.model}`, snapshot);
+      expect(v.ok).toBe(false);
+      if (v.ok) continue;
+      const m = v.message.match(/use "([^"]+)" instead/);
+      if (!m) continue;
+      sawASuggestion = true;
+      const parsed = parseModelRef(m[1]);
+      expect(parsed).toBeDefined();
+      expect(entries.some((e) => e.provider === parsed!.provider && e.model === parsed!.model)).toBe(true);
+    }
+    // The fixture includes a linked haiku pair (see the sameModelAs tests above) — at least one row
+    // must actually exercise the "found a peer" branch, or this test would pass vacuously.
+    expect(sawASuggestion).toBe(true);
   });
 });

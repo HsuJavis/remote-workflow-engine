@@ -74,7 +74,13 @@ export function parseModelRef(ref: unknown): ModelRef | undefined {
  *  `toModelCatalogSnapshot` adapter) — anthropic is deliberately never expected in `entries` (it has
  *  no live listing; see the static-table arm below). */
 export interface ModelCatalogSnapshot {
-  entries: ReadonlyArray<{ provider: string; model: string }>;
+  // issue #136: `sameModelAs` rides along optionally (the SAME field `model-catalog.ts`'s
+  // `linkSameModels` already stamps on a live catalog's `ModelEntry` rows — `toModelCatalogSnapshot`,
+  // model-book.ts, forwards it through unchanged) so `checkModelRef`'s PROVIDER_UNSUPPORTED_BY_HARNESS
+  // hint can name a real, catalog-linked OpenRouter ref instead of a hard-coded example that drifts
+  // out of date as the catalog's naming does (see `harnessUnsupportedSuggestion` below). Absent on any
+  // entry (or the whole snapshot) -> the hint falls back to generic models_list guidance, never a guess.
+  entries: ReadonlyArray<{ provider: string; model: string; sameModelAs?: readonly string[] }>;
   /** ModelBook's own provenance for `entries`: `'static'` means the live source has never once
    *  succeeded (nothing was actually looked up), so an empty `entries` for THAT reason must be
    *  treated as "unavailable", the same as a genuinely-empty live listing for a provider with no
@@ -101,6 +107,30 @@ export const EMPTY_MODEL_CATALOG: ModelCatalogSnapshot = { entries: [] };
 export type ModelRefVerdict =
   | { ok: true; provider: Provider; model: string; warning?: string }
   | { ok: false; message: string; code?: 'UNKNOWN_MODEL' | 'PROVIDER_UNSUPPORTED_BY_HARNESS' };
+
+/** issue #136: the PROVIDER_UNSUPPORTED_BY_HARNESS hint's "what to use instead" clause. A
+ *  hard-coded example (the original `openrouter/anthropic/claude-sonnet-4-5`) silently went stale —
+ *  OpenRouter spells the version with a dot (`claude-sonnet-4.5`), not Anthropic's hyphen — and a
+ *  refused author who copied it hit a SECOND error (UNKNOWN_MODEL). Looks up the refused
+ *  `anthropic/<model>` row in `catalog.entries` for its `sameModelAs` (model-catalog.ts's
+ *  `linkSameModels`, issue #104's cross-provider identity), then picks the first linked ref that is
+ *  (a) an openrouter ref, (b) not a `:batch` variant (the non-batch tier is the one worth leading
+ *  with), and (c) ACTUALLY present among `catalog.entries` itself — not just named by `sameModelAs` —
+ *  so a stale/partial snapshot can never cause this to suggest a ref the same catalog can't back up.
+ *  No such row, no linked peer, or nothing resolves -> generic `models_list` guidance, never a guess. */
+function harnessUnsupportedSuggestion(provider: Provider, model: string, catalog: ModelCatalogSnapshot): string {
+  if (provider === 'anthropic') {
+    const row = catalog.entries.find((e) => e.provider === 'anthropic' && e.model === model);
+    const candidates = row?.sameModelAs?.filter((ref) => ref.startsWith('openrouter/') && !ref.includes(':')) ?? [];
+    for (const ref of candidates) {
+      const parsed = parseModelRef(ref);
+      if (parsed && catalog.entries.some((e) => e.provider === parsed.provider && e.model === parsed.model)) {
+        return `use "${ref}" instead`;
+      }
+    }
+  }
+  return `check models_list({query:'anthropic/'}) or models_list({provider:'openrouter'}) for the exact openrouter id to use instead`;
+}
 
 /** Owner decision 6 — model existence: openrouter/ollama ids are checked against `catalog` when its
  *  listing for that provider is available (refuse `UNKNOWN_MODEL` if the id is absent from it); when
@@ -133,8 +163,8 @@ export function checkModelRef(ref: unknown, catalog: ModelCatalogSnapshot = EMPT
       code: 'PROVIDER_UNSUPPORTED_BY_HARNESS',
       message:
         `"${provider}/${model}" is refused: this engine runs the pi harness, which supports only ` +
-        `${catalog.harnessProviders.join('/')} models — use an openrouter/anthropic/... model instead ` +
-        `(e.g. "openrouter/anthropic/claude-sonnet-4-5") or an ollama/* model, never "anthropic/*" directly.`,
+        `${catalog.harnessProviders.join('/')} models — ${harnessUnsupportedSuggestion(provider, model, catalog)}, ` +
+        `or an ollama/* model; never "anthropic/*" directly.`,
     };
   }
   if (provider === 'anthropic') {
