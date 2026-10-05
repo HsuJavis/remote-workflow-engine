@@ -68,7 +68,7 @@ import { projectToolsList, ENVELOPE_NOTE, TOOL_SPECS } from './tool-specs.js';
 import { authorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
-import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, harnessFilteredProbeLookup, harnessFilteredProbeStore, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
+import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, DEFAULT_BOOT_PROBE_GRACE_MS, harnessFilteredProbeLookup, harnessFilteredProbeStore, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
 import { RunStoreObservedStats, type ObservedStatsProvider } from './models/observed-stats.js';
 import type { Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
@@ -986,7 +986,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         capsFor: async (provider, model) => (await modelBook.snapshot()).lookup(provider, model).caps,
       })
     : undefined;
-  modelProber?.start();
+  // v0374 integration review M-1: `start()` is called AFTER `http.listen()` resolves (below), with a
+  // multi-minute grace — see `ModelProber.start`'s own doc. Before this fix, `start()` ran right
+  // here, BEFORE the server could even serve a request; `rwe.service` restarts every 2s with no
+  // systemd StartLimit, so a boot-crash loop paid for every due target's probe call on every single
+  // restart, often before `http.listen` ever got a chance to succeed or fail.
   // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the
   // request path instead of scanning the run store synchronously — see RunStoreObservedStats' own
   // class doc for the two-path (background vs lazy-fallback) design.
@@ -2186,6 +2190,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   await new Promise<void>((resolve) => {
     http.listen(config?.port ?? 0, bind, resolve);
   });
+  // v0374 integration review M-1: now that the server can actually serve a request, start the model
+  // prober with a grace period before its first (boot) sweep — see the field's own doc and the
+  // comment at this variable's construction, above, for the crash-loop-spend reasoning this closes.
+  modelProber?.start({ bootProbeDelayMs: DEFAULT_BOOT_PROBE_GRACE_MS });
   const address = http.address();
   const port = typeof address === 'object' && address ? address.port : 0;
   boundPort = port; // v8 Defer B: now the Host/Origin allowlist knows our real port

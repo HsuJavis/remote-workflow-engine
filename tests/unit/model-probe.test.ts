@@ -7,14 +7,17 @@
 // 2026-09-26 (alias mechanism removed, owner decision 10): probe targets are now the distinct full
 // `<provider>/<model-id>` refs declared by registered workflow versions — no alias table, no
 // `alias` field on `ProbeTarget`/`ProbeResult`, no `alias` column in the sqlite store.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import Database from 'better-sqlite3';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { AgentOpts } from '../../src/types.js';
 import { FixedClock } from '../../src/clock.js';
+import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
 import {
   classifyProbe,
   probeTargets,
@@ -215,6 +218,97 @@ describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway wor
       const r = await runProbe(gw, { provider: 'ollama', model: 'm' }, { workRoot, timeoutMs: 1000, clock: new FixedClock(new Date(0)) });
       expect(r).toMatchObject({ proseVerified: false, toolUseVerified: false });
       expect(r.detail).toMatch(/boom/);
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+});
+
+// v0374 integration review H-1: `PiGatewayClient`'s successful `GatewayResult` carries NO `events`
+// field at all (pi streams tool events only through the `onEvent` callback) — every hand-built
+// `GatewayClient` fake above puts `events` directly on the returned result, which hid this. A real
+// pi probe therefore always classified `toolUseVerified:false`, even when the model genuinely read
+// the nonce file, because `classifyProbe` read `tools.events` off a result that never had any.
+describe('runProbe (v0374 review H-1) — against a REAL PiGatewayClient (fake child), events arrive only via onEvent', () => {
+  function fakePiChild() {
+    const emitter = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; pid: number; kill: () => void };
+    emitter.stdin = new PassThrough();
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.pid = 90001;
+    emitter.kill = () => {};
+    const stdinWritten: string[] = [];
+    emitter.stdin.on('data', (d: Buffer) => stdinWritten.push(d.toString()));
+    return {
+      child: emitter,
+      stdinWritten,
+      sendLine: (obj: unknown) => emitter.stdout.write(JSON.stringify(obj) + '\n'),
+      exit: (code: number | null = 0) => emitter.emit('exit', code, null),
+    };
+  }
+
+  it('a real Read tool_call/tool_result pair (streamed via onEvent, not on the result) -> toolUseVerified:true', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-probe-pi-'));
+    try {
+      const spawned: Array<ReturnType<typeof fakePiChild>> = [];
+      const gw = new PiGatewayClient({
+        spawnChild: (() => {
+          const f = fakePiChild();
+          spawned.push(f);
+          return f.child;
+        }) as never,
+        entryPath: '/fake/entry.ts',
+      });
+      const resultPromise = runProbe(gw, { provider: 'ollama', model: 'qwen2.5:7b' }, { workRoot, timeoutMs: 5000, clock: new FixedClock(new Date(0)) });
+
+      // Leg 1 (prose): answers PONG, no tools.
+      await vi.waitFor(() => expect(spawned.length).toBeGreaterThanOrEqual(1));
+      spawned[0]!.sendLine({ t: 'final', seq: 1, text: 'PONG', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      spawned[0]!.exit(0);
+
+      // Leg 2 (tools): the child's own stdin carries the real absolute nonce path in its prompt —
+      // read it back off disk (never invented here) so the fake child's reply is the GENUINE value,
+      // the same way a real model's Read tool_result would be.
+      await vi.waitFor(() => expect(spawned.length).toBeGreaterThanOrEqual(2));
+      const childConfig = JSON.parse(spawned[1]!.stdinWritten.join('')) as { prompt: string };
+      const noncePathMatch = childConfig.prompt.match(/absolute file path: (\S+)/);
+      expect(noncePathMatch).not.toBeNull();
+      const noncePath = noncePathMatch![1]!;
+      const nonce = readFileSync(noncePath, 'utf8').trim();
+      spawned[1]!.sendLine({ t: 'tool_call', toolCallId: 'tc1', toolName: 'read', argsJson: JSON.stringify({ path: noncePath }) });
+      spawned[1]!.sendLine({ t: 'tool_result', toolCallId: 'tc1', toolName: 'read', resultJson: JSON.stringify({ content: [{ type: 'text', text: nonce }] }), isError: false });
+      spawned[1]!.sendLine({ t: 'final', seq: 1, text: nonce, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      spawned[1]!.exit(0);
+
+      const r = await resultPromise;
+      expect(r.proseVerified).toBe(true);
+      expect(r.toolUseVerified).toBe(true);
+      expect(r.detail).not.toMatch(/no Read tool_use/);
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('a prose-only reply (no tool_call at all) still -> toolUseVerified:false, never a false positive', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-probe-pi-'));
+    try {
+      const spawned: Array<ReturnType<typeof fakePiChild>> = [];
+      const gw = new PiGatewayClient({
+        spawnChild: (() => {
+          const f = fakePiChild();
+          spawned.push(f);
+          return f.child;
+        }) as never,
+        entryPath: '/fake/entry.ts',
+      });
+      const resultPromise = runProbe(gw, { provider: 'ollama', model: 'qwen2.5:7b' }, { workRoot, timeoutMs: 5000, clock: new FixedClock(new Date(0)) });
+      await vi.waitFor(() => expect(spawned.length).toBeGreaterThanOrEqual(1));
+      spawned[0]!.sendLine({ t: 'final', seq: 1, text: 'PONG', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      spawned[0]!.exit(0);
+      await vi.waitFor(() => expect(spawned.length).toBeGreaterThanOrEqual(2));
+      // The model answers with prose only — no tool_call event at all, the real "model guessed /
+      // narrated instead of calling the tool" case this probe exists to catch.
+      spawned[1]!.sendLine({ t: 'final', seq: 1, text: 'I cannot read files.', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      spawned[1]!.exit(0);
+      const r = await resultPromise;
+      expect(r.toolUseVerified).toBe(false);
+      expect(r.detail).toMatch(/no Read tool_use/);
     } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });
 });
@@ -725,6 +819,65 @@ describe('ModelProber.start() (issue #139c) — probes DUE targets promptly, not
       store.close();
     } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });
+
+  // v0374 integration review M-1: `modelProber?.start()` used to run before `http.listen()`
+  // (server.ts) with no delay — on a host where `rwe.service` restarts every 2s with no systemd
+  // StartLimit, a boot-crash loop pays for every due target's probe call on EVERY restart, long
+  // before the server can even serve a request. `start({bootProbeDelayMs})` postpones the FIRST
+  // (boot) sweep only — the periodic interval's own cadence (already far longer than any grace
+  // period) is unaffected.
+  it('bootProbeDelayMs postpones the FIRST sweep; nothing is dispatched before it elapses', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-start-delay-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw, reqs } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS },
+        modelRefs: () => ['ollama/only'],
+      });
+      prober.start({ bootProbeDelayMs: 60 });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(reqs).toHaveLength(0); // still within the delay window
+      await new Promise((r) => setTimeout(r, 80));
+      expect(reqs).toHaveLength(2); // delay elapsed — the sweep ran (prose + tools legs)
+      prober.stop();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('bootProbeDelayMs omitted -> no delay, byte-identical to this field\'s pre-M-1 absence', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-start-nodelay-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw, reqs } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS },
+        modelRefs: () => ['ollama/only'],
+      });
+      prober.start();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(reqs).toHaveLength(2);
+      prober.stop();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('stop() before the delay elapses cancels the pending boot sweep — never dispatches late', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-start-delay-stop-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw, reqs } = recordingGateway('good');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS },
+        modelRefs: () => ['ollama/only'],
+      });
+      prober.start({ bootProbeDelayMs: 40 });
+      prober.stop();
+      await new Promise((r) => setTimeout(r, 80));
+      expect(reqs).toHaveLength(0);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
 });
 
 // issue #139(c): `runProbe` itself never throws (a gateway exception is already caught into a
@@ -751,6 +904,128 @@ describe('ModelProber — one target\'s own failure does not abort the rest of t
       expect(results!.map((r) => `${r.provider}/${r.model}`)).toEqual(['ollama/good']);
       expect(store.get('ollama', 'good')).toBeDefined();
       expect(store.get('ollama', 'bad')).toBeUndefined();
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+});
+
+// v0374 integration review M-1: a `capsFor`/dispatch failure for ONE target should not abort the
+// rest of the sweep (the #139(c) describe block above) — but a `store.put` failure is different in
+// kind: if the STORE itself is broken (disk full, a locked sqlite file), every SUBSEQUENT
+// `store.put` in the same sweep will fail too, so dispatching more targets only spends money and
+// persists nothing. The sweep must STOP on the first `store.put` failure, not continue paying for
+// every remaining due target.
+describe('ModelProber — a store.put failure STOPS the sweep, unlike a per-target dispatch failure (issue M-1)', () => {
+  it('the gateway is never even invoked for a target queued after the one whose store.put throws', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-putstop-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const dispatchedModels: string[] = [];
+      const gw: GatewayClient = {
+        async invoke(req) {
+          dispatchedModels.push(req.opts.model!);
+          if (req.opts.allowedTools?.includes('Read')) {
+            const value = readFileSync(join(req.workspace!, 'probe-nonce.txt'), 'utf8').trim();
+            return ok(value, [{ ts: 't', kind: 'tool_call' as const, data: { type: 'tool_use', name: 'Read', input: {} } }]);
+          }
+          return ok('PONG');
+        },
+      };
+      let putCalls = 0;
+      // `ModelProbeStore`'s real methods (markStarted/get/startedAt/close) live on the prototype, so
+      // a plain `{...store}` spread (own-enumerable-properties only) would silently drop them —
+      // overriding just `put` as an OWN property on the real instance shadows the prototype method
+      // for this one call while leaving every other real method intact.
+      store.put = (_r) => {
+        putCalls += 1;
+        throw new Error('boom: disk full');
+      };
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS, timeoutMs: 500 },
+        modelRefs: () => ['ollama/first', 'ollama/second', 'ollama/third'],
+      });
+      const results = await prober.probeNow();
+      // The FIRST target's own two legs dispatch (prose + tools) before store.put ever runs for it —
+      // but once THAT put() throws, the sweep stops: 'second' and 'third' are never even dispatched.
+      expect(dispatchedModels).toEqual(['ollama/first', 'ollama/first']);
+      expect(putCalls).toBe(1);
+      expect(results).toEqual([]);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+});
+
+// v0374 integration review M-1: a crash-loop restart (systemd `rwe.service`: RestartSec=2s, no
+// StartLimit) must not re-dispatch the SAME target on every single restart just because its probe
+// STARTED but never got the chance to COMPLETE (the process died mid-call). `markStarted`/
+// `startedAt` give `dueTargets()` a persisted "this one is already in flight" signal, independent of
+// a completed `probed_at` row.
+describe('ModelProbeStore.markStarted/startedAt (issue M-1) — a persisted in-flight marker survives a restart', () => {
+  it('round-trips through a close + reopen; absent for a target never started', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-probe-started-'));
+    try {
+      const path = join(dir, 'index.db');
+      const a = new ModelProbeStore(path);
+      a.markStarted('ollama', 'qwen2.5:7b', '2026-09-25T00:00:00.000Z');
+      a.close();
+      const b = new ModelProbeStore(path);
+      expect(b.startedAt('ollama', 'qwen2.5:7b')).toBe('2026-09-25T00:00:00.000Z');
+      expect(b.startedAt('ollama', 'never-started')).toBeUndefined();
+      // A later markStarted call overwrites (the latest attempt is the one that matters).
+      b.markStarted('ollama', 'qwen2.5:7b', '2026-09-25T00:05:00.000Z');
+      expect(b.startedAt('ollama', 'qwen2.5:7b')).toBe('2026-09-25T00:05:00.000Z');
+      b.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('ModelProber.dueTargets() (issue M-1) — a recent in-flight marker with no newer completed result suppresses re-dispatch', () => {
+  it('a target marked started moments ago, never completed, is NOT due; the same target IS due once the cooldown elapses', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-cooldown-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const clock = new FixedClock(new Date('2026-09-25T00:00:00.000Z'));
+      const prober = new ModelProber({
+        gateway: recordingGateway('good').gw, store, workRoot, clock, config: MODEL_PROBE_DEFAULTS,
+        modelRefs: () => ['ollama/inflight'],
+      });
+      store.markStarted('ollama', 'inflight', '2026-09-25T00:00:00.000Z'); // started AT the clock's own "now"
+      expect(prober.dueTargets()).toEqual([]);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('once the cooldown window has fully elapsed, the same never-completed target is due again', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-cooldown-elapsed-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      // Started a very long time ago (far past any reasonable cooldown) and STILL never completed —
+      // the process that started it is long dead; this target must be retried.
+      store.markStarted('ollama', 'inflight', '2020-01-01T00:00:00.000Z');
+      const clock = new FixedClock(new Date('2026-09-25T00:00:00.000Z'));
+      const prober = new ModelProber({
+        gateway: recordingGateway('good').gw, store, workRoot, clock, config: MODEL_PROBE_DEFAULTS,
+        modelRefs: () => ['ollama/inflight'],
+      });
+      expect(prober.dueTargets().map((t) => `${t.provider}/${t.model}`)).toEqual(['ollama/inflight']);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  it('a target that HAS completed since it was started is due on the normal age rule, not suppressed by the stale marker', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-cooldown-completed-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const clock = new FixedClock(new Date('2026-09-25T00:00:00.000Z'));
+      const prober = new ModelProber({
+        gateway: recordingGateway('good').gw, store, workRoot, clock, config: MODEL_PROBE_DEFAULTS,
+        modelRefs: () => ['ollama/done'],
+      });
+      store.markStarted('ollama', 'done', '2026-09-24T23:59:00.000Z');
+      // ...and it COMPLETED a moment later, well inside the normal interval — the stale in-flight
+      // marker must not override a real, fresh completed result.
+      store.put({ ...RESULT, model: 'done', probedAt: '2026-09-24T23:59:30.000Z' });
+      expect(prober.dueTargets()).toEqual([]);
       store.close();
     } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });
