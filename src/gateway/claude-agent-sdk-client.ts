@@ -1337,6 +1337,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           // `effortApplied`'s `{reason}` branch; empty ⇒ the field is not emitted at all.
           unresolvedMcp: mcpMissing,
         });
+        // issue #138: this gateway always dispatches through the claude-agent-sdk transport — never
+        // inferred, set at the same site every other descriptor field is.
+        descriptor.transport = 'claude-agent-sdk';
         // v24 (ARCH-104/DES-160, TASK-145): the materialized set rides the descriptor itself (the ONE
         // decoration site downstream, `agent-executor.ts`, fills the honest empty set for a dispatch
         // that never sets `req.assets` at all — e.g. the direct-fetch gateway).

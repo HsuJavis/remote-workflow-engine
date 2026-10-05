@@ -575,6 +575,8 @@ export class LiteLLMGatewayClient implements GatewayClient {
           ...(this._proxy ? { proxyModel: ref } : {}),
           curatedTools: [], mergedMcp: [], skills: [],
         }),
+        // issue #138: this gateway always dispatches through the direct-fetch transport.
+        transport: 'direct-fetch',
         ...(applied !== undefined ? { effortApplied: applied } : {}),
       };
       await req.onHarness(descriptor, applied);

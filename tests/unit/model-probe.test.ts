@@ -24,6 +24,8 @@ import {
   validateModelProbeConfig,
   MODEL_PROBE_DEFAULTS,
   toolProbeWarnings,
+  probeEffectiveForHarness,
+  harnessFilteredProbeLookup,
   type ProbeResult,
 } from '../../src/models/model-probe.js';
 import { enrichModelEntry, type ModelEntry } from '../../src/models/model-catalog.js';
@@ -156,6 +158,30 @@ describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway wor
       expect(existsSync(ws)).toBe(false);
       expect(r).toMatchObject({ provider: 'anthropic', model: 'claude-haiku', proseVerified: true, toolUseVerified: true });
       expect(typeof r.probedAt).toBe('string');
+      // issue #138: the fake gateway's own `ok()` results (above) carry no `transport` at all — a
+      // probe that genuinely cannot tell which harness ran it never guesses, so it records 'unknown'
+      // rather than silently defaulting to some specific harness.
+      expect(r.harness).toBe('unknown');
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  // issue #138: `runProbe` reads the harness straight off the SAME `GatewayResult` every agent()
+  // call dispatches through (`GatewayResult.transport`) — never a separate guess from deployment
+  // config — so a probe genuinely reflects which gateway answered it.
+  it('records the harness from the GatewayResult.transport the probed gateway actually returned', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-probe-'));
+    try {
+      const gw: GatewayClient = {
+        async invoke(req) {
+          if (req.opts.allowedTools?.includes('Read')) {
+            const value = readFileSync(join(req.workspace!, 'probe-nonce.txt'), 'utf8').trim();
+            return { ok: true, provider: 'p', model: 'm', tokens: { input: 1, output: 1 }, content: value, transport: 'pi', events: [{ ts: 't', kind: 'tool_call', data: { type: 'tool_use', name: 'Read', input: {} } }] as never };
+          }
+          return { ok: true, provider: 'p', model: 'm', tokens: { input: 1, output: 1 }, content: 'PONG', transport: 'pi' };
+        },
+      };
+      const r = await runProbe(gw, { provider: 'ollama', model: 'm' }, { workRoot, timeoutMs: 1000, clock: new FixedClock(new Date(0)) });
+      expect(r.harness).toBe('pi');
     } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });
 
@@ -196,6 +222,7 @@ describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway wor
 const RESULT: ProbeResult = {
   provider: 'ollama', model: 'qwen2.5:7b', proseVerified: true, toolUseVerified: false,
   probedAt: '2026-09-25T00:00:00.000Z', latencyMs: { prose: 812, tools: 4021 }, detail: 'tools: no Read tool_use in the reply',
+  harness: 'pi',
 };
 
 describe('ModelProbeStore (#73) — persisted so a restart keeps the last result', () => {
@@ -244,6 +271,45 @@ describe('ModelProbeStore (#73) — persisted so a restart keeps the last result
       // Reopening again (schema already migrated) is a no-op / stable.
       const reopened = new ModelProbeStore(path);
       expect(reopened.get('ollama', 'qwen2.5:7b')).toEqual(RESULT);
+      reopened.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // issue #138: a db written before the `harness` column existed (e.g. a deployment still on the
+  // #73-era schema, which itself already post-dates the alias-drop above) must not lose its rows —
+  // unlike the alias migration (a genuinely incompatible shape), this one only ADDS a column, so
+  // existing rows are preserved and backfilled with a documented default: 'sdk' (every one of these
+  // rows necessarily predates the pi harness's existence, so "not pi" is a known fact — the finer
+  // claude-agent-sdk-vs-direct-fetch split is NOT recoverable, which is exactly why 'sdk' is its own
+  // value rather than a guess at one of those two).
+  it('migrates a pre-existing db that predates the harness column by adding it with default "sdk", preserving existing rows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-probe-db-migrate-harness-'));
+    try {
+      const path = join(dir, 'index.db');
+      const legacy = new Database(path);
+      legacy.exec(`CREATE TABLE model_probes (
+        provider TEXT NOT NULL, model TEXT NOT NULL,
+        prose_ok INTEGER NOT NULL, tools_ok INTEGER NOT NULL, probed_at TEXT NOT NULL,
+        prose_ms INTEGER NOT NULL, tools_ms INTEGER NOT NULL, detail TEXT NOT NULL,
+        PRIMARY KEY (provider, model))`);
+      legacy.prepare('INSERT INTO model_probes VALUES (?,?,?,?,?,?,?,?)').run(
+        'ollama', 'qwen2.5:7b', 1, 0, '2026-01-01T00:00:00.000Z', 100, 200, 'pre-harness-column row',
+      );
+      legacy.close();
+
+      const store = new ModelProbeStore(path);
+      // The pre-existing row survives (not dropped — this is an additive migration) and is
+      // backfilled with the documented default.
+      const row = store.get('ollama', 'qwen2.5:7b');
+      expect(row).toMatchObject({ detail: 'pre-harness-column row', harness: 'sdk' });
+
+      // A fresh write still records its own real harness, unaffected by the default.
+      store.put(RESULT);
+      expect(store.get('ollama', 'qwen2.5:7b')!.harness).toBe('pi');
+      store.close();
+
+      const reopened = new ModelProbeStore(path);
+      expect(reopened.get('ollama', 'qwen2.5:7b')!.harness).toBe('pi');
       reopened.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -409,5 +475,111 @@ describe('toolProbeWarnings (#73 (d)) — run_start warns, never refuses', () =>
   it('one warning per label even when the label is called twice', () => {
     const calls = [{ line: 3, label: 'x', index: 0, allowedTools: ['Bash'] }, { line: 5, label: 'x', index: 9, allowedTools: ['Bash'] }];
     expect(toolProbeWarnings({ calls, modelFor: () => 'ollama/qwen2.5:7b', resolve, lookup })).toHaveLength(1);
+  });
+});
+
+// Issue #138: a probe recorded under one harness (e.g. the sdk gateway) must not keep driving
+// MODEL_TOOL_USE_UNVERIFIED warnings, stability, or toolUseVerified after this deployment switches
+// to a different harness (e.g. pi) — see #137's smoke report, which is where this was found: a
+// 2026-09-28 sdk-era probe kept warning under gateway:"pi" even though the model worked fine there.
+describe('probeEffectiveForHarness (#138) — a recorded probe counts only for a compatible active harness', () => {
+  it('a precise claude-agent-sdk/direct-fetch recording is honoured under active "sdk" and ignored under active "pi"', () => {
+    expect(probeEffectiveForHarness('claude-agent-sdk', 'sdk')).toBe(true);
+    expect(probeEffectiveForHarness('direct-fetch', 'sdk')).toBe(true);
+    expect(probeEffectiveForHarness('claude-agent-sdk', 'pi')).toBe(false);
+    expect(probeEffectiveForHarness('direct-fetch', 'pi')).toBe(false);
+  });
+
+  it('a pi recording is honoured under active "pi" and ignored under active "sdk"', () => {
+    expect(probeEffectiveForHarness('pi', 'pi')).toBe(true);
+    expect(probeEffectiveForHarness('pi', 'sdk')).toBe(false);
+  });
+
+  it('the legacy migration default "sdk" behaves exactly like a precise sdk-family recording', () => {
+    expect(probeEffectiveForHarness('sdk', 'sdk')).toBe(true);
+    expect(probeEffectiveForHarness('sdk', 'pi')).toBe(false);
+  });
+
+  // 'unknown' carries NO negative knowledge (unlike the legacy 'sdk' default, which confidently
+  // means "predates pi") — a gateway that never reports a transport at all (many real and test
+  // GatewayClient implementations legitimately don't — see ProbeHarness's own doc) must not have its
+  // probes invalidated by a gate it was never evidence for either way; this is "fail open", matching
+  // the pre-#138 behavior that applied before harnesses were ever tracked.
+  it('"unknown" (a probe whose own gateway result carried no transport at all) is honoured under every active harness', () => {
+    expect(probeEffectiveForHarness('unknown', 'sdk')).toBe(true);
+    expect(probeEffectiveForHarness('unknown', 'pi')).toBe(true);
+  });
+
+  it('an absent harness (a fixture/row that predates this field entirely) is treated the same as "unknown" — also fail-open', () => {
+    expect(probeEffectiveForHarness(undefined, 'sdk')).toBe(true);
+    expect(probeEffectiveForHarness(undefined, 'pi')).toBe(true);
+  });
+});
+
+describe('harnessFilteredProbeLookup (#138) — the wrapper server.ts composes around the raw store lookup', () => {
+  const sdkRow: ProbeResult = { ...RESULT, provider: 'ollama', model: 'a', harness: 'claude-agent-sdk' };
+  const piRow: ProbeResult = { ...RESULT, provider: 'ollama', model: 'b', harness: 'pi' };
+  const raw = (provider: string, model: string): ProbeResult | undefined =>
+    provider === 'ollama' && model === 'a' ? sdkRow : provider === 'ollama' && model === 'b' ? piRow : undefined;
+
+  it('an sdk-recorded probe passes through unfiltered when the active harness is sdk', () => {
+    const lookup = harnessFilteredProbeLookup(raw, 'sdk');
+    expect(lookup('ollama', 'a')).toEqual(sdkRow);
+  });
+
+  it('an sdk-recorded probe is hidden (undefined) when the active harness is pi', () => {
+    const lookup = harnessFilteredProbeLookup(raw, 'pi');
+    expect(lookup('ollama', 'a')).toBeUndefined();
+  });
+
+  it('a pi-recorded probe passes through unfiltered when the active harness is pi, and is hidden under sdk', () => {
+    expect(harnessFilteredProbeLookup(raw, 'pi')('ollama', 'b')).toEqual(piRow);
+    expect(harnessFilteredProbeLookup(raw, 'sdk')('ollama', 'b')).toBeUndefined();
+  });
+
+  it('no stored row at all stays undefined regardless of active harness', () => {
+    expect(harnessFilteredProbeLookup(raw, 'pi')('ollama', 'absent')).toBeUndefined();
+  });
+
+  // issue #138 (run_start warning path): MODEL_TOOL_USE_UNVERIFIED must not fire for a run_start
+  // whose probe evidence came from a harness this deployment is no longer running — exactly the
+  // #137 scenario (sdk-era probe, now running pi).
+  describe('run_start warning path (toolProbeWarnings fed a harness-filtered lookup)', () => {
+    const resolveRef = (ref: string): { provider: string; model: string } | undefined => parseModelRef(ref);
+    const calls = [{ line: 3, label: 'coder', index: 0, allowedTools: ['Bash'] }];
+
+    it('an sdk-recorded, tool-unverified probe DOES warn when still running sdk', () => {
+      const lookup = harnessFilteredProbeLookup(raw, 'sdk');
+      const w = toolProbeWarnings({ calls, modelFor: () => 'ollama/a', resolve: resolveRef, lookup });
+      expect(w).toHaveLength(1);
+    });
+
+    it('the SAME sdk-recorded, tool-unverified probe does NOT warn once this deployment is running pi', () => {
+      const lookup = harnessFilteredProbeLookup(raw, 'pi');
+      const w = toolProbeWarnings({ calls, modelFor: () => 'ollama/a', resolve: resolveRef, lookup });
+      expect(w).toEqual([]);
+    });
+  });
+
+  // issue #138 (models_list fields): toolUseVerified/proseVerified null and stabilitySource 'rule'
+  // (the local classifyStability fallback), not the stale probe's verdict, once the harness no
+  // longer matches — `enrichModelEntry` already treats an absent probe exactly this way (see the
+  // "never probed" case above); feeding it a harness-filtered lookup result is all this needs.
+  describe('models_list fields (enrichModelEntry fed a harness-filtered lookup)', () => {
+    it('toolUseVerified/proseVerified are null and stabilitySource is "rule" when the recording harness mismatches', () => {
+      const lookup = harnessFilteredProbeLookup(raw, 'pi');
+      const e = enrichModelEntry(ROW, null, lookup('ollama', 'a'));
+      expect(e.toolUseVerified).toBeNull();
+      expect(e.proseVerified).toBeNull();
+      expect(e.stabilitySource).toBe('rule');
+    });
+
+    it('the SAME row is honoured (probe-sourced fields, stabilitySource "probe") once the active harness matches', () => {
+      const lookup = harnessFilteredProbeLookup(raw, 'sdk');
+      const e = enrichModelEntry(ROW, null, lookup('ollama', 'a'));
+      expect(e.toolUseVerified).toBe(sdkRow.toolUseVerified);
+      expect(e.proseVerified).toBe(sdkRow.proseVerified);
+      expect(e.stabilitySource).toBe('probe');
+    });
   });
 });

@@ -736,6 +736,8 @@ export class PiGatewayClient implements GatewayClient {
         skills: materialized?.skills ?? [],
       }),
       harnessVersion: PI_HARNESS_VERSION,
+      // issue #138: this gateway always dispatches through the pi transport.
+      transport: 'pi',
       ...(plantedConfigRemoved.length > 0 ? { plantedConfigRemoved } : {}),
       ...(materialized !== undefined ? { materialized } : {}),
       ...(mapped.piNames.includes('bash')

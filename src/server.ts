@@ -68,7 +68,7 @@ import { projectToolsList, ENVELOPE_NOTE, TOOL_SPECS } from './tool-specs.js';
 import { authorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
-import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
+import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, harnessFilteredProbeLookup, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
 import { RunStoreObservedStats, type ObservedStatsProvider } from './models/observed-stats.js';
 import type { Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
@@ -940,7 +940,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // `store/`), so they survive a restart. The prober needs the deployment's REAL gateway — the same
   // object every agent() call dispatches through — so it exists only when one is configured.
   const probeStore = new ModelProbeStore(join(workRoot, 'store', 'index.db'));
-  const probeLookup = (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model);
+  // issue #138: `harnessFilteredProbeLookup` hides a probe recorded under a DIFFERENT harness than
+  // the one THIS deployment is actively running (the `harnessProviders` gate present only under
+  // gateway:"pi", same two-way distinction `harness-info.ts`'s `HarnessAnnounce.name` discloses) —
+  // every consumer sharing this one closure (run-manager's run_start warning, models_list
+  // enrichment below and in call-tool.ts, the dashboard) gets the fix at once, since each already
+  // treats `undefined` as "never probed" (null fields, rule-tier stability, no warning).
+  const probeLookup = harnessFilteredProbeLookup(
+    (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model),
+    config?.harnessProviders !== undefined ? 'pi' : 'sdk',
+  );
   // Issue #104: models_list's `observed` field — the SAME `store` (SqliteRunStore) and `probeStore`
   // instances every other read in this file uses; constructed once (TTL-cached internally), never
   // per-request.
