@@ -90,8 +90,10 @@ export interface ServerConfig {
   useLiteLLMProxy?: boolean;
   // Injectable proxy manager (tests only) — defaults to a real LiteLLMProxyManager.
   proxyManager?: LiteLLMProxyManager;
-  // TASK-027: overrides the managed LiteLLM proxy's hard-coded default port (4000) — closes the
-  // repeatedly-Gate-7.5-reproduced port-clash hazard when something else already owns 4000.
+  // TASK-027: overrides the managed LiteLLM proxy's port. Omitted -> an ephemeral free port is
+  // resolved at proxy start() time (litellm-proxy.ts) — there is no hard-coded default port any
+  // more (C5 2026-10-06 correction: this comment used to say "default port (4000)", which stopped
+  // being true at D-V3M-4).
   litellmPort?: number;
   // D-F1: additive composition-root override — lets a caller (e.g. the product entrypoint,
   // src/main.ts) supply a fully custom GatewayClient (e.g. a real
@@ -195,7 +197,10 @@ export interface ServerConfig {
   maxWorkflowVersions?: number;
   // v24 (ARCH-090, DES-141, TASK-146): the role map composeConfig() forwards from
   // FileConfig.principals ("*" is a legal key). Absent -> ADR-028 fail-closed default (every
-  // authenticated caller resolves to 'user'), announced visibly on the boot line + GET /api/system.
+  // authenticated caller with no entry of its own resolves to 'none' — signed in, pending approval,
+  // refused by every tool; owner decision 2026-09-30, authz.ts's `roleWithSource`. C5 2026-10-06
+  // correction: this comment used to say "resolves to 'user'", which stopped being true that day),
+  // announced visibly on the boot line + GET /api/system.
   principals?: Record<string, { role: Role }>;
   // v24 (ARCH-102, DES-153, TASK-146): https-only allowlist gating an `asset_push({kind:'mcp'})`
   // config's `http` transport BEFORE any probe/fetch (EGRESS_DENIED otherwise). Absent -> no http

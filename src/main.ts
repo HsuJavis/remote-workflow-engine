@@ -5,7 +5,8 @@
 //
 // Config precedence (low -> high): built-in defaults < RWE_CONFIG_PATH JSON file < env vars.
 // Provider API keys are NEVER read from the config file (src/gateway/client.ts reads them
-// straight from process.env: ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / OLLAMA_BASE_URL)
+// straight from process.env: ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL — client.ts
+// reads no OPENAI_API_KEY/GEMINI_API_KEY today, C5 2026-10-06 correction)
 // so the JSON config file never holds secrets and is safe to commit an .example of.
 //
 // D-F4: gateway selection. Production default ("sdk", the config opt-out key's default value) wires
@@ -349,7 +350,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (principalsResult && !principalsResult.ok) {
     throw new Error(
       `rwe.config.json's principals["${principalsResult.key}"].role is "${principalsResult.role}", which is not a valid role ` +
-        '(must be one of admin/author/user). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
+        // C5 2026-10-06 correction: this list used to omit "none" (a legal role since 2026-09-30 —
+        // see normalizePrincipals' own VALID_ROLES and authz.ts's roleWithSource default).
+        '(must be one of admin/author/user/none). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
     );
   }
 
