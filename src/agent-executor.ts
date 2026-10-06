@@ -4,7 +4,7 @@ import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, Transcr
 import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
-import { ZERO_TOKENS, priceCall } from './run-guard.js';
+import { ZERO_TOKENS, priceCall, sumTokens } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
@@ -600,7 +600,14 @@ export class AgentTranscriptSink {
             if (thisTokens !== undefined) {
               const priced = priceCall(thisTokens, this._priceBook?.pinned[`${provider}/${prev?.model ?? ''}`]?.price ?? null);
               thisCostUSD = priced ?? 0;
-              thisUnpriced = priced === null;
+              // issue #160 BUG-4 follow-up: a zero-token call is EXACTLY priced at 0 regardless of
+              // whether the model's price is known — `priceCall` returns `null` for "rates
+              // unknown" whether or not any tokens were spent, so without the `sumTokens` guard a
+              // call aborted before provider/model resolved (both still '', no price-book entry)
+              // got `unpriced: true` for spending literally nothing, flipping the documented
+              // "never dispatched, so genuinely not an unpriced call" contract this record type
+              // otherwise honours everywhere else (see the terminal `_records.set` call below).
+              thisUnpriced = priced === null && sumTokens(thisTokens) > 0;
               this._guard?.addUsage(thisTokens, thisCostUSD, thisUnpriced, result.unmapped);
             }
             const tokens = addTokenVectors(priorTokens, thisTokens ?? ZERO_TOKENS);
