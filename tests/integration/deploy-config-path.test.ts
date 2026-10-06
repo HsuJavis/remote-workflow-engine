@@ -45,7 +45,12 @@ describe('D14 — deploy.sh step 2 acts on the config file the engine will actua
     expect(out).toContain(`確認設定檔 (${target})`);
     expect(out).toContain(`建立 ${target}`);
     expect(existsSync(target)).toBe(true);
-    expect(readFileSync(target, 'utf8')).toBe(readFileSync('rwe.config.example.json', 'utf8'));
+    // Audit A5: step 2 copies the template AND persists the chosen workRoot into it (it used to
+    // apply to one run only). Everything else must still match the template exactly.
+    const written = JSON.parse(readFileSync(target, 'utf8'));
+    const template = JSON.parse(readFileSync('rwe.config.example.json', 'utf8'));
+    expect(written.workRoot).toBe('/tmp/rwe-test-workroot');
+    expect({ ...written, workRoot: template.workRoot }).toEqual(template);
     // The bug: the old script talked about the repo-root file. No message may name it bare.
     expect(out).not.toMatch(/(^|[^/])rwe\.config\.json/m);
   });
