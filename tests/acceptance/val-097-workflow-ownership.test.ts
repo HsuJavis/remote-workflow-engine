@@ -220,10 +220,11 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
       await nullServer.close();
     }
 
-    // Re-boot with auth enabled (backfill runs)
+    // Re-boot with auth enabled (backfill runs) — issue audit A1 (owner decision 2026-10-06): the
+    // backfill target is `auth.legacyOwner` now, not a hard-coded constant.
     const bootedServer = await createServer({
       port: 0, bind: '127.0.0.1', workRoot: tmpDir,
-      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: CLIENT_ID, googleClientSecret: 'cs', googleBase: `http://127.0.0.1:${fakeGoogPort}`, jwksFetch: () => Promise.resolve([JWK]) },
+      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: CLIENT_ID, googleClientSecret: 'cs', googleBase: `http://127.0.0.1:${fakeGoogPort}`, jwksFetch: () => Promise.resolve([JWK]), legacyOwner: 'hsuhungjung@gmail.com' },
     } as never);
 
     try {

@@ -132,6 +132,16 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     expect(((cfg as Record<string, unknown>)['auth'] as Record<string, unknown>)['serviceAccountTokenTtlMs']).toBe(1800_000);
   });
 
+  // Issue audit A1 (owner decision 2026-10-06): `auth.legacyOwner` replaces the old hard-coded
+  // BOOT_BACKFILL_EMAIL — same "a NEW field on an already-forwarded block can still get lost" class
+  // as serviceAccountTokenTtlMs above (`auth` is forwarded wholesale by `resolveAuthSecrets`'s
+  // `{...auth}` spread), so this passes without a composeConfig.ts change — explicit regression lock.
+  it('auth.legacyOwner is forwarded from FileConfig into the returned ServerConfig (A1)', async () => {
+    const auth = { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'test-id', googleClientSecret: 'test-secret', legacyOwner: 'ops@example.com' };
+    const cfg = await composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect(((cfg as Record<string, unknown>)['auth'] as Record<string, unknown>)['legacyOwner']).toBe('ops@example.com');
+  });
+
   // 2026-09-28 (owner: no plaintext secrets in config): auth.googleClientSecret / googleClientId may
   // be a `${secret:NAME}` handle, resolved at config load from the SAME RWE_SECRET_<NAME> env store
   // the engine already uses. A missing name refuses boot — the literal handle must never reach Google.
@@ -590,6 +600,120 @@ describe('composeConfig() — gateway:"pi" (pi harness v1, owner decisions 1/2/3
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// Issue audit A8 (owner decision 2026-10-06): an unrecognized `gateway` value used to silently fall
+// through to direct-fetch (main.ts never validated it) — refused at boot now, naming the valid set,
+// never a silent fallback. Shared by `--check-config` (same composeConfig() path).
+describe('gateway: an unrecognized value refuses the boot (A8, ADR-028 fail-closed)', () => {
+  it('refuses a typo\'d gateway value, naming it and the three valid values', async () => {
+    await expect(composeConfig({ gateway: 'Pi' } as any, FAKE_DEPS)).rejects.toThrow(
+      /gateway.*"Pi".*"sdk".*"direct-fetch".*"pi"/s,
+    );
+  });
+
+  it('still accepts every real value (no behaviour change for valid configs)', async () => {
+    await expect(composeConfig({ gateway: 'sdk' }, FAKE_DEPS)).resolves.toBeDefined();
+    await expect(composeConfig({ gateway: 'pi' }, FAKE_DEPS)).resolves.toBeDefined();
+    await expect(composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS)).resolves.toBeDefined();
+  });
+
+  it('an absent gateway key still defaults to "sdk" (no behaviour change)', async () => {
+    const cfg = await composeConfig({}, FAKE_DEPS);
+    expect(cfg.gateway).toBeDefined();
+  });
+});
+
+// Issue audit A9 (owner decision 2026-10-06): several boot refusals used to live ONLY in
+// createServer()/RunManager, so `--check-config` (which shares composeConfig(), never
+// createServer()) reported OK on a config that then crash-loops the real restart. Each case below
+// calls the SAME validator/function the real boot path already uses — no duplicated rule, just a
+// second CALL SITE reached before any side effect (same convention as modelProbe/casQuota/diskFloor
+// above, and as seedRefAllowlist/updateFlagPath's own pre-existing single implementations).
+describe('composeConfig() shares every boot-refusal rule with a real boot (A9, one validator, no duplication)', () => {
+  it('updateFlagPath inside workRoot refuses to start (same UPDATE_FLAG_INSIDE_WORKROOT rule createServer() already enforces)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', workRoot: '/var/rwe/data', updateFlagPath: '/var/rwe/data/update.flag' } as any, FAKE_DEPS),
+    ).rejects.toThrow(/UPDATE_FLAG_INSIDE_WORKROOT/);
+  });
+
+  it('updateFlagPath outside workRoot still boots (no behaviour change for a valid config)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', workRoot: '/var/rwe/data', updateFlagPath: '/var/rwe/update.flag' } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+
+  it('a non-https seedRefAllowlist entry refuses to start (same normalizeSeedRefAllowlist rule RunManager already enforces)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', seedRefAllowlist: ['http://seeds.example/'] } as any, FAKE_DEPS),
+    ).rejects.toThrow(/seedRefAllowlist entry must use https/);
+  });
+
+  // B4/B21: non-positive/non-integer caps and ceilings — every one of these boots today with the
+  // bad value simply breaking the feature at runtime (agentSlots<=0 wedges every agent() call
+  // forever; the others refuse every override/registration) instead of refusing at boot.
+  it.each([
+    ['agentSlots', 0],
+    ['agentSlots', -1],
+    ['agentSlots', 1.5],
+    ['runConcurrency', 0],
+    ['maxWorkflowDepth', 0],
+    ['maxWorkflowDescendants', -1],
+    ['maxConcurrentRuns', 0],
+    ['maxTimeoutMs', 0],
+    ['maxAppendPromptBytes', -1],
+    ['maxWorkflowVersions', 0],
+  ])('%s: a non-positive/non-integer value (%s) refuses to start, naming the key', async (key, value) => {
+    await expect(composeConfig({ gateway: 'direct-fetch', [key]: value } as any, FAKE_DEPS)).rejects.toThrow(
+      new RegExp(key as string),
+    );
+  });
+
+  it.each([
+    ['agentSlots', 7],
+    ['runConcurrency', 40],
+    ['maxWorkflowDepth', 5],
+    ['maxWorkflowDescendants', 300],
+    ['maxConcurrentRuns', 65],
+    ['maxTimeoutMs', 900000],
+    ['maxAppendPromptBytes', 2048],
+    ['maxWorkflowVersions', 12],
+  ])('%s: a valid positive-integer value (%s) still boots (no behaviour change)', async (key, value) => {
+    await expect(composeConfig({ gateway: 'direct-fetch', [key]: value } as any, FAKE_DEPS)).resolves.toBeDefined();
+  });
+
+  it('an unknown maxEffort value refuses to start, naming it and the valid set', async () => {
+    await expect(composeConfig({ gateway: 'direct-fetch', maxEffort: 'ultra' } as any, FAKE_DEPS)).rejects.toThrow(
+      /maxEffort.*"ultra"/s,
+    );
+  });
+
+  it('every real maxEffort value still boots (no behaviour change)', async () => {
+    for (const e of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      await expect(composeConfig({ gateway: 'direct-fetch', maxEffort: e } as any, FAKE_DEPS)).resolves.toBeDefined();
+    }
+  });
+
+  it('a non-https mcpEgressAllowlist entry refuses to start, naming the entry', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: ['http://mcp.example/'] } as any, FAKE_DEPS),
+    ).rejects.toThrow(/mcpEgressAllowlist.*http:\/\/mcp\.example/s);
+  });
+
+  it('an https mcpEgressAllowlist entry still boots (no behaviour change)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: ['https://mcp.example/'] } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+
+  it('a non-array mcpEgressAllowlist refuses to start with a clear message (never iterates a string/throws "not iterable")', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: 'https://mcp.example/' } as any, FAKE_DEPS),
+    ).rejects.toThrow(/mcpEgressAllowlist must be an array/);
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: 5 } as any, FAKE_DEPS),
+    ).rejects.toThrow(/mcpEgressAllowlist must be an array/);
   });
 });
 

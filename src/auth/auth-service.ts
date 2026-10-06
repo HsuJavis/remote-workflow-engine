@@ -37,6 +37,14 @@ export interface AuthConfig {
   /** Service accounts spec (owner decision 2026-10-03): TTL of a bearer issued by the
    *  client_credentials grant. Default 1h. */
   serviceAccountTokenTtlMs?: number;
+  /** Issue audit A1 (owner decision 2026-10-06): replaces the old hard-coded
+   *  `BOOT_BACKFILL_EMAIL` ('hsuhungjung@gmail.com') in workflow-catalog.ts. A principal id
+   *  (typically an email) that NULL-owner workflow rows are backfilled to, once per boot,
+   *  idempotently — same mechanics as the old constant, just operator-configured instead of
+   *  hard-coded. Absent -> no backfill at all; if any NULL-owner rows exist, WorkflowCatalog logs
+   *  one boot line with the count and a hint to set this key (only while auth is enabled — with
+   *  auth off, ownership is unenforced and the hint would be noise). */
+  legacyOwner?: string;
 }
 
 /** Service accounts spec §Token exchange: the narrow port `tokenExchange`'s client_credentials arm

@@ -5,7 +5,8 @@
 //
 // Config precedence (low -> high): built-in defaults < RWE_CONFIG_PATH JSON file < env vars.
 // Provider API keys are NEVER read from the config file (src/gateway/client.ts reads them
-// straight from process.env: ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / OLLAMA_BASE_URL)
+// straight from process.env: ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL — client.ts
+// reads no OPENAI_API_KEY/GEMINI_API_KEY today, C5 2026-10-06 correction)
 // so the JSON config file never holds secrets and is safe to commit an .example of.
 //
 // D-F4: gateway selection. Production default ("sdk", the config opt-out key's default value) wires
@@ -41,6 +42,10 @@ import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js'
 import { PiGatewayClient } from './gateway/pi-gateway-client.js';
 import { probePiPath } from './gateway/pi-confinement-probe.js';
 import type { Provider } from './providers.js';
+import { assertUpdatePathsOutsideWorkRoot } from './self-update.js';
+import { normalizeSeedRefAllowlist } from './seedref-egress.js';
+import { assertPositiveInteger } from './config-numeric.js';
+import { isEffort } from './params/contract.js';
 
 // pi harness v1 owner decision 2: the closed provider set the pi harness supports — never
 // 'anthropic' (no Anthropic subscription token/API key is used under pi). Exported so the wiring
@@ -349,7 +354,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (principalsResult && !principalsResult.ok) {
     throw new Error(
       `rwe.config.json's principals["${principalsResult.key}"].role is "${principalsResult.role}", which is not a valid role ` +
-        '(must be one of admin/author/user). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
+        // C5 2026-10-06 correction: this list used to omit "none" (a legal role since 2026-09-30 —
+        // see normalizePrincipals' own VALID_ROLES and authz.ts's roleWithSource default).
+        '(must be one of admin/author/user/none). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
     );
   }
 
@@ -360,6 +367,15 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // The error names the handle and its env var, never a value. A plain literal passes through as-is.
   const auth = resolveAuthSecrets(fileConfig.auth, deps.secretSource ?? loadSecretSourceFromEnv());
 
+  // Issue audit A8 (owner decision 2026-10-06): an unrecognized `gateway` value used to fall through
+  // silently to the direct-fetch default (nothing here validated the raw string) — refused at boot
+  // now, naming the offending value and the full valid set, never a silent fallback.
+  if (fileConfig.gateway !== undefined && !(['sdk', 'direct-fetch', 'pi'] as const).includes(fileConfig.gateway)) {
+    throw new Error(
+      `rwe.config.json: gateway "${fileConfig.gateway}" is not a valid value (must be one of "sdk" | "direct-fetch" | "pi"). ` +
+        'Refusing to start (ADR-028 fail-closed: a typo must never silently fall back to a different gateway).',
+    );
+  }
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   // Issue #73: validated at load, fail-closed (a bad interval must not silently mis-schedule or
   // disable the probe); absent -> the defaults (enabled, weekly). Forwarded below — the
@@ -387,6 +403,71 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // resolved value — one resolution, one value, both consumers (server.ts:655's own `??` fallback
   // stays, for every direct `createServer()` test caller that never goes through `composeConfig()`).
   const workRoot = explicitWorkRoot ?? deps.workRootDefault;
+
+  // Issue audit A9 (owner decision 2026-10-06): this used to be checked ONLY inside createServer()
+  // (server.ts), which `--check-config` never reaches — a config that failed this exact rule still
+  // reported OK, then crash-looped the real restart. Calling the SAME `assertUpdatePathsOutsideWorkRoot`
+  // function here (server.ts keeps its own call too, for every direct createServer() test caller that
+  // bypasses composeConfig) means the rule itself is never duplicated, only the call site is.
+  if ((fileConfig.updateFlagPath || fileConfig.updateResultPath) && workRoot !== undefined) {
+    assertUpdatePathsOutsideWorkRoot([fileConfig.updateFlagPath, fileConfig.updateResultPath], [workRoot]);
+  }
+  // Issue audit A9/B21 (owner decision 2026-10-06): same gap as updateFlagPath above —
+  // `normalizeSeedRefAllowlist` (seedref-egress.ts) was reached ONLY by RunManager's constructor
+  // (createServer()), never by `--check-config`. Validated here for its fail-closed throw alone; the
+  // RAW value is still what reaches ServerConfig.seedRefAllowlist below (RunManager normalizes it
+  // again at construction — same convention as every other RunManager-owned cap/ceiling: composeConfig
+  // validates, the runtime owner still does its own pass).
+  if (fileConfig.seedRefAllowlist !== undefined) {
+    normalizeSeedRefAllowlist(fileConfig.seedRefAllowlist);
+  }
+  // Issue audit A9/B4/B21 (owner decision 2026-10-06): the caps/ceilings RunManager/createServer
+  // already validate at CONSTRUCTION time (RunManager._positiveInt / `agentSemaphore.total`) — none
+  // of them were reachable from `--check-config`, which never constructs either. One shared rule
+  // (assertPositiveInteger, config-numeric.ts) — the SAME function RunManager._positiveInt now
+  // delegates to — reached from a second call site, never reimplemented.
+  assertPositiveInteger(fileConfig.agentSlots, 'agentSlots');
+  assertPositiveInteger(fileConfig.runConcurrency, 'runConcurrency');
+  assertPositiveInteger(fileConfig.maxWorkflowDepth, 'maxWorkflowDepth');
+  assertPositiveInteger(fileConfig.maxWorkflowDescendants, 'maxWorkflowDescendants');
+  assertPositiveInteger(fileConfig.maxConcurrentRuns, 'maxConcurrentRuns');
+  assertPositiveInteger(fileConfig.maxTimeoutMs, 'maxTimeoutMs');
+  assertPositiveInteger(fileConfig.maxAppendPromptBytes, 'maxAppendPromptBytes');
+  assertPositiveInteger(fileConfig.maxWorkflowVersions, 'maxWorkflowVersions');
+  // Issue audit B21 (owner decision 2026-10-06): an unknown `maxEffort` value used to silently
+  // remove EVERY effort level from `resolveHarnessParams`'s ceiling filter (EFFORT_RANK[bad value]
+  // is `undefined`, so `EFFORT_RANK[e] <= undefined` is false for every `e`) — the engine still
+  // booted, with every effort override/declaration refused from then on. Reuses `isEffort`
+  // (params/contract.ts) — the SAME membership check `resolveHarnessParams` itself would use.
+  if (fileConfig.maxEffort !== undefined && !isEffort(fileConfig.maxEffort)) {
+    throw new Error(
+      `rwe.config.json: maxEffort "${fileConfig.maxEffort}" is not a valid effort (must be one of low/medium/high/xhigh/max). ` +
+        'Refusing to start (ADR-028 fail-closed).',
+    );
+  }
+  // Issue audit B21 (owner decision 2026-10-06): an `http://` (or unparseable) mcpEgressAllowlist
+  // entry used to be accepted at boot but could never match anything (seedref-egress.ts's own
+  // `isEgressAllowed`/this file's `normalizeSeedRefAllowlist` both require https) — refused here
+  // instead, naming the offending entry, so a typo'd scheme is caught at boot, not discovered the
+  // first time an author's `asset_push({kind:'mcp'})` mysteriously gets EGRESS_DENIED. A non-array
+  // value gets its own clear refusal (mirrors `normalizeSeedRefAllowlist`'s own shape check) rather
+  // than iterating a string's characters or throwing a raw "is not iterable" on a number.
+  if (fileConfig.mcpEgressAllowlist !== undefined) {
+    if (!Array.isArray(fileConfig.mcpEgressAllowlist)) {
+      throw new Error(`rwe.config.json: mcpEgressAllowlist must be an array, got ${typeof fileConfig.mcpEgressAllowlist}. Refusing to start (ADR-028 fail-closed).`);
+    }
+    for (const entry of fileConfig.mcpEgressAllowlist) {
+      let parsed: URL;
+      try {
+        parsed = new URL(entry);
+      } catch {
+        throw new Error(`rwe.config.json: mcpEgressAllowlist entry "${entry}" is not a valid URL. Refusing to start (ADR-028 fail-closed).`);
+      }
+      if (parsed.protocol !== 'https:') {
+        throw new Error(`rwe.config.json: mcpEgressAllowlist entry "${entry}" must use https:, got ${parsed.protocol}. Refusing to start (ADR-028 fail-closed).`);
+      }
+    }
+  }
 
   // v37 (ARCH-177, DES-254/255, TASK-252, REQ-218) / v37 Gate-8 send-back (finding A3, ARCH-175
   // amendment): protectedFiles are every REQ-218 risk-surface path — the config file the loader

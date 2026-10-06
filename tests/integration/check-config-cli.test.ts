@@ -95,4 +95,52 @@ describe('main.ts --check-config: validate without binding a port (IT-143, DES-1
     expect(await portIsFree(port)).toBe(true);
     rmSync(tmpDir, { recursive: true, force: true });
   }, 10000);
+
+  // Issue audit A8 (owner decision 2026-10-06): a typo'd `gateway` value used to boot clean (it
+  // silently fell through to direct-fetch) — now refused by the REAL `--check-config` process, not
+  // merely by the unit-tier composeConfig() tests.
+  it('exits 1 naming an unrecognized gateway value and the valid set, with no port bound', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-gateway-'));
+    const configPath = join(tmpDir, 'rwe.config.json');
+    writeFileSync(configPath, JSON.stringify({ gateway: 'Pi' }));
+    const port = 18792;
+    const result = await run(configPath, port);
+    expect(result.code).toBe(1);
+    const out = result.stdout + result.stderr;
+    expect(out).toContain('"Pi"');
+    expect(out).toContain('"sdk"');
+    expect(out).toContain('"direct-fetch"');
+    expect(await portIsFree(port)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 10000);
+
+  // Issue audit A9 (owner decision 2026-10-06): `agentSlots<=0` used to boot clean (the refusal
+  // lived only in RunManager/createServer's own construction, never reached by `--check-config`) —
+  // this is the real-process proof that the gap is closed, not just the composeConfig()-level one.
+  it('exits 1 naming a non-positive agentSlots, with no port bound (A9: check-config now shares the real boot refusal)', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-agentslots-'));
+    const configPath = join(tmpDir, 'rwe.config.json');
+    writeFileSync(configPath, JSON.stringify({ agentSlots: 0 }));
+    const port = 18793;
+    const result = await run(configPath, port);
+    expect(result.code).toBe(1);
+    expect(result.stdout + result.stderr).toContain('agentSlots');
+    expect(await portIsFree(port)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 10000);
+
+  // Issue audit A9 (owner decision 2026-10-06): an `updateFlagPath` inside `workRoot` used to boot
+  // clean (UPDATE_FLAG_INSIDE_WORKROOT was only enforced by createServer()) — same real-process proof.
+  it('exits 1 naming UPDATE_FLAG_INSIDE_WORKROOT when updateFlagPath resolves inside workRoot, with no port bound', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-updateflag-'));
+    const configPath = join(tmpDir, 'rwe.config.json');
+    const workRoot = join(tmpDir, 'data');
+    writeFileSync(configPath, JSON.stringify({ workRoot, updateFlagPath: join(workRoot, 'update.flag') }));
+    const port = 18794;
+    const result = await run(configPath, port);
+    expect(result.code).toBe(1);
+    expect(result.stdout + result.stderr).toContain('UPDATE_FLAG_INSIDE_WORKROOT');
+    expect(await portIsFree(port)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 10000);
 });

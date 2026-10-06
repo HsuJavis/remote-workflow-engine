@@ -90,8 +90,10 @@ export interface ServerConfig {
   useLiteLLMProxy?: boolean;
   // Injectable proxy manager (tests only) — defaults to a real LiteLLMProxyManager.
   proxyManager?: LiteLLMProxyManager;
-  // TASK-027: overrides the managed LiteLLM proxy's hard-coded default port (4000) — closes the
-  // repeatedly-Gate-7.5-reproduced port-clash hazard when something else already owns 4000.
+  // TASK-027: overrides the managed LiteLLM proxy's port. Omitted -> an ephemeral free port is
+  // resolved at proxy start() time (litellm-proxy.ts) — there is no hard-coded default port any
+  // more (C5 2026-10-06 correction: this comment used to say "default port (4000)", which stopped
+  // being true at D-V3M-4).
   litellmPort?: number;
   // D-F1: additive composition-root override — lets a caller (e.g. the product entrypoint,
   // src/main.ts) supply a fully custom GatewayClient (e.g. a real
@@ -195,7 +197,10 @@ export interface ServerConfig {
   maxWorkflowVersions?: number;
   // v24 (ARCH-090, DES-141, TASK-146): the role map composeConfig() forwards from
   // FileConfig.principals ("*" is a legal key). Absent -> ADR-028 fail-closed default (every
-  // authenticated caller resolves to 'user'), announced visibly on the boot line + GET /api/system.
+  // authenticated caller with no entry of its own resolves to 'none' — signed in, pending approval,
+  // refused by every tool; owner decision 2026-09-30, authz.ts's `roleWithSource`. C5 2026-10-06
+  // correction: this comment used to say "resolves to 'user'", which stopped being true that day),
+  // announced visibly on the boot line + GET /api/system.
   principals?: Record<string, { role: Role }>;
   // v24 (ARCH-102, DES-153, TASK-146): https-only allowlist gating an `asset_push({kind:'mcp'})`
   // config's `http` transport BEFORE any probe/fetch (EGRESS_DENIED otherwise). Absent -> no http
@@ -878,7 +883,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const modelBook = new ModelBook(buildModelCatalog, { clock });
   // v15 (DES-098, DES-099, TASK-089): boot backfill + registration-time model-ref existence check.
   const catalog = new WorkflowCatalog(workRoot, clock, {
-    backfillOwner: config?.auth?.enabled ? true : undefined,
+    // Issue audit A1 (owner decision 2026-10-06): the hard-coded BOOT_BACKFILL_EMAIL is gone —
+    // `auth.legacyOwner` is the operator-configured backfill target, only meaningful while auth is
+    // enabled (ownership is unenforced with auth off, so neither backfilling nor hinting about it
+    // means anything there).
+    backfillOwner: config?.auth?.enabled ? config?.auth?.legacyOwner : undefined,
+    authEnabled: config?.auth?.enabled,
     // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry.
     // issue #103(a): `WorkflowCatalog` doesn't take an `mcpLookup` opt at all any more — the v24
     // catalog-backed MCP/skill asset check now lives entirely in `mcp-facade.ts`'s
@@ -1067,7 +1077,17 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt count
   // — forwarded so `workflow_describe`'s advertised `timeoutMs.attempts`/`worstCaseMs` reflect what
   // THIS deployment actually retries (the composeConfig wiring class, twice bitten).
-  const gatewayAttempts = 1 + Math.max(0, config?.retries ?? 1);
+  // Owner decision 2026-10-06 (describe/retries mismatch fix): this used to hard-code the
+  // direct-fetch-only "retries defaults to 1" rule (server.ts's own `LiteLLMGatewayClient`
+  // construction above) regardless of which gateway is actually deployed. `config?.gateway` being
+  // ALREADY SET means composeConfig() built an sdk/pi gateway and forwarded `fileConfig.retries`
+  // RAW onto it (main.ts) — those gateways' own `attemptsFor()` (client.ts, DES-249) defaults an
+  // unset `retries` to 0 extra retries (1 attempt), never 1. `config?.gateway` undefined means the
+  // local `gateway` built just above (or RunManager's own DEFAULT_GATEWAY_CONFIG fallback) applies,
+  // which DOES default retries to 1 (2 attempts) — so the two branches here mirror the two REAL
+  // defaults instead of overstating one of them.
+  const gatewayDefaultRetries = config?.gateway !== undefined ? 0 : 1;
+  const gatewayAttempts = 1 + Math.max(0, config?.retries ?? gatewayDefaultRetries);
   // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` rides `config?.confinementPosture`
   // — the SAME value the `buildToolDeps` door below already reads, set once at boot by `main.ts`'s
   // real probe; `undefined` on every test/zero-config boot, which the guide already treats as
