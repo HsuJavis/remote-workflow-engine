@@ -19,6 +19,20 @@ import type { SandboxBudget } from '../types.ts';
 interface Spend { usd: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } }
 const ZERO_SPEND: Spend = { usd: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 
+// F-2: the SAME safe-message strategy as guards.ts's own `safeMessage` (inlined, not imported, for
+// the identical reason `ZERO_SPEND` above is inlined) — `String(err)` throws on `Object.create(null)`
+// or a stringification-poisoned object, so a classification exception here must never itself throw.
+function safeMessage(err: unknown): string {
+  try {
+    if (err instanceof Error) return err.message;
+  } catch { /* fall through to the next strategy */ }
+  try {
+    return String(err);
+  } catch {
+    return 'the script threw a value that could not be converted to a message';
+  }
+}
+
 // Extends the DES-006 ParentMsg 'init' shape with the fields a standalone child process needs
 // at spawn time (script text, runId) that the seam's steady-state protocol doesn't carry.
 interface StartMsg {
@@ -177,7 +191,22 @@ async function main(msg: StartMsg): Promise<void> {
     },
   };
 
-  const result = await evaluateScript(msg.script, api);
+  // F-2 (defense in depth): `evaluateScript` classifies every script-thrown value internally (its
+  // own try/catch, hardened not to itself throw on a non-stringifiable thrown value — see guards.ts
+  // `safeMessage`) and is expected to always RESOLVE with a `ScriptResult`, never reject. This
+  // wrapper is the second, independent layer: if some future regression (or an unanticipated failure
+  // during `vm.createContext`/context setup, before the script's own try/catch is even entered) ever
+  // makes it reject anyway, that exception must not propagate out of `main()` uncaught — `main()` is
+  // invoked un-awaited (`void main(msg)` below), so an uncaught rejection here would crash this child
+  // process the same way issue #162's `send()` throw once did. Always yields SCRIPT_ERROR, with the
+  // SAME safe, fixed-fallback message extraction guards.ts uses (inlined — this module does not
+  // resolve local `.js`→`.ts` value imports, see the `checkMeta` note in guards.ts).
+  let result: Awaited<ReturnType<typeof evaluateScript>>;
+  try {
+    result = await evaluateScript(msg.script, api);
+  } catch (e) {
+    result = { kind: 'error', error: { code: 'SCRIPT_ERROR', message: safeMessage(e) } };
+  }
   if (result.kind === 'done') {
     // issue #162 A/B: an explicit pre-check (mirrors guards.ts's own MAX_SCRIPT_BYTES pattern) —
     // computing `JSON.stringify` here ALSO catches a circular/BigInt return value with a controlled

@@ -364,3 +364,35 @@ describe('Sandbox VM guards', () => {
     }
   });
 });
+
+// F-2 (sandbox robustness sweep): a script that `throw`s a value `String(err)` cannot convert — a
+// null-prototype object, or an object/Proxy whose stringification hooks are poisoned — used to crash
+// evaluateScript's own classification catch (an uncaught TypeError escaping `String(err)` there), so
+// the run was reported ABORTED with a guards.ts source line in the message instead of a clean
+// SCRIPT_ERROR. Covers the exact three shapes the task names.
+describe('F-2: a non-stringifiable thrown value is still classified as a clean SCRIPT_ERROR', () => {
+  it('throw Object.create(null) (no toString/valueOf at all) does not crash classification', async () => {
+    const r = await evaluateScript('throw Object.create(null);', FAKE_API);
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('SCRIPT_ERROR');
+  });
+
+  it('throw {toString:null, valueOf:null, [Symbol.toPrimitive]:null} does not crash classification', async () => {
+    const r = await evaluateScript(
+      'throw { toString: null, valueOf: null, [Symbol.toPrimitive]: null };',
+      FAKE_API,
+    );
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('SCRIPT_ERROR');
+  });
+
+  it('throwing a Proxy with a poisoned get trap does not crash classification and leaks no guards.ts source line', async () => {
+    const r = await evaluateScript(
+      "throw new Proxy({}, { get() { throw new Error('trap'); } });",
+      FAKE_API,
+    );
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('SCRIPT_ERROR');
+    expect(r.error!.message).not.toMatch(/guards\.ts/);
+  });
+});

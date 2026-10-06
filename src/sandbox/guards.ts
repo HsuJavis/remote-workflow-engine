@@ -369,6 +369,26 @@ function refusalCode(err: unknown): string | null {
   return ENGINE_REFUSAL_CODES.has(code) ? code : null;
 }
 
+// F-2 (sandbox robustness sweep): `String(err)` throws when `err` is `Object.create(null)` (no
+// `toString`/`valueOf`/`Symbol.toPrimitive` to fall back to, not even `Object.prototype`'s) or any
+// object whose stringification hooks are poisoned (`{toString:null, valueOf:null,
+// [Symbol.toPrimitive]:null}`) — a script can `throw` either. Before this, that threw OUT OF
+// evaluateScript's own classification catch below, uncaught, which crashed the sandbox child and
+// surfaced to the caller as an opaque ABORTED carrying a guards.ts source line (an internal
+// implementation detail leaking across the trust boundary). A fixed fallback message, never a
+// re-thrown classification exception.
+const UNREPRESENTABLE_THROWN_VALUE = 'the script threw a value that could not be converted to a message';
+function safeMessage(err: unknown): string {
+  try {
+    if (err instanceof Error) return err.message;
+  } catch { /* fall through to the next strategy */ }
+  try {
+    return String(err);
+  } catch {
+    return UNREPRESENTABLE_THROWN_VALUE;
+  }
+}
+
 type Thunk = () => Promise<unknown>;
 type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
 
@@ -699,27 +719,39 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     const value = await runScript();
     return { kind: 'done', value };
   } catch (err) {
-    // v36 (DES-248): read the ref FROM THE MAP, never off `err` itself — a script that set
-    // `e.refusalRef = 99` on the caught error changes nothing here.
-    const refusalRef = refusalRefs.get(err as object);
-    const refField = refusalRef !== undefined ? { refusalRef } : {};
-    // #157 B1: replaces `err instanceof GuardError` (no longer meaningful — GuardError is built
-    // per-call, native to THIS call's own context, so `instanceof` against anything embedding-side
-    // would always be false). `GUARD_MARK` is the realm-agnostic replacement; see its own doc.
-    const isGuardError = err !== null && typeof err === 'object' && (err as Record<symbol, unknown>)[GUARD_MARK] === true;
-    if (isGuardError) {
-      const e = err as { code?: unknown };
-      return { kind: 'error', error: { code: typeof e.code === 'string' ? e.code : 'SCRIPT_ERROR', message: err instanceof Error ? err.message : String(err), ...refField } };
+    // F-2: the classification logic below reads properties off `err` (`GUARD_MARK`, `.code`,
+    // `.name`) and `String()`s it — any of which can itself throw (a Proxy with a poisoned `get`
+    // trap; `Object.create(null)`/a stringification-poisoned object for the message). Wrapping the
+    // WHOLE classification in its own try/catch means a throw INSIDE classification can never
+    // escape evaluateScript uncaught (which would crash the sandbox child) — it always falls back to
+    // a clean, fixed SCRIPT_ERROR instead.
+    try {
+      // v36 (DES-248): read the ref FROM THE MAP, never off `err` itself — a script that set
+      // `e.refusalRef = 99` on the caught error changes nothing here.
+      const refusalRef = refusalRefs.get(err as object);
+      const refField = refusalRef !== undefined ? { refusalRef } : {};
+      // #157 B1: replaces `err instanceof GuardError` (no longer meaningful — GuardError is built
+      // per-call, native to THIS call's own context, so `instanceof` against anything embedding-side
+      // would always be false). `GUARD_MARK` is the realm-agnostic replacement; see its own doc.
+      const isGuardError = err !== null && typeof err === 'object' && (err as Record<symbol, unknown>)[GUARD_MARK] === true;
+      if (isGuardError) {
+        const e = err as { code?: unknown };
+        return { kind: 'error', error: { code: typeof e.code === 'string' ? e.code : 'SCRIPT_ERROR', message: safeMessage(err), ...refField } };
+      }
+      // v25 (DES-167, REQ-120): an uncaught engine REFUSAL keeps its own code instead of flattening to
+      // SCRIPT_ERROR (which run-manager's toErrorCode would then map to INTERNAL_ERROR). This is what
+      // makes `run_result.error.code === 'BUDGET_EXCEEDED'` true for the caller — the owner's ask:
+      // 「如果是 budget 問題 應該 fail 時 client 知道」. Covers both the sequential `await agent()` and
+      // the refusal parallel()/pipeline() re-threw above.
+      const refusal = refusalCode(err);
+      if (refusal !== null) {
+        return { kind: 'error', error: { code: refusal, message: safeMessage(err), ...refField } };
+      }
+      return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: safeMessage(err), ...refField } };
+    } catch {
+      // F-2: classification itself threw (a poisoned Proxy trap fired on one of the property reads
+      // above) — fixed fallback, no guards.ts source line, no re-thrown value.
+      return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: UNREPRESENTABLE_THROWN_VALUE } };
     }
-    // v25 (DES-167, REQ-120): an uncaught engine REFUSAL keeps its own code instead of flattening to
-    // SCRIPT_ERROR (which run-manager's toErrorCode would then map to INTERNAL_ERROR). This is what
-    // makes `run_result.error.code === 'BUDGET_EXCEEDED'` true for the caller — the owner's ask:
-    // 「如果是 budget 問題 應該 fail 時 client 知道」. Covers both the sequential `await agent()` and
-    // the refusal parallel()/pipeline() re-threw above.
-    const refusal = refusalCode(err);
-    if (refusal !== null) {
-      return { kind: 'error', error: { code: refusal, message: err instanceof Error ? err.message : String(err), ...refField } };
-    }
-    return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: err instanceof Error ? err.message : String(err), ...refField } };
   }
 }
