@@ -138,6 +138,33 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
     }
   });
 
+  // issue #159 follow-up (audit A5 finding 2): the early UNSUPPORTED_TRANSPORT pre-check guarded
+  // on `typeof req.config.type === 'string' && req.config.type !== 'http'`, which ALSO matched
+  // `type:'stdio'` — a real `npx`-launched stdio config that happens to carry an (unrelated) `url`
+  // field (e.g. a server's homepage/docs URL, or metadata some callers attach) was wrongly refused
+  // UNSUPPORTED_TRANSPORT before `probe()` ever ran, even though `classifyTransport()` calls this
+  // exact shape `'npx-stdio'` — a SUPPORTED transport. Must reach the egress check (url present),
+  // then `probe()`, then be stored, exactly like a `type:'stdio'` config with no `url` at all.
+  it('kind:"mcp" stdio+npx with an (incidental) url field is NOT refused UNSUPPORTED_TRANSPORT — reaches probe and is stored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn().mockResolvedValue({ ok: true }) };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: ['https://x.example.com/'],
+      });
+      const config = { type: 'stdio', command: 'npx', args: ['-y', 'x'], url: 'https://x.example.com/mcp' };
+      const result = await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv', config: config as never, pushedBy: 'bob' });
+      expect(result).toMatchObject({ stored: 'srv' });
+      expect(probe.probe).toHaveBeenCalledWith(config);
+      expect(catalog.putAsset).toHaveBeenCalledWith(expect.objectContaining({ config }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('kind:"hook" is refused by the schema enum — HOOKS_UNSUPPORTED is retired, no path can produce it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
     try {

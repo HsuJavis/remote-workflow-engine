@@ -572,19 +572,24 @@ export class AssetSyncService {
       // issue #159: an EXPLICITLY-typed, unsupported transport (e.g. `type:'sse'`) that also
       // carries a `url` field used to hit the SAME EGRESS_DENIED-before-probe masking as the
       // placeholder case above — `probe()` is the only place that would ever call
-      // `classifyTransport()` and say UNSUPPORTED_TRANSPORT, and the egress check ran first. Scoped
-      // deliberately narrow — `typeof req.config.type === 'string' && req.config.type !== 'http'` —
-      // rather than a blanket `classifyTransport(...) === 'unsupported'`: the wider check also
-      // classifies a config with a `url` but NO `type` at all as unsupported, and that bare shape is
-      // an established, widely-used test/fixture shorthand for "an http-like MCP server" across this
+      // `classifyTransport()` and say UNSUPPORTED_TRANSPORT, and the egress check ran first. Gated
+      // on `classifyTransport(req.config) === 'unsupported'` itself (audit A5 finding 2, fixing a
+      // prior `req.config.type !== 'http'` predicate that also matched `type:'stdio'` — a REAL
+      // `npx`-launched stdio config that happens to also carry an unrelated `url` field was wrongly
+      // refused UNSUPPORTED_TRANSPORT here even though `classifyTransport()` calls it the supported
+      // `'npx-stdio'` kind; see tests/unit/asset-sync-v24.test.ts's "incidental url field" case).
+      // Still scoped to `typeof req.config.url === 'string' && typeof req.config.type === 'string'`
+      // — not a blanket `classifyTransport(...) === 'unsupported'` with no url guard — because a
+      // config with a `url` but NO `type` at all is `'unsupported'` too, and that bare shape is an
+      // established, widely-used test/fixture shorthand for "an http-like MCP server" across this
       // suite (asset-mcp-config-wiring.test.ts, nested-asset-skill-mcp-scope.test.ts, val-021-
       // secret-store.test.ts, …) that a lenient injected `McpProbe` (FakeMcpProbe) has always
       // accepted without ever consulting `classifyTransport` — refusing it here, before the probe is
       // even reached, would be a real behavior change for all of those, never asked for by this fix.
-      // A `type:'stdio'` config with a non-`npx` `command` is also `'unsupported'` but carries no
-      // `url`, so it was never reachable before the egress check anyway (same reasoning as the
-      // placeholder case above) — left to `probe()` exactly as before.
-      if (typeof req.config.url === 'string' && typeof req.config.type === 'string' && req.config.type !== 'http') {
+      // A `type:'stdio'` config with a non-`npx` `command` and no `url` was never reachable before
+      // the egress check anyway (same reasoning as the placeholder case above); one WITH a `url` is
+      // now also caught here, correctly, since `classifyTransport` calls it `'unsupported'` too.
+      if (typeof req.config.url === 'string' && typeof req.config.type === 'string' && classifyTransport(req.config) === 'unsupported') {
         return {
           error: 'MCP_PROBE_FAILED',
           detail: { code: 'UNSUPPORTED_TRANSPORT', message: UNSUPPORTED_TRANSPORT_MESSAGE, transport: classifyTransport(req.config) },

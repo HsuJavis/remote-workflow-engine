@@ -1609,12 +1609,15 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`EGRESS_DENIED` refusal from `workspace_push({kind:\'mcp\'})` points back at that same ' +
         'field. Two narrower checks run even BEFORE the allowlist, so a config that trips one of ' +
         "them never sees `EGRESS_DENIED` at all, no matter the allowlist: an unknown `${run:...}` " +
-        "placeholder (`UNKNOWN_RUN_PLACEHOLDER` — see \"Per-run MCP state\" below) and a config whose " +
-        "`type` is EXPLICITLY set to something other than `'http'`/`'stdio'` (e.g. `type:'sse'`) — " +
-        "the latter is `MCP_PROBE_FAILED`/`UNSUPPORTED_TRANSPORT`, the same code the probe itself " +
-        'would give, just returned before the probe (and the allowlist) are ever reached. A config ' +
-        "with a `url` but NO `type` at all is not covered by this: it still reaches the allowlist " +
-        'first, exactly as before.\n\n' +
+        "placeholder (`UNKNOWN_RUN_PLACEHOLDER` — see \"Per-run MCP state\" below) and a `url`-bearing " +
+        "config whose `type` IS set and is one the probe would itself call `'unsupported'` — " +
+        "`type:'sse'`, or `type:'stdio'` with a `command` other than `\"npx\"` (e.g. " +
+        "`{type:'stdio', command:'node'}`) — is `MCP_PROBE_FAILED`/`UNSUPPORTED_TRANSPORT`, the same " +
+        'code the probe itself would give, just returned before the probe (and the allowlist) are ' +
+        "ever reached. A real `{type:'stdio', command:'npx'}` config that happens to ALSO carry a " +
+        "`url` field is NOT caught by this — it is a supported transport — and reaches the allowlist " +
+        "and probe exactly as a `url`-less one would. A config with a `url` but NO `type` at all is " +
+        'also not covered by this: it still reaches the allowlist first, exactly as before.\n\n' +
         // issue #126: a stdio MCP server's own persisted state (not the engine's secrets/data
         // covered above — its OWN files) is shared host-wide unless the config opts into a
         // per-run private directory via ${run:dir}/${run:id}.
