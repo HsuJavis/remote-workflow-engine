@@ -1246,7 +1246,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
    *  meets them; `markRefused` shares `markFailed`'s advance, so a refused `cron` gets a fresh
    *  `nextFire` (ADR-031's coalescing — one row per due instant, not 1440 rows a day) and a refused
    *  `once` is CONSUMED. */
-  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string; createdRemote: boolean; createdBy?: string } | { refused: RefusalReason }> {
+  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string; version?: string; createdRemote: boolean; createdBy?: string } | { refused: RefusalReason }> {
     // The CLAIM, not the owner: `ownerOf` answers `createdBy` (the creating principal) as of the
     // Gate 6.5+7 round-2 authorization fix, so reading it here would resolve a PRINCIPAL ID as a
     // workflow name and refuse every authenticated user's schedule CLAIMED_WORKFLOW_MISSING.
@@ -1262,26 +1262,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // path and `Scheduler.trigger()`'s resident path already apply).
     const createdBy = status?.createdBy;
     if (claimedBy === null || claimedBy === '') return { refused: 'UNCLAIMED' };
-    let released;
+    // issue #160 (owner-approved 2026-10-07): a schedule CLAIMED through a version's `triggers[]`
+    // is PINNED to the highest version that still declares it (`boundVersionFor`) — it fires THAT
+    // version, never whatever `release` happens to point at. This REPLACES the old release-channel-
+    // membership gate (`NOT_IN_RELEASE`, see errors.ts's retired entry): a bound version either
+    // resolves (fires it) or throws because the version/workflow is gone
+    // (CLAIMED_WORKFLOW_MISSING below) — there is no third state left for that code to name. A
+    // trigger bound at CREATION (`schedule_create({workflow})`, now reachable only as a pre-v24
+    // legacy row — `declaresTrigger` false) never entered any version's `triggers[]`, so it keeps
+    // the pre-v24 behaviour: resolve the RELEASE channel, same as always.
+    const boundVersion = catalog.declaresTrigger(claimedBy, firing.id) ? catalog.boundVersionFor(claimedBy, firing.id) : null;
     try {
-      released = await catalog.resolve(claimedBy, { channel: 'release' });
+      await catalog.resolve(claimedBy, boundVersion !== null ? { version: boundVersion } : { channel: 'release' });
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (code === 'CHANNEL_UNPUBLISHED') return { refused: 'CHANNEL_UNPUBLISHED' };
       return { refused: 'CLAIMED_WORKFLOW_MISSING' };
     }
-    // NOT_IN_RELEASE: the workflow still exists and is published, but the RELEASED version no
-    // longer declares this trigger id. Two guards, and they are NOT the same guard twice (v24
-    // Gate 8, AF-2 / TASK-161):
-    //   - `triggers !== undefined` covers a genuine PRE-v24 version row, whose column did not exist;
-    //   - `declaresTrigger` covers the create-time binding door (`schedule_create({workflow})`):
-    //     a schedule bound that way never entered any version's `triggers[]`, so the release list
-    //     has no jurisdiction over it. v24 adjudication #8 (H-2, issue #56) CLOSED that door on the
-    //     tool surface — AF-5's "still shipped" is fixed — so this guard now covers PRE-v24 legacy
-    //     rows only; the rows exist, so the guard stays. Until AF-2, the first guard did this job by proxy because an empty declaration
-    //     was persisted as NULL — the exact conflation that made NOT_IN_RELEASE unreachable.
-    if (released.triggers !== undefined && !released.triggers.includes(firing.id) && catalog.declaresTrigger(claimedBy, firing.id)) return { refused: 'NOT_IN_RELEASE' };
-    return { workflow: claimedBy, createdRemote, ...(createdBy !== undefined ? { createdBy } : {}) };
+    return { workflow: claimedBy, ...(boundVersion !== null ? { version: boundVersion } : {}), createdRemote, ...(createdBy !== undefined ? { createdBy } : {}) };
   }
   ticker.start(() => {
     const due = tick(scheduler.all(), clock.now());
@@ -1310,7 +1308,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // 2026-09-30 (webhook B1): `principal` — `target.createdBy` (the trigger's CREATOR), same
         // fix as `Scheduler.trigger()`'s resident path and `WebhookRegistry.deliver()`'s webhook
         // path — the creator can now read a run their cron/once schedule started.
-        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.id }, origin: target.createdRemote ? 'remote' : 'local', principal: target.createdBy })
+        // issue #160: `version: target.version` — set only for a version-pinned trigger; `undefined`
+        // for a legacy create-time-bound one, same as before (falls back to `start()`'s own default).
+        .start({ name: target.workflow, version: target.version, args: firing.args, startedBy: { type: 'schedule', id: firing.id }, origin: target.createdRemote ? 'remote' : 'local', principal: target.createdBy })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was

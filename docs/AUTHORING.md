@@ -268,6 +268,8 @@ The normal loop: `workflow_register` a script under a name, `run_start({name, ve
 
 Registering a script that predates the v24 contract (or was never migrated) resolves `runnable:false` with `runnableReason: LEGACY_REREGISTER` — re-register it under the current contract; there is no legacy-resolution ladder. Omitting a currently-registered trigger from a new version does not release it (omission does not release) — deregister the trigger explicitly if you mean to stop it. A `once` trigger is consumed on its firing attempt — whether that attempt succeeds or is refused — and will not fire again; a refused `cron` firing instead gets a fresh future `nextFire` and tries again next time. Assets (skills/mcp) registered under an owner are shared across every version of that workflow name, not pinned to the version that first declared them.
 
+A trigger bound through `triggers:[id]` is PINNED to the HIGHEST-numbered version that declares it — it runs that version directly when it fires, regardless of what `release`/`beta` point at, and even while neither channel is published at all. Re-declaring the same id in a later registration moves the binding forward to that version; omitting it from a later version leaves the binding on the older version that still lists it (the "omission does not release" rule above). A trigger `workflow_deregister` releases is also DISABLED — a schedule needs `schedule_setEnabled({id, enabled:true})` after it is re-claimed to fire again; a disabled webhook has no re-enable call and answers every delivery `403 {code:TRIGGER_DISABLED}` until it is deleted and a new one is created.
+
 ## Authoring rules this engine enforces (refused with this code)
 
 - `NOT_TRIGGER_OWNER` — the caller does not own (did not create) this trigger

@@ -698,6 +698,16 @@ export class SqliteSchedulerPort {
     return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
   }
 
+  /** issue #160 (owner-approved 2026-10-07): deregister-only hygiene alongside `release()` — see
+   *  `TriggerClaimStore.disable`'s own docblock (mcp-facade.ts) for why. Idempotent, like `release`:
+   *  an already-disabled or unknown id is a no-op, never an error. Deliberately a BARE `enabled=0`
+   *  write, not `setEnabled()` — that method answers `TRIGGER_NOT_FOUND` for an unknown id, which
+   *  deregister's own release loop (iterating ids the catalog just reported as claimed) must never
+   *  surface as a deregister failure. */
+  disable(id: string): void {
+    this._db.prepare('UPDATE schedules SET enabled = 0 WHERE id = ?').run(id);
+  }
+
   /** Idempotent: releasing an id not claimed by `workflow` (including one already unclaimed) is a
    *  no-op, never an error — this is what lets compensation call `release` unconditionally on every
    *  id it attempted. */

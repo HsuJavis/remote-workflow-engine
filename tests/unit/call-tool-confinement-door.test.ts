@@ -31,7 +31,7 @@ function partialDeps(d: Record<string, unknown>): ToolDeps {
 const ANCHOR = new Date('2024-06-01T12:00:00.000Z');
 const B1_CLOCK: Clock = { now: () => ANCHOR.getTime(), isoNow: () => ANCHOR.toISOString() };
 function b1FakeCatalog() {
-  return { async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger(): boolean { return false; }, async exists() { return true; } };
+  return { async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger(): boolean { return false; }, boundVersionFor(): string | null { return null; }, async exists() { return true; } };
 }
 function b1FakeRunManager() {
   return { async start() { return 'run-x'; } };

@@ -1,23 +1,23 @@
 // IT-132 (v24 Gate 8 AF-2 / TASK-161, ARCH-098 + ARCH-099 + ADR-026, adjudication (v24) #7 G-2):
-// `triggers: []` stops being byte-identical to a pre-v24 `NULL`, so moving the `release` pointer
-// can finally UN-declare a trigger.
+// `triggers: []` stops being byte-identical to a pre-v24 `NULL`, so the per-version declaration
+// honestly says what each version claims.
 //
 // The defect: `workflow-catalog.ts:472` wrote `NULL` for any empty array. The facade always passes
 // an array, so a v24 row declaring `triggers: []` was indistinguishable on disk from a legacy row
-// that predates the column. Both the scheduler fire path (`server.ts:775`) and the webhook one
-// (`webhook-registry.ts:279`) gate their membership check on `released.triggers !== undefined` —
-// deliberately, so the pre-v24 create-time-binding door keeps working — so an empty declaration
-// skipped the check entirely. Consequence: register v1 with `triggers:[t1]`, register v2 with
-// `triggers:[]`, publish v2 to `release`, and t1 keeps firing v2 forever. `NOT_IN_RELEASE` was
-// unreachable and the one direction that REMOVES a trigger was never versioned.
+// that predates the column. ARCH-098's text ("both `NULL` **only on pre-v24 rows**") names the
+// first test in the same sentence: no post-migration row is written `NULL`.
 //
-// ARCH-098's text ("both `NULL` **only on pre-v24 rows**") names the first test in the same
-// sentence: no post-migration row is written `NULL`.
+// issue #160 (owner-approved 2026-10-07): the second `describe` below used to pin the OLD
+// release-channel-membership gate (`NOT_IN_RELEASE`) — "moving `release` off the declaring version
+// un-declares the trigger". That is retired: a trigger claimed through a version's `triggers[]` is
+// now PINNED to the HIGHEST version that still declares it (`WorkflowCatalog.boundVersionFor`) and
+// fires THAT version directly, regardless of what `release` points at (or whether anything is
+// published to `release` at all). See `errors.ts`'s retired `NOT_IN_RELEASE` entry and
+// `webhook-registry.ts`'s `deliver()` for the replacement logic.
 //
 // Mock policy (integration, DES-119): a real SQLite `WorkflowCatalog` and a real `WebhookRegistry`
 // over `:memory:`, wired to each other exactly as `server.ts` wires them. Only `RunManager` is a
-// spy — the assertion "t1 does NOT run v2" is precisely "start() was never called", which needs a
-// recording double and nothing else.
+// spy — it records both `name` and `version` so a test can prove WHICH version actually ran.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,6 +37,7 @@ let dir: string;
 let catalog: WorkflowCatalog;
 let registry: WebhookRegistry;
 let started: string[];
+let startedVersions: Array<string | undefined>;
 
 function rawDb(c: WorkflowCatalog): Database.Database {
   return (c as unknown as { _db: Database.Database })._db;
@@ -46,9 +47,10 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rwe-it132-'));
   catalog = new WorkflowCatalog(dir);
   started = [];
+  startedVersions = [];
   registry = new WebhookRegistry({
     clock: new SystemClock(),
-    runManager: { start: async (spec: { name?: string }) => { started.push(spec.name ?? '?'); return 'run-it135'; } },
+    runManager: { start: async (spec: { name?: string; version?: string }) => { started.push(spec.name ?? '?'); startedVersions.push(spec.version); return 'run-it135'; } },
     catalog,
     dbPath: ':memory:',
   });
@@ -96,10 +98,10 @@ describe('a v24 row is never written with NULL triggers (IT-132, AF-2, TASK-161)
   });
 });
 
-describe('moving `release` to a version that declares no triggers un-declares them (IT-132, AF-2)', () => {
+describe('issue #160: a version-claimed trigger fires the version it is BOUND to, never the release channel', () => {
   const WF = 'it132-fire';
 
-  it('v1 declares [t1], v2 declares [], release moves to v2 => NOT_IN_RELEASE and NO run', async () => {
+  it('v1 declares [t1], v2 declares [], release moves to v2 => t1 still fires v1 (its bound version), NOT v2', async () => {
     const created = await registry.create({});
     expect('webhookId' in created).toBe(true);
     const { webhookId, secret } = created as { webhookId: string; secret: string };
@@ -109,21 +111,22 @@ describe('moving `release` to a version that declares no triggers un-declares th
     // The webhook is claimed by the workflow, exactly as workflow_register's claim step leaves it.
     await registry.claim(webhookId, WF);
 
-    // Control: while v1 is released, the delivery fires for real. Without this, the refusal below
-    // could be green for any reason at all (bad signature, unclaimed row, missing workflow).
+    // Control: while v1 is released, the delivery fires for real.
     const admitted = await deliverSigned(webhookId, secret);
     expect(admitted.httpStatus).toBe(202);
     expect(started).toEqual([WF]);
+    expect(startedVersions).toEqual(['v1']);
 
-    // v2 declares NO triggers, and becomes the released version.
+    // v2 declares NO triggers and becomes the released version — but v1 is still the HIGHEST
+    // version that ever declared this id, so the trigger stays bound to v1 and keeps firing it.
     await catalog.register({ name: WF, script: SCRIPT, mermaid: MERMAID, triggers: [] });
     await catalog.publish(WF, 'v2', 'release', null);
 
-    const refused = await deliverSigned(webhookId, secret);
-    expect(refused.httpStatus, 'the trigger still fired a version that no longer declares it').toBe(409);
-    expect((refused as { code?: string }).code).toBe('NOT_IN_RELEASE');
-    expect(started, 't1 started a run for a version that un-declared it').toEqual([WF]); // still only the admitted one
-    expect(registry.get(webhookId)?.refusalCount).toBe(1);
+    const second = await deliverSigned(webhookId, secret);
+    expect(second.httpStatus, 'a version-bound trigger must keep running its bound version, not the release channel').toBe(202);
+    expect(started).toEqual([WF, WF]);
+    expect(startedVersions, 'fired v1 (its bound version) again, never v2').toEqual(['v1', 'v1']);
+    expect(registry.get(webhookId)?.refusalCount).toBe(0);
   });
 
   // The other half of the same rule, and the reason the storage fix alone is not the whole fix.
@@ -148,22 +151,28 @@ describe('moving `release` to a version that declares no triggers un-declares th
     expect(started).toEqual([WF2]);
   });
 
-  it('MIXED: a claimed-then-undeclared trigger is refused while a create-time-bound one on the SAME workflow fires', async () => {
+  it('MIXED: a version-claimed trigger keeps firing its bound version while a create-time-bound one on the SAME workflow fires the release channel', async () => {
     const WF3 = 'it132-mixed';
     const claimedHook = await registry.create({}) as { webhookId: string; secret: string };
     const createDoorHook = await registry.create({ workflow: WF3 }) as { webhookId: string; secret: string };
 
-    await catalog.register({ name: WF3, script: SCRIPT, mermaid: MERMAID, triggers: [claimedHook.webhookId] });
+    await catalog.register({ name: WF3, script: SCRIPT, mermaid: MERMAID, triggers: [claimedHook.webhookId] }); // v1
     await registry.claim(claimedHook.webhookId, WF3);
-    await catalog.register({ name: WF3, script: SCRIPT, mermaid: MERMAID, triggers: [] }); // v2 un-declares it
+    await catalog.register({ name: WF3, script: SCRIPT, mermaid: MERMAID, triggers: [] }); // v2 declares nothing new
     await catalog.publish(WF3, 'v2', 'release', null);
 
-    const refused = await deliverSigned(claimedHook.webhookId, claimedHook.secret);
-    expect(refused.httpStatus).toBe(409);
-    expect((refused as { code?: string }).code).toBe('NOT_IN_RELEASE');
+    // claimedHook is bound to v1 (the highest version that ever declared it) — it fires v1, not the
+    // v2 release, and is NOT refused.
+    const bound = await deliverSigned(claimedHook.webhookId, claimedHook.secret);
+    expect(bound.httpStatus).toBe(202);
+    expect(startedVersions).toEqual(['v1']);
 
+    // createDoorHook was bound at creation (never declared by any version) — it keeps resolving the
+    // release channel (currently v2) itself; no explicit `version` is passed to `start()` for it
+    // (same as before this fix — `undefined` lets admission resolve `release` on its own).
     const admitted = await deliverSigned(createDoorHook.webhookId, createDoorHook.secret);
     expect(admitted.httpStatus).toBe(202);
-    expect(started).toEqual([WF3]);
+    expect(started).toEqual([WF3, WF3]);
+    expect(startedVersions).toEqual(['v1', undefined]);
   });
 });

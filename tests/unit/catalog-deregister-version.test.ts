@@ -155,6 +155,23 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
     expect(cat.declaredTriggers('ut302-trig').has('in-both')).toBe(true);
   });
 
+  // issue #160 (owner-approved 2026-10-07): `boundVersionFor` — the method the fire path now calls
+  // instead of resolving `release`. Highest-numbered declarer wins; `null` when no version ever did.
+  it('boundVersionFor: the HIGHEST version declaring the id wins; re-declaring in a later version moves the binding forward; null when never declared', async () => {
+    const { cat } = catalog();
+    const { version: v1 } = await cat.insertVersion({ name: 'ut302-bound', script: "meta = {description:'x'};\nreturn 1;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice', triggers: ['t1'] });
+    expect(cat.boundVersionFor('ut302-bound', 't1')).toBe(v1);
+    expect(cat.boundVersionFor('ut302-bound', 'never-declared')).toBeNull();
+
+    // v2 declares NOTHING new — t1 stays bound to v1, the highest version that still lists it.
+    await cat.insertVersion({ name: 'ut302-bound', script: "meta = {description:'y'};\nreturn 2;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice', triggers: [] });
+    expect(cat.boundVersionFor('ut302-bound', 't1')).toBe(v1);
+
+    // v3 re-declares t1 — the binding moves FORWARD to v3.
+    const { version: v3 } = await cat.insertVersion({ name: 'ut302-bound', script: "meta = {description:'z'};\nreturn 3;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice', triggers: ['t1'] });
+    expect(cat.boundVersionFor('ut302-bound', 't1')).toBe(v3);
+  });
+
   it('every whole-name deregister() test stays green: unrelated to the new sibling method', async () => {
     const { cat } = catalog();
     await twoVersions(cat, 'ut302-whole');

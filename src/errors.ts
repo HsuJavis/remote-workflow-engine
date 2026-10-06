@@ -231,8 +231,18 @@ export const ERROR_CATALOG = {
   TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
   TRIGGER_ALREADY_CLAIMED: { see: 'workflow_authoring_guide', hint: 'this trigger id is already claimed by a different workflow' },
   UNCLAIMED: { see: null, hint: 'this trigger has not been claimed by any workflow; it will not fire' },
+  // issue #160 (owner-approved 2026-10-07): a webhook `workflow_deregister` disabled (see
+  // `TriggerClaimStore.disable`, mcp-facade.ts) now refuses delivery with this CODED reason instead
+  // of a bare, code-less 403 — "the webhook is disabled" previously carried no `code` at all.
+  TRIGGER_DISABLED: { see: null, hint: 'this trigger was disabled (its workflow was deregistered); delete it and create a new one, or re-enable it if it is a schedule' },
   CLAIMED_WORKFLOW_MISSING: { see: null, hint: 'the workflow this trigger is claimed by no longer resolves' },
-  NOT_IN_RELEASE: { see: null, hint: 'this trigger id is claimed but omitted from the currently released version' },
+  // issue #160 (owner-approved 2026-10-07): RETIRED from the fire path — a claimed trigger is now
+  // pinned to the version that declared it (`WorkflowCatalog.boundVersionFor`) and fires THAT
+  // version regardless of what `release` points at, so "omitted from the currently released
+  // version" is no longer a question either fire path ever asks. Left in `RefusalReason`/the
+  // catalog (never removed) only because it is a real `ErrorCode` a pre-existing caller could still
+  // reference; no code path produces it any more.
+  NOT_IN_RELEASE: { see: null, hint: 'retired (issue #160): a claimed trigger fires the version it is bound to, never a release-channel membership check' },
 
   // Run lifecycle
   RUN_NOT_FOUND: { see: null, hint: 'no run is recorded under this runId' },

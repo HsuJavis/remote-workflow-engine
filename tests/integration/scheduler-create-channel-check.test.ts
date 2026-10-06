@@ -94,16 +94,26 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     expect((await rowFor(id!))?.claimedBy).toBe('h4-unpublished');
   });
 
-  it('when that schedule comes due it is REFUSED CHANNEL_UNPUBLISHED, the refusal is recorded, and no run starts', async () => {
+  // issue #160 (owner-approved 2026-10-07): REWRITTEN — a trigger CLAIMED through a version's
+  // `triggers[]` is now PINNED to that version (`WorkflowCatalog.boundVersionFor`) and fires it
+  // directly; an explicit version resolves regardless of channel publish state
+  // (`resolveVersionRequest`'s rows 2-3 win over the channel rows), so "registered but never
+  // published to any channel" is no longer a reason to refuse a version-bound trigger. This case
+  // used to pin CHANNEL_UNPUBLISHED here — that was the exact owner-decision item issue #160 approved
+  // fixing: "a trigger bound to a specific version … must run the bound version".
+  it('it fires its BOUND version even though no channel is published at all', async () => {
     const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
     const id = ((created.result ?? created) as { id: string }).id;
     const reg = await call('workflow_register', { name: 'h4-unpublished-fire', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph LR', triggers: [id] });
     expect(reg.error, `claim: ${JSON.stringify(reg.error)}`).toBeUndefined();
+    const version = reg.result.version as string;
 
-    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0, 12000);
-    expect(row?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
-    expect(row?.lastRunId).toBeUndefined();
-    expect((await call('run_list', { workflow: 'h4-unpublished-fire' })).result ?? []).toEqual([]);
+    const row = await until(() => rowFor(id), (r) => r?.lastRunId !== undefined, 12000);
+    expect(row?.lastRunId, 'a version-bound trigger fires even with no published channel').toBeTruthy();
+    expect(row?.refusalCount ?? 0).toBe(0);
+    const runs = (await call('run_list', { workflow: 'h4-unpublished-fire' })).result as Array<{ scriptVersion?: string }>;
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.scriptVersion).toBe(version);
   }, 20000);
 
   // issue #103(f) (owner decision, supersedes this case's old "refused UNCLAIMED, recorded"
@@ -141,14 +151,15 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     expect(row?.refusalCount ?? 0).toBe(0);
   }, 20000);
 
-  // Issue #98 item 8: clearing a channel (`workflow_publish({version:null})`) must make a trigger
-  // bound to it refuse EXACTLY as it does for a channel that was never published — the fire path
-  // re-resolves the release pointer on every tick (this file's own header note: `resolveScheduleTarget`
-  // is a live re-check, not a value cached from claim/publish time), so a CLEARED channel is
-  // indistinguishable, at fire time, from one that was never published. A once-schedule (not a
-  // repeating cron) keeps this to a single ~3s wait, matching this file's other `kind:'once'` cases,
-  // rather than needing a live cron to fire twice a minute apart.
-  it('a channel CLEARED via workflow_publish({version:null}) BEFORE the due instant is refused CHANNEL_UNPUBLISHED exactly like never-published', async () => {
+  // issue #160 (owner-approved 2026-10-07): REWRITTEN — clearing the release channel no longer
+  // touches a version-bound trigger at all: it was never resolving `release` in the first place
+  // (`resolveScheduleTarget` resolves `{version: boundVersion}` directly), so it keeps firing its
+  // bound version exactly as before the clear. This used to pin CHANNEL_UNPUBLISHED here (issue
+  // #98 item 8's "clearing a channel must refuse a trigger bound to it exactly like never-published")
+  // — that premise (a claimed trigger is bound to the CHANNEL) is exactly what issue #160 overturns:
+  // the trigger was bound to the VERSION all along, and `release` pointing anywhere, nowhere, or
+  // being cleared mid-flight never governs it.
+  it('clearing the release channel via workflow_publish({version:null}) does not affect a version-bound trigger — it still fires its bound version', async () => {
     const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
     expect(created.error, `create: ${JSON.stringify(created.error)}`).toBeUndefined();
     const id = ((created.result ?? created) as { id: string }).id;
@@ -163,8 +174,8 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     expect(cleared.error, `clear: ${JSON.stringify(cleared.error)}`).toBeUndefined();
     expect((cleared.result as { version?: string | null } | undefined)?.version).toBeNull();
 
-    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0, 12000);
-    expect(row?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
-    expect(row?.lastRunId).toBeUndefined();
+    const row = await until(() => rowFor(id), (r) => r?.lastRunId !== undefined, 12000);
+    expect(row?.lastRunId, 'a version-bound trigger fires even after its release channel is cleared').toBeTruthy();
+    expect(row?.refusalCount ?? 0).toBe(0);
   }, 20000);
 });

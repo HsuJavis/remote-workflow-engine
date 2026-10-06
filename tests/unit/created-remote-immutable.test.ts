@@ -20,7 +20,7 @@ import type { Clock } from '../../src/clock.js';
 
 const ANCHOR = new Date('2026-09-25T00:00:00.000Z');
 const CLOCK: Clock = { now: () => ANCHOR.getTime(), isoNow: () => ANCHOR.toISOString() };
-const fakeCatalog = () => ({ async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger: () => false });
+const fakeCatalog = () => ({ async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger: () => false, boundVersionFor: () => null });
 const fakeRunManager = () => ({ async start() { return 'run-1'; } });
 
 type ClaimOutcome = 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';

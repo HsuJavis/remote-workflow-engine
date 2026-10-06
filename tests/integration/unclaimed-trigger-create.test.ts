@@ -167,9 +167,13 @@ describe('deregister releases a claimed trigger — no phantom fire (IT-128, D-1
     const dereg = await call('workflow_deregister', { name });
     expect(dereg.error, `deregister: ${JSON.stringify(dereg.error)}`).toBeUndefined();
     expect(dereg.result.releasedTriggers, 'the claimed trigger was not reported as released').toContain(id);
-    const row = ((await call('schedule_list')).result as Array<{ id: string; claimedBy?: string | null; workflow?: string | null }>).find((r) => r.id === id);
+    const row = ((await call('schedule_list')).result as Array<{ id: string; claimedBy?: string | null; workflow?: string | null; enabled?: boolean }>).find((r) => r.id === id);
     expect(row?.claimedBy ?? null, 'claimedBy still points at the deleted workflow').toBeNull();
     expect(row?.workflow ?? null, 'the legacy workflow column still points at the deleted workflow — the fire path falls back to it').toBeNull();
+    // issue #160 (owner-approved 2026-10-07): deregister must DISABLE a released trigger, not just
+    // release its claim — otherwise it sits `enabled:true`, live for whatever claims it next, with
+    // no explicit re-enable step in between.
+    expect(row?.enabled, 'deregister released the claim but left the trigger enabled').toBe(false);
 
 
     // Someone re-registers the freed name and publishes it.
