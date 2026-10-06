@@ -407,9 +407,13 @@ function numberWord(n: number): string {
 // or (when the posture is not known at render time) states both.
 const HOST_PATH_GRANTS_CONFINED =
   '`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as ' +
-  "an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a " +
-  'script that shells out to a global cache sees a failed command, not a special error your ' +
-  'script can branch on.\n\n' +
+  // issue #159 (DOC): the confinement mechanism denies by mounting the denied region READ-ONLY
+  // (bwrap/srt — see gateway/bash-confinement.ts's own "Read-only file system" comments), which
+  // surfaces at the syscall level as EROFS, not an EACCES permission-bit denial. Corrected from
+  // the previous (wrong) "an ordinary EACCES" claim.
+  "an ordinary `EROFS` (read-only filesystem) inside the agent's own tool result, not as an " +
+  'engine refusal — a script that shells out to a global cache sees a failed command, not a ' +
+  'special error your script can branch on.\n\n' +
   'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
   "something a script requests — the list applied to a given run appears in that run's own " +
   '`agent.confinement` log line.';
@@ -1030,7 +1034,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // guide that always asserted confinement was a false claim on a host measured 'unconfined'
       // (this one). The grant LIST itself stays static (no GuideCeilings.grantedHostPaths, no new
       // ServerConfig hop — the owner left that half of DES-258's question unresolved on purpose).
-      // No GUIDE_EXAMPLES entry either way (an EACCES happens inside a tool result the workflow
+      // No GUIDE_EXAMPLES entry either way (an EROFS happens inside a tool result the workflow
       // script never sees, so an example demonstrating one would teach an invalid example).
       hostPathGrantsBody(ceilings.confinementPosture),
     ),

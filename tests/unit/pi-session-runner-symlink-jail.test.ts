@@ -107,3 +107,60 @@ describe('walkDir (find/Glob) — never traverses or lists a symlinked directory
     expect(out).toEqual([]); // the only entry is the symlink itself, which is skipped outright
   });
 });
+
+describe('assertJailed — refusal message names the workspace root, never the resolved host path (issue #159, B11)', () => {
+  // docs/AUTHORING.md / authoring-guide.ts promise: "the refusal names the workspace root" — not
+  // the engine's internal data-directory layout. pi's own tool layer (read.js et al.) resolves a
+  // relative model-typed path against cwd BEFORE calling our operations hooks, so assertJailed never
+  // sees the model's original (possibly relative) candidate — only the fully-resolved absolute path.
+  // The fix displays that path RELATIVE TO THE WORKSPACE ROOT instead of the host-absolute form.
+  it('a plain ../ escape names the root, not the host-absolute resolved path', () => {
+    const base = tmp('rwe-pi-jail-b11-');
+    const ws = join(base, 'ws'); mkdirSync(ws);
+    const outside = join(ws, '..', 'outside.txt'); // what the caller passes today: already resolved
+    let message = '';
+    try {
+      assertJailed(outside, config(ws), deps);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/PATH_ESCAPES_WORKSPACE/);
+    expect(message).toContain(ws); // names the workspace root, as promised
+    expect(message).not.toContain(outside); // never the resolved host-absolute escape target
+  });
+
+  it('a dangling symlink escape never leaks the landing (realpath-resolved) host path either', () => {
+    const base = tmp('rwe-pi-jail-b11sym-');
+    const ws = join(base, 'ws'); mkdirSync(ws);
+    const secretDir = join(base, 'secret-elsewhere'); mkdirSync(secretDir);
+    const landingPath = join(secretDir, 'real.txt');
+    writeFileSync(landingPath, 'x');
+    symlinkSync(landingPath, join(ws, 'link'));
+    let message = '';
+    try {
+      assertJailed(join(ws, 'link'), config(ws), deps);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/PATH_ESCAPES_WORKSPACE/);
+    expect(message).toContain(ws);
+    expect(message).not.toContain(secretDir); // the symlink's landing directory never leaks
+    expect(message).not.toContain(landingPath);
+  });
+
+  it('PROJECT_CONFIG_PROTECTED refusal is consistent: names the root, not the host-absolute path', () => {
+    const base = tmp('rwe-pi-jail-b11cfg-');
+    const ws = join(base, 'ws'); mkdirSync(ws);
+    const protectedAbs = join(ws, '.claude', 'settings.json');
+    const cfg = config(ws);
+    cfg.protectedFiles = [protectedAbs];
+    let message = '';
+    try {
+      assertJailed(protectedAbs, cfg, deps);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/PROJECT_CONFIG_PROTECTED/);
+    expect(message).toContain(ws);
+  });
+});

@@ -346,6 +346,21 @@ export async function walkDir(dir: string, base: string, out: string[], ignore: 
  *  containment check below, never which root `config.protectedFiles` or a write op is checked
  *  against. `config.cwd` ITSELF stays checked unconditionally either way — `skillReadRoots` only ever
  *  ADDS an extra allowed root for a read, never removes `cwd`. */
+/** Issue #159 (B11): pi's own tool layer resolves a relative model-typed path against `cwd` BEFORE
+ *  calling the operations hooks below (confirmed against `@earendil-works/pi-coding-agent`'s
+ *  `read.js`: `ops.readFile(absolutePath)` — never the model's original candidate), so by the time
+ *  `assertJailed` runs, the pre-resolution candidate is already gone; there is nothing to echo back
+ *  but the resolved absolute path. Showing that path verbatim leaks the engine's internal
+ *  data-directory layout (e.g. `/home/rwe/.local/share/rwe-data/workflows/<wf>/runs/...`) instead of
+ *  the workspace-root-relative view the authoring guide promises ("the refusal names the workspace
+ *  root"). Displaying the path RELATIVE TO `root` instead gives the same actionable information (how
+ *  far outside the workspace the path falls, same `../`-counting shape a model already reasons about
+ *  for its own relative paths) without naming anything above the shared ancestor.
+ */
+function describeRelativeToRoot(root: string, absolute: string): string {
+  return relative(root, absolute);
+}
+
 export function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps, opts?: { readOnly?: boolean }): void {
   const root = resolve(config.cwd);
   const target = resolve(absolutePath);
@@ -358,12 +373,12 @@ export function assertJailed(absolutePath: string, config: PiChildConfig, deps: 
   const containedIn = (r: string): boolean => deps.isPathContained(target, r) && deps.isPathContained(landing, r);
   const skillReadRoots = opts?.readOnly ? (config.skillReadRoots ?? []) : [];
   if (!containedIn(root) && !skillReadRoots.some(containedIn)) {
-    throw new Error(`PATH_ESCAPES_WORKSPACE: "${absolutePath}" is outside this run's workspace`);
+    throw new Error(`PATH_ESCAPES_WORKSPACE: "${describeRelativeToRoot(root, target)}" must resolve inside this run's workspace, ${root}`);
   }
   for (const protectedPath of config.protectedFiles) {
     const resolvedProtected = resolve(protectedPath);
     if (deps.isPathContained(target, protectedPath) || deps.isPathContained(landing, protectedPath) || target === resolvedProtected || landing === resolvedProtected) {
-      throw new Error(`PROJECT_CONFIG_PROTECTED: "${absolutePath}" is a protected path`);
+      throw new Error(`PROJECT_CONFIG_PROTECTED: "${describeRelativeToRoot(root, target)}" is a protected path in this run's workspace, ${root}`);
     }
   }
 }
