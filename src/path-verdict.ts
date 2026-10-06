@@ -72,3 +72,40 @@ export function pathVerdict(
   if (!isPathContained(abs, root, realpath)) return { kind: 'reject', reason: 'SYMLINK' };
   return { kind: 'ok', abs };
 }
+
+// Issue #154 B4: a workflow NAME (unlike the multi-segment relative paths `lexicalVerdict` above
+// decides) is a single bare path SEGMENT — it is joined directly as `join(workRoot, 'workflows',
+// name)` (workflow-catalog.ts's `workFolder`, which becomes the forked sandbox child's own `cwd`)
+// and, separately, as `join(assetRoot, name, 'skill'|'mcp', ...)` (asset-sync.ts). The ONLY check
+// either site had was a case-sensitive `rwe-` prefix (RESERVED_PREFIX, above) — nothing rejected an
+// empty name, whitespace, `..`, an embedded `/` (which turns one "name" into several real path
+// segments, some of them `..`), or an unbounded length. A name failing this check can never become a
+// `/`-free, non-`..`, non-empty single path segment, so joining it can never add or remove a
+// directory level from what the caller intended — closing the escape at its ONE source rather than
+// chasing every join site that uses a name downstream.
+//
+// Deliberately NOT `params/contract.ts`'s `validateNameArray` charset (`/^[A-Za-z0-9][\w.-]*$/`,
+// alnum-first, no spaces/punctuation) — an early version of this function reused that exact pattern
+// and broke a real, already-registered naming convention (tests/integration/guide-examples-register.
+// test.ts registers workflows named e.g. `guide-nested workflow() black box`: spaces and parens,
+// never a security concern on any target filesystem). The actual escape vector is narrower than
+// "an unusual character": only `/` (and `\`, Windows) can turn one name into multiple real path
+// segments, and only a name that resolves to exactly `.`/`..` can walk up a level with NO separator
+// at all. Punctuation, spaces, unicode — anything else — is just a single, harmless path-segment
+// NAME, whatever a filesystem makes of it.
+/** Generous — real workflow names are short; this only needs to rule out pathological input before
+ *  it reaches a filesystem call (ENAMETOOLONG territory starts well above this on every target OS). */
+export const MAX_BARE_NAME_LENGTH = 128;
+
+/** True for a non-empty, length-bounded name with no leading/trailing whitespace that contains
+ *  neither path separator and is not exactly `.`/`..` — safe to join as exactly one path segment
+ *  with no risk of adding, removing, or escaping a directory level. Deliberately silent on the
+ *  `rwe-` reserved prefix: callers that care (workflow_register) check `RESERVED_PREFIX` separately,
+ *  as a distinct refusal code from "malformed" (`INVALID_NAME`). */
+export function isValidBareName(name: string): boolean {
+  if (typeof name !== 'string' || name.length === 0 || name.length > MAX_BARE_NAME_LENGTH) return false;
+  if (name.trim() !== name) return false; // rejects '', whitespace-only, and leading/trailing padding
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false;
+  if (name === '.' || name === '..') return false;
+  return true;
+}
