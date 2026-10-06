@@ -157,11 +157,58 @@ function checkTopLevelFunctionWrapper(body: string, program: { body?: unknown[] 
  *  cannot see through (an assignment, an argument, a `.call`/`.bind` property access, a bare
  *  expression statement). Over-flags only an extremely unlikely intentional shadow of one of these
  *  five names for an unrelated purpose — the same fail-closed bias this codebase's other scanners
- *  already take (e.g. issue #154 B2's spread/shorthand refusal) over silently accepting a bypass. */
+ *  already take (e.g. issue #154 B2's spread/shorthand refusal) over silently accepting a bypass.
+ *
+ *  #157 DOC phase-alias (Gate 8 v2 re-review): `x.agent`/`x.phase` is correctly ignored above as "an
+ *  unrelated property on some unrelated object" — EXCEPT when `x` is `globalThis` or (top-level, a
+ *  classic, non-strict script body) `this`, both of which ARE the sandbox's own global object inside
+ *  the vm context. `const P = globalThis.phase; P('undeclared-lane');` reached a real, undeclared
+ *  phase lane through a real engine — the registration-time TEXT scanners (`AGENT_CALL_RE` et al.)
+ *  all use a `(?<!\.)` negative lookbehind specifically to let `x.agent(` through as presumed-
+ *  unrelated, so a `globalThis.`/`this.`-qualified reference is invisible to them by the SAME design
+ *  choice that makes `x.agent` safe to ignore for every OTHER `x`. Flagged here regardless of
+ *  position (including as a direct callee — `globalThis.agent(...)` must still be refused, since the
+ *  text scanners cannot see it either way); a non-literal computed access (`globalThis['ag'+'ent']`)
+ *  cannot be resolved to a name statically and fails CLOSED rather than silently passing.
+ *
+ *  #154 B2 (Gate 8 v2 re-review): the previously-exempted "direct callee of its own call" shape is
+ *  now ALSO required to be the exact textual form the registration-time scanners can see — `name(`
+ *  with at most PLAIN WHITESPACE in between, optional chaining excluded. `agent?.('a', {...extra})`
+ *  dispatched with an options object whose spread-smuggled keys (`allowedTools`, `timeoutMs`, …) were
+ *  never examined by `scanAgentCalls`, because `AGENT_CALL_RE` (`/(?<!\.)\bagent\s*\(/`) requires
+ *  `\s*\(` immediately after the identifier and `?.` is neither whitespace nor `(`. The same gap
+ *  hides `(agent)(...)` (the identifier is followed by `)`, not `(` — parentheses are not nodes in
+ *  the AST, so this is otherwise indistinguishable from a direct call) and `agent/**\/(...)` (a
+ *  comment, not whitespace, between the name and the paren). Dynamic construction
+ *  (`Function('return agent')()`, `eval(...)`, `globalThis['ag'+'ent']`) stays an acknowledged,
+ *  undocumented-here residual — no static scan over the ORIGINAL script text can see into a string
+ *  evaluated as a separate program; the owner-decision write-up in this fix's report covers it. */
 function checkSandboxApiAliasing(body: string, root: Record<string, unknown>): ScriptCheckError | null {
-  let found: { name: string; line: number; source?: string } | null = null;
+  let found: { name: string; line: number; source?: string; hidden?: boolean } | null = null;
   walkWithParent(root, null, null, (n, parent, key) => {
-    if (found || n['type'] !== 'Identifier' || typeof n['name'] !== 'string' || !CALLABLE_API_NAMES.has(n['name'] as string)) return;
+    if (found) return;
+
+    if (n['type'] === 'MemberExpression') {
+      const obj = n['object'] as Record<string, unknown> | undefined;
+      const prop = n['property'] as Record<string, unknown> | undefined;
+      const computed = n['computed'] === true;
+      const isGlobalBase = !!obj && ((obj['type'] === 'Identifier' && obj['name'] === 'globalThis') || obj['type'] === 'ThisExpression');
+      if (isGlobalBase) {
+        const literalName =
+          !computed && prop?.['type'] === 'Identifier' ? (prop['name'] as string)
+          : computed && prop?.['type'] === 'Literal' && typeof prop['value'] === 'string' ? (prop['value'] as string)
+          : undefined;
+        const isApiName = literalName !== undefined && CALLABLE_API_NAMES.has(literalName);
+        if (isApiName || (computed && literalName === undefined)) {
+          const start = typeof n['start'] === 'number' ? (n['start'] as number) : 0;
+          const line = body.slice(0, start).split('\n').length;
+          found = { name: literalName ?? '(dynamic property access)', line, source: body.split('\n')[line - 1]?.trim() };
+          return;
+        }
+      }
+    }
+
+    if (n['type'] !== 'Identifier' || typeof n['name'] !== 'string' || !CALLABLE_API_NAMES.has(n['name'] as string)) return;
     if (!parent) return;
     const pType = parent['type'];
     // Binding / non-value positions — not a reference to the sandbox global at all.
@@ -171,23 +218,156 @@ function checkSandboxApiAliasing(body: string, root: Record<string, unknown>): S
     if (pType === 'CatchClause' && key === 'param') return;
     if (pType === 'Property' && key === 'key' && parent['computed'] !== true) return;
     if (pType === 'MemberExpression' && key === 'property' && parent['computed'] !== true) return;
-    // The one ALLOWED value-reference shape: the direct callee of its own call.
-    if ((pType === 'CallExpression' || pType === 'NewExpression') && key === 'callee') return;
+    // The one ALLOWED value-reference shape: the direct callee of its own call — but only when this
+    // call form is the exact one the registration-time TEXT scanners can see (see #154 B2 doc above).
+    if ((pType === 'CallExpression' || pType === 'NewExpression') && key === 'callee') {
+      const isOptional = parent['optional'] === true;
+      const nEnd = typeof n['end'] === 'number' ? (n['end'] as number) : undefined;
+      const tailIsPlainCall = nEnd !== undefined && /^\s*\(/.test(body.slice(nEnd));
+      if (!isOptional && tailIsPlainCall) return;
+      const start = typeof n['start'] === 'number' ? (n['start'] as number) : 0;
+      const line = body.slice(0, start).split('\n').length;
+      found = { name: n['name'] as string, line, source: body.split('\n')[line - 1]?.trim(), hidden: true };
+      return;
+    }
     const start = typeof n['start'] === 'number' ? (n['start'] as number) : 0;
     const line = body.slice(0, start).split('\n').length;
     found = { name: n['name'] as string, line, source: body.split('\n')[line - 1]?.trim() };
   });
   if (!found) return null;
-  const f = found as { name: string; line: number; source?: string };
+  const f = found as { name: string; line: number; source?: string; hidden?: boolean };
+  if (f.hidden) {
+    return {
+      code: 'SCRIPT_INVALID',
+      message:
+        `\`${f.name}\` is called at line ${f.line}${f.source ? `: \`${f.source}\`` : ''} through a form registration-time scanning cannot read — optional chaining ` +
+        `(\`${f.name}?.(\`), a parenthesized callee (\`(${f.name})(\`), or a comment between the name and \`(\` all hide the call from the scan that looks for the ` +
+        `literal text \`${f.name}(\`. Call \`${f.name}(...)\` plainly — see workflow_authoring_guide.`,
+      detail: { field: 'script', line: f.line, ...(f.source ? { source: f.source } : {}), api: f.name },
+    };
+  }
   return {
     code: 'SCRIPT_INVALID',
     message:
       `\`${f.name}\` is referenced at line ${f.line}${f.source ? `: \`${f.source}\`` : ''} without being called directly — assigning it to a variable, passing it as a value, ` +
-      `or reaching it through \`.call\`/\`.bind\`/\`.apply\` hides the call from registration-time scanning (the scan looks for \`${f.name}(\`, not every alias that could ` +
-      `reach it). Call \`${f.name}(...)\` directly — see workflow_authoring_guide.`,
+      `reaching it through \`.call\`/\`.bind\`/\`.apply\`, or qualifying it with \`globalThis.\`/\`this.\` (the sandbox global itself, under another name) hides the call ` +
+      `from registration-time scanning (the scan looks for \`${f.name}(\`, not every alias that could reach it). Call \`${f.name}(...)\` directly — see workflow_authoring_guide.`,
     detail: { field: 'script', line: f.line, ...(f.source ? { source: f.source } : {}), api: f.name },
   };
 }
+
+/** Total occurrence count of each Identifier NAME across the whole script — every position, binding
+ *  sites included, with no scope resolution at all (a deliberately approximate census, not a real
+ *  reference-vs-declaration analysis — see `checkAgentCallReachability`'s own doc for why this
+ *  specific approximation is the right tradeoff here). */
+function countIdentifierOccurrences(root: Record<string, unknown>): Map<string, number> {
+  const counts = new Map<string, number>();
+  walkWithParent(root, null, null, (n) => {
+    if (n['type'] === 'Identifier' && typeof n['name'] === 'string') {
+      const name = n['name'] as string;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  });
+  return counts;
+}
+
+/** `true` when `node`'s subtree contains a DIRECT `agent(`/`phase(` call (bare-Identifier callee) at
+ *  ANY depth — including inside further-nested function literals, deliberately: a dead outer wrapper
+ *  makes everything written inside it dead too, however many layers of closure separate the two. */
+function containsDirectAgentOrPhaseCall(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some((item) => containsDirectAgentOrPhaseCall(item));
+  const n = node as Record<string, unknown>;
+  if (n['type'] === 'CallExpression') {
+    const callee = n['callee'] as Record<string, unknown> | undefined;
+    if (callee?.['type'] === 'Identifier' && (callee['name'] === 'agent' || callee['name'] === 'phase')) return true;
+  }
+  for (const k of Object.keys(n)) {
+    if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue;
+    const val = n[k];
+    if (val && typeof val === 'object' && containsDirectAgentOrPhaseCall(val)) return true;
+  }
+  return false;
+}
+
+/** Issue #154 B1 (CRITICAL, re-opened by a Gate 8 v2 re-review): `checkTopLevelFunctionWrapper`
+ *  above refuses a top-level `function`/`async function` STATEMENT outright, but an agent()/phase()
+ *  call wrapped in any OTHER function shape that is never actually invoked — an arrow assigned to a
+ *  `const` with no call anywhere (`const main = async () => { phase(...); await agent(...) };`, no
+ *  `main()` anywhere in the script — the exact real-engine repro), or a `function` DECLARATION nested
+ *  inside a block rather than at the top level (`{ async function main(){...} }`, likewise never
+ *  called — also a real-engine repro) — is still syntactically legal, still a direct `agent(`/
+ *  `phase(` call the text scanners find and count as live, and still never actually runs at run time:
+ *  the wrapper is declared but nothing in the script ever invokes it. The result is a workflow that
+ *  registers clean (every static check believes the call is live) and then RUNS to "completed" with
+ *  zero agents dispatched, no result, and no warning.
+ *
+ *  Rule, deliberately a CENSUS rather than a reachability analysis (two over-strict scope-aware
+ *  versions of this check were tried and discarded during this fix — see the git history on this
+ *  function — because they each refused a real, pre-existing, documented authoring pattern the first
+ *  time they met one: `thunks.push(async () => agent(...))`, an accumulator array built across a
+ *  loop, and `lenses.map((lens) => () => agent(...))`, a thunk array built by `.map()` — BOTH used by
+ *  this codebase's own test fixtures and the authoring guide's own worked example. Any shape-based
+ *  rule for "this function is reachable" kept missing another legitimate shape): for every function
+ *  bound to a NAME — a `function NAME(){...}` declaration (wherever it is nested) or a `const`/`let
+ *  NAME = function/arrow` — whose body contains a direct `agent(`/`phase(` call, check whether `NAME`
+ *  is referenced ANYWHERE ELSE in the entire script (a plain identifier-text census, no scope
+ *  resolution). Zero other occurrences means the binding is provably decorative — nothing in the
+ *  script could ever reach it, by any mechanism — so it is refused. ANY other occurrence, however
+ *  reached (called, passed to `.map()`/`.push()`/`parallel()`/`pipeline()`, stored on an object,
+ *  anything), is accepted: deliberately permissive, because every real false-positive found while
+ *  building this check came from trying to enumerate "the" legitimate shapes instead of asking the
+ *  one question that actually matters for the exploit this fixes — is this name decorative or not.
+ *
+ *  An INLINE, unnamed function (an arrow or function expression that is not the direct initializer of
+ *  a `const`/`let`) is never checked here at all: by construction it is already somewhere a consumer
+ *  can reach it (an array element, a `.map()`/`.push()` argument, a `parallel()`/`pipeline()` argument,
+ *  an IIFE) — the ONE way an unnamed function literal becomes truly unreachable (a bare, discarded
+ *  expression statement) is left as a documented residual, the same "no reachability analysis" scope
+ *  line `checkTopLevelFunctionWrapper` already draws, not a new gap this fix introduces. Likewise
+ *  dead code reached only via control flow (`if (false) { agent(...) }`) is out of scope — it is not
+ *  a function at all, so there is no binding name to census. */
+function checkAgentCallReachability(body: string, root: Record<string, unknown>): ScriptCheckError | null {
+  const counts = countIdentifierOccurrences(root);
+  let found: { name: string; line: number; source?: string } | null = null;
+
+  walkWithParent(root, null, null, (n, parent, key) => {
+    if (found) return;
+    let name: string | undefined;
+    if (n['type'] === 'FunctionDeclaration') {
+      const id = n['id'] as Record<string, unknown> | undefined;
+      if (id?.['type'] === 'Identifier') name = id['name'] as string;
+    } else if (
+      (n['type'] === 'FunctionExpression' || n['type'] === 'ArrowFunctionExpression') &&
+      parent?.['type'] === 'VariableDeclarator' &&
+      key === 'init'
+    ) {
+      const id = parent['id'] as Record<string, unknown> | undefined;
+      if (id?.['type'] === 'Identifier') name = id['name'] as string;
+    }
+    if (name === undefined) return;
+    if ((counts.get(name) ?? 0) > 1) return; // referenced somewhere besides its own binding — accepted
+    if (!containsDirectAgentOrPhaseCall(n['body'])) return; // no agent()/phase() call — nothing to refuse
+
+    const start = typeof n['start'] === 'number' ? (n['start'] as number) : 0;
+    const line = body.slice(0, start).split('\n').length;
+    found = { name, line, source: body.split('\n')[line - 1]?.trim() };
+  });
+
+  if (!found) return null;
+  const f = found as { name: string; line: number; source?: string };
+  return {
+    code: 'SCRIPT_INVALID',
+    message:
+      `\`${f.name}\` at line ${f.line}${f.source ? `: \`${f.source}\`` : ''} wraps an agent()/phase() call but is never referenced anywhere ` +
+      `else in the script — not called, not passed to anything, not stored anywhere. Registration-time scanning counts the \`agent(\`/\`phase(\` call ` +
+      `inside it as live because it can read the call site, but a binding nothing ever reaches will never actually run, producing a silently incomplete ` +
+      `result at run time. Call \`${f.name}(...)\` (directly, or pass it to parallel()/pipeline()), or inline the call at the script's own top level — ` +
+      'see workflow_authoring_guide.',
+    detail: { field: 'script', line: f.line, ...(f.source ? { source: f.source } : {}), api: f.name },
+  };
+}
+
 
 export function validateScriptEntry(
   script: string,
@@ -220,6 +400,10 @@ export function validateScriptEntry(
       if (wrapperErr) errors.push(wrapperErr);
       const aliasErr = checkSandboxApiAliasing(body, ast as unknown as Record<string, unknown>);
       if (aliasErr) errors.push(aliasErr);
+      if (errors.length === 0) {
+        const reachabilityErr = checkAgentCallReachability(body, ast as unknown as Record<string, unknown>);
+        if (reachabilityErr) errors.push(reachabilityErr);
+      }
     } catch {
       // acorn disagreeing with V8 on a script V8 already accepted is not expected in practice; fail
       // OPEN here specifically (not closed) — the vm.Script check above is the authoritative parse

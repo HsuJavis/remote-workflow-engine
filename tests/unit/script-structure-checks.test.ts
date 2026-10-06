@@ -99,4 +99,96 @@ describe('#154 B1 (phase-alias dup): a non-call reference to agent/phase/paralle
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.errors[0]!.code).toBe('PARSE_ERROR');
   });
+
+  // #157 DOC phase-alias (Gate 8 v2 re-review): `globalThis.phase`/`this.agent` ARE the sandbox
+  // global under another name — the `x.agent` exemption above only holds for `x` that is NOT the
+  // sandbox global itself. Confirmed through a real engine: `const P = globalThis.phase;
+  // P('undeclared-lane');` registered clean and ran to completion with an undeclared phase lane.
+  describe('#157 DOC phase-alias: globalThis.<api>/this.<api> is the sandbox global, not an unrelated property', () => {
+    const CASES: Array<[string, string]> = [
+      ['globalThis.phase aliased then called', "const P = globalThis.phase; P('p1'); return 1;"],
+      ['globalThis.agent called directly (still invisible to the text scanners, which exclude anything preceded by `.`)', "return await globalThis.agent('a', {});"],
+      ['this.agent aliased then called (top-level `this` is the sandbox global in a classic script)', "const A = this.agent; return await A('a', {});"],
+      ['globalThis computed string-literal access', "const P = globalThis['phase']; P('p1'); return 1;"],
+    ];
+    for (const [label, script] of CASES) {
+      it(`refuses: ${label}`, () => {
+        const r = validateScriptEntry(script);
+        expect(r.ok, `expected refusal for: ${script}`).toBe(false);
+        if (!r.ok) expect(r.errors[0]!.code).toBe('SCRIPT_INVALID');
+      });
+    }
+
+    it('an unrelated object\'s .agent property is still NOT flagged (globalThis/this only, no over-refusal)', () => {
+      const script = "const x = { agent: 1 };\nreturn x.agent;";
+      const r = validateScriptEntry(script);
+      expect(r.ok).toBe(true);
+    });
+  });
+
+  // #154 B2 (Gate 8 v2 re-review): a call form the registration-time TEXT scanners (`AGENT_CALL_RE`
+  // et al., which require the literal substring `name(` with at most plain whitespace in between)
+  // cannot see, even though the AST alias-check's OLD "direct callee" exemption let it straight
+  // through. Confirmed through a real engine: `agent?.('a', {prompt, ...extra})` dispatched with a
+  // spread-smuggled options object (`allowedTools`/`timeoutMs`/`retries`) that no static check — not
+  // `AGENT_OPTS_SPREAD`, not the mermaid tool list, not the BASH_* checks — ever examined, because
+  // none of them ever saw this call at all.
+  describe('#154 B2: a call form hidden from registration-time text scanning is refused, not silently allowed', () => {
+    const CASES: Array<[string, string]> = [
+      ['optional chaining (`agent?.(`)', "return await agent?.('a', {});"],
+      ['parenthesized callee (`(agent)(`)', "return await (agent)('a', {});"],
+      ['a block comment between the name and the paren', "return await agent/* hide */('a', {});"],
+    ];
+    for (const [label, script] of CASES) {
+      it(`refuses: ${label}`, () => {
+        const r = validateScriptEntry(script);
+        expect(r.ok, `expected refusal for: ${script}`).toBe(false);
+        if (!r.ok) expect(r.errors[0]!.code).toBe('SCRIPT_INVALID');
+      });
+    }
+
+    it('plain whitespace before the paren is NOT flagged (the text scanners already tolerate `\\s*`, no over-refusal)', () => {
+      const script = "return await agent ('a', { prompt: 'OK' });";
+      const r = validateScriptEntry(script);
+      expect(r.ok).toBe(true);
+    });
+  });
+});
+
+// Issue #154 B1 (re-opened by a Gate 8 v2 re-review): `checkTopLevelFunctionWrapper` only refuses a
+// top-level `function`/`async function` STATEMENT — an arrow assigned to a `const` and never called,
+// or a `function` DECLARATION nested inside a block (not at the top level) and never called, both
+// still registered clean through a real engine and ran to "completed" with zero agents dispatched.
+//
+// RED before this fix: every "refuses" case below registers clean (`validateScriptEntry` returns
+// `{ok:true}`) despite the agent()/phase() call inside it never actually running.
+describe('#154 B1 (re-opened): an agent()/phase() call inside a function that is never demonstrably invoked is refused', () => {
+  const REFUSED: Array<[string, string]> = [
+    ['an uncalled const-bound async arrow ("fnarrow", the exact real-engine repro)', "const main = async () => { phase('p1'); return await agent('a', {prompt: 'OK', allowedTools: []}) }; return 1;"],
+    ['an uncalled function declaration nested in a block, not at the top level ("fnblock", the exact real-engine repro)', "{ async function main(){ phase('p1'); return await agent('a', {prompt: 'OK'}); } }\nreturn 1;"],
+    ['an uncalled const-bound async FUNCTION EXPRESSION (not even an arrow)', "const main = async function(){ return await agent('a', {}); };\nreturn 1;"],
+  ];
+  for (const [label, script] of REFUSED) {
+    it(`refuses: ${label}`, () => {
+      const r = validateScriptEntry(script);
+      expect(r.ok, `expected refusal for: ${script}`).toBe(false);
+      if (!r.ok) expect(r.errors.map((e) => e.code)).toContain('SCRIPT_INVALID');
+    });
+  }
+
+  const ACCEPTED: Array<[string, string]> = [
+    ['a script with no function wrapper at all (no false positive)', "phase('p1');\nreturn await agent('a', { prompt: 'OK' });"],
+    ['an arrow assigned to a const that IS called by name', "const main = async () => { phase('p1'); return await agent('a', {}); };\nreturn await main();"],
+    ['an arrow assigned to a const used as a parallel() thunk (existing documented pattern)', "const thunk = () => agent('a', {});\nreturn await parallel([thunk]);"],
+    ['inline arrow thunks passed directly to parallel() (existing documented pattern)', "return await parallel([() => agent('a', {}), () => agent('b', {})]);"],
+    ['a const-bound arrow passed BY NAME as a pipeline() stage', "const stage = (prev, item) => agent('a', {});\nreturn await pipeline([1], stage);"],
+    ['an immediately-invoked function expression', "return await (async () => { phase('p1'); return await agent('a', {}); })();"],
+    ['a ternary routing between two direct agent() calls (existing documented pattern)', "return await (true ? agent('a', {}) : agent('b', {}));"],
+  ];
+  for (const [label, script] of ACCEPTED) {
+    it(`does NOT refuse: ${label}`, () => {
+      const r = validateScriptEntry(script);
+      expect(r.ok, `expected acceptance for: ${script} (got ${r.ok ? '' : JSON.stringify(r.errors)})`).toBe(true);
+    });
+  }
 });

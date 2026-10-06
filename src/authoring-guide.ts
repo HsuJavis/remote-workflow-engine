@@ -812,12 +812,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'context gets its own inert console whose output never reaches this engine\'s logs or your ' +
         'run\'s result; it is harmless, just not useful; `log(...)` (listed above) is this engine\'s ' +
         'own no-op placeholder, included for forward compatibility, not a working substitute today.' +
-        '\n\nThe actual security containment is two independent layers: every value this engine ' +
-        'exposes into your script (including `Date`/`Math`/`Intl` above) is built natively in your ' +
-        'script\'s own realm rather than the engine\'s, so there is no live reference back to engine ' +
-        'internals to find; and separately, the per-run child PROCESS your script runs in is forked ' +
-        'with an empty environment, so even a future gap in the first layer would not also be a ' +
-        'secrets leak.',
+        // #157 B1 (Gate 8 v2 re-review): the prior wording here claimed layer 1 alone meant "there is
+        // no live reference back to engine internals to find" — false as a general claim even after
+        // that round's fix: a RETURNED Promise, a static method's own un-severed prototype, and a
+        // guard thrower's own `.prototype` object each turned out to be a separate value this engine
+        // exposes that the first pass missed, each re-opening the same escape. `node:vm` itself
+        // documents that it is not a security boundary (any value or function this engine builds and
+        // hands in is a NEW surface to re-check, every time); this guide should not promise otherwise.
+        '\n\nThe actual security containment is the per-run child PROCESS your script runs in, forked ' +
+        'with an empty environment (no inherited secrets, store, or network handle) — `node:vm` is ' +
+        'hygiene on top of that, closing specific known escapes (`.constructor.constructor`, a ' +
+        'guard\'s own prototype chain, …) as they are found, not a boundary this engine claims is ' +
+        'complete. Treat anything a script can reach as untrusted until it leaves the forked child.',
     ),
   );
 
@@ -832,11 +838,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       '**The script body is a bare async function body.** The statements you send as `script` ARE ' +
         'the body of an `async function` the engine wraps for you: `await` at the top level is ' +
         'fine, and a `return` returns the run result. Do not wrap it yourself — ' +
-        '`export default async function () { … }`, a `function` wrapper of any kind, and any ' +
-        'top-level `import` are refused `PARSE_ERROR` (which names the line and the construct). ' +
-        '`export const meta = {…}` is the ONE exception, and it must be written exactly that way, ' +
-        'as a literal object: dropping the `export` makes the whole declaration invisible to the ' +
-        'engine, and every `agent()` label is then refused `AGENT_UNDECLARED`.\n\n' +
+        '`export default async function () { … }`, a top-level `function`/`async function` ' +
+        'STATEMENT, and any top-level `import` are refused `PARSE_ERROR` (which names the line and ' +
+        "the construct). A `const` arrow function used as a thunk (for `parallel()`/`pipeline()`, " +
+        'or called back out by name) is fine — but an `agent()`/`phase()` call written inside ANY ' +
+        'function (a `const`-bound arrow, a nested `function` declaration, …) that the script never ' +
+        'demonstrably reaches is refused `SCRIPT_INVALID`, issue #154: the engine counts the call ' +
+        'site as live and the run silently dispatches nothing. ' +
+        '`export const meta = {…}` is the ONE exception to the no-wrapper rule, and it must be ' +
+        'written exactly that way, as a literal object: dropping the `export` makes the whole ' +
+        'declaration invisible to the engine, and every `agent()` label is then refused ' +
+        '`AGENT_UNDECLARED`.\n\n' +
         'Every `agent(label, ...)` call in the script needs a matching `meta.params.agents.<label>` ' +
         'declaration — `model`, `effort`, and `timeoutMs` are all required, each with a `.default` (v24: ' +
         'there is no implicit engine default per agent). `appendPrompt`, `skills`, and `mcp` are optional. ' +

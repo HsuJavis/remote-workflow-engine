@@ -345,7 +345,11 @@ describe('the guide states the script-body form (UT-215, defect D6)', () => {
   });
 
   it('says `export const meta` is the one exception and that dropping its export costs AGENT_UNDECLARED', () => {
-    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 900);
+    // Window widened from 900 (issue #154 B1 re-opened): the paragraph now also states the
+    // function-wrapper DEAD-CODE rule (SCRIPT_INVALID) between the no-wrapper sentence and the
+    // meta-exception sentence this case checks for — the two assertions below are still about the
+    // SAME paragraph, just with more accurate content in between.
+    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 1400);
     expect(para).toMatch(/export const meta/);
     expect(para).toMatch(/AGENT_UNDECLARED/);
   });
