@@ -778,14 +778,26 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "THAT workflow's own `meta.params.agents` defaults — your run's `overrides.agents` never reach " +
         'them (labels belong to the workflow that declares them, even when a name collides) — and its ' +
         "models are priced into, and bound by, your run's budget.\n\n" +
-        '`Date` and `Math` are present but GUARDED — three calls are refused `DETERMINISM_GUARD` ' +
+        '`Date` and `Math` are present but GUARDED — the calls below are refused `DETERMINISM_GUARD` ' +
         "because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value " +
         'baked into that key would change it on replay and re-dispatch an already-paid call:\n\n' +
         determinismGuardRows() +
-        '\n\nThis is documented as HYGIENE, not a security boundary — `node:vm` is not a sandbox, and ' +
-        'the real containment is the per-run child PROCESS, which holds no secrets/store/network ' +
-        'handle, not these two guarded globals. `setTimeout`, `fetch`, `console`, `require`, ' +
-        '`process`, and `fs` are simply absent from the context, not merely shadowed.',
+        // #157 B1: this paragraph used to claim the vm context ITSELF was the security boundary
+        // ("process... simply absent from the context, not merely shadowed... holds no secrets/
+        // store/network handle") — that was FALSE as implemented: `<injected>.constructor.
+        // constructor(...)` reached the sandbox child process's own `process`/`fetch`, which (before
+        // #157's fix) carried the engine's full inherited env. Both halves are now actually true —
+        // the escape itself is closed (every value exposed into the context is realm-safe) AND the
+        // child process now holds no inherited secrets regardless — but the paragraph is rewritten
+        // to describe the REAL, now-closed containment rather than repeat a claim that happened to
+        // be right for the wrong reason.
+        '\n\n`setTimeout`, `fetch`, `require`, `process`, and `fs` are genuinely absent from this ' +
+        'context (not merely shadowed) — standard `node:vm` behavior, unrelated to the two guards ' +
+        'above. The actual security containment is two independent layers: every value this engine ' +
+        'exposes into your script (including `Date`/`Math` above) is built natively in your script\'s ' +
+        'own realm rather than the engine\'s, so there is no live reference back to engine internals ' +
+        'to find; and separately, the per-run child PROCESS your script runs in is forked with an ' +
+        'empty environment, so even a future gap in the first layer would not also be a secrets leak.',
     ),
   );
 
