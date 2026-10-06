@@ -422,8 +422,14 @@ const HOST_PATH_GRANTS_CONFINED =
   // which is a DIFFERENT, file-tool-only mechanism — see the error catalog entry for that code).
   "`Bash`'s READS are deny-by-default too, but scoped differently than writes: the whole engine " +
   'home directory and the whole `workRoot` (every run\'s workspace, not just other runs\' — this ' +
-  "one's own workspace, the system toolchain (node/git/...), and any operator-granted host path " +
-  'are re-opened on top of that denial. A read outside those re-opened paths fails as an ordinary ' +
+  "one's own workspace, the HOME-RESIDENT toolchain (everything the engine's own `PATH` puts under " +
+  "`$HOME`, plus its node install prefix), and any operator-granted host path are re-opened on top " +
+  // A system path (e.g. `/usr/bin/git`) was never denied to begin with — it is outside both denied
+  // regions, so "re-opened" would overstate what happens to it; only the home-resident half of the
+  // toolchain goes through the deny-then-reopen mechanism at all (DEPLOY.md §1c(f) says this the
+  // same way: "家目錄內的工具鏈").
+  'of that denial — a system path like `/usr/bin/git` was never denied in the first place, so it ' +
+  'needs no re-opening. A read outside those paths fails as an ordinary ' +
   'shell-level error (e.g. "No such file or directory"), never a special engine refusal — same as ' +
   'the write case above, just the opposite default. A host path with no relationship to $HOME or ' +
   'workRoot (e.g. `/etc/hostname`) is NOT denied by this — the policy only closes those two ' +
