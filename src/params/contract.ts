@@ -827,19 +827,28 @@ export function validateUserOverrides(
   return { ok: true, value: { agents: resultAgents }, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
-/** Declared `args` are checked only for fields the contract declares; undeclared keys pass
- *  through unchanged (backward compat). Unchanged in v24 — `args` still lives flat on
- *  `ParamContract`, untouched by the agents/knobs split. */
+/** Declared `args` fields are checked only against what the contract declares; undeclared keys
+ *  pass through unchanged (backward compat), even on a contract with NO declared args at all.
+ *  Independent of that per-key check, the top-level `args` value must always be a plain object
+ *  (or absent/null) — an array/string/number is refused with `PARAM_OUT_OF_RANGE`, whether or not
+ *  the contract declares any args keys (issue #161 B6). Unchanged in v24 — `args` still lives flat
+ *  on `ParamContract`, untouched by the agents/knobs split. */
 export function validateDeclaredArgs(c: ParamContract, args: unknown): { ok: true } | Err {
   // Review send-back LOW-1 (issue #107 follow-up): `key in obj` below throws a bare, uncoded
   // `TypeError` when `args` is a non-record primitive (string/number/boolean) — reachable from
   // BOTH `start()` and a nested `workflow()` call (this function is the one door both share) the
   // instant the contract declares at least one `args` key. Refused the same way any other wrong-
   // shaped args value is: `PARAM_OUT_OF_RANGE`, reported by type only (never the value — same
-  // convention `checkValueAgainstSpec` already uses). A contract declaring NO args at all has
-  // nothing to check a non-record value against, so it is left alone (`undefined`/`null` already
-  // degrade to `{}` below, unchanged).
-  if (Object.keys(c.args).length > 0 && args !== undefined && args !== null) {
+  // convention `checkValueAgainstSpec` already uses).
+  //
+  // issue #161 B6 (owner-approved): a contract declaring NO args at all used to skip this shape
+  // check entirely (the `Object.keys(c.args).length > 0` guard this comment used to describe), so
+  // run_start/nested workflow() args of any shape — an array, a bare string — passed straight
+  // through to the script unchecked, unlike a contract that DOES declare args. The top-level shape
+  // check now always runs; only the *per-key* loop below is skipped when there is nothing declared
+  // to check a key against. Undeclared KEYS inside an otherwise-plain-object `args` still pass
+  // through unchanged either way (#107/#161 B1 — kept). `undefined`/`null` still degrade to `{}`.
+  if (args !== undefined && args !== null) {
     const isRecord = typeof args === 'object' && !Array.isArray(args);
     if (!isRecord) {
       return {

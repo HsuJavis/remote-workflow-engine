@@ -973,6 +973,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
         "wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an " +
         '`enum` type requires the `enum` array of legal values).\n\n' +
+        // issue #161 B6 (owner-approved): a workflow with NO `meta.params.args` keys at all (or no
+        // `params.args` block) used to skip the top-level shape check entirely, so `run_start`/a
+        // nested `workflow(name, args)` call could pass an array or a bare string straight through
+        // to `args` inside the script — inconsistent with a workflow that DOES declare args, which
+        // has always required a plain object there.
+        '**A workflow that declares NO `args` at all still requires `args` to be a plain object (or ' +
+        "omitted/`null`, which the script sees as `{}`)** — an array, string, or other non-object " +
+        '`args` is refused the same way a bad declared-args value is, before your script runs. Keys ' +
+        "the contract doesn't declare still pass through onto `args` unchanged either way; only the " +
+        'top-level shape is checked.\n\n' +
         // issue #107: args are typed data the AUTHOR places into their own trusted prompt — the
         // bound is the contract's job, not the caller's good behaviour, because `args` is validated
         // on BOTH admission doors a run can arrive through.
