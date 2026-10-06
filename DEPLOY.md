@@ -146,6 +146,15 @@ node node_modules/tsx/dist/cli.mjs src/main.ts
 # systemctl --user status rwe.service   → Active: active (running)
 ```
 
+**`rwe.config.example.json` 本身的內容（2026-10-06 業主裁決，B12/B13）**：JSON 格式沒有註解語法，
+所以範本檔本身**不含任何說明文字**——它是一份刻意精簡、「複製了就能開機」的安全範本，不是「列出每個
+可能的鍵」的參考範例（那是上面 §1b 整份表的工作）。它**不會**出現 `"*": {"role":"user"}` 這種條目
+——那個條目等於「任何通過 Google 驗證的帳號都能跑已發布的工作流程」，在真正要對外開放前必須先刪掉
+（見下方「角色」一節），所以範本從一開始就不附這一行，省得有人忘記刪。範本只包含開機必要、且預設值
+本身就安全的幾個頂層鍵（`bind`／`port`／`workRoot`／`gateway`；`auth` 區塊整個省略——範本本身不開
+auth，要開的人照 §1b「auth」那幾列與「角色」一節自己加）。每個鍵的意義、型別、預設值、是否必填都查
+§1b 設定總表，不要指望範本檔案裡有解釋——這份 DEPLOY.md 就是範本的「註解」，只是放在旁邊的檔案裡。
+
 ```bash
 # 健康確認（服務啟動後）
 curl -s http://localhost:8787/api/status
@@ -155,7 +164,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 38
+# 預期：tools: 46
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -407,8 +416,13 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 
 ## 1a. 前置條件
-- **Node.js 22.6 以上**（沙箱子行程 `src/sandbox/child-entry.ts` 與啟動用的 `tsx` 都依賴 Node 22
-  原生 `--experimental-transform-types` type-stripping）。
+- **Node.js 22.19 以上**（owner decision，A4）。兩個原因都成立、取較高者：(1) 沙箱子行程
+  `src/sandbox/child-entry.ts` 與啟動用的 `tsx` 都依賴 Node 22 原生 `--experimental-transform-types`
+  type-stripping（Node 22.7 起才有）；(2) `package.json` 的 `dependencies`（不是
+  `optionalDependencies`——每一種 `gateway` 選擇都會裝到）裡的 `@earendil-works/pi-coding-agent`／
+  `@earendil-works/pi-ai` 自己宣告 `engines.node:">=22.19.0"`，即使這台部署從未把 `gateway` 設成
+  `"pi"`。`package.json` 已加 `"engines":{"node":">=22.19.0"}`，`npm install`／`npm ci` 版本不符時
+  會印警告（不會擋裝）。
 - npm（隨 Node 附帶）。
 - **`bubblewrap`（`bwrap`）與 `socat`**：真正的 Claude CLI sandbox 硬性需要這兩個執行檔，缺一個
   Bash 圍籠就直接量成 `unconfined`（見 §1c(e)，遠端送出的 run 會被拒絕）——`sudo apt install
@@ -522,7 +536,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 ## 1b. 設定總表 Configuration Reference
 
-> 這是**唯一**列出每個設定鍵/secret 名稱/port/flag 的地方——本文件其他章節只用名稱引用，不重複列值。
+> 這是列出 `rwe.config.json` 每個鍵／主要 secret／provider 環境變數的地方——本文件其他章節只用
+> 名稱引用，不重複列值。**C9 更正**：這份表不是本文件唯一出現設定名稱的地方——`RWE_CONFIG_ENV_FILE`、
+> `RWE_UPDATE_FLAG`／`RWE_UPDATE_RESULT`／`RWE_UPDATE_LOCK`、`RWE_OFFICIAL_REMOTE`、`SYSTEMCTL`
+> 這幾個是**特權自我更新 unit**（`deploy/rwe-update.service`）自己的 `Environment=`，只在 §6b／§7
+> 解說；`auth.serviceAccountTokenTtlMs`（本表已有列）額外也在「服務帳號」一節被提到；`RWE_USER`／
+> `RWE_UPDATE_SKIP_TESTS` 分別只在 §6c（`deploy/rwectl` 的 `RWE_USER` override）與 §7 第 12 點
+> （自我更新的測試逃生閥）出現，不在這份表。這些都是部署腳本/unit 自己的環境變數，不是
+> `rwe.config.json` 的鍵，所以沒有收進本表，但也請不要假設「沒出現在這裡 = 不存在」。
 > 涵蓋三種載體：`rwe.config.json` 的鍵（不進版控，由 `.example` 複製而來，**本身不含機密**）、
 > 環境變數（含 `RWE_SECRET_<NAME>` secret store）。金鑰/token 一律用環境變數，絕不寫進 JSON 設定檔。
 
@@ -532,68 +553,132 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `port` | 監聽 port | `number` / `8787` | 否 | v1 |
 | `rwe.config.json` → `workRoot` | 狀態/journal/run 工作目錄根，**必須在任何 `.git`/`CLAUDE.md` 祖先之外**（否則啟動時 `WORKROOT_INSIDE_PROJECT` fail-fast） | `string` / 系統暫存目錄自動建立 | 否 | v1 |
 | `rwe.config.json` → `timeoutMs` | 單次 `agent()` LLM 呼叫的逾時斷路器（非整體 workflow 逾時） | `number` / `15000`（`gateway:"sdk"` 零設定也套用此保底值） | 否 | v1 |
-| `rwe.config.json` → `retries` | `agent()` 呼叫失敗重試次數 | `number` / `1` | 否 | v1 |
-| `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）、`"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署），或 `"pi"`（pi harness，v1 起新增——見下方「§1b2 pi harness（替代 gateway）」一節；**production 仍停在 `"sdk"`**） | `"sdk"｜"direct-fetch"｜"pi"` / `"sdk"` | 否 | v1 / pi-v1 |
+| `rwe.config.json` → `retries` | `agent()` 呼叫失敗重試次數。**預設值依 gateway 而不同**：`gateway:"sdk"`／`"pi"` 省略此鍵時實際是 **0 次重試（1 次嘗試）**（共用的 `attemptsFor(undefined, t) === 1`）；只有 `gateway:"direct-fetch"` 省略時才是 **1 次重試（2 次嘗試）**（`LiteLLMGatewayClient` 建構子自己的預設）。`workflow_describe` 回的 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs` 如實反映這份差異——按**這次部署實際生效的 gateway**算，不是固定公式 | `number` / sdk／pi：`0`；direct-fetch：`1` | 否 | v1 |
+| `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）、`"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署），或 `"pi"`（pi harness，v1 起新增——見下方「§1b2 pi harness（替代 gateway）」一節；**production 仍停在 `"sdk"`**）。**2026-10-06 業主裁決（A8）**：這三個字串以外的任何值（拼錯、大小寫不同，例如 `"Pi"`／`"SDK"`／`"direct_fetch"`）在開機與 `--check-config` 都以明確訊息**拒絕啟動**，訊息列出三個合法值——**不會**再悄悄退回 `"direct-fetch"` 行為（舊行為：打錯字會讓 `config.gateway` 維持 `undefined`，結果真的去呼叫 `agent()` 時安靜地用了 direct-fetch 路徑，沒有工具迴圈、也沒有確認過圍籠姿態） | `"sdk"｜"direct-fetch"｜"pi"` / `"sdk"`；其他字串值在開機與 `--check-config` 皆拒絕 | 否 | v1 / pi-v1 / A8(2026-10-06) |
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
-| `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設） | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
-| `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
-| `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base | `string` / `'https://api.anthropic.com'` | 否 | v7 |
-| `rwe.config.json` → `anthropicAuth` | Anthropic 直連認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷 | 否 | v7 |
+| `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` **與** `gateway:"pi"` 兩條路徑都吃這個鍵（`pi-gateway-client.ts` 同一套優先序）——`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設）。`gateway:"direct-fetch"` 不支援工具迴圈，這個鍵對它沒有意義 | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
+| `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對。**不驗證格式**（B21）：寫錯（漏了 port、多打斜線）不會拒絕開機，只是那個條目永遠比對不上，效果等於沒加——加完要用「區網部署」一節的 `curl` 驗證指令實際確認，不要只看開機沒出錯就當作生效 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
+| `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base。**只有 `gateway:"direct-fetch"` 會用到**；`gateway:"sdk"` 的 CLI 子行程另外走自己的 `ANTHROPIC_BASE_URL`（指向本機 LiteLLM 代理，見 §1c(c)），`gateway:"pi"` 完全不支援 anthropic provider（見 §1b2），兩者都忽略這個鍵 | `string` / `'https://api.anthropic.com'` | 否 | v7 |
+| `rwe.config.json` → `anthropicAuth` | 認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔。**只在 `gateway:"sdk"` 下生效**（`resolveAnthropicAuth()`）；`gateway:"direct-fetch"` 不讀這個鍵（永遠走 api-key 形狀），`gateway:"pi"` 不支援 anthropic provider，兩者都忽略它。**是 opt-in override，不是必填**——不設時**自動判斷**：偵測到任何一個 OAuth token（`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` 或 `CLAUDE_CODE_OAUTH_TOKEN`）就自動走 `subscription`，否則走 `api-key`；只有要**強制**用某一種（例如兩者都設了、想忽略 token 優先用 api key）才需要明寫這個鍵。**打錯字不會拒絕開機**（B21）：寫的不是 `"api-key"`／`"subscription"` 這兩個字串之一（例如 `"apikey"`），程式只檢查是不是等於 `'subscription'`，不是就一律走 `api-key` 路徑——跟故意設 `"api-key"` 的效果相同，不會有任何警告 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷；打錯字一律靜默當 `"api-key"` | 否 | v7 |
 | `rwe.config.json` → `litellmPort` | LiteLLM 代理子行程監聽 port | `number` / 省略則綁 OS 分配的 ephemeral 空閒 port | 否 | v1 |
 | `rwe.config.json` → `schedulerDbPath` | 排程 SQLite 檔路徑 | `string` / `$workRoot/schedules.db` | 否 | v1 |
 | `rwe.config.json` → `assetRoot` | `workspace_push` 的**工作流程範圍**資產樹根目錄，實際版面是 `<assetRoot>/<workflow>/<kind>/<name>`（`kind` 是 `skill`／`mcp`）。管理員推的全域資產不放這裡，固定在 `<workRoot>/_global_assets/<kind>/<name>`（刻意在被 GC 掃描的 `assets/` 樹之外） | `string` / `$workRoot/assets` | 否 | v24 |
-| `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
-| `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
-| `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
+| `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數**在真實開機時**拒絕（`RunManager` 建構子的 `_positiveInt`）——**這個檢查目前不在 `composeConfig()` 裡，`--check-config` 看不到它**，詳見下方「`--check-config` 涵蓋範圍」 | `number` / `4` | 否 | v8 |
+| `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED`；≤0 或非整數**在真實開機時**拒絕，同上，`--check-config` 目前看不到 | `number` / `256` | 否 | v8 |
+| `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值）。**沒有範圍檢查**（B21）：設成 `0` 會讓**每一個**工作流程名稱一註冊第一個版本就立刻撞上限（`count >= 0` 恆成立） | `number` / 省略 = 不設上限 | 否 | v22 |
 | `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"｜"none"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**（ADR-028 fail-closed）；未列名（也沒有 `"*"`）的已驗證呼叫者是 `"none"`＝**待核准**，每個工具與 dashboard 資料都回 `ACCOUNT_PENDING_APPROVAL`，直到 admin 授予角色（2026-09-30 起；之前是 `"user"`）；開機那行 `auth:` log 的 `defaultRole=` 會如實顯示 | `object` / 省略 | 否 | v24 |
 | `rwe.config.json` → `proxyManager` / `issueReporter` / `mcpProbe` / `modelCatalog` / `modelCatalogFetchers` / `systemInfo` | **程式注入用的替身接點，JSON 設定檔設不了**（值是函式/物件）。列在這裡只是為了說明：把它們寫進 `rwe.config.json` 不會被當成「不認得的鍵」警告，但也不會有任何效果 | 物件/函式 / — | 否 | v26 |
-| `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零）。2026-09-30 業主裁決：這份生效清單經 `system_info` 回應的 `policy.mcpEgressAllowlist` 對外可見（任何已驗證呼叫者，同一份值，不重讀設定） | `string[]` / `[]` | 否 | v24 |
-| `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可等於或包住引擎的家目錄（issue #101，否則等於把整個家目錄的讀取封鎖還回去）、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 是 | v37 |
+| `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零）。2026-09-30 業主裁決：這份生效清單經 `system_info` 回應的 `policy.mcpEgressAllowlist` 對外可見（任何已驗證呼叫者，同一份值，不重讀設定）。**不像 `seedRefAllowlist`，這個鍵載入時完全不正規化也不驗證**（B21）：entries 原樣存下來，不檢查是不是合法 URL、是不是 `https:`。寫一個 `http://` 開頭的條目**不會**被拒絕開機，但這個條目永遠配不上任何東西——比對用的是同一個 `isEgressAllowed()`，只接受 `https:` 的待比對 URL，`http://` 字首的允許清單條目因為協定字串本身就對不上，形同虛設 | `string[]` / `[]` | 否 | v24 |
+| `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可等於或包住引擎的家目錄（issue #101，否則等於把整個家目錄的讀取封鎖還回去）、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 否（省略 = `[]`，最嚴格姿態；不是必填鍵） | v37 |
 | `rwe.config.json` → `sandbox.allowReadPaths` | issue #101：agent Bash 的讀取是**預設拒絕**（整個家目錄 + 整個 `workRoot`，見 §1c (f)），這個清單是營運者額外**唯讀**重新開放的路徑——給裝在家目錄底下、引擎自動推導沒涵蓋到的工具鏈用（例如 `~/.cargo/bin` 加 `~/.rustup`）。引擎自己 `PATH` 上位於家目錄內的目錄、以及它自己 node 的安裝前綴（`~/.local/node` 這種 `<prefix>/bin/node`）**會自動重新開放，不用列**。驗證規則與 `sandbox.allowHostPaths` 相同（絕對路徑、開機時必須存在、不在也不包住 `workRoot`、不等於也不包住受保護檔案或家目錄本身、無萬用字元），任一筆不合規**整個拒絕開機**；設了這個鍵就必須明確設定 `workRoot`。永遠不可寫。省略 = `[]` | `string[]` / `[]` | 否 | #101 |
 | （量測值，非設定鍵）Bash 圍籠姿態 | 開機時先確認 `bwrap`（bubblewrap）與 `socat` 都在 PATH 上（真正的 Claude CLI sandbox 硬性需要兩者，缺一個直接判 `unconfined`，`reason` 指名缺哪個；`sudo apt install bubblewrap socat` 補齊即可），兩者都在才對主機跑一次巢狀 `bwrap --unshare-user` 探測（REQ-218，ADR-083 業主裁決 posture C）：探測通過 → `confined`，這台部署上每個 agent() 呼叫都真的請求 OS 沙箱；探測失敗（常見於 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 namespace——修法見下方「探測失敗時怎麼修」）→ `unconfined`，**本機（loopback）送出、且跑的是本機註冊版本的 run 仍會照跑、不受任何 Bash 圍籠**，但**遠端送出的 `run_start`/`run_resume`——在 ajv 參數驗證、authz、以及工作流程/版本是否存在都先過了之後才被拒絕**（issue #93：這道拒絕以前排在最前面，連參數錯誤或工作流程不存在都先回 `CONFINEMENT_UNAVAILABLE`，2026-09-26 已改成排在最後，讓遠端呼叫端至少能看到自己請求本身的錯誤），而且**不論從哪裡送出，只要這次要跑的版本是遠端註冊的、或觸發器是遠端建立的，同樣被拒**（`CONFINEMENT_UNAVAILABLE`，判定式見 §6）。姿態印在開機那行 log 與每次 `agent.confinement` 事件的 `posture` 欄位，無法用設定檔調高或調低——這是量測，不是宣告。**探測失敗時怎麼修（Ubuntu/AppArmor 主機）**：多半是 `bwrap-userns-restrict` AppArmor 設定檔擋住第二層（巢狀）unprivileged user namespace——設定 `kernel.apparmor_restrict_unprivileged_userns=0`（寫進 `/etc/sysctl.d/60-rwe-userns.conf` 再 `sysctl --system`）**並且**停用該設定檔（`ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/ && apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`），然後重開引擎；這是**整台主機**層級的放寬（任何非特權行程之後都能建立巢狀 user namespace），只在這台主機上每個會用到本引擎的人都已經是作業系統層信任對象時才這樣做——不是共用/多租戶主機。要復原：移除該 sysctl 覆寫，並重新啟用設定檔（刪掉 `disable/` 下的符號連結，再跑一次 `apparmor_parser`） | — | — | v37 / issue #93 |
-| `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
-| `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
+| `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**（執行期判定）：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全）。**另有一層開機期驗證**（`normalizeSeedRefAllowlist()`）：這個鍵本身不是陣列、或陣列裡任何一筆不是字串／不是合法 URL／不是 `https:` scheme，一律以 `SEEDREF_ALLOWLIST_INVALID` **拒絕啟動**（逐筆指名是哪一筆、哪裡不合規）；通過驗證的每一筆會被正規化成 `origin+pathname+強制結尾斜線` 再存進執行期清單，跟你原始寫的字面字串不一定逐字元相同 | `string[]` / `[]` | 否 | v13 |
+| `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE`。**下限不是拒絕開機，是靜默調高**：設定值低於 1 MiB（`1048576` bytes）會被 `Math.max(1 MiB, 設定值)` 悄悄拉回 1 MiB，不會報錯、也不會在開機 log 留下痕跡 | `number` / `268435456`（256 MiB，最小 1048576，見前一句） | 否 | v10 |
 | `rwe.config.json` → `casQuota` | 每個角色可上傳到 CAS 的總量上限（2026-10-02 業主裁決）：`{user, author, admin}`，每個值可以是 bytes 整數、`"5GiB"`/`"500MB"` 這種字串（KiB/MiB/GiB/TiB 二進位、KB/MB/GB/TB 十進位）或 `"unlimited"`/`null`；只寫一部分其餘用預設；格式錯誤（不認得的角色、看不懂的大小）**開機直接拒絕**。用量＝該帳號 namespace 內每個 blob 的大小總和（與其他帳號共用的 blob 對每個帳號都全額計算）；`POST /assets/blob`、`POST /assets/manifest`、`workspace_push` blob 模式、engine 代抓的 `seedRef` 都計入，超過時在**寫入之前**拒絕：HTTP 507 / `QUOTA_EXCEEDED {usedBytes, limitBytes, requestedBytes, hint}`（先看 Content-Length，串流中途再擋謊報大小的客戶端，並發上傳不會合計超額）。個別帳號可由 admin 用 `principal_set_quota` 或 dashboard 管理頁覆寫（存在 `auth-tokens.db`，即時生效、有稽核紀錄）；待核准（`none`）帳號一律 0；auth 停用或 loopback 救援路徑的 `local` namespace 不設上限。用量可在 `principals_list`、`workspace_diff`、`GET /api/me` 看到；清理用 `workspace_prune_blobs`（預設 dry-run；只刪沒有任何已註冊版本 `seedManifestRef` 需要、且 `olderThanDays`（預設 30）天內沒用過的 blob；檔案只在沒有任何 namespace 還參照時才真的從磁碟刪除） | `object` / `{user:"1GiB", author:"5GiB", admin:"unlimited"}` | 否 | 2026-10-02 |
 | `rwe.config.json` → `diskFloor` | 磁碟水位下限（2026-10-02 業主裁決）：`workRoot`（以及另設的 `casDir`）所在檔案系統的可用空間低於 `max(percent% × 檔案系統大小, bytes)` 時，**所有上傳**與**所有新 run 的准入**（`run_start`、`run_resume`、排程/webhook 觸發、巢狀 `workflow()`）一律拒絕 `DISK_LOW {freeBytes, floorBytes}`——是暫時性的（上傳回 HTTP 503；webhook 回 503 並釋放 delivery id，可用同一個 id 重送；排程把 `DISK_LOW` 記進 `lastError`——但若該排程是 `kind:'once'`，這次失敗的觸發就**永久消耗掉它**（`enabled:false`，業主裁決 2026-10-02：`once` 不補跑；要重試就 `schedule_create` 一個新的），`schedule_list` 的 `lastError.message`／`lastRefusalMessage` 對這種已消耗的 `once` 列會額外附一句講明這點，**不會**只留目錄裡那句泛用的「retry later」——那句話對一個已經不會再觸發的列是誤導；`cron` 列的訊息不變）；已在跑的 run 不受影響。巢狀 `workflow()` 被 `DISK_LOW` 拒絕時**不會**計入該 run 的 `maxWorkflowDescendants` 名額（2026-10-02 修正：之前會計入，讓低磁碟期間重試的呼叫白白燒掉名額）。`{percent, bytes}`：`percent` 0..100、`bytes` 可用大小字串；兩者都設 0 = 停用；格式錯誤開機拒絕。`statfs` 結果快取 5 秒；**若設定的每一個路徑（`workRoot`／`casDir`）當下 `statfs` 全部失敗**（例如該磁區未掛載），為了可用性採**失效開放**（視同沒有超過水位，不擋任何上傳/准入）而非失效關閉，只在第一次發生時記一行 `disk_floor_fail_open` 警告（不會每次 `status()` 重複印）——這是刻意的可用性/安全取捨，不是臨時缺陷 | `object` / `{percent:5, bytes:"5GiB"}` | 否 | 2026-10-02 |
-| `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
-| `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值（設 `"agentSlots": 7` 就會讀到 7）。與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 |
-| `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
+| `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定。≤0 或非整數**在真實開機時**拒絕，`--check-config` 目前看不到（同上兩列） | `number` / `24` | 否 | v25 |
+| `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值（設 `"agentSlots": 7` 就會讀到 7）。與 `runConcurrency`（單一 run 內）是兩層不同的上限。**2026-10-06 業主裁決（B4）**：`0` 或負數**之前**不會被拒絕，只會讓 `createSemaphore()` 的 `acquire()` 永遠不成功——每一個 `agent()` 呼叫永遠排隊、服務看起來正常開機、dashboard 也能開，但沒有任何 agent 真的跑得動，症狀隱晦；這一版起 `≤0` 或非整數**拒絕開機**，訊息明確點名這個鍵 | `number` / `32`；`≤0` 或非整數拒絕開機 | 否 | v26 / B4(2026-10-06) |
+| `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位。≤0 或非整數**在真實開機時**拒絕，`--check-config` 目前看不到（同上） | `number` / `64` | 否 | v8 |
 | `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個已註冊 workflow 版本宣告過的相異 provider/model 打一通純文字＋一通只給 `Read`（issue #93 item 4 之前是 `Bash`+`cat`，現在是叫模型用 `Read` 工具讀一個 nonce 檔）的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；v0.37.4 起會在開機時探測一次（伺服器開始接受連線後等待一段緩衝時間，預設 2 分鐘，`DEFAULT_BOOT_PROBE_GRACE_MS`），之後才進入 min(intervalMs, 1h) 的週期檢查；為了讓 `rwe.service` 這種每 2 秒重啟一次、沒有 systemd StartLimit 的崩潰迴圈不會每次重啟都重新付費探測同一個 target，探測「已開始但尚未完成」會留一個持久化標記（`model_probe_started` 表），在冷卻視窗內（預設 5 分鐘，`PROBE_INFLIGHT_COOLDOWN_MS`）同一個 target 不會被重新派發。`enabled:false` 只關週期探測（以及開機那一次），admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
 | `modelProbe` 的探測結果現在按 harness 分（issue #138） | 每筆探測結果記住是哪個 harness/transport（`claude-agent-sdk`／`direct-fetch`／`pi`）量到的；切換 `gateway`（例如 `sdk`→`pi`）後，舊 harness 量到的結果對目前這個 harness 一律視為「還沒探測過」——`toolUseVerified`/`proseVerified` 讀回 `null`、`stabilitySource` 落回 `rule`、`run_start` 不再用舊 harness 的結果發 `MODEL_TOOL_USE_UNVERIFIED`。週期探測器會在引擎開始接受連線約 2 分鐘後的開機探測自動重新探測（之後每小時檢查一次，不必等 `intervalMs` 那麼久）；要立刻刷新可手動呼叫一次不帶參數的 admin `models_probe()`（探測所有已宣告的相異 model）。**升級**：`store/index.db` 的 `model_probes` 表會自動補上 `harness` 欄位，舊資料列保留、標成 `harness:'sdk'`（這張表存的時間點必定早於 pi harness 存在，所以「不是 pi」是確定的事實）。**降版（rollback）**：這張表只是週期探測器會自己重建的快取，從來不是必要資料——降到本次變更之前的版本前，先 `DROP TABLE model_probes`（或直接刪 `store/index.db` 重建也可以，但會連 run 歷史一起清掉，優先選只刪這張表），否則舊版引擎的寫入會因欄位數不符而失敗 | — | — | #138 |
 | `modelProbe` 的探測結果現在按「探測邏輯版本」分（issue #152，業主核准的附帶改善） | 背景：v0.37.4 修過一次 pi 探測器本身的邏輯錯誤，但修之前量到的「錯誤結果」在 `intervalMs`（預設 7 天）過期前一直被當成「還新鮮」，得靠人工重新呼叫 `models_probe()` 才會刷新。現在每筆探測結果額外記一個 `PROBE_LOGIC_VERSION`（寫在 `src/models/model-probe.ts`，`classifyProbe` 的判定規則或 `runProbe` 的派發方式——問什麼、怎麼判——改變語意時就要調高這個常數）；一筆探測結果存的版本只要跟目前程式碼的版本不一樣，就跟 issue #138 的 harness 不符一樣，整列視為「還沒探測過」——`get()`/`all()` 直接隱藏它（`toolUseVerified`/`proseVerified` 讀回 `null`、`stabilitySource` 落回 `rule`），週期探測器也會立刻把它排進下一輪，不必等 `intervalMs`。這個常數從 1 開始起跳：這一版部署之前存在的每一筆資料列，必定也早於這個欄位本身存在，所以回填值一定比 1 小，於是這次部署會自動刷新全部舊資料，正是業主要的效果，不需要為了這次部署額外調整常數。**升級**：`store/index.db` 的 `model_probes` 表會自動補上 `logic_version` 欄位（新建表與既有表走的是同一段 additive migration，跟 `harness` 欄位同一個 constructor、同樣的「先查欄位存不存在、不存在才 ALTER、重複欄位名稱的 race 直接吞掉」防護），舊資料列保留、回填成一個保證比目前版本小的值。**降版（rollback）**：這張表一樣只是快取，從來不是必要資料；跟 `harness` 欄位同一個理由——降到本次變更之前的版本前，先 `DROP TABLE model_probes`（或直接刪 `store/index.db`，但會連 run 歷史一起清掉，優先選只刪這張表），否則舊版引擎的 `INSERT OR REPLACE INTO model_probes VALUES (...)` 用的是位置參數、欄位數固定寫死，遇到多出來的 `logic_version` 欄位會直接因為欄位數不符而寫入失敗 | — | — | #152 |
-| `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
-| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 40 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
+| `rwe.config.json` → `workspaceTtlMs` | **不是 sweep 間隔，是終態 run workspace 的保留年齡（ms）**：GC 回收「結束超過這個年齡」的 workspace（REQ-026）；sweep 本身多久跑一次是 `min(ttl, 1小時)`，獨立的另一回事。`0`/省略 = workspace reclaim 關閉。**同時決定 auth-table GC（`gcExpired()`）的 sweep 間隔**：auth 啟用但此鍵省略/`0` 時，那個 sweep 固定每小時跑一次（跟 workspace reclaim 有沒有開啟無關） | `number` / `0`（停用） | 否 | v16 |
+| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 46 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
 | `rwe.config.json` → `publicBaseUrl` | `webhook_create` 回傳的 `url` 用哪個 base URL 組出來（issue #97）——省略時退回這個 process 自己的 bind 位址／request `Host` 表頭，對走 cloudflared/nginx 反向代理進來的遠端呼叫端會是不可達的 `http://localhost:8899` 這類值。優先序：明白設定的 `publicBaseUrl` 一律最優先；沒設但 `auth.enabled:true` 時退回 `auth.issuer`（該值已經是這個部署對外宣告的身分，同一顆 base URL 沒有理由分開設定兩次）；兩者都沒有才退回舊行為。**任何有反向代理/隧道（cloudflared 等）在前面的部署都應該明白設這個鍵**，否則 webhook 送達方永遠拿不到能打的網址——見 §6 外部 ingress 安全一節。**開機時不驗證這個值的形狀**（不是合法 URL 也照樣接受、原樣拼進 `url`）——跟 `auth.issuer` 現有的寬鬆程度一致，但這裡沒有 `enabled` 開關保護，打錯就是每一次 `webhook_create` 都回一個打不通的網址，直到手動修正設定檔為止 | `string` / — | 有反向代理/隧道時建議設定 | #97 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定。每個 namespace 的用量受 `casQuota` 限制，清理見 `workspace_prune_blobs`；若放在與 `workRoot` 不同的檔案系統，`diskFloor` 兩邊都量、取較差者 | `string` / `$workRoot/cas` | 否 | v10 |
-| `rwe.config.json` → `updateFlagPath` | GitHub tag/release webhook 觸發自我更新的旗標檔路徑（mode 0600，原子寫入）；**必須在所有 `workRoot` 之外**（違反則 `UPDATE_FLAG_INSIDE_WORKROOT` 拒絕啟動）；省略時 `/github/webhook` 對已驗簽事件回 503 | `string` / — | 否 | v11 |
+| `rwe.config.json` → `updateFlagPath` | GitHub tag/release webhook 觸發自我更新的旗標檔路徑（mode 0600，原子寫入）；**必須在所有 `workRoot` 之外**（違反則 `UPDATE_FLAG_INSIDE_WORKROOT` **在真實開機時**拒絕啟動——這個檢查目前在 `createServer()`，不在 `composeConfig()` 裡，`--check-config` 目前看不到，詳見下方「`--check-config` 涵蓋範圍」）；省略時 `/github/webhook` 對已驗簽事件回 503 | `string` / — | 否 | v11 |
 | `rwe.config.json` → `updateResultPath` | 特權 bash helper 寫入更新結果 JSON（`{tag,status,ts,detail?,configCheck?}`，`configCheck` 是 `'passed'\|'skipped'\|'failed'`）的路徑；同樣必須在 `workRoot` 之外 | `string` / — | 否 | v11 |
 | `rwe.config.json` → `selfUpdateDbPath` | 自更新 delivery 去重 + pending outcome 的 SQLite 路徑 | `string` / `$workRoot/self-update.db` | 否 | v11 |
-| `rwe.config.json` → `maxTimeoutMs` | `timeoutMs` 的 engine 端 ceiling，**兩處都管**：送出時的 `overrides.timeoutMs`，以及註冊時腳本宣告的 `meta.params.agents.<label>.timeoutMs.default`。超過一律拒絕、不靜默改小。唯一不受此上限約束的是腳本內 `agent()` 的逐次 opts | `number` / `600000` | 否 | v21 |
-| `rwe.config.json` → `maxAppendPromptBytes` | `overrides.appendPrompt` 的位元組上限；超過在送出時以 `PARAM_OUT_OF_RANGE` 拒絕（不截斷、原文不回顯於錯誤訊息） | `number` / `1024` | 否 | v21 |
-| `rwe.config.json` → `maxEffort` | `overrides.effort`／`meta.params` 宣告的 `effort` 上限（`low\|medium\|high\|xhigh\|max` 五階） | `string` / `'high'` | 否 | v21 |
+| `rwe.config.json` → `maxTimeoutMs` | `timeoutMs` 的 engine 端 ceiling，**兩處都管**：送出時的 `overrides.timeoutMs`，以及註冊時腳本宣告的 `meta.params.agents.<label>.timeoutMs.default`。超過一律拒絕、不靜默改小。唯一不受此上限約束的是腳本內 `agent()` 的逐次 opts。**這個鍵本身沒有範圍檢查**（B21）：設成 `0` 或負數，效果是**每一個**逾時 override／宣告都超過這個 ceiling，於是全部被拒絕——服務正常開機，但之後每個 `run_start`/`workflow_register` 只要帶 `timeoutMs` 就失敗，症狀不會指向這個設定鍵本身 | `number` / `600000` | 否 | v21 |
+| `rwe.config.json` → `maxAppendPromptBytes` | `overrides.appendPrompt` 的位元組上限；超過在送出時以 `PARAM_OUT_OF_RANGE` 拒絕（不截斷、原文不回顯於錯誤訊息）。**同上，沒有範圍檢查**（B21）：`0` 或負數會讓任何非空 `appendPrompt` 一律被拒 | `number` / `1024` | 否 | v21 |
+| `rwe.config.json` → `maxEffort` | `overrides.effort`／`meta.params` 宣告的 `effort` 上限（`low\|medium\|high\|xhigh\|max` 五階）。**打錯字時的行為不是「拒絕」，是「全部過濾掉」**（B21）：`EFFORT_RANK[ceilings.maxEffort]` 在五個合法值以外一律是 `undefined`，接下來每一處 `EFFORT_RANK[e] <= undefined` 比較恆為 `false`——服務正常開機，但每個宣告/覆寫的 `effort` 不管填什麼都被濾掉，等同整個部署的 `effort` 機制靜默失效 | `string` / `'high'`；五個合法值以外的字串不會拒絕開機，但會讓 effort 機制整個失效（見前一句） | 否 | v21 |
 | `rwe.config.json` → `auth.enabled` | OAuth 2.0 身份認證 toggle；`false`（省略）= 開放行為（無 auth） | `boolean` / `false` | 否 | v15 |
-| `rwe.config.json` → `auth.issuer` | 這台引擎當作 OAuth 授權伺服器時對外宣告的 base URL（寫進 AS metadata、`WWW-Authenticate` 與 client redirect 的 `iss`）；省略時自動用 `http://<bind>:<實際 port>`，公開部署（HTTPS tunnel）必須明寫成對外網址 | `string` / `http://<bind>:<port>` | 否（公開部署時建議設定） | v15 |
-| `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證。可寫明碼，或 `${secret:NAME}`（同下一列） | `string` / — | 當 `auth.enabled:true` | v15 |
-| `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` code exchange。**建議寫成 `${secret:GOOGLE_CLIENT_SECRET}`**，值放在環境變數 `RWE_SECRET_GOOGLE_CLIENT_SECRET`（例如 `~/.config/rwe.env`）——開機（與 `npm run check-config`）時解析，找不到就**拒絕開機**並指名缺的變數（不印值、不把字面 handle 送給 Google）；明碼值仍可用（向後相容） | `string` / — | 當 `auth.enabled:true` | v15 |
+| `rwe.config.json` → `auth.issuer` | 這台引擎當作 OAuth 授權伺服器時對外宣告的 base URL（寫進 AS metadata、`WWW-Authenticate` 與 client redirect 的 `iss`）；省略時自動用 `http://<bind>:<實際 port>`，公開部署（HTTPS tunnel）必須明寫成對外網址。**不驗證格式**（B21，跟 `publicBaseUrl` 同一個寬鬆程度）：寫一個解析不出 host 的字串，不會被拒絕開機，只是不會被加進 Host/Origin 白名單（見「外部 ingress 安全」一節），效果是打錯字之後這台引擎自己的公開網址反而連不上自己的 `/mcp` | `string` / `http://<bind>:<port>` | 否（公開部署時建議設定） | v15 |
+| `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證。可寫明碼，或 `${secret:NAME}`（同下一列）。**`auth.enabled:true` 時沒有任何開機檢查這個鍵是不是真的填了值**——完全省略也能正常開機，直到有人真的走 Google 登入才會失敗；**不是**會擋開機的必填鍵，只是功能上一定要有才能用 Google 登入 | `string` / — | 功能上必要，但開機不驗證（見前一句） | v15 |
+| `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` code exchange。**建議寫成 `${secret:GOOGLE_CLIENT_SECRET}`**，值放在環境變數 `RWE_SECRET_GOOGLE_CLIENT_SECRET`（例如 `~/.config/rwe.env`）——這個鍵**有值但是個解不開的 `${secret:NAME}` handle** 時，開機（與 `npm run check-config`）會**拒絕啟動**並指名缺的變數（不印值、不把字面 handle 送給 Google）；但這個鍵**整個省略**（跟上一列一樣）不會被擋，服務照常開機，只有真的走 Google 登入時才會失敗——服務帳號的 `client_credentials`（見下方「服務帳號」一節）完全不受影響，不需要這兩個鍵 | `string` / — | 功能上必要，但開機只驗 handle 解不解得開，不驗是否完全缺漏 | v15 |
 | `rwe.config.json` → `auth.googleAuthorizeUrl` | Google authorization endpoint override（一般部署不需設定） | `string` / `'https://accounts.google.com/o/oauth2/v2/auth'` | 否 | v18 |
 | `rwe.config.json` → `auth.googleTokenUrl` | Google token endpoint override | `string` / `'https://oauth2.googleapis.com/token'` | 否 | v18 |
 | `rwe.config.json` → `auth.googleJwksUrl` | Google JWKS endpoint override | `string` / `'https://www.googleapis.com/oauth2/v3/certs'` | 否 | v18 |
 | `rwe.config.json` → `auth.googleBase` | **deprecated** 向後相容 fallback；改用上面三個獨立 URL 欄位 | `string` / — | 否（deprecated） | v18 |
+| `rwe.config.json` → `auth.serviceAccountTokenTtlMs` | 服務帳號（`sa:<name>`）`client_credentials` 換到的 bearer 存活時間（見下方「服務帳號」一節）；過期後需重新換 token，無 refresh token 這回事 | `number` / `3600000`（1 小時） | 否 | 2026-10-03 |
+| `rwe.config.json` → `auth.legacyOwner` | **2026-10-06 業主裁決（A1），取代舊版寫死的 backfill 信箱**：舊版本開機在 `auth.enabled:true` 時，會把每一個 owner 為 `NULL` 的工作流程（在 auth 關閉期間註冊的，見 `src/mcp-facade.ts` 的註冊路徑）無條件 `UPDATE workflows SET owner = ? WHERE owner IS NULL` 轉給一個寫死在程式碼裡的個人信箱——**這一版起這個行為必須靠這個鍵明確選擇**：**省略**＝完全不做 backfill，開機只印一行 log 說明有幾筆 ownerless 的工作流程、並提示可以設這個鍵（這些工作流程在 `auth.enabled:true` 後維持 owner 為 `null`，只有 admin 能碰，見「角色」一節的 ownerless-resource 規則）；**有設**＝跟舊行為一樣，把這些 NULL owner 補成這裡填的 principal id 字串（同樣是冪等——只補 `NULL`，不會覆蓋已經有 owner 的列，重跑/重啟不會重複處理）。這個值就是一個 principal id（通常是 email），不會做格式驗證（跟 `principals` 鍵本身是否存在這個 id 是兩回事——沒在 `principals` 列出的話，這個 id 之後登入會落到預設角色，跟任何其他未列名使用者一樣）。透過 `loadFileConfig`／`composeConfig` 轉發，`--check-config` 跟真實開機走同一條路徑 | `string` / 省略（不 backfill） | 否 | 2026-10-06 |
+| （無對應設定鍵，寫死） | MCP OAuth（`/authorize`／`/token` 走 authorization-code+PKCE）發出的 bearer 固定 TTL **7 天**（`SESSION_TTL_MS`），對應 refresh token 固定 TTL **90 天**（`REFRESH_TTL_MS`，sliding window，每次用掉就續命）——兩者都**不可設定**，不要在 `rwe.config.json` 找對應的鍵 | — | — | v20 |
 | env `RWE_CONFIG_PATH` | 要讀取的 JSON 設定檔路徑 | `string` / `./rwe.config.json`（不存在則略過） | 否 | v1 |
 | env `RWE_BIND` | 覆蓋 `bind` | `string` / `127.0.0.1` | 否 | v1 |
 | env `RWE_PORT` | 覆蓋 `port` | `number` / `8787` | 否 | v1 |
 | env `RWE_WORK_ROOT` | 覆蓋 `workRoot` | `string` / 設定檔值或系統暫存目錄 | 否 | v1 |
 | env `RWE_LITELLM_VENV` | 只有 `deploy.sh` 讀：LiteLLM Python venv 的路徑（步驟 3 檢查／建立 `<venv>/bin/litellm`，並把 `<venv>/bin` 加進服務的 `PATH`）；引擎本身不讀這個變數 | `string` / `$HOME/.rwe-litellm-venv` | 否 | v24 |
-| env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 與 `auth.googleClientId`／`auth.googleClientSecret` 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔 | `string` / 無預設 | 依 MCP 引用 | v1 |
+| env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 與 `auth.googleClientId`／`auth.googleClientSecret` 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔。**引擎自己會讀的固定名字不只是靠 `${secret:}` 引用到的那些**——`RWE_SECRET_ANTHROPIC_API_KEY`（sdk）、`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`（sdk）、`RWE_SECRET_OPENROUTER_API_KEY`（pi）、`RWE_SECRET_GITHUB_TOKEN`、`RWE_SECRET_GITHUB_WEBHOOK_SECRET`——這些都是程式碼直接按固定名字查這個 store，不需要任何設定檔裡的 `${secret:}` handle 先「引用」它們才會被讀到（各自的細節查本表對應列）。**每一個 `RWE_SECRET_*` 值在寫進 catalog/run 的稽核事件（`catalog.register`／`run.terminal` 等）之前都會被 redact-at-capture 機制濾掉**（`secretValueProvider`，見 §1b2「角色提示詞」一節同一類顧慮），不會原文落進 log。**但這個 store 本身不是所有子行程的唯一防線**：`gateway:"sdk"` 的 LiteLLM 代理子行程是用 `env:{...process.env}` 整段繼承**啟動這個伺服器的那個 process 自己的環境變數**（不是這個 secret store，是裸的 `process.env`，所以它連這個 store 管不到的其他環境變數也會拿到）；真正被嚴格白名單過的是**被 dispatch 的 agent 子行程**（實際執行工具迴圈那個，`claude` CLI 或 pi 子行程），見 §6「子行程環境變數白名單」與 §1c(c) | `string` / 無預設 | 依 MCP 引用或上述固定名字 | v1 |
 | env `RWE_SECRET_GITHUB_TOKEN` | `issue_report`／Issues 儀表板需要；GitHub PAT/fine-grained token，須有目標 repo `issues:write` 權限；缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`，`GET /api/issues` 回 200 `{degraded}`（不 500） | `string` / 無預設 | 否（缺少則降級） | v1 |
-| env `ANTHROPIC_API_KEY` | 每個 `anthropic/<model-id>` ref 用的 API key；`gateway:"sdk"` 路徑也可改由 `RWE_SECRET_ANTHROPIC_API_KEY` 提供 | `string` / 無預設 | 用到 anthropic model ref 時 | v1 |
-| env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store（`gateway:"sdk"` 直連 Anthropic 時優先於 `ANTHROPIC_API_KEY`） | `string` / 無預設 | 否 | v7 |
-| env `CLAUDE_CODE_OAUTH_TOKEN` | `provider:"anthropic"` **直連**的**訂閱制**認證（`anthropicAuth:"subscription"`），用 `claude setup-token`（Pro/Max 帳號）產生；設定時**不要**同時設 `ANTHROPIC_API_KEY` | `string` / 無預設 | 否 | v7 |
+| env `ANTHROPIC_API_KEY` | 每個 `anthropic/<model-id>` ref 用的 API key。`gateway:"direct-fetch"` **只認這個裸變數**（`src/gateway/client.ts`，不查 secret store）；`gateway:"sdk"` 兩種都認，見下一列 | `string` / 無預設 | 用到 anthropic model ref 時 | v1 |
+| env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store；**只有 `gateway:"sdk"` 這條路徑會讀它**（優先於裸 `ANTHROPIC_API_KEY`）。`gateway:"direct-fetch"` 不查 secret store，`gateway:"pi"` 完全不支援 anthropic provider（見 §1b2），兩者都只能靠上一列的裸變數或根本用不到 | `string` / 無預設 | 否 | v7 |
+| env `CLAUDE_CODE_OAUTH_TOKEN` | `gateway:"sdk"` 的**訂閱制**認證，用 `claude setup-token`（Pro/Max 帳號）產生。**兩者同時設定也沒關係，不必刻意避免**——`anthropicAuth` 不設時這個 token 存在就自動優先（見上面 `anthropicAuth` 那一列），只有明寫 `anthropicAuth:"api-key"` 才會改用 `ANTHROPIC_API_KEY`／忽略這個 token | `string` / 無預設 | 否 | v7 |
 | env `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` | 同上，但走伺服器端 secret store（優先於 `CLAUDE_CODE_OAUTH_TOKEN`） | `string` / 無預設 | 否 | v7 |
-| env `OLLAMA_BASE_URL` | 每個 `ollama/<model-tag>` ref 要打的 Ollama 位址（本機/內網/自架模型，免金鑰；見 §6「本機小模型能力上限」與§情境配方 0） | `string` / `http://localhost:11434` | 否 | v1 |
-| env `OPENROUTER_API_KEY` | 每個 `openrouter/<id>` ref 的 API key（`sk-or-…`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取，一把 key 開放整個 OpenRouter 目錄（`models_list` 可查） | `string` / 無預設 | 用到 openrouter model ref 時 | v9 |
+| env `OLLAMA_BASE_URL` | 每個 `ollama/<model-tag>` ref 要打的 Ollama 位址（本機/內網/自架模型，免金鑰；見 §6「本機小模型能力上限」與§情境配方 0） | `string` / `http://localhost:11434`（LiteLLM 子行程與模型目錄自己的預設值其實是 `http://127.0.0.1:11434`——兩者是同一台機器，行為無差別，純粹是字面值不同，見 C1） | 否 | v1 |
+| env `OPENROUTER_API_KEY` | 每個 `openrouter/<id>` ref 的 API key（`sk-or-…`）。`gateway:"direct-fetch"` **只認這個裸變數**；`gateway:"sdk"` 的 LiteLLM 子行程繼承**整個** `process.env`，所以裸變數一樣有效，但**不會**去讀 `RWE_SECRET_OPENROUTER_API_KEY`（下一列） | `string` / 無預設 | 用到 openrouter model ref 時 | v9 |
+| env `RWE_SECRET_OPENROUTER_API_KEY` | 同上，但走伺服器端 secret store。**只有 `gateway:"pi"` 會讀它**（`src/gateway/pi-gateway-client.ts`，只注入 pi 子行程記憶體）——`gateway:"sdk"`／`"direct-fetch"` 都只吃上一列的裸 `OPENROUTER_API_KEY`（`sdk` 的 LiteLLM 子行程是整段 env 繼承，secret store 的值從不會自動變成它看得到的環境變數）。只在 secret store 存了這個鍵、裸變數卻沒設的部署會踩到：`gateway:"pi"` 正常，切回 `"sdk"`／`"direct-fetch"` 後每一通 openrouter 呼叫都失敗 | `string` / 無預設 | 否 | #105 |
 | env `RWE_SECRET_GITHUB_WEBHOOK_SECRET` | 標籤觸發式自動更新的 GitHub webhook HMAC 共享密鑰；`POST /github/webhook` 以此對原始 body bytes 算 HMAC-SHA256 比對 `X-Hub-Signature-256`；缺少（且未設 `updateFlagPath`）則路由回 503 `UPDATE_WEBHOOK_UNCONFIGURED` | `string` / 無預設 | 否（缺少則自動更新停用） | v11 |
+
+### `auth.enabled:false` 會關掉什麼／不會關掉什麼（唯一權威清單，B7）
+
+這份清單取代本文件其他地方零散提到的片段——其餘段落若講到 `auth.enabled:false` 的某個效果，以這裡
+為準。三類：
+
+**關掉（Off）**：
+- `/authorize`／`/token`／`/register`／`/.well-known/*`／`/oauth/google/callback`／
+  `/dashboard/login` 這幾條路由**完全不註冊**（打了回路由層 404，不是 401/403——跟「註冊了但拒絕」
+  不同）。
+- D-BIND fail-closed 整層短路——沒有「沒 bearer 就 401」這回事。
+- 每個工具與 dashboard 路由的角色／擁有權檢查（`FORBIDDEN_ROLE`／`NOT_WORKFLOW_OWNER` 等）全部不套用，
+  任何連得到 `/mcp` 的呼叫端都有效等同 `admin`。
+- `principals` 設定（連同執行期的 `principal_set_role` 覆寫）照常被存進 `auth-tokens.db`，但**不生效**
+  ——沒有角色判斷這一步可以套用它。
+- CAS 配額（`casQuota`）不生效：所有上傳都落進 `local`（`casNamespaceFor(null)`）這個**無上限**
+  namespace，不分呼叫端是誰。
+- A1 的 ownerless-workflow backfill（見 §1b `auth.legacyOwner`）完全不會跑——backfill 只在
+  `auth.enabled:true` 的開機路徑上觸發。
+
+**不受影響，一直開著（Still on，跟 auth 開關無關）**：
+- Host/Origin 白名單（DNS-rebinding／CSRF 過渡管控，見「外部 ingress 安全」一節）。
+- `POST /hooks/:id` 的 webhook HMAC 驗簽與 `POST /github/webhook` 的 HMAC 驗簽（兩者的認證機制本來
+  就不是 OAuth，是各自的共享密鑰）。
+- `diskFloor` 磁碟水位下限。
+- Bash 圍籠不可用時對遠端 `run_start`/`run_resume`/webhook/排程的 `CONFINEMENT_UNAVAILABLE` 拒絕
+  （§1c(e)/§6）——這是量測出來的姿態，不是 auth 的一部分。
+
+**半開（Partly on）**：
+- `auth-tokens.db` 本身**永遠在每次開機被打開**（`authDb = new Database(...)`，不論 `auth.enabled`
+  真假）——角色覆寫表（`principal_roles`）、已知使用者表（`principals_seen`）、服務帳號表都在裡面，
+  且**服務帳號的 6 個管理工具在 `auth.enabled:false` 時一樣可以呼叫**（建立、輪替 secret 都正常）；
+  真正被鎖住的只有 `/token` 這個換 bearer 的端點（整條路由在 Off 清單裡沒有註冊）——換句話說：
+  `auth.enabled:false` 時可以**預先**把服務帳號準備好，但帳號換不到可用的 bearer，直到真的把 auth
+  打開為止（這正是上面「身分提供者限制」一節提到、沒驗證過的 bootstrap 路徑所依賴的事實）。
+
+**容易被誤讀的一條舊文字**：`GET /api/system`「不需要認證」這句話**只在 `auth.enabled:false` 時成立
+**；`auth.enabled:true` 時它跟其他 `/api/*` 路由一樣要登入／bearer（見下方「Dashboard 登入」一節的
+門檻說明），不要把這句話當成任何時候都成立的例外。
+
+### `--check-config` 涵蓋範圍（A9，2026-10-06 業主裁決）
+
+`npm run check-config`（`tsx src/main.ts --check-config`）跑的是 `composeConfig()` 這條翻譯路徑——
+`principals` 角色字串打錯、`auth.googleClientSecret` 的 `${secret:}` handle 解不開、`sandbox.allowHostPaths`／
+`sandbox.allowReadPaths` 不合規、`modelProbe`／`casQuota`／`diskFloor` 格式錯誤、現在新增的
+`auth.legacyOwner`／`gateway` 非法值（見上面兩列）這些都在這條路徑上，`--check-config` 真的能提前
+抓到。**但下面這些會讓真實開機拒絕啟動的檢查，目前活在 `createServer()`／`RunManager` 建構子，不在
+`composeConfig()` 裡**——`--check-config` 目前**看不到**它們，綠燈不代表這些值沒問題：
+
+- `updateFlagPath`／`updateResultPath` 落在 `workRoot` 之內（`UPDATE_FLAG_INSIDE_WORKROOT`）。
+- `seedRefAllowlist` 條目不是陣列／不是字串／不是合法 URL／不是 `https:`（`SEEDREF_ALLOWLIST_INVALID`）。
+- `runConcurrency`／`maxWorkflowDepth`／`maxWorkflowDescendants`／`maxConcurrentRuns` 不是正整數。
+- **新增（B4）**：`agentSlots` ≤0 或非整數。
+
+**裁決**：這些規則要收斂成**一個**共用的驗證器，`--check-config` 與真實開機呼叫同一份——不是在
+`composeConfig()` 之外另開一條平行的檢查清單（那正是本文件開頭 CLAUDE.md 等級的「composeConfig
+佈線 bug class」要避免的同一類問題：規則存在兩份，只改了一份）。**在這份共用驗證器落地之前**，`npm
+run check-config` 綠燈只保證「設定檔翻譯得動」，不保證「`updateFlagPath`／`seedRefAllowlist`／並行
+上限這幾類值真的合規」——這幾類請在真實啟動後看開機 log、或照上面每一列各自的檢查規則手動核對一次，
+不要只憑 `--check-config` 的結果決定能不能切換到自我更新的新 tag。
 
 `auth.enabled:true` 時的部署前提：
 1. `bind` 改成 `0.0.0.0`（或公開 IP），並在 `allowedHosts` 列出你的 LAN IP／主機名稱。
@@ -620,6 +705,67 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `${secret:GOOGLE_CLIENT_SECRET}` 引用它——跟 `RWE_SECRET_GITHUB_TOKEN` 等既有值是同一個信任前提
 （能註冊 workflow／推 MCP 資產的人就能用 store 裡的任何名字）。
 
+### 身分提供者限制：目前只能用 Google（2026-10-06 業主裁決，A2/A3/A13；暫不改程式碼）
+
+上面 `auth.googleAuthorizeUrl`／`googleTokenUrl`／`googleJwksUrl` 三個「override」鍵**不是**接任意
+OIDC/OAuth IdP 的開關——它們只是把同一套 Google 流程指到一個 Google-相容的測試替身（例如整合測試用的
+fake IdP），不是給公司內部 SSO（Okta／Entra ID／Keycloak…）用的。原因是程式碼層級的，不是設定可以
+繞過的：
+
+- **issuer 寫死**：`src/auth/google-verifier.ts` 的 `VALID_ISSUERS` 只接受
+  `https://accounts.google.com`／`accounts.google.com` 兩個字面值。把上面三個 URL 改指到別的 IdP，
+  id_token 驗證一樣會用這份清單比對 `iss`——不符就是 `bad iss`，每個登入都失敗，不會是「部分可用」。
+- **`email_verified` 必填**：驗證要求 id_token 帶 `email_verified:true`；不少企業 IdP（含 Entra ID）
+  不會送這個 claim。
+- **scope 寫死 `openid email`**：`src/auth/auth-service.ts` 固定送這個 scope，不是從設定讀的。
+- **callback 路徑固定** `/oauth/google/callback`，不是「某個 IdP 的 callback」這種泛用路由。
+
+**白話**：要接公司自己的 SSO，目前**只有改程式碼**這條路（至少要動 `google-verifier.ts` 的 issuer／
+claims 檢查與 `auth-service.ts` 的 scope），不是改 `rwe.config.json` 就能做到；這幾個 override 鍵
+目前唯一經過驗證的用途是指向測試替身。
+
+**沒有 Google、但還是想開 `auth.enabled:true` 會發生什麼（A3，依程式碼推導，非實機驗證過的組合）**：
+- 引擎正常開機——沒有任何地方檢查 `googleClientId`/`googleClientSecret` 是否真的填了可用的值。
+- 服務帳號的 `client_credentials`（`/token`，見下方「服務帳號」一節）照常可用，因為這條路完全不經過
+  Google。
+- **但沒有人能拿到 `admin` 角色**：`service_account_*` 這 6 個工具與 `principal_set_role` 都要
+  `admin`；服務帳號本身的角色只能是 `author`／`user`（絕不會是 `admin`，見下方「服務帳號」小節）；
+  真人要拿 `admin` 只能靠 Google 登入通過。結果是：沒有人能建立/輪替服務帳號、沒有人能改角色、
+  `models_probe` 與全域資產一律不可用，待核准（`none`）帳號永遠卡住、沒有 admin 能核准他們。
+- dashboard 只剩 D-BIND 的本機救援視角（`loopback-exempt`，見「Dashboard 登入」一節）：能看系統／
+  模型／issues／工作流程（非擁有者視角），沒有任何 run 頁面、沒有管理分頁。
+- **唯一可能的 bootstrap 路徑（未經真機驗證，列出來給要試的人）**：在 `auth.enabled:false` 時先用
+  `service_account_create` 建好需要的服務帳號（這一步不需要 auth），再把 `auth.enabled` 改
+  `true`——這樣至少有可用的服務帳號，但依然沒有任何一個 `admin`（服務帳號角色上限是 `author`）。
+  這條路徑只是程式碼邏輯上看起來可行，沒有在這份文件的驗證範圍內實測過，請自行先在非正式環境試過
+  再上線。
+- **在這個限制解決之前，公司內部、沒有 Google 帳號體系的主機，實務上的正解是 `auth.enabled:false`
+  （見下方「移植到沒有 Google 的主機」與 §7 的對應段落）**——網路層用 bind `127.0.0.1` + SSH 通道／
+  VPN／防火牆取代身份認證，不要把 `auth.enabled:true` 當成「沒有 Google 也能有存取控制」的手段，
+  它目前做不到。
+
+**身分字串＝Google email，換 IdP／換人會讓資料變成孤兒（A13）**：擁有權（`workflow`／`run`／
+`webhook`／`schedule` 的 owner、CAS namespace、`principals` 的鍵、`auth-tokens.db` 裡的角色/配額
+覆寫列）全部是拿 principal id（也就是 Google 回的 `email` claim）當原始字串比對，沒有第二層間接。
+換句話說：
+
+- 同一個人若未來改用別的身分登入（換 IdP、換公司 email、identity provider 換了 `sub`/UPN 格式），
+  他原本名下的每一筆資源都會變成「擁有者是一個再也登入不進來的字串」——非擁有者、非 admin 誰都碰
+  不到（`NOT_WORKFLOW_OWNER`/`NOT_RUN_OWNER` 之類的擁有權拒絕，見「角色」一節），個人配額/角色覆寫
+  也不會跟著生效到新身分上。
+- **搬家（§7）或換身分系統時，必須先做「identity remap」這一步**，二選一：(a) 讓新 IdP 簽出一模
+  一樣的 email 字串（issuer 換了沒關係，字串本身不變，既有 refresh token 仍會失效但資料擁有權不受
+  影響）；或 (b) 手動改寫 `catalog.db`／run store／`schedules.db`／`webhooks.db`／CAS 各 namespace
+  目錄／`auth-tokens.db` 裡每一處 owner 欄位與 `principals` 的鍵，改成新身分字串，兩者擇一在**新
+  身分第一次登入之前**做，不然就是看得到資源名字、永遠打不開。
+
+**規劃中、尚未實作的方向（未來工作，不是這次迭代的範圍）**：公司內部 SSO 不走 Google OAuth，改用
+**trusted-proxy header 認證**——反向代理（已經過公司 SSO 驗證）在請求上附加一個可信的身份 header
+（例如 `X-Authenticated-Email`），引擎信任該 header（僅在請求來自設定過的信任代理時），不再要求
+Google id_token；同時需要一個**非 Google 的 bootstrap-admin** 機制（例如設定檔直接列一個
+`principals` 鍵對應 trusted-proxy 身份、標成 `role:"admin"`），解決上面 A3 的「沒有 admin」死結。
+這條路線目前只是方向，沒有排進任何已核准的迭代，程式碼完全未動。
+
 ## §1b2 pi harness（替代 `gateway`）
 
 一個與 `"sdk"` 平行的第三種 `gateway` 選項：`@earendil-works/pi-coding-agent`（pinned `1.0.0`），
@@ -629,8 +775,10 @@ curl -s http://localhost:8787/api/models | python3 -c \
 **怎麼切換**：`rwe.config.json` 設 `"gateway": "pi"`，重開引擎（或 `rwe-update.sh` 這種會重啟的流程）。
 不需要額外的 `"pi"` 設定區塊——沒有per-agent/per-run 開關，整個引擎只有一種 harness 生效。
 
-**Node 版本**：pi 套件（ESM-only）需要 **Node.js 22.19 以上**——比引擎本身的 22.6 下限更高。升級引擎到含
-pi 的版本前，先用引擎帳號確認：`sudo -u rwe node -v`（或 `ExecStart` 實際指向的那支 node）。
+**Node 版本**：pi 套件（ESM-only）需要 **Node.js 22.19 以上**——這就是 §1a 把引擎整體下限訂在
+22.19 的原因（pi 相依套件是一般 `dependencies`，不管這台部署有沒有把 `gateway` 設成 `"pi"` 都會裝
+進 `node_modules`）。升級引擎前，先用引擎帳號確認：`sudo -u rwe node -v`（或 `ExecStart` 實際指向的
+那支 node）。
 
 **支援的 provider（只有兩個，故意的）**：`openrouter/*` 與 `ollama/*`。**完全不碰 Anthropic**——
 沒有 `ANTHROPIC_API_KEY`，也不接受 `CLAUDE_CODE_OAUTH_TOKEN`（owner 2026-10-03 決定：spike 發現透過
@@ -1354,10 +1502,14 @@ fileConfig.bind`，`RWE_PORT` 同理）——下面設定檔範例裡的 `bind`�
 
 若要跑純本地 Ollama、零 API 金鑰、零 LiteLLM/Python 依賴的最小情境：**不要**安裝
 `override.conf` drop-in，並把複製出來的 `rwe.service` 裡的 `RWE_BIND` 改成 `127.0.0.1`（理由同上表），
-這樣 unit 本體的 `RWE_PORT=8787`／`RWE_BIND=127.0.0.1` 會跟下面**搭配的 `rwe.config.json`** 一致：
+這樣 unit 本體的 `RWE_PORT=8787`／`RWE_BIND=127.0.0.1` 會跟下面**搭配的 `rwe.config.json`** 一致。
+**`workRoot` 務必是 repo 外的絕對路徑**——`./data` 這種相對路徑會落在 repo checkout 裡面，開機時
+`workroot-guard.ts` 一偵測到祖先目錄有 `.git`／`CLAUDE.md` 就以 `WORKROOT_INSIDE_PROJECT` 拒絕啟動
+（見下方 §1b「workRoot」那一列的「workRoot 隔離」規則，跟第 2 步 quickstart 用的
+`~/.local/share/remote-workflow-engine` 是同一條規則）：
 ```json
 {
-  "bind": "127.0.0.1", "port": 8787, "workRoot": "./data",
+  "bind": "127.0.0.1", "port": 8787, "workRoot": "/home/<user>/.local/share/rwe-data",
   "timeoutMs": 300000, "gateway": "direct-fetch", "useLiteLLMProxy": false
 }
 ```
@@ -1488,9 +1640,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 40 個工具（`workflow_*` 7、`run_*` 8、
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 46 個工具（`workflow_*` 7、`run_*` 8、
 `workspace_*` 7、`schedule_*` 4、`webhook_*` 3、`issue_*` 5、`models_list`＋`models_probe`＋`system_info`、
-`principals_list`＋`principal_set_role`＋`principal_set_quota`）；
+`principals_list`＋`principal_set_role`＋`principal_set_quota`、`service_account_create`／`_list`／
+`_update`／`_rotate_secret`／`_revoke_secret`／`_delete`）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
@@ -1517,10 +1670,11 @@ npm run start
 | 啟動失敗 `EADDRINUSE` | port 已被另一個 remote-workflow-engine process 占用 | `RWE_PORT=<other>` 換一個 port，或先確認/停掉舊 process（`ps aux \| grep "main.ts"`） |
 | `pip install 'litellm[proxy]'` 失敗（`uvloop`/`orjson` 編譯錯誤） | 系統 Python 版本太新（如 3.13/3.14），沒有預編譯 wheel | 用 §1a 的 `uv python install 3.12` 取得一份獨立的 3.12，改用它裝 |
 | `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該 model ref 對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`）——一個**依序** `await agent(...)` 呼叫失敗或逾時一律回傳 `null`，不拋例外，是刻意設計，不是漏接；`run_status`/`run_result`/`GET /api/runs/:id` 會同時多一個 `failedAgentCount` 欄位，不必自己去掃 `agents[]` 才發現「這次 run 裡有東西失敗了」 | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且腳本 `meta.params.agents.<label>.model.default` 寫的完整 ref 指到你要的 provider/model；腳本自己要對 `await agent(...)` 的回傳值判斷 `null` 再往下用，避免把 `null` 字串化接進下一段 prompt |
-| 宣告的 `timeoutMs` 跟實際等到失敗的時間對不上（例如宣告 60000ms、實測快兩倍才失敗） | `timeoutMs` 界定的是**單次嘗試**、不是整個呼叫；部署的 `retries`（`rwe.config.json`，預設 1）會讓實際最壞等待時間變成 `timeoutMs × (1 + retries)` | 呼叫 `workflow_describe` 直接讀 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs`（伺服器已經照這條公式算好，不必自己乘） |
+| 宣告的 `timeoutMs` 跟實際等到失敗的時間對不上（例如宣告 60000ms、實測快兩倍才失敗） | `timeoutMs` 界定的是**單次嘗試**、不是整個呼叫；部署的 `retries`（`rwe.config.json`，**預設值依 gateway 而不同，見 §1b「retries」列**：sdk/pi 是 0、direct-fetch 是 1）會讓實際最壞等待時間變成 `timeoutMs × attempts`（`attempts = 1 + retries`） | 呼叫 `workflow_describe` 直接讀 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs`（伺服器已經照這台部署實際生效的 gateway 算好 attempts，不必自己乘） |
 | `workflow_register` 回 `UNKNOWN_MODEL` | 腳本 `meta.params.agents.<label>.model.default`／`.enum` 不是合法的完整 `<provider>/<model-id>` ref（裸名稱、認不得的 provider 前綴），或 openrouter/ollama 的 id 在該供應商的現行目錄裡真的找不到 | 改成完整 ref（用 `models_list` 查、複製它的 `ref` 欄位貼上）——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
-| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（38 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
+| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（46 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
 | 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`、`aliases`——2026-09-26 起別名機制整個移除） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些。**`aliases` 這個鍵不會擋住開機**（自我更新重啟舊設定檔時仍要能正常啟動），但已完全不生效——把每個模型改寫進腳本自己的 `meta.params.agents.<label>.model.default`（完整 `<provider>/<model-id>` ref） |
+| 設定檔裡巢狀物件打錯鍵名（例如 `auth.enable:true`、`sandbox.allowHostPath:[...]`），**沒有任何警告**，開機 log 乾淨 | 這個「不認得的鍵」檢查**只掃頂層**（`composeConfig()` 的 `unknownKeys` 比對只看 `Object.keys(fileConfig)`）；物件內部的鍵打錯字，該物件本身仍是「認得的頂層鍵」，所以完全靜默——`auth.enable:true`（想打 `auth.enabled`）的後果是 auth **仍然關閉**，看起來像設定生效了其實完全沒有；`sandbox.allowHostPath`（漏了 `s`）的後果是這個授權**完全沒套用**。目前只有 `modelProbe`、`casQuota`、`diskFloor` 這三個巢狀物件自己額外做了「不認得的內部鍵就拒絕」——其餘（`auth`、`sandbox`、`principals[x]` 除了 `role` 以外的鍵）沒有這層保護 | 巢狀鍵名**逐字元**對照 §1b 這份表；設完重開後，用 `workflow_describe` 或 `GET /api/status`／`system_info` 等能反映該設定「是否真的生效」的介面二次確認，不要只看「開機沒有警告」就當作設定生效 |
 | `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | 註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
 | `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是扁平的 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
 | `run_start` 回 `CHANNEL_UNPUBLISHED`；或 `workflow_describe` 回 `runnable:false` | 剛註冊完還沒發布——註冊只建立版本，不會自動指向任何頻道 | `workflow_publish({name, version, channel:"release"})`（三個參數都必填，`version` 是註冊回傳的字串如 `"v1"`）|
@@ -1530,7 +1684,7 @@ npm run start
 | **本機 7B 級 Ollama 模型不會真的觸發工具呼叫**：`agent()` 要求讀檔/寫檔，回傳的內容看起來像結果，但檔案沒真的被寫入/讀到的內容是編造的 | 已知的模型能力上限（非程式碼缺陷）：即使工具清單已縮減到最小，SDK 的工具迴圈對本機 7B 級模型仍不會真正被觸發，模型直接生成一段編造的「工具結果」文字（直接對 Ollama 原生 API 測試排除了模型本身不支援 tool-calling 的可能） | 目前沒有繞過方法；若工作流程依賴 agent 真的讀寫檔案，改用更大的本機模型（例如 32B 級）或已驗證憑證的付費供應商 |
 | 續跑（`run_resume`）之後，原本被中止那次呼叫的紀錄一直卡在 `"state":"running"` | 已知的顯示瑕疵：中止的呼叫紀錄不會自己轉成終止狀態，續跑會多出一筆新紀錄 | 純顯示瑕疵，不影響最終 `run_result` 的正確性；可忽略舊的那筆紀錄 |
 | 關掉伺服器後還有一個 `litellm --config ...` process 留著 | 正常 `SIGTERM`/`SIGINT` 關機會連帶砍掉內部管理的 `litellm` 子行程；殘留多半是非正常關機（如 `kill -9`）留下的 | 手動 `ps aux \| grep litellm` 找到後 `kill`；也可以用 `litellmPort` 鍵讓每個實例用不同 port，避開多實例誤連風險 |
-| Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.6 | 升級 Node 到 22.6 以上（`node --version` 確認） |
+| Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.19 | 升級 Node 到 22.19 以上（`node --version` 確認） |
 | 服務啟動失敗，log 只有一行 `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` | `gateway:"sdk"` 在**開機階段**就要起一個 `litellm` 代理子行程，而 `PATH` 上沒有 `litellm` 執行檔（常見於 systemd unit 的 `PATH` 沒帶到 venv） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH`（systemd 要寫在 unit 的 `Environment=PATH=...`）再啟動；或改成 §1a 的 `gateway:"direct-fetch"` + `useLiteLLMProxy:false` 免 LiteLLM 組合 |
 | 服務起得來，但每次 `agent()` 都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
@@ -1611,7 +1765,7 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
 巢狀樹（不攤平）；改動前留下、無快照的舊 run 仍以既有方式重建。**尚未支援**：parallel-group
 標記（需 sandbox-IPC 改動）、樹的靜態預讀+快取。
 
-**沒有跨觸發串接工具**：40 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
+**沒有跨觸發串接工具**：46 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
 `continuationDbPath` 設定鍵存在（見 §1b），但沒有任何可呼叫的功能對應到它。要串接多個工作流程，改在腳本裡用 `await workflow(name, args)`
 巢狀呼叫（深度/總數由 `maxWorkflowDepth`／`maxWorkflowDescendants` 把關）。
 
@@ -1773,13 +1927,22 @@ GitHub → POST /github/webhook → 引擎（UNPRIVILEGED）
                                        │ 解析 tag→SHA（array-args，永不 shell-eval）
                                        │ git checkout <SHA>
                                        │ npm ci && npm run build
-                                       │   ↓ 成功
+                                       │ npm test（gate；RWE_UPDATE_SKIP_TESTS=1 可跳過，僅限緊急逃生）
+                                       │ npm run check-config（有設 RWE_CONFIG_PATH 才跑）
+                                       │   ↓ 全部成功
                                        │ 寫 applied 結果（atomic）→ sync
                                        │ systemctl restart rwe
-                                       │   ↓ 失敗（safe-fail）
+                                       │   ↓ tag 格式不合法／官方 remote 上找不到這個 tag（exit 10/20）
+                                       │ 不寫任何結果檔——旗標已消耗、服務留在原版本，
+                                       │ 唯一的痕跡是 journal（deploy/rwectl logs-update）
+                                       │   ↓ 更後面的步驟失敗（build/test/check-config，safe-fail）
                                        └─ 寫 failed 結果，中止（不重啟）
                                           服務繼續在上一個版本上執行
 ```
+**不是每一種失敗都會寫結果檔**：tag 格式驗證沒過、或官方 remote 上根本找不到這個 tag（`exit 10`／
+`20`）屬於「連要更新到哪個版本都還沒確定」的早期失敗，`deploy/rwe-update.sh` 這兩種情況下直接結束、
+**不寫** `result.json`——`deploy/rwectl update-result` 這時看到的仍是上一次真正跑到後段的結果；要
+確認這類早期失敗有沒有發生，查 `deploy/rwectl logs-update`（journal），不要只看 `update-result`。
 
 ### 步驟一：GitHub Webhook 設定
 
@@ -1862,14 +2025,20 @@ RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 > 是否有無效的 role 值），但完全不 spawn litellm、不綁 port。驗證失敗會跟建置/測試失敗一樣安全
 > 失敗（退回前一個 SHA，不重啟），並把 `configCheck:"failed"` 寫進結果檔；沒設 `RWE_CONFIG_PATH` 則記
 > `configCheck:"skipped"`（不是靜默略過——面板上看得到）。也可以手動跑一次同一個檢查：
-> `RWE_CONFIG_PATH=<path> npm run check-config`（離線用，不用真的觸發更新）。
+> `RWE_CONFIG_PATH=<path> npm run check-config`（離線用，不用真的觸發更新）。**`configCheck:"passed"`
+> 現在還不等於「這份設定一定能真的開機」**——見 §1b「`--check-config` 涵蓋範圍（A9）」一節：
+> `updateFlagPath`／`seedRefAllowlist`／並行與深度上限這幾類檢查目前還在真實開機路徑上，不在
+> `composeConfig()` 裡，所以這個綠燈目前看不到它們；收斂成單一共用驗證器之前，這幾類請額外照
+> §1b 對應列手動核對。
 
 ### 步驟五：安裝特權更新 systemd 單元
 
 > 特權 helper（`deploy/rwe-update.sh`）負責 git checkout + build + restart，須以有 `systemctl restart rwe` 權限的使用者執行。對 systemd user service 部署，`rwe-update.service` 作為 user service 即可（user service 可 `systemctl --user restart` 自己的服務）。
 
 > **`deploy/rwe-update.path`／`deploy/rwe-update.service` 兩份範本現在都是 user-service 形狀**
-> （`Environment=` 直接內建六個值，沒有 `EnvironmentFile=`／`/opt`／`/etc/rwe/` 這些 root 安裝路徑
+> （`Environment=` 直接內建八個值（`PATH`／`RWE_UPDATE_FLAG`／`RWE_UPDATE_RESULT`／
+> `RWE_UPDATE_LOCK`／`RWE_OFFICIAL_REMOTE`／`SYSTEMCTL`／`RWE_CONFIG_PATH`／`RWE_CONFIG_ENV_FILE`，
+> `deploy/rwe-update.service` 數得到），沒有 `EnvironmentFile=`／`/opt`／`/etc/rwe/` 這些 root 安裝路徑
 > 才用得到的東西；`%h` 是 systemd 自己的 specifier，會展開成這個 user instance 的家目錄）——只要
 > clone 在 `%h/Documents/remote-workflow` 這個慣例路徑下，複製過去就能直接跑，不必再手動編輯：
 
@@ -1932,7 +2101,19 @@ curl -s http://localhost:8787/api/version
 > 範本可以直接跑在任何帳號底下——這一節是把它們搬到一個**專用、無登入、無 sudo 的系統使用者**
 > （以下用 `rwe`，家目錄 `/home/rwe`）底下，並附一支分階段腳本
 > `deploy/migrate-to-service-user.sh` 把「正在操作員帳號底下跑的 production」原地搬過去。
-> 全新主機也適用：跳過第五階段（沒有舊資料要搬）即可。
+> **全新主機不是「跳過第五階段就好」——這支腳本每一個 phase 預設都假設有一份現成的操作員部署可以
+> 讀**：`phase2` 要複製 `OP_NODE_DIR`（預設 `~/.local/node`）那份 node 安裝；`phase3b`／`phase7`
+> 要從 `OP_CHECKOUT`（預設 `$HOME/Documents/remote-workflow`）讀目前 checkout 在哪個 tag
+> （或你自己明確設 `DEPLOY_TAG`）；`phase4` 要讀 `OP_CONFIG`（`OP_CHECKOUT` 底下的
+> `rwe.config.json`）與 `OP_ENV`（預設 `~/.config/rwe.env`）；`phase6` 會去 `disable`
+> 操作員帳號底下對應的 user unit。**真正全新、連操作員自己都還沒跑過 §0/§2 的主機**，要先選一個：
+> (a) 用操作員帳號照 §0/§2 快速部署一次（哪怕只是起個最小設定），讓 `OP_CHECKOUT`／`OP_ENV`／
+> `OP_NODE_DIR` 這三個預設路徑真的存在，再跑這支腳本的 `phase1`～`phase7`；或 (b) 不想在操作員
+> 帳號底下留痕跡的話，把 `OP_CHECKOUT`／`OP_ENV`／`OP_NODE_DIR`（以及可能需要的 `DEPLOY_TAG`）
+> 明確指到你自己準備好的位置（例如先手動 clone 一份、裝好 node、寫好 `rwe.config.json`／
+> `rwe.env`，不必是「正式在跑」的部署，只要這幾個路徑讀得到正確內容）。兩種方式都做完前置準備後
+> 才能真的「跳過第五階段」（`phase5` 本身確實只搬 workRoot 資料，全新主機沒有舊資料要搬是對的，
+> 但那是**最後一步**，不是唯一要處理的落差）。
 
 ### 為什麼
 
@@ -2205,106 +2386,120 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
 
 > 目的：把「目前這台主機上實際在跑的完整部署」原樣搬到另一台機器——不是重新照 §0/§2 從零架設
 > 一個乾淨範例，是把**這台主機的實際客製**（進階 `gateway:"sdk"` + auth + LiteLLM + 自我更新 +
-> 對外隧道）連同資料一起搬過去。以下每一步都連結到上面已有的章節，不重複寫一次；只補「換機時
-> 才會踩到」的細節與（用 `<占位字元>` 表示的）主機專屬值要換掉的地方。**沒有任何一步需要真的
-> 貼出這台主機的 token/secret 值**——照名稱/位置操作即可，值本身留在原本的檔案裡跟著複製過去。
-> 同一台主機上只是把引擎從操作員帳號搬到專用系統帳號，見 §6c（分階段腳本）；兩者怎麼組合也寫在那裡。
+> 對外隧道）連同資料一起搬過去。**2026-09-29 起這台主機的 production 跑在專屬系統使用者 `rwe`
+> （uid 997，家目錄 `/home/rwe`）底下，不是操作員自己的登入帳號**（見 §6c）——以下每一步都是對
+> `rwe` 這個帳號操作，查/控 `rwe.service` 一律經 `deploy/rwectl`（它內部自己 `sudo -u rwe`），
+> **不要**用裸的 `systemctl --user ...`（那會操作到執行指令的人自己的 user instance，不是
+> `rwe` 的）。以下每一步都連結到上面已有的章節，不重複寫一次；只補「換機時才會踩到」的細節與
+> （用 `<占位字元>` 表示的）主機專屬值要換掉的地方。**沒有任何一步需要真的貼出這台主機的
+> token/secret 值**——照名稱/位置操作即可，值本身留在原本的檔案裡跟著複製過去。
+>
+> **兩種方式，依新主機情況擇一**：(A) 新主機是全新機器、還沒有任何 `rwe` 帳號——照下面每一步，
+> 其中第 3、4、7、11 點改用 §6c `deploy/migrate-to-service-user.sh` 的 `phase1`（建帳號）、
+> `phase2`（工具鏈）、`phase3`/`phase3b`（deploy key + clone）、`phase4`（設定/secrets +
+> check-config）、`phase6`（systemd 單元 + 清 `~/.npm/_logs`/`~/.claude/debug`）、`phase7`
+> （驗證）直接把部署建在新主機的 `rwe` 底下——只是這次 `phase3b` 用的是**新主機**的 SSH deploy
+> key，`phase4`／`phase5`（workRoot）讀的「舊部署」是**舊主機的 `rwe`**（用 `OP_*` 系列環境變數
+> 指過去，不是指操作員自己的 checkout）；(B) 兩台主機都已經是 `rwe`-service-user 形狀（例如
+> 災難復原、換一台等規格機器）——直接照下面各點手動對拷，不需要跑分階段腳本。本節以 (B) 的手動
+> 步驟為主文字，(A) 在對應的點附註要改用哪個 `phase`。
 
-1. **新主機作業系統前置需求**——見 §1a：Node.js 22.6+、npm、（`gateway:"sdk"` 才需要的）
-   Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**這台主機
-   目前實際量到的姿態、以及一個尚未閉環的狀態要先看清楚，不要假設它是 `CONFINED`**：
-   `journalctl --user -u rwe.service` 裡最後一次開機記的是 `Bash confinement: UNCONFINED`
-   （`bwrap: No permissions to create a new namespace`）；這台主機**已經**做了 §1c(e) 的兩步
-   AppArmor 放寬（`/etc/sysctl.d/60-rwe-userns.conf` 設了
-   `kernel.apparmor_restrict_unprivileged_userns=0`，`bwrap-userns-restrict` 設定檔也已停用），
-   但那兩步是**在最後一次 `rwe.service` 重啟之後**才做的——服務還沒重開過，所以現在這個量測結果
-   反映的是放寬**之前**的狀態，放寬到底有沒有生效**沒有被驗證過**。換機前先在原主機上
-   `systemctl --user restart rwe.service` 一次、看新的開機 log 是不是真的變成 `CONFINED`，
-   再決定新主機要不要照著複製同一套 AppArmor 放寬；本文件不替你做這次重啟（這是操作正式服務的
-   動作，超出這份 checklist 讀取範圍）。不管最終量到哪一種姿態：`unconfined` 時本機送出的 run
-   仍照跑，但**遠端**（webhook／排程／別台機器送出的 `run_start`）會被拒，換機後這個行為只要
-   跟換機前一致，就不算回歸——先確認換機前的實際姿態，才知道要在新主機上重現哪一種。
+1. **新主機作業系統前置需求**——見 §1a：Node.js 22.19+、npm、（`gateway:"sdk"` 才需要的）
+   Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**不要假設
+   新主機會量到 `CONFINED`，換機前後都要用 `deploy/rwectl logs | grep -i confinement` 親自確認
+   一次**——這裡記一個真的踩過的教訓（通用於任何主機，不是只有特定一台）：AppArmor 的
+   `bwrap-userns-restrict` 放寬（§1c(e) 的兩個 sysctl/apparmor 步驟）**只對放寬之後才啟動的
+   行程生效**；如果你是先做放寬、服務卻還沒重開過就去讀開機 log，讀到的仍是放寬前那次開機留下的
+   `UNCONFINED` 字樣，會誤判放寬沒生效。正確順序：先做兩步放寬 → `deploy/rwectl restart` →
+   再讀新的開機 log。新主機第一次啟動也適用同一個順序：裝好 `bwrap`/`socat`（+ 視情況做 AppArmor
+   放寬）之後才啟動 `rwe.service`，不要啟動了才回頭補。不管最終量到哪一種姿態：`unconfined` 時
+   本機送出的 run 仍照跑，但**遠端**（webhook／排程／別台機器送出的 `run_start`）會被拒——換機後
+   這個行為只要跟換機前一致就不算回歸，所以換機**前**先在舊主機上用同一個指令確認一次目前的實際
+   姿態，才知道新主機要重現哪一種。
 
-2. **裝好版控的 git pre-push 保護**——見上面「git pre-push 保護」小節：`git config core.hooksPath
-   deploy/git-hooks`（或 symlink）。這是 clone 出來就該做的第一件事，不是部署完才補。
+2. **裝好版控的 git pre-push 保護**——這是**開發端**（人用來 `git push` 的那份 clone，通常是
+   操作員自己的帳號，不是 `rwe` 的 `$RWE_CHECKOUT`）的保護，見上面「git pre-push 保護」小節：
+   `git config core.hooksPath deploy/git-hooks`（或 symlink）。`rwe` 自己的 checkout 只
+   `fetch --tags`／`checkout`，從不 `push`，不需要裝這個 hook。
 
-3. **Clone repo，確認 repo 範本跟這台主機的即時單元還一不一致**——2026-09-27 起
-   `deploy/rwe.user.service`／`deploy/rwe.service.d/override.conf`／`deploy/rwe-update.service`／
-   `deploy/rwe-update.path`／`deploy/systemctl-user` 已經直接照這台主機當時實際跑的 user unit
-   收斂（PATH 含 LiteLLM venv、`RWE_BIND=0.0.0.0`、`rwe-update.service` 是 inline-`Environment=`
-   的 user-service 形狀、都用 `%h`），搬機時多半不必再逐行比對落差，但仍先讀一次舊主機
-   `~/.config/systemd/user/` 底下的檔案（唯讀，不要動它們）確認沒有本 checklist 之後又長出的手動
-   客製，剩下真正要核對的：
-   - **repo 路徑**：範本假設 clone 在 `%h/Documents/remote-workflow`（`WorkingDirectory=`／
-     `ExecStart=`／`RWE_CONFIG_PATH=`）——新主機的 clone 位置不同就要手動改這幾行。
-   - **port**：`deploy/rwe.service.d/override.conf` 範本裡的 `RWE_PORT=8899` 是**這台主機自己的
-     值**，`systemctl --user cat rwe.service` 能看到套用後的完整 unit；新主機若用不同的對外 port，
-     改這個 drop-in 檔（不要動 `deploy/rwe.user.service` 本體），**且要跟第 8 點的反向代理/隧道
-     設定的 port 對得上**——兩邊不一致的典型症狀是隧道連得上但 502／connection refused。
-   - **`RWE_OFFICIAL_REMOTE`**：`deploy/rwe-update.service` 範本裡釘死的是這個專案的官方 remote
-     （`https://github.com/HsuJavis/remote-workflow-engine.git`）；新主機若部署的是自己的 fork，
-     要把這一行換成該 fork 的遠端 URL，否則 helper 會拒絕解析任何 tag。
-   - **`PATH=`（`rwe-update.service`）**：範本是 `%h/.local/bin:...`，這台主機的 npm 剛好落在
-     這裡；新主機若 node/npm 只裝在別的目錄（例如版本管理器的 `~/.local/node/bin`，見
-     `deploy/rwe.user.service`），要把那個目錄一併加進來，否則 `npm ci && npm run build`
-     找不到 npm。
-   - **`~/.local/share/rwe-update/`（`RWE_UPDATE_RESULT`／`RWE_UPDATE_LOCK` 指到的那個 0700
-     目錄，第 3 點步驟三已建過）這台主機上實際有的檔案**：`result.json`（最後一次更新結果，見
-     §6b「可觀測性」）、`update.lock`（flock 用的空檔）、`systemctl-user`（現在就是
-     `deploy/systemctl-user`，見 §6b 步驟五，新主機用 `install -D -m 755` 裝過去即可，不必手打）、
-     以及一份 `.webhook-secret`（0600，**操作員自己留的一份 GitHub webhook secret 備份，不是引擎
-     會去讀的檔案**——引擎驗 HMAC 讀的是 `RWE_SECRET_GITHUB_WEBHOOK_SECRET` 這個環境變數，第 4
-     點已經搬過去，這份檔案單純是操作員自己方便查而已，要不要一起搬純看個人習慣）。**這個目錄
-     底下若有任何 `rwe.config.json.bak-*`／`backup-*` 之類的備份檔，一律當成跟正式
-     `rwe.config.json` 一樣機密處理**（見下方第 7 點：這台主機的 `rwe.config.json` 目前明碼含
-     Google OAuth client secret，備份檔自然也含），不要圖方便丟進任何非 600 權限的位置或連同其他
-     非機密檔案一起打包外流。
+3. **`rwe` 的 checkout（`$RWE_CHECKOUT`，預設 `/home/rwe/remote-workflow`）**——(A) 全新主機：
+   跑 §6c 的 `phase3`（產生/登記 deploy key）+ `phase3b`（SSH clone + checkout 同一個 tag +
+   `npm ci`）。(B) 兩台都已是 `rwe`-service-user：在新主機上對 `rwe` 重複同一套
+   deploy-key+SSH-clone 流程（§6c「GitHub deploy key」一節），checkout 舊主機 `rwe` 目前停在的
+   同一個 tag（`sudo -u rwe -H git -C $RWE_CHECKOUT describe --tags`查）。兩種情況都要核對 repo
+   範本跟**舊主機 `rwe` 目前即時在跑的單元**是否一致（`deploy/rwectl cat rwe.service`，不是
+   `systemctl --user cat`——那只會印執行指令的人自己的 unit）：
+   - **repo 路徑**：單元範本用 `%h`，在 `rwe` 底下自動展開成 `/home/rwe/...`；只要新主機也把
+     checkout 放在 `$RWE_CHECKOUT` 這個慣例路徑（§6c 表格），單元範本照抄即可，不必手改路徑。
+   - **port**：`deploy/rwe.service.d/override.conf` 的 `RWE_PORT` 是**這次部署自己的值**（查
+     `deploy/rwectl cat rwe.service` 裡套用後的 `RWE_PORT`）；新主機若用不同的對外 port，改這個
+     drop-in（不要動 `rwe.user.service` 本體），**且要跟第 8 點的隧道/反向代理設定的 port 對得
+     上**——兩邊不一致的典型症狀是隧道連得上但 502／connection refused。
+   - **`RWE_OFFICIAL_REMOTE`**：`rwe-update.service` 範本裡釘死的是這個專案的官方 remote；部署
+     自己的 fork 要把這一行換成該 fork 的遠端 URL，否則 helper 會拒絕解析任何 tag。
+   - **`PATH=`（`rwe-update.service`）**：要含 `rwe` 自己的 node/npm 安裝目錄（§6c `phase2` 把
+     node 整份複製到 `/home/rwe/.local/node`，並在 `/home/rwe/.local/bin` 建 symlink）。
+   - **`/home/rwe/.local/share/rwe-update/`（0700）這個目錄實際有的檔案**：`result.json`（最後
+     一次更新結果，見 §6b「可觀測性」，`deploy/rwectl update-result` 直接讀）、`update.lock`
+     （flock 空檔）、`systemctl-user`（`deploy/systemctl-user` 的複本）。**這個目錄底下若有任何
+     `rwe.config.json.bak-*`／`backup-*` 之類的備份檔，一律當成跟正式 `rwe.config.json` 一樣
+     機密處理**——不要圖方便丟進任何非 600 權限的位置或連同其他非機密檔案一起打包外流。
 
-4. **`rwe.env`（`~/.config/rwe.env`，權限 600）——只搬「鍵名」對得上的那些，值本身直接複製檔案**：
-   這台主機目前有 `RWE_SECRET_GITHUB_TOKEN`（`issue_report`/Issues 儀表板用）、
-   `OPENROUTER_API_KEY`（openrouter 供應商）、`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`
-   （anthropic 訂閱制 OAuth，見 §1b／README「前置需求」——這台主機沒有另外設 API-key 那個環境變數，
-   用的是訂閱制）、`RWE_SECRET_GITHUB_WEBHOOK_SECRET`（GitHub webhook HMAC，見 §6b 步驟一/四）。
+4. **`rwe.env`（`/home/rwe/.config/rwe.env`，權限 600，owner `rwe`）——只搬「鍵名」對得上的那些，
+   值本身直接複製檔案**：(A) 全新主機用 §6c `phase4`（它會互動式問要不要順便輪替 Google
+   secret）。(B) 手動搬：這台主機目前有 `RWE_SECRET_GITHUB_TOKEN`（`issue_report`/Issues 儀表板
+   用）、`OPENROUTER_API_KEY`（openrouter 供應商）、`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`
+   （anthropic 訂閱制 OAuth，見 §1b／README「前置需求」——這台主機沒有另外設 API-key 那個環境
+   變數，用的是訂閱制）、`RWE_SECRET_GITHUB_WEBHOOK_SECRET`（GitHub webhook HMAC，見 §6b 步驟
+   一/四）、`RWE_SECRET_GOOGLE_CLIENT_SECRET`（§6c `phase4` 已把 `auth.googleClientSecret` 從
+   明碼改成 `${secret:GOOGLE_CLIENT_SECRET}` handle，值就放在這裡——**`rwe.config.json` 現在不含
+   明碼 Google secret，這份 `rwe.env` 才是機密邊界**，搬機時當機密檔處理的是這一份，不是設定檔）。
    另外還有兩個**跟本功能無關的殘留鍵**，新主機可以整行不搬：`RWE_SECRET_DEMO_TOKEN`／
    `RWE_SECRET_VAL092_SECRET`（驗證腳本/測試 fixture 用的假密鑰，不是任何真實供應商）、以及一個
    `OPENAI_` 開頭的殘留鍵（v26 供應商整併前的舊實驗留下，引擎現在完全不讀這個鍵，見上面「已知
-   限制」/`no-retired-surface` 那批 grep 守衛）。搬過去最省事的做法是**整份檔案複製**（保留
-   600 權限），再回頭刪掉不需要的兩三行，而不是逐鍵手打。
+   限制」/`no-retired-surface` 那批 grep 守衛）。搬過去最省事的做法是**整份檔案複製**（`sudo
+   -u rwe -H sh -c 'umask 077; cat > ~/.config/rwe.env'`，保留 600 權限），再回頭刪掉不需要的
+   兩三行，而不是逐鍵手打。
 
-5. **LiteLLM venv（`gateway:"sdk"` 才需要）**——見 §1a「Python 3.11 或 3.12」那一點：這台主機用的
-   是 `~/.rwe-litellm-venv`，Python 3.12。新主機沿用同一個慣例的話，上面第 3 點裡 `rwe.service`
-   的 `PATH=` 才不用改路徑，只需要照抄。
+5. **LiteLLM venv（`gateway:"sdk"` 才需要）**——(A) 全新主機用 §6c `phase2`（以 `rwe` 身分
+   `uv python install 3.12` + `uv venv` + `uv pip install`，**不是**複製舊 venv，見 §6c 的
+   理由）。(B) 兩邊都已是 `rwe`：這台主機用的是 `/home/rwe/.rwe-litellm-venv`，Python 3.12；
+   新主機沿用同一個慣例路徑，第 3 點裡 `rwe.service` 的 `PATH=` 就不用改，只需要照抄。
 
 6. **Ollama 模型（若腳本用到本機模型）**——這台主機目前拉的 tag：`qwen2.5:7b`、`qwen2.5vl:7b`、
    `bge-m3:latest`；新主機要跑哪些腳本，就對照該腳本 `meta.params.agents.<label>.model.default`
    實際寫的 `ollama/<tag>`，`ollama pull <tag>` 補齊——不必整批照抄，帶不到的腳本本來就該先確認
    有沒有真的被排進要跑的工作流程。
 
-7. **`rwe.config.json`——複製後逐一核對，不要整份檔案原樣照搬**：目前只有這些頂層鍵在用
-   （`aliases` 已於 2026-09-26 移除，不會出現，見 §5 疑難排解）：`bind`／`port`／`allowedHosts`／
-   `workRoot`／`timeoutMs`／`retries`／`gateway`／`defaultAllowedTools`／`anthropicAuth`／
-   `updateFlagPath`／`updateResultPath`／`auth`／`principals`（每個鍵的意義查 §1b 設定總表）。
-   換機要特別處理的三個地方：
+7. **`rwe.config.json`（`$RWE_CHECKOUT/rwe.config.json`，owner `rwe`，600）——複製後逐一核對，
+   不要整份檔案原樣照搬**：目前只有這些頂層鍵在用（`aliases` 已於 2026-09-26 移除，不會出現，見
+   §5 疑難排解）：`bind`／`port`／`allowedHosts`／`workRoot`／`timeoutMs`／`retries`／`gateway`／
+   `defaultAllowedTools`／`anthropicAuth`／`updateFlagPath`／`updateResultPath`／`auth`／
+   `principals`（每個鍵的意義查 §1b 設定總表）。換機要特別處理的三個地方：
    - **`allowedHosts`／`auth.issuer`／隧道 hostname 是否換掉是同一個決定**：不換公開網域名的話
      （只換運算主機、DNS/隧道還是指到同一個名字），這三者原封不動搬過去即可，GitHub webhook 也
      不用重新設定。**若連公開網域名都換了**：`auth.issuer` 要改成新網域，Google Cloud Console
      那個 OAuth 用戶端的**已授權重新導向 URI**（`https://<新網域>/oauth/google/callback`）要
      一起加，舊網域簽發的既有 refresh token（存在 `workRoot/auth-tokens.db`）在新 issuer 下會
      失效，使用者要重新走一次 OAuth 授權——這不是 bug，是 OAuth issuer 綁定 audience 的必然結果。
-   - **`auth.googleClientSecret`（與可選的 `googleClientId`）寫成 `${secret:NAME}`**，值放在
-     `rwe.env` 的 `RWE_SECRET_NAME`（見 §1b），`rwe.config.json` 就不含機密、搬機時不必當機密檔處理。
-     舊主機若還是明碼：搬之前先改成 handle（或用 §6c 的 `phase4`，它會自動搬值、可順便輪替）；新主機的
-     `rwe-update.service` 要帶 `RWE_CONFIG_ENV_FILE`（範本已有），否則自我更新的 check-config 解不開。
+   - **`auth.googleClientSecret`（與可選的 `googleClientId`）已經是 `${secret:NAME}` handle**
+     （見第 4 點），`rwe.config.json` 本身不含機密、搬機時不必當機密檔處理；新主機的
+     `rwe-update.service` 要帶 `RWE_CONFIG_ENV_FILE`（範本已有），否則自我更新的 check-config
+     解不開。**若真的找到一份仍是明碼的舊版 `rwe.config.json`**（例如還沒跑過 §6c `phase4` 的更
+     早期部署）：先按 §1b「auth.googleClientSecret」那一列改成 handle 再搬，不要把明碼檔案原樣
+     複製到新主機。
    - **`principals`**：目前是「特定信箱 → 角色」的對照表；换機不换使用者的話原樣搬，換一批
-     使用者要照 §1b「角色」小節重新分配，打錯角色字串（不是 `admin`/`author`/`user`）會直接讓
-     開機失敗，不是靜默退回。
+     使用者要照 §1b「角色」小節重新分配，打錯角色字串（不是 `admin`／`author`／`user`／`none`
+     這四個合法值之一）會直接讓開機失敗，不是靜默退回。**沒打錯但想故意留白／待核准的人，角色
+     就是 `none`**——這不是錯誤值，是刻意的「已登入、待管理員核准」狀態（見「角色」一節）。
 
-8. **對外隧道／反向代理**——這台主機用的是使用者層級的 `cloudflared` unit
-   （`~/.config/systemd/user/cloudflared-ssh.service`；名字是舊的，實際上跑的是
+8. **對外隧道／反向代理**——這台主機用的是使用者層級的 `cloudflared` unit（目前仍掛在操作員自己
+   的帳號底下，不是 `rwe`——隧道只是把公開流量轉送到 `127.0.0.1:<RWE_PORT>`，不需要跟引擎本身
+   同一個 uid；`~/.config/systemd/user/cloudflared-ssh.service`，名字是舊的，實際上跑的是
    `cloudflared tunnel --config ~/.cloudflared/config.yml run`，這一份 `config.yml` 底下同時放了
    SSH、另一個服務、跟這個引擎的 ingress 規則——不是三個各自獨立的 tunnel，是同一個 tunnel 的
    一份設定檔），ingress 規則是**逐路徑**白名單（只轉發 `/github/webhook`、`/.well-known/`、`/authorize`、
-   `/oauth/`、`/token`、`/register`、`/mcp`、`/assets/(blob|manifest)` 到本機的 `RWE_PORT`；
+   `/oauth/`、`/token`、`/register`、`/mcp`、`/assets/(blob|manifest)` 到 `127.0.0.1:<RWE_PORT>`；
    dashboard 與 `/api/*` **刻意不對外**，只留本機/內網存取），每條規則都把 `httpHostHeader`
    釘死成 `localhost:<RWE_PORT>`——這是配合 §6 的 Host 白名單防護（伺服器只認得到白名單裡的
    Host，隧道若不覆寫 Host header 會被引擎自己的 403 擋下）。換機時：隧道設定檔本身含憑證與
@@ -2312,7 +2507,8 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
    行程換到新主機上；不管哪種做法，**ingress 規則裡的 port 必須跟第 3 點 `rwe.service` 目前的
    `RWE_PORT` override 一致**，兩者其一忘了同步是最常見的「隧道通、502/連不上」成因。若走的是
    §6b 建議的 nginx 反向代理而非 cloudflared，同一條「只轉發 webhook／OAuth／`/mcp`／assets 路由，
-   其餘不轉」的原則照套即可。
+   其餘不轉」的原則照套即可。**沒有 Google、打算關掉 auth 的部署請先看下方「移植到沒有 Google
+   的主機」——那種情況下這一整點通常用不到，見那一節的建議順序。**
 
 9. **GitHub repo webhook（自我更新用）**——見 §6b 步驟一：事件**只勾 Releases**（`release` 事件、
    `action:"published"`，理由見步驟一的說明；不要多勾 create/push），content type 是
@@ -2320,47 +2516,92 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
    **只換運算主機、Payload URL 網域不變的話，這個 webhook 完全不用動**——它打的是公開網域，不是
    實體主機。
 
-10. **`loginctl enable-linger`**——user service 要在登出/重開機後仍運行，見 §2「無 root 部署」
-    步驟二那一行；新主機同樣要跑一次 `loginctl enable-linger "$USER"`，忘了這一步的症狀是
-    「SSH 斷線 unit 就跟著死掉」。
+10. **`loginctl enable-linger rwe`**——`rwe` 的 user service 要在沒有互動 session／重開機後仍
+    運行。(A) 全新主機：§6c `phase1` 已經對 `rwe` 做過這件事，不需要重複。(B) 手動搬：新主機上
+    對 `rwe` 跑一次 `sudo loginctl enable-linger rwe`（**注意是 `rwe`，不是操作員自己的
+    `$USER`**——這是舊版本 §7 文字的常見筆誤來源），忘了這一步的症狀是「SSH 斷線 unit 就跟著
+    死掉」。
 
-11. **搬 `workRoot` 資料（狀態全在這裡，是唯一真正需要「搬資料」的目錄）**——**先停服務再複製**：
+11. **搬 `workRoot` 資料（狀態全在這裡，是唯一真正需要「搬資料」的目錄，`rwe` 的
+    `/home/rwe/.local/share/rwe-data` 或 `rwe.config.json` 的 `workRoot` 指到哪裡就是哪裡）**
+    ——(A) 全新主機：§6c 的「跟 §7 的關係」小節講的就是這個組合——用這裡的步驟把資料從舊主機搬到
+    新主機的 `RWE_WORKROOT`，取代 `phase5`（`phase5` 本身只處理同一台主機換帳號，不跨主機）。
+    (B) 兩邊都已是 `rwe`：**先停服務再複製**：
     ```bash
-    systemctl --user stop rwe.service rwe-update.path
+    deploy/rwectl stop            # = stop rwe.service
+    deploy/rwectl stop rwe-update.path
     ```
-    再把整棵 `workRoot`（`rwe.config.json` 的 `workRoot` 鍵指到哪裡就是哪裡）複製到新主機，
-    **含 `-wal`/`-shm` 檔**（或複製前對每個 `.db` 跑一次
+    再把整棵 `workRoot`（`rwe.config.json` 的 `workRoot` 鍵指到哪裡就是哪裡，`chown -R rwe:rwe`
+    到新主機）複製到新主機，**含 `-wal`/`-shm` 檔**（或複製前對每個 `.db` 跑一次
     `sqlite3 <db> 'PRAGMA wal_checkpoint(TRUNCATE);'` 把 WAL 併回主檔，兩種做法擇一，不要漏掉
-    `-wal` 又不 checkpoint，那樣會遺失還沒寫回主檔的最新資料）。裡面哪些是真正的狀態、哪些可丟：
+    `-wal` 又不 checkpoint，那樣會遺失還沒寫回主檔的最新資料）。裡面哪些是真正的狀態、哪些可丟
+    （對照 §6c「實際搬遷紀錄」已經更正過的同一份清單）：
     - **狀態，要搬**：`catalog.db*`（工作流程/版本/發布頻道）、`schedules.db*`、`webhooks.db*`、
-      `self-update.db*`、`mcp-registry.db*`、`continuations.db*`、`auth-tokens.db`（啟用 auth
-      時的 refresh token——換 issuer 網域的話這個檔案裡的 token 會失效，見上面第 7 點，仍可以
-      搬過去只是使用者要重新授權一次）、`cas/`、`store/`、`workflows/`、`model-probe/`、
-      `assets/`、`_global_assets/`。
-    - **可丟**：`.graph-analyzer-scratch/`（暫存用途，重跑會自己重建）。
+      `self-update.db*`、`continuations.db*`、`auth-tokens.db`（**不只是 refresh token**——同時
+      是角色覆寫表 `principal_roles`、已知使用者表 `principals_seen`、服務帳號與配額覆寫的存放
+      處，啟用 auth 與否都會被開、都該搬；換 issuer 網域的話裡面的 refresh token 會失效，見上面
+      第 7 點，仍可以搬過去只是使用者要重新授權一次）、`cas/`、`store/`（含 `index.db` 的
+      `model_probes` 表——模型探測結果**存在這裡，不是獨立的 `model-probe/` 目錄**，舊版本這份
+      清單寫的 `model-probe/` 是錯的）、`workflows/`（含每個 run 的實際工作目錄
+      `workflows/<name>/runs/<runId>/`）、`assets/`、`_global_assets/`。
+    - **順手檢查、通常是空的歷史殘留，有東西才需要搬**：`mcp-registry.db*`（pre-v24 的 MCP 資產
+      註冊表，現在只在偵測到這個檔案存在時讀一次做遷移用，遷移完就不再寫入——新主機若已經是乾淨
+      的新 workRoot，這個檔案不存在是正常的，不必特地去生一個）、`_runs/`（`resolveInWorkspace`
+      在 `_runWorkspaces` 記憶體快取還沒被 `hydrateAll()` 重建之前的 fallback 路徑；正常重啟流程
+      下這個目錄應該是空的，但如果存在內容，連同 `workflows/` 一起搬，不要略過）。
+    - **可丟，不必搬**：`cli-tmp/`／`pi-tmp/`（每次派工的暫存，開機會自動清空重建）。
+      `.graph-analyzer-scratch/` 這個目錄在 v24 就已經隨 GraphAnalyzer 一起退役，現在的 workRoot
+      下不會出現，舊版本這份清單列它是過時殘留，不是「現在還可能看到、但可以丟」的東西。
     - 複製完，`chmod` 維持原本的權限（部分檔案是 0600），啟動前確認 `RWE_CONFIG_PATH` 指到
       新主機上正確的 `rwe.config.json`。
 
 12. **啟動與自我更新鏈路，回想一次完整流向**——`git tag` 推上官方 remote → `.github/workflows/`
     的 Release CI 重跑 typecheck + 完整測試 → 綠燈才建立 GitHub Release → Release **published**
-    觸發第 9 點的 webhook → 引擎驗 HMAC、寫 `updateFlagPath`（第 3 點裡固定是 `$HOME/rwe-update.flag`）
-    → `rwe-update.path`（第 3 點）偵測到旗標 → `rwe-update.service` 跑
-    `deploy/rwe-update.sh`（`git fetch` 官方 remote限定 → checkout tag → `npm ci && npm run
-    build` → 跑 `npm run check-config`（有設 `RWE_CONFIG_PATH` 才跑）→ 全綠才
-    `$SYSTEMCTL restart rwe`）→ 失敗在任何一步都安全失敗、服務留在原版本，見 §6b「可觀測性」。
-    新主機第一次啟動建議手動跑一次（`systemctl --user start rwe.service`），確認正常後才
-    `enable` 讓它開機自動跑。
+    觸發第 9 點的 webhook → 引擎驗 HMAC、寫 `updateFlagPath`（第 3 點裡固定是 `$HOME/rwe-update.flag`，
+    這個 `$HOME` 是 `rwe` 的，也就是 `/home/rwe/rwe-update.flag`）→ `rwe-update.path`（第 3 點）
+    偵測到旗標 → `rwe-update.service` 跑 `deploy/rwe-update.sh`（`git fetch` 官方 remote 限定 →
+    checkout tag → `npm ci && npm run build` → **`npm test` 當 gate**（任一紅就安全失敗、不繼續；
+    `RWE_UPDATE_SKIP_TESTS=1` 可以跳過這一步，但這是給測試套件本身壞掉、需要先繞過才能恢復服務的
+    緊急情況用的**逃生閥，不是常態設定**，不要在 unit 裡預設打開）→ 跑 `npm run check-config`
+    （有設 `RWE_CONFIG_PATH` 才跑）→ 全綠才 `$SYSTEMCTL restart rwe`，這裡的 `$SYSTEMCTL` 指的是
+    `deploy/systemctl-user` wrapper，實際效果等同 `deploy/rwectl restart`）→ 失敗在任何一步都
+    安全失敗、服務留在原版本，見 §6b「可觀測性」。新主機第一次啟動建議手動跑一次
+    `deploy/rwectl start`，確認正常後才 `deploy/rwectl enable` 讓它開機自動跑。
 
-13. **收尾驗證清單（照這個順序）**：
-    - `journalctl --user -u rwe.service | grep -i "confinement\|listening"`——確認看到
+13. **收尾驗證清單（照這個順序，指令都經 `deploy/rwectl`，不要用裸 `systemctl --user`／
+    `journalctl --user`——那些查的是執行指令的人自己的 session，不是 `rwe` 的）**：
+    - `deploy/rwectl logs | grep -i "confinement\|listening"`——確認看到
       `Bash confinement: CONFINED`（或已知會是 `UNCONFINED` 並接受第 1 點的差異）與監聽位址/port
       跟預期一致。
     - `curl -s http://127.0.0.1:<RWE_PORT>/api/version`——版本號跟搬過來前的 `git describe` 對得上。
-    - `scripts/smoke.sh`——見 §2「上線前煙霧測試」，`PASS` 才算過（不需要任何供應商金鑰）。
+    - 以 `rwe` 身分在它的 checkout 跑 `sudo -u rwe -H sh -c 'cd <RWE_CHECKOUT> &&
+      RWE_PORT=<空的測試 port> scripts/smoke.sh'`（見 §2「上線前煙霧測試」），`PASS` 才算過
+      （不需要任何供應商金鑰）。
     - `curl -i https://<公開網域>/mcp`（啟用 auth 時）——預期 `401`，且
       `WWW-Authenticate` 標頭帶 `scope`（D-BIND 的 fail-closed 行為，見 README「安全模型」）。
-    - 打一個測試 tag 走一次完整自我更新鏈（第 12 點）到 `result.json` 記 `"status":"applied"`，
-      才算連自我更新這條路也在新主機上真的接通，不是只有手動啟動能動。
+    - 打一個測試 tag 走一次完整自我更新鏈（第 12 點）到 `deploy/rwectl update-result` 記
+      `"status":"applied"`，才算連自我更新這條路也在新主機上真的接通，不是只有手動啟動能動。
+    - `rwe` **讀不到**操作員家目錄、操作員的 `rwe.env`／`rwe.config.json`（§6c `phase7` 的隔離
+      檢查同樣適用於跨主機搬遷後的新主機）。
+
+### 移植到沒有 Google 帳號體系的主機（2026-10-06 業主裁決，A2/A3/A13 的操作面）
+
+公司內部主機、沒有（或不想用）Google 帳號體系時，**不要**把 `auth.enabled:true` 當作「換一種登入
+方式」來用——上面「身分提供者限制」一節已經說明：目前這條路只接 Google，接别的 IdP 需要先改程式碼
+（trusted-proxy header 認證的方向見該節，尚未實作）。在那個能力做出來之前，實務上的建議順序：
+
+1. **先把 `auth.enabled` 留白或設 `false`**——不要為了「看起來有身份認證」硬開 `auth.enabled:true`
+   卻沒有 Google 可用，那只會得到上面 A3 分析的「沒有人能是 admin」死結，不會比單純關閉更安全。
+2. **網路層面取代身分層面**：`bind` 留 `127.0.0.1`（預設），要給同事/同網段的人用就照「區網部署」
+   一節把 `bind` 改到 LAN IP、**立刻**上防火牆白名單（`ufw allow from <你的網段> to any port
+   8787`），或乾脆維持 `127.0.0.1` + 每個使用者自己開 SSH 通道（`ssh -L
+   8787:127.0.0.1:8787 user@host`）／VPN。這就是 §0「區網部署」一節本來就建議的姿態，在沒有
+   Google 的主機上**是正解，不是退而求其次**。
+3. **不要對外網開放 dashboard／`/mcp`**——沒有 auth 時任何連得到的人都能 `workspace_push` 寫入
+   任意內容（見「無訪問控制時的已知風險」一節），網路層隔離是這個情境下唯一的防線。
+4. **之後公司真的要接自己的 SSO 時**：等 trusted-proxy header 認證那條路線實作完成（見「身分提供者
+   限制」一節「規劃中」段落）再切；在那之前先用上面兩步把部署邊界收緊，不要卡在等功能的同時維持
+   全開放。
 
 ## 附錄：辨識端點（僅供 Ollama 除錯用）
 
