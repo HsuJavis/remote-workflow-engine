@@ -78,11 +78,12 @@
   觸發器**先建立、再由工作流程認領**：`schedule_create`／`webhook_create` 都不需要 `workflow`，回一個 id，
   再交給 `workflow_register({triggers:[id]})` 綁定到某個版本（仍可在建立時直接帶 `workflow` 綁定）。
   沒被認領的觸發器到期時會被拒絕並把理由記在該列上（`lastRefusalReason`），不會靜默丟掉。
-- **工作區與資產（`workspace_*`，六個工具）**：`workspace_push`（兩種模式：CAS blob `{sha256,contentB64}`，
+- **工作區與資產（`workspace_*`，七個工具）**：`workspace_push`（兩種模式：CAS blob `{sha256,contentB64}`，
   或工作流程名下的資產 `{workflow,kind:'skill'|'mcp',name,files?/config?}`；`scope:'global'` 的全域資產需
   `admin` 角色）、`workspace_diff`（比對 manifest 與自己的 blob 池，回還缺哪些）、
   `workspace_pull`（讀某個 run 工作區裡某個檔的位元組區間）、`workspace_list`（列某個 run 的工作區檔案，
-  或某個工作流程名下某類資產）、`workspace_delete`、`workspace_purge`（刪掉已終止 run 的整個工作區）。
+  或某個工作流程名下某類資產）、`workspace_delete`、`workspace_purge`（刪掉已終止 run 的整個工作區）、
+  `workspace_prune_blobs`（清掉沒被任何已註冊版本用到的 CAS blob，見下方「CAS 上傳配額」）。
   hook 明確不支援：`kind:'hook'` 在 schema／模式判定就被擋掉，回 `INVALID_ARGUMENT`；
   seed 裡的 `.claude/hooks/…` 則是在路徑判定時就被剝掉、根本不寫進工作區。**MCP server 現在就是一種資產**：
   `workspace_push({workflow, kind:'mcp', name, config})`（secret handle `${secret:NAME}`；`stdio`
@@ -129,7 +130,7 @@
     上方的泳道圖直接切換成那次 run，不會離開這一頁。**還沒執行過的 workflow** 一樣看得到圖，顯示的
     是根據腳本推算出來的「預測結構」（哪個 agent 在哪個 phase），不是真的跑過（開了登入驗證時，
     登入後的任何角色都看得到 release 版的預測結構）。
-  - **模型**：十一欄可排序表格（模型/供應商/上下文/價格/工具/推理/模態/延遲/穩定性/基準/
+  - **模型**：十一欄可排序表格（模型/供應商/上下文/價格/工具/努力程度/模態/延遲/穩定度/基準分數/
     位置——2026-09-26 起別名機制移除，不再有「別名」欄，`ref` 就是可以直接貼進
     `model.default`／run_start override 的完整字串），點欄標題依該欄排序、再點一次切換升降冪；
     上方有搜尋框、供應商下拉、「全部/遠端/本機」
@@ -177,7 +178,7 @@
    │
    │                                  （複製某次 run 的 ID 也能單獨開
    │                                   /dashboard/<runId>，同一張圖，點節點一樣會開面板）
-   ├─ 模型（十二欄可排序表格，點列滑出細節）
+   ├─ 模型（十一欄可排序表格，點列滑出細節）
    ├─ 系統（四張資源卡片 + 處理程序表 + 引擎自身資訊）
    └─ 問題（GitHub issue 列表）
   ```
@@ -221,16 +222,28 @@
   超過回 `QUOTA_EXCEEDED`；用 `workspace_prune_blobs` 清掉沒被已註冊版本用到的舊 blob。磁碟可用空間低於
   `diskFloor`（預設 max(5%, 5 GiB)）時，上傳與新 run 一律暫時拒絕 `DISK_LOW`。見 DEPLOY.md §1b。
 
-共 **40 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
+共 **46 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 
 ## 前置需求
 
-- **Node.js 22.6 以上**（`tsx` 與沙箱子行程均依賴 Node 22 原生 TypeScript 支援）
+- **Node.js 22.19 以上**（`pi` 套件——`@earendil-works/pi-coding-agent`／`pi-ai`，`gateway:"pi"`
+  用得到——在 `package.json` 宣告的最低版本；這個下限同時涵蓋沙箱子行程用到的 Node 22 原生
+  TypeScript 支援 `--experimental-transform-types`，該旗標本身在更早的 22.x 版本就已存在）
 - npm（隨 Node 附帶）
-- **Python 3.11 或 3.12**（`gateway:"sdk"`（預設）需要 `litellm[proxy]`）。
-  LiteLLM 只有**一個**消費者：`agent()` 呼叫（`workflow_register` 不走 gateway）。要略過 Python/LiteLLM，在 `rwe.config.json` 設 `gateway:"direct-fetch"` +
-  `useLiteLLMProxy:false`（本機 Ollama 直連）。留著預設值 `gateway:"sdk"` 卻沒裝 `litellm`，
-  服務會在**開機階段**就拒絕啟動（見「已知限制」）。
+- **`bubblewrap`（`bwrap`）與 `socat`**：不論 `gateway` 選哪個，Bash 圍籠（Claude CLI sandbox）都需要
+  這兩個執行檔，缺一個就是 `unconfined`（本機送出的 run 仍照跑，遠端送出的會被拒絕）——
+  `sudo apt install bubblewrap socat`。細節與 AppArmor 巢狀 namespace 的常見陷阱見 DEPLOY.md §1c(e)。
+- **`gateway` 選哪個，決定還要裝什麼**（三選一，見 `rwe.config.json` 的 `gateway` 鍵）：
+  - `"sdk"`（**預設**）：另需 **Python 3.11 或 3.12**，裝 `litellm[proxy]`。LiteLLM 只有**一個**
+    消費者：`agent()` 呼叫（`workflow_register` 不走 gateway）。留著預設值卻沒裝 `litellm`，
+    服務會在**開機階段**就拒絕啟動（見「已知限制」）。
+  - `"direct-fetch"` + `useLiteLLMProxy:false`：完全不需要 Python/LiteLLM（本機 Ollama 直連）。
+  - `"pi"`：原生支援 OpenRouter 與 Ollama，同樣**不需要** Python/LiteLLM。額外的硬性依賴：
+    `@anthropic-ai/sandbox-runtime`（pi 的圍籠函式庫）啟動時會檢查 PATH 上有一支真正的
+    `rg`（ripgrep）執行檔，缺了就拒絕初始化——**引擎自己會處理**：只要本引擎安裝的
+    `@anthropic-ai/claude-agent-sdk-<platform>` 套件在，就用它內附的 `claude` 執行檔冒充
+    （`argv0:'rg'`），不必額外裝系統套件；只有那個套件完全沒裝（平台不支援）的機器才需要自己裝
+    ripgrep。詳見 DEPLOY.md §1b2。
 - 至少一個可用的 LLM 供應商（Anthropic / OpenRouter API key，或本機 Ollama）
 
 ## 快速開始 Quickstart
@@ -251,7 +264,12 @@
 ```bash
 # anthropic 供應商：兩種認證擇一 —— API key，或 Pro/Max 訂閱制的 OAuth token
 export ANTHROPIC_API_KEY=sk-ant-...                  # 用 API key 時
-# export RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN=...      # 用訂閱制時（rwe.config.json 的 anthropicAuth:"subscription"）
+# export RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN=...      # 用訂閱制時；只要偵測到這個 token 就自動選
+                                                      #   subscription 模式——即使同時也設了 API
+                                                      #   key，token 還是優先，不是「沒有另外設
+                                                      #   api key 時」才生效；rwe.config.json 的
+                                                      #   anthropicAuth 只在要「強制」指定某一種
+                                                      #   模式時才需要設（詳見 DEPLOY.md §1b 同一列）
 # export OPENROUTER_API_KEY=sk-or-...                # 用 openrouter 供應商時；本機 Ollama 免金鑰
 # export RWE_SECRET_GITHUB_TOKEN=...                 # 若要用 issue_report/Issues 儀表板
 ./deploy.sh --background
@@ -442,7 +460,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 沒過就回 401 + WWW-Authenticate——而且是在讀到任何工作流程資料「之前」就擋下，
 # 所以未授權的呼叫端連「這個名稱存不存在」都問不出來（存在與不存在都是同一個 401）。
 
-# 查詢 38 個 MCP 工具（含 schema）
+# 查詢 46 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -537,7 +555,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 9. **Inline script 已關閉**：`run_start`/`run_resume` 不接受呼叫端夾帶的 `script`；`run_start` 的 schema 是封閉的（`additionalProperties:false`），硬塞任何未宣告的欄位都在送出當下被拒（`INLINE_SCRIPT_CLOSED`／`INVALID_ARGUMENT`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型 ref 是否合法、MCP 名稱是否已推送、agent 契約、mermaid 對照）也全在註冊當下做，不會因為改用具名執行就少檢查。
 10. **腳本本文只有一個出口，且對非擁有者遮蔽**：能回傳腳本本文的工具只有 `workflow_source`（需要 `author` 角色）。啟用 auth 後，它對非擁有者回傳 `scriptWithheld:true`、不含腳本本文；擁有者/admin 仍可看到完整腳本。`workflow_describe`／`workflow_list`／`/api/workflows*`／儀表板**在設計上就不含**腳本本文，不論身份。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能透過 `workflow_source` 看到完整腳本。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
-12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport（`config.type:"stdio"`）與 `scope:'global'` 的推送都需要 `admin`，其他角色一律 `FORBIDDEN_ROLE`、不會探測也不會啟動任何子行程。
+12. **角色（`principals`）fail-closed**：有效角色只有四種——`admin`/`author`/`user`/`none`；`rwe.config.json` 的 `principals` 角色字串打錯（不在這四者之中）→ 開機直接拒絕啟動，不會靜默退回任何角色。整個鍵省略、或某個已驗證呼叫者未列名（也沒有 `"*"` 萬用列）時，**一律是 `none`＝待核准**：每個工具都回 `ACCOUNT_PENDING_APPROVAL`，直到 admin 用 `principal_set_role` 或 dashboard 授予角色；開機那行 `auth:` log 如實顯示（ADR-028）。詳見 DEPLOY.md「角色（`principals`）——啟用 auth 前一定要讀」一節。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport（`config.type:"stdio"`）與 `scope:'global'` 的推送都需要 `admin`，其他角色一律 `FORBIDDEN_ROLE`、不會探測也不會啟動任何子行程。
 13. **`harness.prompt` 就是這次呼叫實際送出的原始字串，沒有隱藏的伺服器端系統提示詞**：`agent()` 沒有任何伺服器端可套用的 system prompt 層——`harness.prompt`＝腳本自帶的 `prompt`，有覆寫時再接上框住的 `appendPrompt`（`<user-instructions untrusted="true">…</user-instructions>`），沒有任何東西會在寫入逐字稿前被剔除。這一段線上回應（MCP `run_agent_log` 與 `GET /api/runs/:id/agents/:agentId` 皆同）任何人（含擁有者）都看得到完整內容，因為根本沒有需要遮蔽的東西。實測（本機模型 `qwen2.5:7b`，appendPrompt 覆寫 `"Also mention the word BANANA."`）：`harness.prompt` 回傳
    `"Say hello in one short sentence.\n\n<user-instructions untrusted=\"true\">\nAlso mention the word BANANA.\n</user-instructions>"`，`harness` 物件裡沒有 `systemPrompt` 這個鍵。作者若要為某個 agent 準備固定的系統提示詞，寫進腳本自己的 `prompt` 參數即可（見 `workflow_authoring_guide` 的「Prompt layering」一節）。
 
@@ -564,11 +582,11 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   （CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter 丟掉這個參數）。
   `run_agent_log` 的 `harness.effortApplied` 會如實回報 `{applied:false, reason:…}` 並寫明原因。
   Anthropic 模型的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
-- **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
-  1. **偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
-     （run `3977b82d`，無法穩定重現、尚未歸因；
-     [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)）。
-     對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。
+- **已知缺陷**：目前沒有已知、尚未修復的缺陷待追蹤（2026-10-06 查核：先前列在這裡的
+  [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)——偶發的
+  `suspend`→`resume`→`failed`、agent 工作在終態之後還在跑——已在 v0.22.0（2026-09-25）修好並關閉，
+  獨立驗證見該 issue 的結案留言）。目前狀態與任何新回報見
+  [GitHub Issues](https://github.com/HsuJavis/remote-workflow-engine/issues)。
 
 ## 更多
 

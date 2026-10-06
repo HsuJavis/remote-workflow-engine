@@ -54,6 +54,7 @@ import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/mod
 import { createEventSink, type EventSink } from './event-log.js';
 import { scanAgentCalls } from './workflow-meta.js';
 import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
+import { assertPositiveInteger } from './config-numeric.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected. 2026-09-26 (alias mechanism removed): no alias table to route through any more — the
@@ -630,13 +631,13 @@ export class RunManager {
   private readonly _usageBackfillChecked = new Set<string>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
-   *  (the composition root builds RunManager from rwe.config.json, so this IS the config-load check). */
+   *  (the composition root builds RunManager from rwe.config.json, so this IS the config-load check).
+   *  Issue audit A9 (owner decision 2026-10-06): the rule itself now lives in `assertPositiveInteger`
+   *  (config-numeric.ts) — the SAME function `composeConfig()` calls at `--check-config` time, so
+   *  the two call sites can never state the rule differently (one shared validator, no duplication). */
   private static _positiveInt(value: number | undefined, fallback: number, name: string): number {
-    if (value === undefined) return fallback;
-    if (!Number.isInteger(value) || value < 1) {
-      throw new Error(`${name} must be a positive integer, got ${value}`);
-    }
-    return value;
+    assertPositiveInteger(value, name);
+    return value ?? fallback;
   }
 
   constructor(deps: RunManagerDeps = {}) {

@@ -277,7 +277,10 @@ describe('case 6: null principal on a genuinely AUTH-DISABLED server → ungated
 
 // ── Boot backfill tests ────────────────────────────────────────────────────────
 
-describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)', () => {
+// Issue audit A1 (owner decision 2026-10-06): the backfill target is no longer a hard-coded
+// constant (BOOT_BACKFILL_EMAIL) — these cases now configure `auth.legacyOwner` explicitly to
+// exercise the SAME idempotent backfill mechanics.
+describe('Boot backfill: NULL owner → auth.legacyOwner (DES-098/A1, IT-080)', () => {
   it('case 9: a pre-v15 row (NULL owner) is backfilled to the configured email on boot', async () => {
     const wf = 'pre-v15-workflow-it080';
     // v22 H1 amendment (see header): a NULL-owner PUBLISHED row can no longer be produced by an
@@ -292,14 +295,14 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     seedDb.close();
 
     // Simulate a new boot (create a new server instance with the same workRoot)
-    // The boot backfill runs once at startup: UPDATE workflows SET owner='hsuhungjung@gmail.com' WHERE owner IS NULL
+    // The boot backfill runs once at startup: UPDATE workflows SET owner=<auth.legacyOwner> WHERE owner IS NULL
     const server2 = await createServer({
       port: 0,
       // v24: loopback bind + alice's bearer — a D-BIND-exempt read of `workflow_source` is now
       // `PRINCIPAL_REQUIRED` (see the header's migration note). Same workRoot ⇒ same auth-tokens.db.
       bind: '127.0.0.1',
       workRoot: tmpDir,
-      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid2', googleClientSecret: 'cs' },
+      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid2', googleClientSecret: 'cs', legacyOwner: 'hsuhungjung@gmail.com' },
       principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
     } as never);
 
@@ -327,13 +330,13 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
       port: 0,
       bind: '127.0.0.1', // v24: same reason as server2 above.
       workRoot: tmpDir,
-      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid3', googleClientSecret: 'cs' },
+      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid3', googleClientSecret: 'cs', legacyOwner: 'hsuhungjung@gmail.com' },
       principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
     } as never);
 
     try {
       const wfGet = await callToolOn(server3, 'workflow_source', { name: wf }, aliceToken);
-      // Already-owned row must NOT be re-owned to hsuhungjung@gmail.com
+      // Already-owned row must NOT be re-owned to auth.legacyOwner
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe(ALICE);
     } finally {

@@ -5,7 +5,8 @@
 //
 // Config precedence (low -> high): built-in defaults < RWE_CONFIG_PATH JSON file < env vars.
 // Provider API keys are NEVER read from the config file (src/gateway/client.ts reads them
-// straight from process.env: ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / OLLAMA_BASE_URL)
+// straight from process.env: ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL — client.ts
+// reads no OPENAI_API_KEY/GEMINI_API_KEY today, C5 2026-10-06 correction)
 // so the JSON config file never holds secrets and is safe to commit an .example of.
 //
 // D-F4: gateway selection. Production default ("sdk", the config opt-out key's default value) wires
@@ -41,6 +42,10 @@ import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js'
 import { PiGatewayClient } from './gateway/pi-gateway-client.js';
 import { probePiPath } from './gateway/pi-confinement-probe.js';
 import type { Provider } from './providers.js';
+import { assertUpdatePathsOutsideWorkRoot } from './self-update.js';
+import { normalizeSeedRefAllowlist, assertHttpsAllowlist } from './seedref-egress.js';
+import { assertPositiveInteger } from './config-numeric.js';
+import { isEffort } from './params/contract.js';
 
 // pi harness v1 owner decision 2: the closed provider set the pi harness supports — never
 // 'anthropic' (no Anthropic subscription token/API key is used under pi). Exported so the wiring
@@ -349,7 +354,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (principalsResult && !principalsResult.ok) {
     throw new Error(
       `rwe.config.json's principals["${principalsResult.key}"].role is "${principalsResult.role}", which is not a valid role ` +
-        '(must be one of admin/author/user). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
+        // C5 2026-10-06 correction: this list used to omit "none" (a legal role since 2026-09-30 —
+        // see normalizePrincipals' own VALID_ROLES and authz.ts's roleWithSource default).
+        '(must be one of admin/author/user/none). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
     );
   }
 
@@ -360,6 +367,32 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // The error names the handle and its env var, never a value. A plain literal passes through as-is.
   const auth = resolveAuthSecrets(fileConfig.auth, deps.secretSource ?? loadSecretSourceFromEnv());
 
+  // Issue audit A8 (owner decision 2026-10-06): an unrecognized `gateway` value used to fall through
+  // silently to the direct-fetch default (nothing here validated the raw string) — refused at boot
+  // now, naming the offending value and the full valid set, never a silent fallback.
+  // NULL-WAS-DEFAULT (repair round, 2026-10-06): `!= null` (not `!== undefined`) so an explicit
+  // JSON `null` — which `?? 'sdk'` below already treats as "use the default" — is still absent, not
+  // a refused bad value. Same reasoning applies to every other `!== undefined`/`=== undefined`
+  // guard this repair round touches below.
+  if (fileConfig.gateway != null && !(['sdk', 'direct-fetch', 'pi'] as const).includes(fileConfig.gateway)) {
+    throw new Error(
+      `rwe.config.json: gateway "${fileConfig.gateway}" is not a valid value (must be one of "sdk" | "direct-fetch" | "pi"). ` +
+        'Refusing to start (ADR-028 fail-closed: a typo must never silently fall back to a different gateway).',
+    );
+  }
+  // Repair round defect A1-LEGACYOWNER-TYPE (2026-10-06): `auth.legacyOwner` is a principal-id
+  // STRING (src/auth/auth-service.ts), compared with `===` against `principal.id` (authz.ts) — a
+  // number or boolean can never match that comparison, and an empty string is indistinguishable
+  // from "no backfill wanted" everywhere else this repair round's A1 logging (workflow-catalog.ts)
+  // treats it. Every other key this repair round touches refuses the wrong type at boot; this one
+  // didn't. `== null` (not `!== undefined`) so an explicit `null` stays "absent, no backfill" —
+  // same NULL-WAS-DEFAULT convention as every other guard in this function.
+  if (auth?.legacyOwner != null && (typeof auth.legacyOwner !== 'string' || auth.legacyOwner === '')) {
+    throw new Error(
+      `rwe.config.json: auth.legacyOwner must be a non-empty string principal id, got ${JSON.stringify(auth.legacyOwner)}. ` +
+        'Refusing to start (ADR-028 fail-closed: a non-string/empty value can never match a principal id and would silently disable backfill).',
+    );
+  }
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   // Issue #73: validated at load, fail-closed (a bad interval must not silently mis-schedule or
   // disable the probe); absent -> the defaults (enabled, weekly). Forwarded below — the
@@ -387,6 +420,67 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // resolved value — one resolution, one value, both consumers (server.ts:655's own `??` fallback
   // stays, for every direct `createServer()` test caller that never goes through `composeConfig()`).
   const workRoot = explicitWorkRoot ?? deps.workRootDefault;
+
+  // Issue audit A9 (owner decision 2026-10-06): this used to be checked ONLY inside createServer()
+  // (server.ts), which `--check-config` never reaches — a config that failed this exact rule still
+  // reported OK, then crash-looped the real restart. Calling the SAME `assertUpdatePathsOutsideWorkRoot`
+  // function here (server.ts keeps its own call too, for every direct createServer() test caller that
+  // bypasses composeConfig) means the rule itself is never duplicated, only the call site is.
+  if ((fileConfig.updateFlagPath || fileConfig.updateResultPath) && workRoot !== undefined) {
+    assertUpdatePathsOutsideWorkRoot([fileConfig.updateFlagPath, fileConfig.updateResultPath], [workRoot]);
+  }
+  // Issue audit A9/B21 (owner decision 2026-10-06): same gap as updateFlagPath above —
+  // `normalizeSeedRefAllowlist` (seedref-egress.ts) was reached ONLY by RunManager's constructor
+  // (createServer()), never by `--check-config`. Validated here for its fail-closed throw alone; the
+  // RAW value is still what reaches ServerConfig.seedRefAllowlist below (RunManager normalizes it
+  // again at construction — same convention as every other RunManager-owned cap/ceiling: composeConfig
+  // validates, the runtime owner still does its own pass).
+  if (fileConfig.seedRefAllowlist != null) {
+    normalizeSeedRefAllowlist(fileConfig.seedRefAllowlist);
+  }
+  // Issue audit A9/B4/B21 (owner decision 2026-10-06): the caps/ceilings RunManager/createServer
+  // already validate at CONSTRUCTION time (RunManager._positiveInt / `agentSemaphore.total`) — none
+  // of them were reachable from `--check-config`, which never constructs either. One shared rule
+  // (assertPositiveInteger, config-numeric.ts) — the SAME function RunManager._positiveInt now
+  // delegates to — reached from a second call site, never reimplemented.
+  // V3-M2 (repair-round defect, 2026-10-06): pass `{ prefix: 'rwe.config.json: ' }` so these
+  // refusals are framed like every other composeConfig() refusal below (gateway, maxEffort,
+  // mcpEgressAllowlist). RunManager._positiveInt's own call site keeps no prefix — its wording
+  // stays exactly as it was.
+  const CONFIG_PREFIX = { prefix: 'rwe.config.json: ' };
+  assertPositiveInteger(fileConfig.agentSlots, 'agentSlots', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.runConcurrency, 'runConcurrency', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxWorkflowDepth, 'maxWorkflowDepth', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxWorkflowDescendants, 'maxWorkflowDescendants', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxConcurrentRuns, 'maxConcurrentRuns', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxTimeoutMs, 'maxTimeoutMs', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxAppendPromptBytes, 'maxAppendPromptBytes', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxWorkflowVersions, 'maxWorkflowVersions', CONFIG_PREFIX);
+  // Issue audit B21 (owner decision 2026-10-06): an unknown `maxEffort` value used to silently
+  // remove EVERY effort level from `resolveHarnessParams`'s ceiling filter (EFFORT_RANK[bad value]
+  // is `undefined`, so `EFFORT_RANK[e] <= undefined` is false for every `e`) — the engine still
+  // booted, with every effort override/declaration refused from then on. Reuses `isEffort`
+  // (params/contract.ts) — the SAME membership check `resolveHarnessParams` itself would use.
+  if (fileConfig.maxEffort != null && !isEffort(fileConfig.maxEffort)) {
+    throw new Error(
+      `rwe.config.json: maxEffort "${fileConfig.maxEffort}" is not a valid effort (must be one of low/medium/high/xhigh/max). ` +
+        'Refusing to start (ADR-028 fail-closed).',
+    );
+  }
+  // Issue audit B21 (owner decision 2026-10-06): an `http://` (or unparseable) mcpEgressAllowlist
+  // entry used to be accepted at boot but could never match anything (seedref-egress.ts's own
+  // `isEgressAllowed`/this file's `normalizeSeedRefAllowlist` both require https) — refused here
+  // instead, naming the offending entry, so a typo'd scheme is caught at boot, not discovered the
+  // first time an author's `asset_push({kind:'mcp'})` mysteriously gets EGRESS_DENIED. A non-array
+  // value gets its own clear refusal (mirrors `normalizeSeedRefAllowlist`'s own shape check) rather
+  // than iterating a string's characters or throwing a raw "is not iterable" on a number.
+  // V3-M1 (repair-round defect, 2026-10-06): this used to be a second hand-written copy of
+  // `normalizeSeedRefAllowlist`'s own parse+https rule. Both now call the one shared
+  // `assertHttpsAllowlist` (seedref-egress.ts) — `{ frame: true }` keeps this call site's existing
+  // "rwe.config.json: … Refusing to start (ADR-028 fail-closed)." wording.
+  if (fileConfig.mcpEgressAllowlist != null) {
+    assertHttpsAllowlist(fileConfig.mcpEgressAllowlist, 'mcpEgressAllowlist', { frame: true });
+  }
 
   // v37 (ARCH-177, DES-254/255, TASK-252, REQ-218) / v37 Gate-8 send-back (finding A3, ARCH-175
   // amendment): protectedFiles are every REQ-218 risk-surface path — the config file the loader

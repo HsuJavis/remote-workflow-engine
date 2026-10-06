@@ -9,8 +9,10 @@ Type=oneshot
 WorkingDirectory=%h/Documents/remote-workflow
 # helper 需要 git/npm 可執行 —— 這裡沿用這台 production 主機實測可行的 PATH(npm 落在
 # ~/.local/bin)。若這台機器的 node/npm 只裝在別的目錄(例如版本管理器的 ~/.local/node/bin,
-# 見 deploy/rwe.user.service),要把那個目錄一併加進來,否則 `npm ci && npm run build` 會找不到
-# npm(見 DEPLOY.md §6b 步驟五 —— 這是換機時要核對的一點,不是這份範本保證涵蓋所有安裝方式)。
+# 見 deploy/rwe.user.service),要把那個目錄一併加進來,否則 `npm ci && npm run build && npm test`
+# 會找不到 npm(見 DEPLOY.md §6b 步驟五 —— 這是換機時要核對的一點,不是這份範本保證涵蓋所有安裝
+# 方式)。`npm test` 是 apply 前的最後一道 gate(deploy/rwe-update.sh,失敗會安全退回舊版本,不
+# 重啟),不是只有 build 而已。
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RWE_UPDATE_FLAG=%h/rwe-update.flag
 Environment=RWE_UPDATE_RESULT=%h/.local/share/rwe-update/result.json

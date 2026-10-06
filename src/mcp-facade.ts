@@ -114,10 +114,15 @@ export interface McpFacadeDeps {
    *  "resolved, never hard-coded" rule as `ceilings` above. */
   runConcurrency?: number;
   /** v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt
-   *  count — `1 + max(0, config?.retries ?? 1)`, forwarded from server.ts's composition root — so
-   *  `workflow_describe`'s `timeoutMs.attempts`/`worstCaseMs` are COMPUTED from what this deployment
-   *  actually retries, never a hard-coded number. Absent (unit construction) defaults inside
-   *  `projectWorkflowDescribe` itself to the deployed default (1 + 1 = 2). */
+   *  count, forwarded from server.ts's composition root — so `workflow_describe`'s
+   *  `timeoutMs.attempts`/`worstCaseMs` are COMPUTED from what this deployment actually retries,
+   *  never a hard-coded number. **Owner decision 2026-10-06 (describe/retries mismatch fix)**: the
+   *  formula is `1 + max(0, config?.retries ?? gatewayDefaultRetries)`, where
+   *  `gatewayDefaultRetries` is `0` when an sdk/pi gateway is deployed (their own `attemptsFor()`
+   *  default) and `1` only for direct-fetch (`LiteLLMGatewayClient`'s own default) — NOT a single
+   *  `?? 1` for every gateway (see server.ts's `gatewayAttempts` computation for the real branch).
+   *  Absent (unit construction) defaults inside `projectWorkflowDescribe` itself to the deployed
+   *  default (1 + 1 = 2). */
   gatewayAttempts?: number;
   /** v37 (DES-258 owner ruling 2026-09-22, ARCH-181, ADR-083 posture C): this deployment's
    *  MEASURED Bash-confinement posture, forwarded from `ServerConfig.confinementPosture`
