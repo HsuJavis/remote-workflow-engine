@@ -10,7 +10,13 @@ export type StartedBy = {
 
 // v8 Defer A: `interrupted` = a run that was `running` when the engine crashed/restarted — RESUMABLE
 // (not terminal), distinct from a user `suspended`/`stopped`. hydrateAll assigns it at boot recovery.
-export type RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed' | 'interrupted';
+// issue #160 BUG-2 follow-up (status enum): `RUN_STATUSES` is the ONE list every documented value
+// comes from — `RunStatus` is derived from it (never hand-duplicated) and `run_list`'s own
+// `status` schema (tool-specs.ts) imports this SAME array for its `enum`, so a value outside it
+// (e.g. `'bogus'`) is refused INVALID_ARGUMENT by ajv before the store ever sees it, instead of the
+// old silent `[]` a typo'd/out-of-enum status used to produce.
+export const RUN_STATUSES = ['queued', 'running', 'suspended', 'stopped', 'completed', 'failed', 'interrupted'] as const;
+export type RunStatus = typeof RUN_STATUSES[number];
 
 /** v25 (issue #53, adjudication #9 I-2): one structured observation about a run's terminal path.
  *  OBSERVABILITY ONLY — emitting one changes no control flow, refuses nothing and is never surfaced
