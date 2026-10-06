@@ -30,6 +30,17 @@ describe('Sandbox VM guards', () => {
     expect(r.error!.code).toBe('DETERMINISM_GUARD');
   });
 
+  // #157 (DOC item): `Date()` called WITHOUT `new` also reads the wall clock — the same hazard class
+  // as `Date.now()`/`new Date()` — but was refused only incidentally, by the ES class-invocation rule
+  // ("Class constructor GuardedDate cannot be invoked without 'new'", code SCRIPT_ERROR), a side
+  // effect of GuardedDate being an ES class rather than an intentional guard branch. No wall-clock
+  // value escapes either way, but the WRONG error code/message reached the script.
+  it('Date() without `new` returns DETERMINISM_GUARD (not a generic SCRIPT_ERROR class-invocation message)', async () => {
+    const r = await evaluateScript('return Date();', FAKE_API);
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('DETERMINISM_GUARD');
+  });
+
   it('TypeScript type annotations in script return PARSE_ERROR', async () => {
     const r = await evaluateScript('const x: number = 1; return x;', FAKE_API);
     expect(r.kind).toBe('error');

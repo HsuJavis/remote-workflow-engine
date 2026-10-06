@@ -245,7 +245,17 @@ function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): Date
       throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
     }
   }
-  return GuardedDate as unknown as DateConstructor;
+  // #157 (DOC item): `Date()` called WITHOUT `new` reads the wall clock too — the same hazard as
+  // `Date.now()` — but was refused only incidentally, by the ES class-invocation rule ("Class
+  // constructor ... cannot be invoked without 'new'", a generic TypeError/SCRIPT_ERROR), since
+  // GuardedDate happens to be implemented as a class. The `apply` trap intercepts the no-`new` call
+  // form explicitly with the SAME GuardError the other two calls use; `construct` is left
+  // untouched (not overridden in this trap set), so `new` still forwards to GuardedDate normally.
+  return new Proxy(GuardedDate, {
+    apply(): never {
+      throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Date() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+    },
+  }) as unknown as DateConstructor;
 }
 
 function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof Math {
