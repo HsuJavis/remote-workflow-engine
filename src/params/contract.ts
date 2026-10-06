@@ -248,7 +248,7 @@ const VALID_SPEC_TYPES = ['string', 'number', 'enum'] as const;
 // `min`/`max` must never register as-is and poison every later read of the stored row. Typed
 // rejection, nothing stored. Unchanged in v24 — still the one shape guard every declared spec
 // (an agent's model/effort/timeoutMs/appendPrompt, or an args entry) goes through.
-function validateSpecShape(param: string, spec: ParamSpec): Err | null {
+function validateSpecShape(param: string, spec: ParamSpec, effortLenient = false): Err | null {
   if (!(VALID_SPEC_TYPES as readonly string[]).includes(spec.type)) {
     return invalid(param, `type must be one of ${VALID_SPEC_TYPES.join(', ')}`);
   }
@@ -277,17 +277,50 @@ function validateSpecShape(param: string, spec: ParamSpec): Err | null {
   if (spec.type === 'enum' && (spec.min !== undefined || spec.max !== undefined)) {
     return invalid(param, "min/max do not apply to a type:'enum' spec — enum membership is its own bound");
   }
+  // issue #161 B3: a type:'enum' spec with no `enum` at all registers a knob that is misleadingly
+  // UNRESTRICTED (checkValueAgainstSpec's membership check only fires `enum !== undefined`, so
+  // `{type:'enum'}` alone accepts any string); `enum:[]` is the opposite and worse failure — it
+  // registers a knob that admits NO value at all (`[].includes(x)` is always false). Reject both at
+  // registration, same precedent as the min/max-on-enum rejection above.
+  // EXCEPTION — the agent's own `effort` key (`effortLenient`): omitting `enum` there has an
+  // existing, documented meaning — `boundEffort` (above) defaults a missing/non-array `enum` to
+  // `ALL_EFFORTS`, clamped by the `maxEffort` ceiling — so `{type:'enum', default:'low'}` with no
+  // `enum` is "every effort the ceiling allows", not an unrestricted/unusable knob. An EXPLICIT
+  // `enum:[]` on effort is still rejected: `Array.isArray([])` is true, so `boundEffort` does NOT
+  // fall back for it — a declared empty array disables every override regardless of the key.
+  if (spec.type === 'enum' && spec.enum === undefined && !effortLenient) {
+    return invalid(param, "a type:'enum' spec requires a non-empty enum array");
+  }
+  if (spec.type === 'enum' && Array.isArray(spec.enum) && spec.enum.length === 0) {
+    return invalid(param, "a type:'enum' spec requires a non-empty enum array");
+  }
+  // issue #161 B4: min > max registers a knob that rejects every value — neither bound is wrong
+  // individually (both are numbers), only their relationship is.
+  if (spec.min !== undefined && spec.max !== undefined && spec.min > spec.max) {
+    return invalid(param, 'min must be <= max');
+  }
+  // issue #161 B5: an unknown field (a typo like `maxLength`/`required`, or the engine-internal
+  // `ceilingKey` — never author-set per its own doc comment on ParamSpec) silently registers as a
+  // no-op today. `unit`/`description` are legitimate author-facing documentation fields: an `args`
+  // entry's ParamSpec is surfaced VERBATIM on `workflow_describe` (workflow-view.ts), so both are
+  // read by a caller even though neither is enforced here.
+  const KNOWN_SPEC_FIELDS = ['type', 'default', 'enum', 'min', 'max', 'unit', 'description'];
+  for (const k of Object.keys(spec)) {
+    if (!KNOWN_SPEC_FIELDS.includes(k)) {
+      return invalid(param, `unknown field "${k}"`);
+    }
+  }
   return null;
 }
 
 /** model/effort/timeoutMs share one shape: declared, spec-valid, and carrying a `.default` — v24's
  *  "all three REQUIRED with .default" (DES-144). Extra semantic checks (alias / effort-rank /
  *  ceiling) are layered on top per key by the caller. */
-function validateRequiredKeySpec(param: string, spec: unknown): Err | null {
+function validateRequiredKeySpec(param: string, spec: unknown, effortLenient = false): Err | null {
   if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) {
     return invalid(param, 'must be an object');
   }
-  const shapeErr = validateSpecShape(param, spec as ParamSpec);
+  const shapeErr = validateSpecShape(param, spec as ParamSpec, effortLenient);
   if (shapeErr) return shapeErr;
   if ((spec as ParamSpec).default === undefined) {
     return invalid(param, 'must declare a default (v24: no implicit engine default per agent)');
@@ -334,7 +367,7 @@ function validateOneAgentSpec(
     }
   }
 
-  const effortErr = validateRequiredKeySpec(`agents.${label}.effort`, spec.effort);
+  const effortErr = validateRequiredKeySpec(`agents.${label}.effort`, spec.effort, /* effortLenient */ true);
   if (effortErr) return effortErr;
   const effort = spec.effort as ParamSpec;
   if (!isEffort(effort.default)) {

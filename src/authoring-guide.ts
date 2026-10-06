@@ -886,7 +886,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'contract is refused before your script runs at all. `appendPrompt` is the separate, ' +
         "author-OPT-IN channel for a caller's own free-text instructions, framed so the model can " +
         "tell them apart from yours — a `string`-typed arg you interpolate verbatim carries no such " +
-        'framing, so a loose `{type:\'string\'}` (no `enum`/`maxLength`-style `max`) lets ANY text ' +
+        'framing, so a loose `{type:\'string\'}` (no `enum`, no byte-length `max`) lets ANY text ' +
         'through your own bound; constrain it with `enum`/`max`, or route free text through ' +
         '`appendPrompt` instead.\n\n' +
         `\`meta.params.knobs\` and \`meta.defaults\` are retired — a script that declares either is ` +

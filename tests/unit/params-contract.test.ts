@@ -1149,3 +1149,82 @@ describe('validateUserOverrides() — detail.tunable lists only the keys THIS ag
   });
 });
 
+// issue #161 B3: a `type:'enum'` spec can register with no `enum` at all, or `enum:[]` — a knob
+// that is advertised but rejects every possible value (checkValueAgainstSpec's `expectedType` is
+// forced to 'string' for an enum spec, then `enum.includes(value)` is vacuously false against `[]`,
+// or `undefined` is treated elsewhere as "no restriction" only for an ALREADY-STORED poisoned row,
+// never meant to be the way a NEW enum spec registers).
+describe('validateSpecShape() / parseParamContract() — a type:\'enum\' spec must declare a non-empty enum array at registration (issue #161 B3)', () => {
+  it('args.b: {type:"enum"} with no enum key at all is refused PARAM_CONTRACT_INVALID', () => {
+    const r = parseParamContract({ args: { b: { type: 'enum' } } }, [], CATALOG);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('args.b: {type:"enum", enum:[]} is refused PARAM_CONTRACT_INVALID', () => {
+    const r = parseParamContract({ args: { b: { type: 'enum', enum: [] } } }, [], CATALOG);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('regression pin: a non-empty string enum still registers fine', () => {
+    const r = parseParamContract({ args: { b: { type: 'enum', enum: ['x', 'y'] } } }, [], CATALOG);
+    expect(r.ok).toBe(true);
+  });
+});
+
+// issue #161 B4: a `type:'number'` spec can register with min > max (e.g. {min:10,max:1}), making
+// EVERY value rejected — the shape guard checks each bound is individually a number but never that
+// min <= max.
+describe('validateSpecShape() / parseParamContract() — min must be <= max at registration (issue #161 B4)', () => {
+  it('args.b: {type:"number", min:10, max:1} is refused PARAM_CONTRACT_INVALID', () => {
+    const r = parseParamContract({ args: { b: { type: 'number', min: 10, max: 1 } } }, [], CATALOG);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('regression pin: min === max is allowed (a single legal value is not "every value rejected")', () => {
+    const r = parseParamContract({ args: { b: { type: 'number', min: 5, max: 5, default: 5 } } }, [], CATALOG);
+    expect(r.ok).toBe(true);
+  });
+
+  it('regression pin: min < max still registers fine', () => {
+    const r = parseParamContract({ args: { b: { type: 'number', min: 1, max: 10 } } }, [], CATALOG);
+    expect(r.ok).toBe(true);
+  });
+});
+
+// issue #161 B5: an unknown field on a declared ParamSpec (a typo like `maxLength`, or an
+// engine-internal field like `ceilingKey` an author should never set — see contract.ts:47-53's own
+// doc comment) silently registers as a no-op instead of being refused — the authoring guide's own
+// wording ("an `enum`/`maxLength`-style `max`") actively invites the `maxLength` typo.
+describe('validateSpecShape() / parseParamContract() — an unknown field on a declared ParamSpec is refused at registration (issue #161 B5)', () => {
+  it('args.b: {type:"string", maxLength:3} is refused PARAM_CONTRACT_INVALID (the real field is `max`)', () => {
+    const r = parseParamContract({ args: { b: { type: 'string', maxLength: 3 } as never } }, [], CATALOG);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('args.b: {type:"string", required:true} is refused PARAM_CONTRACT_INVALID (no such field exists)', () => {
+    const r = parseParamContract({ args: { b: { type: 'string', required: true } as never } }, [], CATALOG);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('args.b declaring the engine-internal `ceilingKey` is refused PARAM_CONTRACT_INVALID (never author-set)', () => {
+    const r = parseParamContract({ args: { b: { type: 'string', ceilingKey: 'maxTimeoutMs' } as never } }, [], CATALOG);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('regression pin: `unit` and `description` are legitimate documentation-only fields and still register (surfaced verbatim on args by workflow_describe)', () => {
+    const r = parseParamContract({ args: { b: { type: 'string', unit: 'bytes', description: 'a bio field' } } }, [], CATALOG);
+    expect(r.ok).toBe(true);
+  });
+
+  it('regression pin: a fully-declared agent spec with only known fields still registers fine', () => {
+    const r = parseParamContract({ agents: { plan: baseAgentSpec() } }, ['plan'], CATALOG);
+    expect(r.ok).toBe(true);
+  });
+});
+
