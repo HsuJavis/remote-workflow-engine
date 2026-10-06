@@ -56,6 +56,24 @@ describe('checkMermaid (UT-149, DES-147)', () => {
     expect(result.ok).toBe(false);
   });
 
+  // issue #155 B2b: VALUE_MISMATCH carried only {line} — no declared value or which field
+  // disagreed, unlike every other v2 rule's self-describing `expected`.
+  it('a VALUE_MISMATCH names the label and the declared field(s) in `expected`', () => {
+    const src = 'graph TD\n  plan(["plan<br/>haiku · low · 60s"])';
+    const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5', effort: 'low', timeoutMs: 60000 } }, limits, NO_V2) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('VALUE_MISMATCH');
+    expect(result.expected).toEqual({ label: 'plan', model: 'sonnet-5', effort: 'low', timeoutMs: 60000 });
+  });
+
+  it('a VALUE_MISMATCH `expected` only names the fields the contract actually declares', () => {
+    const src = 'graph TD\n  plan(["plan<br/>haiku · low · 60s"])';
+    const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5' } }, limits, NO_V2) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('VALUE_MISMATCH');
+    expect(result.expected).toEqual({ label: 'plan', model: 'sonnet-5' });
+  });
+
   it('120s and 120000 are equivalent timeout representations (no false mismatch)', () => {
     const src = 'graph LR\n  plan(["plan<br/>sonnet-5 · low · 120s"])';
     const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5', effort: 'low', timeoutMs: 120000 } }, limits, NO_V2);

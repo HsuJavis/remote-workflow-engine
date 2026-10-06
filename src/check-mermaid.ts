@@ -271,7 +271,13 @@ export function checkMermaid(
       (def.effort !== undefined && effort !== def.effort) ||
       (def.timeoutMs !== undefined && timeoutMs !== def.timeoutMs)
     ) {
-      return err('VALUE_MISMATCH', { line: node.line });
+      // issue #155 B2b: name the label and the specific declared field(s) that disagreed, same as
+      // every other v2 rule's self-describing `expected` — only the fields `def` actually declares.
+      const expectedValue: { label: string; model?: string; effort?: string; timeoutMs?: number } = { label };
+      if (def.model !== undefined) expectedValue.model = def.model;
+      if (def.effort !== undefined) expectedValue.effort = def.effort;
+      if (def.timeoutMs !== undefined) expectedValue.timeoutMs = def.timeoutMs;
+      return err('VALUE_MISMATCH', { line: node.line, expected: expectedValue });
     }
   }
 
