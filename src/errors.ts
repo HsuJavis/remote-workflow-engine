@@ -210,6 +210,9 @@ export const ERROR_CATALOG = {
   NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. a legacy or refused registration)' },
   INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
   INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
+  // issue #160 BUG-3: distinct from INVALID_CRON — this names the tz field, not the cron field,
+  // when the two were previously conflated (an invalid IANA zone surfaced as field:'cron').
+  INVALID_TZ: { see: null, hint: 'the `tz` value is not a valid IANA time zone name' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
   // (mcp-facade.ts:308/322) — see NOT_TRIGGER_OWNER above.
   TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },

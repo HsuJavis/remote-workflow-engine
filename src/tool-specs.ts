@@ -1088,7 +1088,7 @@ export const TOOL_SPECS = [
       kind: { type: 'string', enum: ['cron', 'once', 'resident'], description: "Defaults to 'cron' when omitted." },
       cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'. Fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-6, Sun=0; 7 is refused, not aliased to 0) — each '*', a number, a range 'a-b', or a comma list, optionally with a '/step'. Standard Vixie/POSIX day rule: day-of-month and day-of-week are each 'restricted' only when the field does NOT start with '*' (so '*/2' still counts as unrestricted even though it filters values). When BOTH are restricted, a date matches if day-of-month OR day-of-week matches (not AND) — e.g. '0 9 1 * 1' fires on the 1st of the month OR every Monday. Must have a next fire within a 4-year search horizon." },
       at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'. An UNCLAIMED trigger never fires, no matter how far past `at` is — it fires on the next tick only once a workflow claims it (workflow_register({triggers:[id]})); a past `at` on an ALREADY-claimed trigger also fires on the next tick." },
-      tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
+      tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted. An unrecognised zone name is refused INVALID_TZ (field:'tz'), distinct from a malformed cron expression." },
       args: { description: 'Run arguments handed to every firing.' },
       enabled: { type: 'boolean', description: 'Defaults to true when omitted — a schedule created disabled never fires.' },
     // v24 Gate 7.5 (D-1, REQ-115 clause 1 + ADR-026 scenario S-5): the row required `workflow`, so
@@ -1110,12 +1110,17 @@ export const TOOL_SPECS = [
     // resolved when it FIRES (`resolveScheduleTarget`, which records UNCLAIMED /
     // CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE as refusals), because a
     // trigger created before its workflow exists has nothing to resolve yet.
-    errors: ['INVALID_CRON', 'INVALID_AT', 'FORBIDDEN_ROLE'],
+    // issue #160 BUG-3: INVALID_TZ joins INVALID_CRON — an invalid `tz` (e.g. not a real IANA
+    // zone) is its own field-specific refusal, never folded into the cron field's message.
+    errors: ['INVALID_CRON', 'INVALID_TZ', 'INVALID_AT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {
       happy: { cron: '* * * * *' },
-      errors: { INVALID_CRON: { cron: 'not a cron expression' } },
+      errors: {
+        INVALID_CRON: { cron: 'not a cron expression' },
+        INVALID_TZ: { cron: '0 9 * * *', tz: 'Mars/Olympus_Mons' },
+      },
     },
   },
   {

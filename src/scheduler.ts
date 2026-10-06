@@ -345,6 +345,20 @@ export class SqliteSchedulerPort {
       if (cronError) {
         return { error: { code: 'INVALID_CRON', message: `${cronError} ${CRON_SEMANTICS}`, field: 'cron' } };
       }
+      // issue #160 BUG-3: `computeNextFire`'s catch below is written for its OWN two failure
+      // modes (a semantically impossible calendar combination, or the 4-year search horizon
+      // exhausted) and labels every throw from it INVALID_CRON/field:'cron' unconditionally. But
+      // the SAME function can also throw for an orthogonal reason — `fieldsAt`'s
+      // `Intl.DateTimeFormat` (scheduler-engine.ts) raises a RangeError for a bogus IANA tz — and
+      // that got stitched into the cron message, mislabeling a tz problem as a cron one. Validate
+      // tz up front, BEFORE computeNextFire ever runs, so a bad tz is reported on its own field.
+      if (s.tz !== undefined) {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: s.tz });
+        } catch {
+          return { error: { code: 'INVALID_TZ', message: `Not a valid IANA time zone: ${s.tz}`, field: 'tz' } };
+        }
+      }
     }
     if (s.kind === 'once' && Number.isNaN(Date.parse(s.at))) {
       return { error: { code: 'INVALID_AT', message: `Not a valid ISO timestamp: ${s.at}`, field: 'at' } };
