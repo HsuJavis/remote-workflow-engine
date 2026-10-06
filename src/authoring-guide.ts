@@ -747,7 +747,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     section(
       'The sandbox API',
       'A workflow script runs inside a restricted VM context with exactly these globals — nothing else ' +
-        `is reachable (\`${SANDBOX_GLOBALS.join('\`, \`')}\`; \`Date\`/\`Math\` are GUARDED, see below):\n\n` +
+        `is reachable (\`${SANDBOX_GLOBALS.join('\`, \`')}\`; \`Date\`/\`Math\`/\`Intl\` are GUARDED, see below). ` +
+        'The script body IS the function the engine calls — write statements and a `return`, with no ' +
+        '`function`/`async function` DECLARATION wrapped around any of it (`const thunk = () => ' +
+        "agent(...)`, used for parallel()/pipeline(), is fine — only a top-level `function` STATEMENT " +
+        'is refused, `PARSE_ERROR`, issue #154). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` ' +
+        "DIRECTLY — `agent('label', {...})`, not `const a = agent; a(...)` or `agent.call(...)` — " +
+        'registration can only see a call it can read at the call site; an alias, a `.call`/`.bind`, or ' +
+        'any other indirection is refused `SCRIPT_INVALID` (issue #154).\n\n' +
         "- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string " +
         'identifier (`/^[A-Za-z_][\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; ' +
         '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +

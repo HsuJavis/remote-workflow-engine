@@ -4,7 +4,7 @@ This engine has no bundled guidance skill — the tool schemas returned by `tool
 
 ## The sandbox API
 
-A workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`, `Intl`; `Date`/`Math` are GUARDED, see below):
+A workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`, `Intl`; `Date`/`Math`/`Intl` are GUARDED, see below). The script body IS the function the engine calls — write statements and a `return`, with no `function`/`async function` DECLARATION wrapped around any of it (`const thunk = () => agent(...)`, used for parallel()/pipeline(), is fine — only a top-level `function` STATEMENT is refused, `PARSE_ERROR`, issue #154). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` DIRECTLY — `agent('label', {...})`, not `const a = agent; a(...)` or `agent.call(...)` — registration can only see a call it can read at the call site; an alias, a `.call`/`.bind`, or any other indirection is refused `SCRIPT_INVALID` (issue #154).
 
 - `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string identifier (`/^[A-Za-z_][\w-]*$/`) matching a `meta.params.agents.<label>` declaration; `options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / `AGENT_OPTS_SHORTHAND` at registration, issue #154).
 - `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each returning `null` on its own thrown error rather than rejecting the whole call.
@@ -301,6 +301,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `TRIGGER_ALREADY_CLAIMED` — this trigger id is already claimed by a different workflow
 - `BUDGET_EXCEEDED` — the run's token budget is spent; the engine refused to dispatch this agent() call
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
+- `INVALID_NAME` — the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\', not '.' or '..', at most 128 characters
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
 - `UNKNOWN_RUN_PLACEHOLDER` — a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run's id) are supported
 
