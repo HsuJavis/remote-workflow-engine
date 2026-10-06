@@ -126,6 +126,14 @@ export interface McpFacadeDeps {
    *  author to learn it from a refused run. Absent (unit construction, or a deployment where the
    *  probe never ran) renders the guide's dual-posture generic text rather than asserting either. */
   confinementPosture?: 'confined' | 'unconfined';
+  /** Issue #147: this deployment's ACTUAL harness (`server.ts`'s `activeHarness`, the direct
+   *  gateway-transport signal issue #138 introduced for the probe/observed-stats wiring — a second
+   *  reader of the SAME value, not a new fact). So `workflow_authoring_guide`'s Skills section
+   *  states the harness actually in force first, and `BASH_SUBSUMES_FILE_TOOLS` can explain the
+   *  pi + declared-skill exception. Absent (unit construction, or a deployment that never forwarded
+   *  it) renders the guide's dual-harness generic text and leaves the warning unchanged — same
+   *  "absent degrades honestly" convention as `confinementPosture` just above. */
+  activeHarness?: 'sdk' | 'pi';
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -316,6 +324,7 @@ export class McpFacade {
   private readonly runConcurrency: number;
   private readonly gatewayAttempts?: number;
   private readonly confinementPosture?: 'confined' | 'unconfined';
+  private readonly activeHarness?: 'sdk' | 'pi';
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -342,6 +351,7 @@ export class McpFacade {
     this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
     this.gatewayAttempts = deps.gatewayAttempts;
     this.confinementPosture = deps.confinementPosture;
+    this.activeHarness = deps.activeHarness;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -494,10 +504,17 @@ export class McpFacade {
           provisioningWarnings.push(...provisioningWarningsFor(a.name, label, missing));
         }
       }
+      // Issue #147: each label's own declared skills, so toolSurfaceWarnings can explain the
+      // pi + declared-skill BASH_SUBSUMES_FILE_TOOLS exception — built from the SAME
+      // `params.agents` the provisioning-warning loop above already iterates, never a second read.
+      const skillsByLabel: Record<string, readonly string[]> = {};
+      for (const [label, spec] of Object.entries(params.agents)) {
+        if (spec.skills && spec.skills.length > 0) skillsByLabel[label] = spec.skills;
+      }
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
       // unaffected registration keeps exactly the reply keys it had before. 2026-09-26 (owner
       // decision 6): merged with any MODEL_CATALOG_UNVERIFIED notes from validateRegistration above.
-      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? []), ...provisioningWarnings];
+      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture, { skillsByLabel, harness: this.activeHarness }), ...(modelWarnings ?? []), ...provisioningWarnings];
       return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -895,6 +912,7 @@ export class McpFacade {
           ...this.ceilings,
           runConcurrency: this.runConcurrency,
           confinementPosture: this.confinementPosture,
+          activeHarness: this.activeHarness,
         }),
       },
     };

@@ -612,6 +612,51 @@ describe('the guide teaches how declared skills reach the model (#81/#83)', () =
   });
 });
 
+// Issue #147: the Skills section used to describe ONLY the sdk/Skill-tool activation rule, with
+// the pi exception (`allowedTools: []` does NOT work — a declared skill needs `Read` or `Bash`,
+// refused SKILL_REQUIRES_READ_TOOL with neither) buried many sections later in a generic harness
+// disclosure paragraph. `buildAuthoringGuide` is pure over its `ceilings` argument and this engine
+// already knows which harness is actually running (`activeHarness`, server.ts) by the time it
+// serves the LIVE `workflow_authoring_guide` tool response — so the Skills section itself should
+// render the ACTIVE harness's rule first, not force the reader to find the caveat elsewhere.
+describe('the Skills section renders according to the active harness (issue #147)', () => {
+  function skillsSection(text: string): string {
+    const start = text.indexOf('**Skills.**');
+    expect(start, 'Skills paragraph not found').toBeGreaterThanOrEqual(0);
+    return text.slice(start, start + 2000);
+  }
+
+  it('no activeHarness (static docs / gen-authoring-md.ts): both harnesses are shown, clearly labelled', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const s = skillsSection(text);
+    expect(s).toMatch(/gateway:"sdk"/);
+    expect(s).toMatch(/gateway:"pi"/);
+    expect(s).toMatch(/SKILL_REQUIRES_READ_TOOL/);
+    // sdk's own rule must still be stated (regression guard for the #81/#83 assertions above).
+    expect(s).toMatch(/through the Skill tool/i);
+  });
+
+  it("activeHarness:'pi': the pi rule leads, and says allowedTools: [] does NOT work on pi", () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, activeHarness: 'pi' });
+    const s = skillsSection(text);
+    const piIdx = s.search(/gateway:"pi"|pi harness|active harness: pi/i);
+    const sdkIdx = s.search(/gateway:"sdk"|active harness: sdk/i);
+    expect(piIdx, s).toBeGreaterThanOrEqual(0);
+    if (sdkIdx >= 0) expect(piIdx).toBeLessThan(sdkIdx);
+    expect(s).toMatch(/SKILL_REQUIRES_READ_TOOL/);
+    expect(s).toMatch(/'Read'.*'Bash'|'Bash'.*'Read'/);
+  });
+
+  it("activeHarness:'sdk': the sdk Skill-tool rule leads", () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, activeHarness: 'sdk' });
+    const s = skillsSection(text);
+    const sdkIdx = s.search(/through the Skill tool|active harness: sdk/i);
+    const piIdx = s.search(/SKILL_REQUIRES_READ_TOOL/);
+    expect(sdkIdx, s).toBeGreaterThanOrEqual(0);
+    if (piIdx >= 0) expect(sdkIdx).toBeLessThan(piIdx);
+  });
+});
+
 // issue #89 item 1: "Locked vs. tunable" hand-typed "six" while LOCKED_KEYS (params/contract.ts)
 // carries seven since issue #78(c) added `bash` — the count word must track the constant's own
 // length, not a literal that can silently go stale the next time LOCKED_KEYS grows or shrinks.
