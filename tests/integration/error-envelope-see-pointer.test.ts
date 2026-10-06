@@ -54,7 +54,14 @@ describe('every authoring refusal carries the guide pointer on the wire (IT-129,
     ['MERMAID_REQUIRED', { name: 'it129-no-mermaid', script: 'export const meta = { phases: [] };\nreturn 1;' }, 'MERMAID_REQUIRED'],
     ['DIAGRAM_MISMATCH', { name: 'it129-mismatch', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph TD;\nghost(["ghost"])' }, 'DIAGRAM_MISMATCH'],
     ['PARSE_ERROR', { name: 'it129-parse', script: 'this is not { valid javascript (((', mermaid: 'graph LR' }, 'PARSE_ERROR'],
-    ['MERMAID_INVALID', { name: 'it129-collapsed', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph TD;\na["a"]\nb["b"]\nc["c"]\na-->b & c' }, 'MERMAID_INVALID'],
+    // issue #155 B2a (owner-approved, 2026-10-07): `&` fan-out shorthand used to fold into
+    // MERMAID_INVALID; it is now its own `COLLAPSED_EDGE` catalog row (src/errors.ts), still
+    // carrying the same `see:'workflow_authoring_guide'` pointer this suite exists to check.
+    ['COLLAPSED_EDGE', { name: 'it129-collapsed', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph TD;\na["a"]\nb["b"]\nc["c"]\na-->b & c' }, 'COLLAPSED_EDGE'],
+    // A genuine, still-unparsable MERMAID_INVALID case (whitespace-only diagram,
+    // workflow-catalog.ts's own `mermaid.trim() === ''` check), so this code's own see-pointer
+    // coverage isn't lost now that the collapsed-edge case above moved off it.
+    ['MERMAID_INVALID', { name: 'it129-whitespace', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: '   ' }, 'MERMAID_INVALID'],
   ];
 
   for (const [label, args, code] of cases) {

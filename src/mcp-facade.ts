@@ -178,7 +178,10 @@ export interface DiagramInvalidator {
  *  STRING before it reaches the tool (observed with the Claude Code plugin — the script then read
  *  `args.inquiry` off a string and silently got `undefined`). If `args` arrives as a string that is
  *  valid JSON, parse it back into the object the caller intended; a non-JSON string is left as-is
- *  (a workflow that genuinely wants a string arg still gets it). Non-string values pass through. */
+ *  here. Issue #161 B6: downstream admission (`validateDeclaredArgs`) now refuses any non-object
+ *  top-level `args` with `PARAM_OUT_OF_RANGE` regardless of what this workflow declares, so a
+ *  left-as-is non-JSON string never actually reaches a script — only a JSON-string or object `args`
+ *  does. Non-string values pass through this function unchanged. */
 function normalizeArgs(args: unknown): unknown {
   if (typeof args !== 'string') return args;
   try {

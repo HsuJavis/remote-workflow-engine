@@ -1,7 +1,10 @@
 // Robustness: some MCP clients serialize the untyped `args` object into a JSON STRING before it
-// reaches run_start (observed with the Claude Code plugin). The facade now parses a JSON-string
-// `args` back into an object so a workflow's `args.field` reads work; a non-JSON string is left
-// as-is; an object passes through unchanged.
+// reaches run_start (observed with the Claude Code plugin). The facade parses a JSON-string `args`
+// back into an object so a workflow's `args.field` reads work; an object passes through unchanged.
+// A non-JSON string used to be left as-is and delivered verbatim to the script — issue #161 B6
+// (owner-approved) changed that: admission (`validateDeclaredArgs`) now refuses ANY non-object
+// top-level `args` (array/string/number) with `PARAM_OUT_OF_RANGE`, whether or not the workflow
+// declares any `args` keys, so a non-JSON string is refused before the run is even admitted.
 import { describe, it, expect } from 'vitest';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
@@ -43,9 +46,13 @@ describe('run_start args normalization (MCP-boundary robustness)', () => {
     expect(out.inquiry).toBe('direct object');
   });
 
-  it('a non-JSON string arg is left as a string (a workflow that wants a string still gets it)', async () => {
-    const out = await runAndGet(facade(), 'return { typeofArgs: typeof args, val: args };', 'just a plain string') as { typeofArgs: string; val: unknown };
-    expect(out.typeofArgs).toBe('string');
-    expect(out.val).toBe('just a plain string');
+  // issue #161 B6 (owner-approved, 2026-10-07): this used to assert the opposite — a non-JSON
+  // string reached the script verbatim as `typeof args === 'string'`. Admission now refuses any
+  // non-object top-level `args` outright, so the run is never even admitted; there is no script
+  // result to read.
+  it('a non-JSON string arg is refused before the run is admitted (issue #161 B6, PARAM_OUT_OF_RANGE)', async () => {
+    const run = await runScriptVia(facadeCaller(facade()), 'return { typeofArgs: typeof args, val: args };', { args: 'just a plain string' });
+    expect(run.error?.code).toBe('PARAM_OUT_OF_RANGE');
+    expect(run.error?.detail?.['suppliedType']).toBe('string');
   });
 });
