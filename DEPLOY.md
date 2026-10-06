@@ -724,7 +724,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
   （`SEEDREF_ALLOWLIST_INVALID`）：`composeConfig()` 呼叫 `normalizeSeedRefAllowlist()`
   （`src/seedref-egress.ts`）——`RunManager` 建構子也呼叫同一個函式。
 - **`agentSlots`／`runConcurrency`／`maxWorkflowDepth`／`maxWorkflowDescendants`／
-  `maxConcurrentRuns`／`maxTimeoutMs`／`maxAppendPromptBytes`／`maxWorkflowVersions` ≤0 或非整數**：
+  `maxConcurrentRuns`／`maxTimeoutMs`／`maxAppendPromptBytes`／`maxWorkflowVersions`／
+  `maxRunDurationMs` ≤0 或非整數**：
   `composeConfig()` 呼叫 `assertPositiveInteger()`（`src/config-numeric.ts`）——`RunManager` 的
   `_positiveInt` 現在委派給同一個函式，而不是各自維護一份「必須是正整數」的規則。
 - **`maxEffort` 不是 `low`／`medium`／`high`／`xhigh`／`max` 之一**：`composeConfig()` 用
@@ -1542,9 +1543,10 @@ server-memory` 就是現成例子：預設把資料寫進自己 npx package 目�
    `node_modules` 經驗證完全不需要），不給 `--allow-fs-write`/`--allow-child-process`/
    `--allow-worker`/`--allow-addons`/`--allow-wasi` 任何一個——所以就算第 1 層被繞過、子行程真的拿到
    一個 `process`，`fs.readFileSync`/`child_process.execSync` 這類操作仍會在 Node 自己的 permission
-   層被擋下（`ERR_ACCESS_DENIED`），讀不到任意主機檔案，也起不了任意指令。**這一層需要 Node.js
-   22.19 以上**（見 §1a 前置條件——比引擎其餘部分的 22.6 下限更高，舊版 Node 上 `--permission` 不穩定
-   甚至不存在，子行程會直接啟動失敗）。
+   層被擋下（`ERR_ACCESS_DENIED`），讀不到任意主機檔案，也起不了任意指令。**這一層是 §1a 把
+   引擎整體下限訂在 Node.js 22.19 以上的三個原因之一**——單看 type-stripping 本身 22.7 即可，
+   但這個旗標要到 22.19 才穩定，舊版 Node 上 `--permission` 不穩定甚至不存在，子行程會直接
+   啟動失敗。
 
 三層獨立疊加對子行程啟動時間的影響：量測約 +6%（中位數 fork→完成一個空白腳本，約 135ms→144ms），
 可忽略不計。三層防護互不依賴：安全稽核/滲透測試應三層分開驗證，不能以「第 1 層守住了」代表另外
