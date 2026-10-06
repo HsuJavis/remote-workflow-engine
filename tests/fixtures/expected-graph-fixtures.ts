@@ -107,6 +107,45 @@ if (cond) {
 }
 `;
 
+// issue #155 B1 (fan-in half): a real slot follows the split branch — both arms must fan IN to it,
+// never just the textually-last one.
+const ifElseSeparatePhasesThenMoreScript = `
+export const meta = { name: 'ifelsephasesthen', params: { agents: { a: {}, b: {}, c: {}, d: {} } } };
+phase('p1');
+await agent('a', { prompt: 'p' });
+if (cond) {
+  phase('hot');
+  await agent('b', { prompt: 'p' });
+} else {
+  phase('cold');
+  await agent('c', { prompt: 'p' });
+}
+phase('done');
+await agent('d', { prompt: 'p' });
+`;
+
+// issue #155 B1 (consecutive split branches): TWO if/else blocks in a row, each arm its own
+// phase() — branch 2's anchor must be EVERY arm of branch 1, not just the textually-last one.
+const twoConsecutiveSplitBranchesScript = `
+export const meta = { name: 'twosplits', params: { agents: { a: {}, b: {}, c: {}, d: {}, e: {} } } };
+phase('p1');
+await agent('a', { prompt: 'p' });
+if (cond1) {
+  phase('hot');
+  await agent('b', { prompt: 'p' });
+} else {
+  phase('cold');
+  await agent('c', { prompt: 'p' });
+}
+if (cond2) {
+  phase('warm');
+  await agent('d', { prompt: 'p' });
+} else {
+  phase('cool');
+  await agent('e', { prompt: 'p' });
+}
+`;
+
 const nestedWorkflowScript = `
 export const meta = { name: 'nested', params: { agents: { a: {} } } };
 phase('outer');
@@ -269,6 +308,58 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
           { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
         ],
         edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }],
+      },
+    },
+  },
+  {
+    // issue #155 B1 (fan-in half): the slot AFTER the split branch fans in from EVERY arm.
+    name: 'if/else, each arm its own phase(), THEN a real slot — fans in from BOTH arms',
+    script: ifElseSeparatePhasesThenMoreScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+          { index: 3, title: 'done', dynamic: false, slots: [3] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single', tools: { a: 'default' } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt', tools: { b: 'default' }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
+          { index: 3, lane: 3, labels: ['d'], kind: 'single', tools: { d: 'default' } },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }, { from: 1, to: 3 }, { from: 2, to: 3 }],
+      },
+    },
+  },
+  {
+    // issue #155 B1 (consecutive split branches): branch 2's anchors are EVERY arm of branch 1.
+    name: 'two consecutive if/else branches, each arm its own phase() — full fan-out/fan-in chain',
+    script: twoConsecutiveSplitBranchesScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+          { index: 3, title: 'warm', dynamic: false, slots: [3] },
+          { index: 4, title: 'cool', dynamic: false, slots: [4] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single', tools: { a: 'default' } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt', tools: { b: 'default' }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
+          { index: 3, lane: 3, labels: ['d'], kind: 'alt', tools: { d: 'default' }, altGroup: 2 },
+          { index: 4, lane: 4, labels: ['e'], kind: 'alt', tools: { e: 'default' }, altGroup: 2 },
+        ],
+        edges: [
+          { from: 0, to: 1 }, { from: 0, to: 2 },
+          { from: 1, to: 3 }, { from: 2, to: 3 },
+          { from: 1, to: 4 }, { from: 2, to: 4 },
+        ],
       },
     },
   },

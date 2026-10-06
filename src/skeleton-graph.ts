@@ -137,7 +137,12 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
     }
   }
   const altGroupSeen = new Map<string, number>();
-  const altGroupAnchor = new Map<string, number | undefined>();
+  // Every anchor slot this group's arms fan OUT from — usually one (`lastSlotIndex` at the time the
+  // group's first arm appeared), but when this group starts IMMEDIATELY after another split alt
+  // group just closed (two consecutive if/else branches, each arm its own phase()), its anchors are
+  // THAT group's own arm slots: every outcome of branch 1 fans into every arm of branch 2, not just
+  // the textually-last one.
+  const altGroupAnchor = new Map<string, number[]>();
   const altGroupArms = new Map<string, number[]>();
   // Set once a split alt group has seen its LAST arm — consumed (and cleared) by the NEXT slot this
   // loop creates, which gets edges from every one of that group's arms instead of just `lastSlotIndex`.
@@ -232,20 +237,24 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
     lanes[currentLaneIndex]!.slots.push(slotIndex);
 
     if (altKey !== undefined) {
-      // B1: fan OUT from the one anchor slot that preceded the branch to every arm — never
-      // arm-to-arm — and track the arm so the slot that eventually follows the branch can fan IN
-      // from every one of them.
+      // B1: fan OUT from this group's anchor slot(s) to every arm — never arm-to-arm — and track
+      // the arm so the slot that eventually follows the branch can fan IN from every one of them.
       if (isAltContinuation) {
-        const anchor = altGroupAnchor.get(altKey);
-        if (anchor !== undefined) edges.push({ from: anchor, to: slotIndex });
+        for (const anchor of altGroupAnchor.get(altKey) ?? []) edges.push({ from: anchor, to: slotIndex });
         altGroupArms.get(altKey)!.push(slotIndex);
       } else {
-        altGroupAnchor.set(altKey, lastSlotIndex);
+        // The anchor is normally just `lastSlotIndex`; when a split alt group JUST closed right
+        // before this one opened, `pendingAltArms` holds ITS arms — every one of them is an anchor
+        // for this group too (two consecutive branches fan fully into each other, not through only
+        // the textually-last arm of the first).
+        const anchors = pendingAltArms ?? (lastSlotIndex !== undefined ? [lastSlotIndex] : []);
+        altGroupAnchor.set(altKey, anchors);
         altGroupArms.set(altKey, [slotIndex]);
-        if (lastSlotIndex !== undefined) edges.push({ from: lastSlotIndex, to: slotIndex });
+        for (const anchor of anchors) edges.push({ from: anchor, to: slotIndex });
+        pendingAltArms = undefined; // consumed — this group now owns the "what's pending" slot
       }
       altGroupSeen.set(altKey, (altGroupSeen.get(altKey) ?? 0) + 1);
-      pendingAltArms = altGroupSeen.get(altKey) === altGroupTotal.get(altKey) ? altGroupArms.get(altKey) : undefined;
+      if (altGroupSeen.get(altKey) === altGroupTotal.get(altKey)) pendingAltArms = altGroupArms.get(altKey);
     } else if (pendingAltArms !== undefined) {
       // This slot is whatever follows a NOW-COMPLETE split alt group — fan IN from every arm.
       for (const armSlot of pendingAltArms) edges.push({ from: armSlot, to: slotIndex });
