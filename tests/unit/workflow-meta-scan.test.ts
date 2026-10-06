@@ -8,7 +8,7 @@
 //
 // Mock policy (unit): pure function, no I/O.
 import { describe, it, expect } from 'vitest';
-import { scanAgentCalls } from '../../src/workflow-meta.js';
+import { scanAgentCalls, parseWorkflowSkeleton } from '../../src/workflow-meta.js';
 
 describe('scanAgentCalls — the six REQ-208 non-code cases must NOT produce a violation (DES-237)', () => {
   it('1. a regex literal containing "agent(" text is not scanned as a call', () => {
@@ -103,5 +103,106 @@ describe('scanAgentCalls — a no-meta oracle parse failure fails OPEN, not blin
     expect(result.calls.map((c) => c.label)).toEqual(['a', 'b']);
     expect(result.violations).toEqual([]);
     expect(result.unscannable).toBeUndefined();
+  });
+});
+
+// Issue #140: `export const meta = {…}` is blanked to spaces before the `nonCodeSpans` oracle runs
+// (D11 ordering, avoids `export` tripping the classic-script parse) — but the blanked copy is only
+// used to FIND other non-code spans; the meta span's own range was never itself added back as a
+// non-code span. So a literal "agent (" sitting inside a `meta.description` string (or any other
+// meta field) was scanned against the ORIGINAL, unblanked script text and produced a spurious
+// AGENT_LABEL_REQUIRED/AGENT_OPTS_NOT_LITERAL — regardless of which quote style wrapped it, because
+// the oracle never got a chance to see it as a string literal at all. Fix: the whole meta span is
+// itself always non-code.
+describe('scanAgentCalls — a literal "agent (" inside `export const meta` must never be scanned (issue #140)', () => {
+  it('the exact issue repro: meta.description mentions "trial agent (set …)" and the real call is untouched', () => {
+    const src =
+      'export const meta = {\n' +
+      "  description: 'run it for real on the trial agent (set overrides.agents.trial.model ...)',\n" +
+      '  phases: [{ title: \'P\' }],\n' +
+      '};\n\n' +
+      "phase('P');\n" +
+      'return await agent(\'trial\', { prompt: \'p\' });';
+    const { violations, calls, labels } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(labels).toEqual(['trial']);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.label).toBe('trial');
+  });
+
+  it('single-quoted meta.description containing "agent (" text', () => {
+    const src =
+      "export const meta = { description: 'the trial agent (informal)', phases: [] };\n" +
+      "agent('real', {});";
+    const { violations, calls } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(calls.filter((c) => c.label === 'real')).toHaveLength(1);
+  });
+
+  it('double-quoted meta.description containing "agent (" text', () => {
+    const src =
+      'export const meta = { description: "the trial agent (informal)", phases: [] };\n' +
+      "agent('real', {});";
+    const { violations, calls } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(calls.filter((c) => c.label === 'real')).toHaveLength(1);
+  });
+
+  it('template-literal meta.description containing "agent (" text (meta stays non-code even when impure)', () => {
+    const src =
+      'export const meta = { description: `the trial agent (informal)`, phases: [] };\n' +
+      "agent('real', {});";
+    const { violations, calls } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(calls.filter((c) => c.label === 'real')).toHaveLength(1);
+  });
+
+  it('nested quotes/escapes inside meta.description around "agent (" text', () => {
+    const src =
+      String.raw`export const meta = { description: "she said \"the trial agent (mode A)\" twice", phases: [] };` +
+      "\nagent('real', {});";
+    const { violations, calls } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(calls.filter((c) => c.label === 'real')).toHaveLength(1);
+  });
+
+  it('a comment and a regex literal AFTER a meta block are still excluded as before (no regression)', () => {
+    const src =
+      "export const meta = { description: 'd', phases: [] };\n" +
+      "// the author's agent (informal note)\n" +
+      'const re = /agent\\(/;\n' +
+      "agent('real', {});";
+    const { violations, calls } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(calls.filter((c) => c.label === 'real')).toHaveLength(1);
+  });
+
+  it('a real agent() call inside a `${}` template interpolation in the body is still detected (meta present)', () => {
+    const src =
+      "export const meta = { description: 'd', phases: [] };\n" +
+      'const msg = `result: ${await agent("real", {})}`;';
+    const { violations, calls } = scanAgentCalls(src);
+    expect(violations).toEqual([]);
+    expect(calls.some((c) => c.label === 'real')).toBe(true);
+  });
+
+  it('a genuinely unlabeled agent() call in the body still reports its own real line (meta present, not blind)', () => {
+    const src =
+      "export const meta = { description: 'the trial agent (set x)', phases: [] };\n" +
+      "agent('only-one-arg');";
+    const { violations } = scanAgentCalls(src);
+    expect(violations).toContainEqual(expect.objectContaining({ code: 'AGENT_LABEL_REQUIRED', line: 2 }));
+  });
+
+  it('parseWorkflowSkeleton agrees: exactly one agent node, for the positional join with scanAgentCalls', () => {
+    const src =
+      'export const meta = {\n' +
+      "  description: 'run it for real on the trial agent (set overrides.agents.trial.model ...)',\n" +
+      '  phases: [{ title: \'P\' }],\n' +
+      '};\n\n' +
+      "phase('P');\n" +
+      'return await agent(\'trial\', { prompt: \'p\' });';
+    const nodes = parseWorkflowSkeleton(src);
+    expect(nodes.filter((n) => n.kind === 'agent')).toHaveLength(1);
   });
 });

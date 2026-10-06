@@ -132,6 +132,14 @@ export interface McpFacadeDeps {
    *  pi-harness-correct provider-effort text instead of the sdk gateway's, on a pi deployment. Same
    *  "absent renders the generic/sdk text" rule `confinementPosture` above already has. */
   harnessProviders?: readonly Provider[];
+  /** Issue #147: this deployment's ACTUAL harness (`server.ts`'s `activeHarness`, the direct
+   *  gateway-transport signal issue #138 introduced for the probe/observed-stats wiring — a second
+   *  reader of the SAME value, not a new fact). So `workflow_authoring_guide`'s Skills section
+   *  states the harness actually in force first, and `BASH_SUBSUMES_FILE_TOOLS` can explain the
+   *  pi + declared-skill exception. Absent (unit construction, or a deployment that never forwarded
+   *  it) renders the guide's dual-harness generic text and leaves the warning unchanged — same
+   *  "absent degrades honestly" convention as `confinementPosture` just above. */
+  activeHarness?: 'sdk' | 'pi';
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -323,6 +331,7 @@ export class McpFacade {
   private readonly gatewayAttempts?: number;
   private readonly confinementPosture?: 'confined' | 'unconfined';
   private readonly harnessProviders?: readonly Provider[];
+  private readonly activeHarness?: 'sdk' | 'pi';
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -350,6 +359,7 @@ export class McpFacade {
     this.gatewayAttempts = deps.gatewayAttempts;
     this.confinementPosture = deps.confinementPosture;
     this.harnessProviders = deps.harnessProviders;
+    this.activeHarness = deps.activeHarness;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -502,10 +512,17 @@ export class McpFacade {
           provisioningWarnings.push(...provisioningWarningsFor(a.name, label, missing));
         }
       }
+      // Issue #147: each label's own declared skills, so toolSurfaceWarnings can explain the
+      // pi + declared-skill BASH_SUBSUMES_FILE_TOOLS exception — built from the SAME
+      // `params.agents` the provisioning-warning loop above already iterates, never a second read.
+      const skillsByLabel: Record<string, readonly string[]> = {};
+      for (const [label, spec] of Object.entries(params.agents)) {
+        if (spec.skills && spec.skills.length > 0) skillsByLabel[label] = spec.skills;
+      }
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
       // unaffected registration keeps exactly the reply keys it had before. 2026-09-26 (owner
       // decision 6): merged with any MODEL_CATALOG_UNVERIFIED notes from validateRegistration above.
-      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? []), ...provisioningWarnings];
+      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture, { skillsByLabel, harness: this.activeHarness }), ...(modelWarnings ?? []), ...provisioningWarnings];
       return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -904,6 +921,7 @@ export class McpFacade {
           runConcurrency: this.runConcurrency,
           confinementPosture: this.confinementPosture,
           harnessProviders: this.harnessProviders,
+          activeHarness: this.activeHarness,
         }),
       },
     };
@@ -1260,7 +1278,15 @@ export class McpFacade {
     return { runId: a.runId, status: stored.status, result: r };
   }
 
-  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind; scope?: AssetScope }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind; scope?: AssetScope; includeBody?: boolean }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+    // issue #146: `includeBody` only means something for the dedicated `{scope:'global', kind:
+    // 'skill'}` discovery door (it opts into that skill's own SKILL.md body) — refused for every
+    // other shape rather than silently ignored, same house style as the other malformed-request
+    // checks below (an argument that reads as accepted but does nothing is the defect, not a
+    // convenience).
+    if (a.includeBody !== undefined && !(a.scope === 'global' && a.kind === 'skill')) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list includeBody is only valid with scope:'global' and kind:'skill'" } };
+    }
     if (a.runId) {
       const stored = await this.store.getRun(a.runId);
       if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
@@ -1286,7 +1312,7 @@ export class McpFacade {
       if (!a.kind) {
         return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list scope:'global' requires kind:'skill'|'mcp'" } };
       }
-      const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind) : [];
+      const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind, { includeBody: a.includeBody === true }) : [];
       return { runId: '', status: 'completed', result: rows };
     }
     // issue #109 review send-back (LOW-4): `{kind}` (or nothing at all) with neither `workflow` nor

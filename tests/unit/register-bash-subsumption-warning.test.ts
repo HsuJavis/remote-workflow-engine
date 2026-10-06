@@ -94,3 +94,54 @@ describe('#78(b) — workflow_register warns when Bash sits beside the file tool
     expect(spec.description).toContain('warnings');
   });
 });
+
+// Issue #147 part 2: on `gateway:"pi"`, a declared skill needs `Read` or `Bash` present in
+// `allowedTools` for pi to list it in the model's system prompt (`SKILL_REQUIRES_READ_TOOL`
+// otherwise, pi-gateway-client.ts) — so BASH_SUBSUMES_FILE_TOOLS's generic "no narrower than Bash
+// alone" framing, read by an author as "drop Read", left them unsure whether that would silently
+// hide their skill. It would not (Bash alone already satisfies pi's requirement), but the warning
+// never said so. Fixed by explaining the exception whenever the agent's label declares a skill AND
+// this engine's active harness is pi — never changing the warning's existing wording otherwise.
+function scriptWithSkill(allowedTools: string): string {
+  return (
+    "export const meta = { description: 'd', phases: [{ title: 'P' }], params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+    "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }, skills: ['repo-search'] } } } };\n" +
+    "phase('P');\n" +
+    `return await agent('a', { prompt: 'p', allowedTools: ${allowedTools} });`
+  );
+}
+function mermaidForSkill(allowedTools: string): string {
+  const names = (JSON.parse(allowedTools.replace(/'/g, '"')) as string[]).sort();
+  return `graph LR\nsubgraph "P"\na(["a<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: ${names.join(', ')}"])\nend`;
+}
+
+describe('issue #147 — BASH_SUBSUMES_FILE_TOOLS explains the pi + declared-skill exception instead of leaving it ambiguous', () => {
+  it("on gateway:'pi', a label with a declared skill and ['Bash','Read'] gets a warning that explains dropping Read is safe for the skill", async () => {
+    const piFacade = new McpFacade({ runManager: new RunManager({ catalog: new WorkflowCatalog(workRoot, CLOCK), clock: CLOCK }), clock: CLOCK, activeHarness: 'pi' });
+    const r = (await piFacade.workflowRegister({ name: 'w147-pi', script: scriptWithSkill("['Bash', 'Read']"), mermaid: mermaidForSkill("['Bash', 'Read']") }, OPEN)) as Reply;
+    expect(r.error, JSON.stringify(r.error)).toBeUndefined();
+    const w = r.result!.warnings!.find((x) => x.code === 'BASH_SUBSUMES_FILE_TOOLS')!;
+    expect(w, JSON.stringify(r.result?.warnings)).toBeDefined();
+    expect(w.message).toContain('repo-search');
+    expect(w.message.toLowerCase()).toContain('pi');
+    expect(w.message).toMatch(/SKILL_REQUIRES_READ_TOOL/);
+    expect(w.message.toLowerCase()).not.toMatch(/remove 'read'|removing read|drop 'read'/);
+  });
+
+  it("on the default sdk harness, the SAME skill-declaring script gets the ORIGINAL warning text (no pi exception language)", async () => {
+    const r = (await facade.workflowRegister({ name: 'w147-sdk', script: scriptWithSkill("['Bash', 'Read']"), mermaid: mermaidForSkill("['Bash', 'Read']") }, OPEN)) as Reply;
+    const w = r.result!.warnings!.find((x) => x.code === 'BASH_SUBSUMES_FILE_TOOLS')!;
+    expect(w).toBeDefined();
+    expect(w.message).not.toContain('repo-search');
+    expect(w.message).not.toMatch(/SKILL_REQUIRES_READ_TOOL/);
+    expect(w.message).toContain("['Read', 'Grep', 'Glob']");
+  });
+
+  it("on gateway:'pi' with NO declared skill, the warning is unaffected (regression guard)", async () => {
+    const piFacade = new McpFacade({ runManager: new RunManager({ catalog: new WorkflowCatalog(workRoot, CLOCK), clock: CLOCK }), clock: CLOCK, activeHarness: 'pi' });
+    const r = (await piFacade.workflowRegister({ name: 'w147-pi-noskill', script: script("['Bash', 'Read']"), mermaid: mermaid("['Bash', 'Read']") }, OPEN)) as Reply;
+    const w = r.result!.warnings!.find((x) => x.code === 'BASH_SUBSUMES_FILE_TOOLS')!;
+    expect(w).toBeDefined();
+    expect(w.message).not.toMatch(/SKILL_REQUIRES_READ_TOOL/);
+  });
+});

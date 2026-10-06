@@ -26,6 +26,9 @@ import { SANDBOX_GLOBALS, DETERMINISM_GUARDED } from './sandbox/guards.js';
 // v26 (DES-187, ARCH-121, TASK-193): the three seed shapes and workspace_push's own description,
 // read from the SAME schema `tools/list` serves — a cold client's only documentation (ADR-032).
 import { TOOL_SPECS } from './tool-specs.js';
+// issue #146: the SAME enforced byte bound workspace_list's own description states (tool-specs.ts)
+// — interpolated here too, not transcribed, so the two can never say a different number.
+import { GLOBAL_SKILL_BODY_MAX_BYTES } from './asset-sync.js';
 // v26 (DES-187, ARCH-121, TASK-193, ADR-041) — 2026-09-26 (alias mechanism removed): the provider
 // capability table, read from the same data `parseModelRef`/`checkModelRef` check against.
 import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
@@ -63,6 +66,18 @@ export interface GuideCeilings {
    *  `confinementPosture` above already has) — the live `workflow_authoring_guide` MCP response
    *  (mcp-facade.ts) is the one render that actually has this value. */
   harnessProviders?: readonly Provider[];
+  /** Issue #147: this deployment's ACTUAL harness — `'sdk'` (default) or `'pi'`. Forwarded from
+   *  `server.ts`'s `activeHarness` (the direct gateway-transport signal issue #138 introduced for
+   *  the probe/observed-stats wiring — a second reader of the SAME value, not a new fact), via
+   *  `McpFacadeDeps.activeHarness`. `undefined` when no measurement is in scope at render time
+   *  (`scripts/gen-authoring-md.ts` builds `docs/AUTHORING.md` once, before any host boots, so it
+   *  cannot know which gateway a given deployment will configure) — the Skills section then
+   *  describes BOTH harnesses, clearly labelled, same "can't know yet, so show both" convention as
+   *  `confinementPosture`/`hostPathGrantsBody` above. The sdk/Skill-tool activation rule and the pi
+   *  `SKILL_REQUIRES_READ_TOOL` rule are NOT interchangeable (issue #147): sdk's `allowedTools: []`
+   *  plus a declared skill works; the identical shape on pi is refused before dispatch. Rendering
+   *  only one, unconditionally, previously taught whichever rule is wrong for the other harness. */
+  activeHarness?: 'sdk' | 'pi';
 }
 
 export interface GuideExample {
@@ -506,6 +521,43 @@ function exampleRows(examples: readonly GuideExample[]): string {
   ).join('\n\n');
 }
 
+/** Issue #147: how a declared skill actually reaches the model is harness-specific, and the two
+ *  rules are NOT interchangeable — a cold author reading only the sdk rule (the pre-#147 Skills
+ *  section) would write `allowedTools: []` on a pi deployment and get `SKILL_REQUIRES_READ_TOOL`,
+ *  a refusal the guide's own (correct, but many sections later) harness-disclosure paragraph
+ *  explained — too late for a reader who already wrote the sdk shape. Rendered here, in the Skills
+ *  section itself, with the ACTIVE harness (when known, i.e. the live `workflow_authoring_guide`
+ *  tool response) leading; both shown, clearly labelled, when the harness isn't known yet (the
+ *  generated static `docs/AUTHORING.md`, built once before any host boots). */
+function skillsActivationParagraph(harness?: 'sdk' | 'pi'): string {
+  const sdkBlock =
+    'the model activates a declared skill through the Skill tool, which the engine adds to that ' +
+    "agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants " +
+    'no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared ' +
+    'skill can still activate it.';
+  const piBlock =
+    'there is no separate `Skill` tool: pi only lists a declared skill in the model\'s system prompt ' +
+    "when `allowedTools` includes `'Read'` or `'Bash'` — an agent with neither is refused " +
+    "`SKILL_REQUIRES_READ_TOOL` before dispatch. `allowedTools: []` does NOT work here, unlike sdk.";
+  if (harness === 'pi') {
+    return (
+      `**Active harness: pi.** Under \`gateway:"pi"\`, ${piBlock} (If this deployment instead ran ` +
+      `\`gateway:"sdk"\`: ${sdkBlock})`
+    );
+  }
+  if (harness === 'sdk') {
+    return (
+      `**Active harness: sdk.** Under \`gateway:"sdk"\` (the default), ${sdkBlock} (If this ` +
+      `deployment instead ran \`gateway:"pi"\`: ${piBlock})`
+    );
+  }
+  return (
+    `Under \`gateway:"sdk"\` (the default), ${sdkBlock} Under \`gateway:"pi"\`, ${piBlock} This ` +
+    "guide is generated once and is not per-deployment — the LIVE `workflow_authoring_guide` tool " +
+    "response states which one THIS engine actually runs (`system_info`'s `harness.name` does too)."
+  );
+}
+
 /** pi harness v1 (spec "Disclosure"): static text describing the ALTERNATIVE `gateway:"pi"`
  *  configuration — this guide is generated once (`npm run gen:authoring`), not per-deployment, so it
  *  cannot read a live `ServerConfig.harnessProviders` the way `system_info`'s `harness` field does;
@@ -791,10 +843,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'Register the workflow FIRST (`workflow_register`), then `workspace_push` each declared ' +
         'skill against that already-registered name — a push naming an unregistered workflow is ' +
         'refused `WORKFLOW_NOT_FOUND`; registration itself never requires a declared skill to exist yet. ' +
-        'The model activates a declared skill through the Skill tool, which the engine adds to that ' +
-        "agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants " +
-        'no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared ' +
-        "skill can still activate it. Only the agent's own declared skills can be activated (other " +
+        `${skillsActivationParagraph(ceilings.activeHarness)}\n\n` +
+        "Only the agent's own declared skills can be activated (other " +
         "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. " +
         "A declared skill's files are PRIVATE to the dispatch that declared it: they materialize into a " +
         "directory outside the run workspace for the lifetime of that one dispatch only, never into " +
@@ -895,7 +945,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "that names `Bash` beside any of those five is no narrower than `Bash` alone: " +
         '`workflow_register` answers it with a non-fatal `result.warnings` entry ' +
         '(`BASH_SUBSUMES_FILE_TOOLS`) and registers the version anyway. A read-only agent is ' +
-        "`['Read', 'Grep', 'Glob']`, with no `Bash`.\n\n" +
+        "`['Read', 'Grep', 'Glob']`, with no `Bash`. An agent that also declares a `skill` is a " +
+        'partial exception on `gateway:"pi"` (see Skills, above): dropping `Read` there is still ' +
+        "safe for the skill's own visibility, because `Bash` alone already satisfies pi's " +
+        '`SKILL_REQUIRES_READ_TOOL` requirement — the warning states this explicitly when it ' +
+        'applies.\n\n' +
         readonlyBashBody(ceilings.confinementPosture) +
         '\n\n' +
         // Issue #77: the SDK's Write description says "must be absolute"; the engine cannot change
@@ -1482,7 +1536,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // exact name, so finding that name is the first step; this is where it's discoverable.
         "Don't know the exact name? `workspace_list({scope:'global', kind:'skill'|'mcp'})` lists " +
         "every global asset of that kind — name plus (skill) its SKILL.md description or (mcp) its " +
-        'transport type, nothing more.',
+        'transport type, nothing more. Add `includeBody:true` (skills only) to also read the FULL ' +
+        'SKILL.md text — its instructions and any dependency it names (e.g. "requires MCP X") — ' +
+        `BEFORE you declare/register against it (capped at ${GLOBAL_SKILL_BODY_MAX_BYTES / 1024} ` +
+        "KiB, `bodyTruncated:true` past the cap; refused `INVALID_ARGUMENT` outside " +
+        "`{scope:'global', kind:'skill'}`). That text is " +
+        'visible to every approved principal this way, same as the description already is — an ' +
+        "admin pushing a global skill must never put a secret in its SKILL.md.",
     ),
   );
 

@@ -601,7 +601,23 @@ function altSpans(script: string): AltSpan[] {
  *  output (AGENT_UNDECLARED, AGENT_BEFORE_PHASE, the diagram contract, label checks). */
 function nonCodeOracle(script: string): ReturnType<typeof nonCodeSpans> | null {
   const meta = checkMeta(script);
-  if (meta.span) return nonCodeSpans(script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')));
+  if (meta.span) {
+    const result = nonCodeSpans(script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')));
+    if (!result.ok) return result;
+    // v35 follow-up (issue #140): the blanked copy above only lets the oracle find non-code spans
+    // OUTSIDE the meta block (blanking is what keeps the `export` keyword from tripping the
+    // classic-script parse) — it does not, by itself, mark the meta block's own text as non-code.
+    // `scanAgentCalls`/`parseWorkflowSkeleton` still run AGENT_CALL_RE/CALL_RE against the
+    // ORIGINAL, unblanked script, so a literal "agent (" inside e.g. `meta.description` (whichever
+    // quote style — the blanking is character-preserving, so `script.indexOf(meta.span)` is the
+    // same first occurrence `.replace()` above already matched) was never excluded and read as a
+    // real call. `meta` is a validated object-literal region (checkMeta's own string-aware brace
+    // scan) that can never legitimately contain a top-level `agent(` call, so the whole span is
+    // unconditionally non-code, independent of whether `pureLiteral` holds.
+    const metaStart = script.indexOf(meta.span);
+    const metaSpan: [number, number] = [metaStart, metaStart + meta.span.length];
+    return { ok: true, spans: [...result.spans, metaSpan] };
+  }
   if (meta.found) return null;
   const result = nonCodeSpans(script);
   return result.ok ? result : null;
@@ -760,12 +776,29 @@ export interface RegistrationWarning {
   message: string;
 }
 
+/** Issue #147: extra context `toolSurfaceWarnings` needs ONLY to decide whether the
+ *  BASH_SUBSUMES_FILE_TOOLS message should explain the pi + declared-skill exception — never to
+ *  change WHETHER the warning fires. `skillsByLabel` carries each label's OWN declared
+ *  `meta.params.agents.<label>.skills` (resolved one layer up, mcp-facade.ts, which already
+ *  iterates `params.agents` for the provisioning-warning pass); `harness` is this deployment's
+ *  `activeHarness` (server.ts). Both absent (unit construction, or a deployment where neither was
+ *  wired) reproduces today's wording exactly — this is additive, not a behavior change for callers
+ *  that don't pass it. */
+export interface ToolSurfaceWarningContext {
+  skillsByLabel?: Readonly<Record<string, readonly string[]>>;
+  harness?: 'sdk' | 'pi';
+}
+
 /** Issue #78(b): `allowedTools` restricts tool NAMES, not capability — Bash can read, write and
  *  search whatever Read/Write/Edit/Grep/Glob can, so a literal list naming Bash beside any of them
  *  looks narrower than it is. Non-fatal: `workflow_register` returns these as `result.warnings` and
  *  registers anyway (an implementer that needs a shell is legitimate). Only a LITERAL list counts —
  *  a call with no `allowedTools` gets the deployment default, which the author did not write. */
-export function toolSurfaceWarnings(scan: AgentCallScan, posture?: 'confined' | 'unconfined'): RegistrationWarning[] {
+export function toolSurfaceWarnings(
+  scan: AgentCallScan,
+  posture?: 'confined' | 'unconfined',
+  context?: ToolSurfaceWarningContext,
+): RegistrationWarning[] {
   const out: RegistrationWarning[] = [];
   for (const call of scan.calls) {
     // Issue #78(c): a readonly shell beside Read/Grep/Glob IS the narrow shape — the kernel keeps it
@@ -790,6 +823,21 @@ export function toolSurfaceWarnings(scan: AgentCallScan, posture?: 'confined' | 
     if (!Array.isArray(tools) || !tools.includes('Bash')) continue;
     const subsumed = tools.filter((t) => BASH_SUBSUMED_TOOLS.includes(t));
     if (subsumed.length === 0) continue;
+    // Issue #147: this warning's own "no narrower than Bash alone" framing reads, to an author, as
+    // "drop Read" — which on `gateway:"pi"` collides with the authoring guide's OWN rule that a
+    // declared skill needs `Read` or `Bash` present to appear in the model's system prompt
+    // (SKILL_REQUIRES_READ_TOOL with neither, pi-gateway-client.ts). Dropping `Read` here is in
+    // fact still safe: `Bash` itself satisfies that requirement, so the skill stays visible. State
+    // that explicitly whenever this label declares a skill AND the deployment's active harness is
+    // pi, rather than leaving the author to guess (or re-add `Read` "just in case").
+    const declaredSkills = context?.skillsByLabel?.[call.label] ?? [];
+    const piSkillException =
+      context?.harness === 'pi' && declaredSkills.length > 0 && subsumed.includes('Read')
+        ? `This agent declares skill(s) (${declaredSkills.join(', ')}); on this engine's pi harness a declared ` +
+          "skill needs 'Read' or 'Bash' present in allowedTools to appear in the model's system prompt " +
+          "(SKILL_REQUIRES_READ_TOOL otherwise) — 'Bash' alone already satisfies that, so dropping 'Read' here " +
+          'does not hide the skill. '
+        : '';
     out.push({
       code: 'BASH_SUBSUMES_FILE_TOOLS',
       label: call.label,
@@ -797,6 +845,7 @@ export function toolSurfaceWarnings(scan: AgentCallScan, posture?: 'confined' | 
       message:
         `agent('${call.label}') (line ${call.line}) lists Bash together with ${subsumed.join(', ')}. ` +
         'allowedTools restricts tool names only: Bash can already read, write and search anything those tools can, so this list is no narrower than Bash alone. ' +
+        piSkillException +
         "Keep it if the agent needs a shell; for a read-only agent use ['Read', 'Grep', 'Glob'] with no Bash.",
     });
   }

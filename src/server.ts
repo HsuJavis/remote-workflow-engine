@@ -1075,7 +1075,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // 2026-09-26 (alias mechanism removed): `chooseExampleModelAlias`/`aliasProbes` (issue #89 item 6,
   // v0.23.0) are RETIRED with the alias table they existed to pick a verified example from — the
   // guide's examples now use static full refs directly (`authoring-guide.ts`).
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture, harnessProviders: config?.harnessProviders });
+  // issue #147: `activeHarness` (computed above from the direct gateway-transport signal, issue
+  // #138) forwarded so the live `workflow_authoring_guide` Skills section and the
+  // `BASH_SUBSUMES_FILE_TOOLS` registration warning both state the harness actually in force on
+  // THIS deployment — a second reader of the same value, not a new one.
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture, harnessProviders: config?.harnessProviders, activeHarness });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each
