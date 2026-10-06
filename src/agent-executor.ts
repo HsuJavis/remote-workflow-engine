@@ -759,13 +759,21 @@ export class AgentExecutor implements AgentSpawner {
     // that in). Passing the record's `tokens` here too would double it in. `getLiveAttemptUsage`
     // carries ONLY the currently in-flight attempt's own live-streamed delta, exactly what
     // `capture()`'s failed branch expects to merge onto the committed total.
+    // issue #160 BUG-4: this used to attach `tokens`/`partial` ONLY when something was already
+    // live-streamed onto this agentId's record (`liveAttempt !== undefined`) — the common case for
+    // a call cut short early (before any usage delta streamed) then recorded tokens:0 with NO
+    // `partial` flag at all, indistinguishable from "genuinely a free, exact, zero-cost call".
+    // `pi-gateway-client.ts`'s OWN abort branch (same logical event, reached when the gateway's own
+    // abort check wins instead of this executor-level race) was fixed under issue #152 to ALWAYS
+    // set `partial:true` with whatever `cumulative` holds, even 0 — "the known spend is a lower
+    // bound, possibly 0" is the one honest reading. Mirrored here: always partial:true for 'aborted'.
     const liveAttempt = this._sink.getLiveAttemptUsage(req.agentId);
     await this._sink.capture(
       req.runId,
       { agentId: req.agentId, label: req.opts.label },
       {
         ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
-        ...(liveAttempt !== undefined ? { tokens: liveAttempt, partial: true as const } : {}),
+        tokens: liveAttempt ?? ZERO_TOKENS, partial: true as const,
       },
       this._clock.isoNow(),
     );
