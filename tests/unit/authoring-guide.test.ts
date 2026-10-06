@@ -882,8 +882,9 @@ describe('buildAuthoringGuide — "Provisioning skills and MCP servers" (issue #
 describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_CATALOG key or an explicit non-code (issue #89 drift guard)', () => {
   // Genuine non-codes, each with why it is not an ERROR_CATALOG member:
   const NON_CODES = new Set([
-    'VALUE_MISMATCH', // checkMermaid Rule label; RULE_CODE remaps it to MERMAID_INVALID on the wire
-    'COLLAPSED_EDGE', // same — remaps to MERMAID_INVALID
+    // issue #155 B2a (2026-10-07): VALUE_MISMATCH/COLLAPSED_EDGE REMOVED from this allowlist — RULE_CODE
+    // now self-maps both to their own ERROR_CATALOG key (see rule-code-map.test.ts), so they are real
+    // codes, not checkMermaid-internal labels remapped away on the wire.
     'DETERMINISM_GUARD', // a SCRIPT-thrown GuardError code (sandbox/guards.ts) — script-error
     // namespace, never routed through toErrEnvelope/ERROR_CATALOG
     'BASH_MODE_INVALID', // workflow_register SCAN_VIOLATION detail.violations[].code

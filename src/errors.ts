@@ -144,6 +144,13 @@ export const ERROR_CATALOG = {
   PHASES_REQUIRED: { see: 'workflow_authoring_guide', hint: 'meta.phases is missing or not a valid array of {title:string} — declare it, matching your phase() calls in count/order (phases: [] when the script calls phase() zero times)' },
   PHASES_MISMATCH: { see: 'workflow_authoring_guide', hint: 'meta.phases disagrees with the script\'s own phase() calls in count, order, or title' },
   MERMAID_INVALID: { see: 'workflow_authoring_guide', hint: 'the diagram does not parse under checkMermaid\'s grammar' },
+  // issue #155 B2a (owner-approved, 2026-10-07): split out of MERMAID_INVALID — a diagram that
+  // parses FINE but disagrees with the script on a single declared value, or writes the `&`
+  // fan-out shorthand, is not "unparsable" and a client branching on `code` could not otherwise
+  // tell the two apart. See workflow-catalog.ts's RULE_CODE (now self-mapped) and
+  // check-mermaid.ts's own VALUE_MISMATCH/COLLAPSED_EDGE rules.
+  VALUE_MISMATCH: { see: 'workflow_authoring_guide', hint: "an agent node's `<br/>model · effort · timeout` triple disagrees with that label's declared default(s) — detail names the label and which field(s) disagree" },
+  COLLAPSED_EDGE: { see: 'workflow_authoring_guide', hint: 'an edge uses the `&` fan-out shorthand (e.g. `a-->b & c`) — write one edge per line instead' },
   MERMAID_REQUIRED: { see: 'workflow_authoring_guide', hint: 'v24 registration requires a non-empty mermaid diagram string (ADR-025)' },
   DIAGRAM_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s agent labels disagree with the script\'s' },
   // v26 (DES-184, ARCH-119, ADR-043/039, TASK-189): checkMermaid v2 — four rules compared against

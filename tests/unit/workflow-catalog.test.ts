@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { FIXTURE_SCRIPT, FIXTURE_AGENT_LABEL } from '../../src/tool-specs.js';
 
 // A fixed literal name here (`join(tmpdir(), 'rwe-test-catalog')`) would already be owned by
 // whichever uid last ran this suite in this tmp root — mkdtemp guarantees a fresh directory this
@@ -149,5 +150,35 @@ describe('boot owner backfill — auth.legacyOwner (A1)', () => {
     // touched again (and a DIFFERENT legacyOwner proves re-backfill would have been visible).
     const cat2 = new WorkflowCatalog(workRoot, undefined, { backfillOwner: 'someone-else@example.com', authEnabled: true });
     expect((await cat2.resolveDetail('wf-a1-present', { version: 'v1' })).owner).toBe('ops@example.com');
+  });
+});
+
+// issue #155 B2a (owner-approved, 2026-10-07): VALUE_MISMATCH / COLLAPSED_EDGE must reach the real
+// `register()` caller as their OWN `.code`, not folded into MERMAID_INVALID — the whole point of the
+// fix (a client branching on `code` could not otherwise tell "diagram parses fine but disagrees with
+// one declared value" / "wrote the `&` fan-out shorthand" apart from a genuinely unparsable diagram).
+describe('register() surfaces VALUE_MISMATCH / COLLAPSED_EDGE as their own .code (issue #155 B2a)', () => {
+  it('a value-triple that disagrees with the declared agent default is refused VALUE_MISMATCH, not MERMAID_INVALID', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-b2a-value-'));
+    const cat = new WorkflowCatalog(workRoot);
+    const mermaid =
+      `graph LR\nsubgraph "Greet"\n${FIXTURE_AGENT_LABEL}(["${FIXTURE_AGENT_LABEL}<br/>anthropic/claude-haiku-4-5-20251001 · medium · 60s"])\nend`;
+    // FIXTURE_SCRIPT declares effort.default:'low' — the diagram's triple above says 'medium'.
+    await expect(cat.register({ name: 'b2a-value', script: FIXTURE_SCRIPT, mermaid })).rejects.toMatchObject({ code: 'VALUE_MISMATCH' });
+  });
+
+  it('an `&` fan-out edge shorthand is refused COLLAPSED_EDGE, not MERMAID_INVALID', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-b2a-collapsed-'));
+    const cat = new WorkflowCatalog(workRoot);
+    const script =
+      "export const meta = {\n" +
+      "  phases: [{ title: 'Greet' }],\n" +
+      "  params: { agents: { greet: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, other: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },\n" +
+      "};\n" +
+      "phase('Greet');\n" +
+      "await agent('greet', { prompt: 'hi' });\n" +
+      "return await agent('other', { prompt: 'hi' });";
+    const mermaid = 'graph LR\nsubgraph "Greet"\ngreet(["greet"])\nother(["other"])\nend\ngreet --> other & other';
+    await expect(cat.register({ name: 'b2a-collapsed', script, mermaid })).rejects.toMatchObject({ code: 'COLLAPSED_EDGE' });
   });
 });

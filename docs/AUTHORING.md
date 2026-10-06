@@ -288,6 +288,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `PHASES_REQUIRED` — meta.phases is missing or not a valid array of {title:string} — declare it, matching your phase() calls in count/order (phases: [] when the script calls phase() zero times)
 - `PHASES_MISMATCH` — meta.phases disagrees with the script's own phase() calls in count, order, or title
 - `MERMAID_INVALID` — the diagram does not parse under checkMermaid's grammar
+- `VALUE_MISMATCH` — an agent node's `<br/>model · effort · timeout` triple disagrees with that label's declared default(s) — detail names the label and which field(s) disagree
+- `COLLAPSED_EDGE` — an edge uses the `&` fan-out shorthand (e.g. `a-->b & c`) — write one edge per line instead
 - `MERMAID_REQUIRED` — v24 registration requires a non-empty mermaid diagram string (ADR-025)
 - `DIAGRAM_MISMATCH` — the diagram's agent labels disagree with the script's
 - `DIAGRAM_DIRECTION` — a v2 diagram header must be graph LR / flowchart LR

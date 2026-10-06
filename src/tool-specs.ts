@@ -388,6 +388,11 @@ export const TOOL_SPECS = [
       // mermaid checks below (see workflow-catalog.ts's own pinned-order comment).
       'PHASES_REQUIRED', 'PHASES_MISMATCH',
       'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
+      // issue #155 B2a (owner-approved, 2026-10-07): these two used to fold into MERMAID_INVALID —
+      // now their own ERROR_CATALOG rows, self-mapped by RULE_CODE (workflow-catalog.ts), so a
+      // client branching on `code` can tell a declared-value/fan-out disagreement from a genuinely
+      // unparsable diagram (which still answers MERMAID_INVALID, above).
+      'VALUE_MISMATCH', 'COLLAPSED_EDGE',
       // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the
       // `deriveExpectedGraph` rule registration now answers with before it ever reads the diagram.
       // Advertised because `advertised-surface-truth`/`facade-refusal-arms` pin "every code this
