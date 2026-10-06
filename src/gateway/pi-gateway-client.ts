@@ -25,7 +25,7 @@ import { resolveTimeout, attemptsFor } from './client.js';
 import { redactHarness } from '../agent-executor.js';
 import { parseModelRef } from '../providers.js';
 import { RealCliLifecycle } from '../cli-lifecycle.js';
-import { buildBashConfinement, readonlyBashRefusal, HOST_SHARED_TMPDIR } from './bash-confinement.js';
+import { buildBashConfinement, readonlyBashRefusal, HOST_SHARED_TMPDIR, sharedCliScratch } from './bash-confinement.js';
 import { hostSharedTmpdirPresent } from './host-shared-tmpdir.js';
 import { sweepSrtMuxSockets } from './srt-mux-sweep.js';
 import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
@@ -776,6 +776,12 @@ export class PiGatewayClient implements GatewayClient {
         homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
         allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
         ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
+        // issue #159 B8 follow-up: mirror the sdk gateway's own buildBashConfinement call
+        // (claude-agent-sdk-client.ts) — deny the host-shared CLI scratch `/tmp/claude-<uid>` for
+        // reads. Unconditional (unlike the sdk gateway's `cliScratch !== undefined` guard): every
+        // pi dispatch already has its own per-dispatch tmpDir below (CLI_SCRATCH_DIR's pi
+        // equivalent), so there is never a case where pi itself needs the shared scratch.
+        sharedCliScratch: sharedCliScratch(tmpdir(), process.getuid?.()),
       });
       const ripgrepOverride = (this._config.resolveRipgrepOverride ?? resolveRipgrepOverride)();
       const fs = settings.filesystem as PiChildSandboxConfig['filesystem'];

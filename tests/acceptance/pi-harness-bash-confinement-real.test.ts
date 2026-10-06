@@ -119,48 +119,12 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
 
   // issue #159 B8 (owner approved): confined Bash under pi must deny-by-default for reads the SAME
   // way the sdk gateway's own buildBashConfinement() policy does (issue #101) — $HOME and workRoot
-  // denied, this dispatch's own workspace and the home-resident toolchain re-opened. Before this
-  // test existed, nothing in this suite ever planted a file directly under $HOME and tried to read
-  // it back through confined pi Bash — the sibling-workspace and node-only toolchain tests above
-  // don't cover this specific claim. Mirrors val-253's own "$HOME is off limits" real-tier proof
-  // (val-253-bash-confinement.test.ts), but for READ (pi's own mechanism) rather than WRITE (sdk's).
-  it.skipIf(!HAS_CONFINED_RUNTIME)("issue #159 B8: confined bash denies reads under $HOME; own workspace and the toolchain (node+git) still work" + WHY_NOT, async () => {
-    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-confined-home-'));
-    const ws = join(workRoot, 'ws');
-    mkdirSync(ws, { recursive: true });
-    writeFileSync(join(ws, 'own.txt'), 'own-file-content');
-    const homeDir = process.env['HOME'];
-    if (homeDir === undefined) throw new Error('HOME must be set for this test');
-    const probe = join(homeDir, `rwe-pi-b8-home-probe-${Date.now()}.txt`);
-    writeFileSync(probe, 'HOME_SHOULD_BE_UNREADABLE');
-    try {
-      const gw = new PiGatewayClient({
-        ollamaBaseUrl: 'http://localhost:11434',
-        timeoutMs: 60_000,
-        confinementPosture: 'confined',
-        confinement: { allowHostPaths: [], protectedFiles: [], workRoot, homeDir, allowReadPaths: [dirname(process.execPath)] },
-      });
-      const result = await retryReal(() => gw.invoke({
-        prompt: `Call the bash tool ONCE with this exact command and then report the raw output verbatim: cat own.txt; echo SEP; cat ${probe} 2>&1; echo SEP; node --version; echo SEP; git --version`,
-        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] },
-        runId: 'confined-home-r1',
-        agentId: 'confined-home-a1',
-        workspace: ws,
-      }));
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        const text = String(result.content);
-        expect(text).toContain('own-file-content');
-        // ENOENT (tmpfs-over-denied-$HOME), never the real planted content.
-        expect(text).not.toContain('HOME_SHOULD_BE_UNREADABLE');
-        expect(text).toMatch(/v\d+\.\d+\.\d+/); // node --version
-        expect(text).toMatch(/git version \d+\.\d+/); // git --version
-      }
-    } finally {
-      rmSync(probe, { force: true });
-      rmSync(workRoot, { recursive: true, force: true });
-    }
-  }, 240_000);
+  // denied, this dispatch's own workspace and the home-resident toolchain re-opened. This claim used
+  // to be proved through a real local Ollama (qwen2.5:7b) call and flaked when the model returned an
+  // ok:true reply with EMPTY content (retryReal only retries a zero-usage timeout, not an ok-but-
+  // empty reply) — see the deterministic version of this same claim below
+  // ("issue #159 B8 (deterministic)"), which asserts on the actual bash tool-result text via the
+  // fake-OpenRouter harness and needs no Ollama at all, so it cannot flake on a model's reply shape.
 });
 
 describe('pi harness v1 — srt-mux socket cleanup (residual fix)', () => {
@@ -255,12 +219,21 @@ function startOneBashCommandServer(command: string): Promise<{ server: HttpServe
   });
 }
 
-async function dispatchOneBash(port: number, workRoot: string, command: string, opts: { onEvent?: (ev: EngineEvent) => void } = {}): Promise<string> {
+async function dispatchOneBash(
+  port: number,
+  workRoot: string,
+  command: string,
+  opts: { onEvent?: (ev: EngineEvent) => void; homeDir?: string; allowReadPaths?: readonly string[] } = {},
+): Promise<string> {
   const gw = new PiGatewayClient({
     secretSource: { resolve: () => 'fake-key' }, timeoutMs: 60_000, retries: 0,
     openrouterBaseUrl: `http://127.0.0.1:${port}/api/v1`,
     confinementPosture: 'confined',
-    confinement: { allowHostPaths: [], protectedFiles: [], workRoot },
+    confinement: {
+      allowHostPaths: [], protectedFiles: [], workRoot,
+      ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
+      ...(opts.allowReadPaths !== undefined ? { allowReadPaths: opts.allowReadPaths } : {}),
+    },
     resolveRipgrepOverride,
   });
   if (opts.onEvent) gw.bindEventSink(opts.onEvent);
@@ -341,6 +314,74 @@ describe('pi harness v1 — confined Bash gets its own TMPDIR, never srt\'s shar
       expect(existsSync(join(HOST_SHARED, 'pwn.txt'))).toBe(false);
     } finally {
       rmSync(HOST_SHARED, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+/** issue #159 B8, deterministic replacement for the flaky real-Ollama version above: a REAL
+ *  PiGatewayClient dispatch through REAL srt/bwrap, driven by the same fake-OpenRouter SSE server as
+ *  the R3-1/R4-2 suites above — no Ollama, so there is no model-reply-shape flakiness to retry
+ *  around. Asserts on `fake.resultText()`, the raw bash tool-result text, never a model's own final
+ *  reply. */
+describe('pi harness v1 — $HOME denied under confined Bash (issue #159 B8, deterministic)', () => {
+  it.skipIf(!HAS_PROBE_DEPS)("confined bash denies reads under $HOME; own workspace and the toolchain (node+git) still work" + WHY_NOT, async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-confined-home-det-'));
+    const ws = join(workRoot, 'ws');
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, 'own.txt'), 'own-file-content');
+    const homeDir = process.env['HOME'];
+    if (homeDir === undefined) throw new Error('HOME must be set for this test');
+    const probe = join(homeDir, `rwe-pi-b8-home-probe-${Date.now()}.txt`);
+    writeFileSync(probe, 'HOME_SHOULD_BE_UNREADABLE');
+    try {
+      const command = `cat own.txt; echo SEP; cat ${probe} 2>&1; echo SEP; node --version; echo SEP; git --version`;
+      const fake = await startOneBashCommandServer(command);
+      await dispatchOneBash(fake.port, workRoot, command, { homeDir, allowReadPaths: [dirname(process.execPath)] });
+      await new Promise((r) => fake.server.close(() => r(undefined)));
+      const text = fake.resultText();
+      expect(text).toContain('own-file-content');
+      // ENOENT (tmpfs-over-denied-$HOME), never the real planted content.
+      expect(text).not.toContain('HOME_SHOULD_BE_UNREADABLE');
+      expect(text).toMatch(/v\d+\.\d+\.\d+/); // node --version
+      expect(text).toMatch(/git version \d+\.\d+/); // git --version
+    } finally {
+      rmSync(probe, { force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+/** issue #159 B8 follow-up (review minor): the sdk gateway's own buildBashConfinement call passes
+ *  `sharedCliScratch` so the host-shared `/tmp/claude-<uid>` CLI scratch is denied for reads; pi's
+ *  call site did not. `/tmp/claude-<uid>` is a real, often-populated directory on a dev host (the
+ *  operator's own Claude Code session scratch) — this test only ever plants and removes its OWN
+ *  uniquely-named file inside it, and only removes the directory itself if it did not already exist. */
+describe('pi harness v1 — the host-shared CLI scratch (/tmp/claude-<uid>) is denied too (issue #159 B8 follow-up)', () => {
+  it.skipIf(!HAS_PROBE_DEPS)('a file planted in /tmp/claude-<uid> cannot be read from confined pi Bash' + WHY_NOT, async () => {
+    const uid = process.getuid!();
+    const sharedScratch = join(tmpdir(), `claude-${uid}`);
+    const sharedScratchPreexisted = existsSync(sharedScratch);
+    if (!sharedScratchPreexisted) mkdirSync(sharedScratch, { recursive: true });
+    const probe = join(sharedScratch, `rwe-pi-shared-scratch-probe-${Date.now()}.txt`);
+    writeFileSync(probe, 'SHARED_SCRATCH_SHOULD_BE_UNREADABLE');
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-shared-scratch-'));
+    const ws = join(workRoot, 'ws');
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, 'own.txt'), 'own-file-content');
+    try {
+      const command = `cat own.txt; echo SEP; cat ${probe} 2>&1`;
+      const fake = await startOneBashCommandServer(command);
+      await dispatchOneBash(fake.port, workRoot, command);
+      await new Promise((r) => fake.server.close(() => r(undefined)));
+      const text = fake.resultText();
+      expect(text).toContain('own-file-content');
+      // ENOENT (tmpfs-over-denied-shared-scratch), never the real planted content.
+      expect(text).not.toContain('SHARED_SCRATCH_SHOULD_BE_UNREADABLE');
+      expect(text).toMatch(/No such file or directory/);
+    } finally {
+      rmSync(probe, { force: true });
+      if (!sharedScratchPreexisted) rmSync(sharedScratch, { recursive: true, force: true });
       rmSync(workRoot, { recursive: true, force: true });
     }
   }, 60_000);

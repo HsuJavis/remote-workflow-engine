@@ -916,11 +916,17 @@ gateway 設了 `RWE_SECRET_OPENROUTER_API_KEY` 都會生效。pi 下解析出來
 路徑（例如 `/etc/hostname`、`/usr`、系統層的 `/tmp`）依然可讀**，這不是漏洞、是刻意不做的設計
 （業主裁決：只鏡射 sdk 既有的政策，不另外發明一套「整個 Bash 都關進 workspace」的更嚴格圍籠）。
 `Bash` 從不丟 `PATH_ESCAPES_WORKSPACE`（那是 Read/Write/Edit/Glob/Grep/LS 這五個檔案工具專屬的 JS
-層檢查）——讀到圍籠外的東西失敗樣貌是 shell 層的一般錯誤（`cat`：`No such file or directory`；寫入
-是 `EROFS`），範圍是 `$HOME`+`workRoot`，不是「workspace 以外一律擋」，見本文件 §6 該代碼那一列。
-真機驗證：`tests/acceptance/pi-harness-bash-confinement-real.test.ts`（真 bwrap/socat + 本機 Ollama
-`qwen2.5:7b`）——自己的 workspace 可讀、另一個 run 的 workspace 回 ENOENT、`$HOME` 底下種的檔案讀不到，
-`node --version`／`git --version`（工具鏈）仍然正常執行。
+層檢查）——讀到圍籠外的東西失敗樣貌是 shell 層的一般錯誤（`cat`：`No such file or directory`）；
+寫入的失敗樣貌依路徑而不同：寫到系統路徑（例如 `/etc`、`/usr`）失敗是 `EROFS`；寫到 `$HOME` 底下
+則會成功，但只落進沙箱內部的暫時 tmpfs，從未真正到達主機（這次派工結束、沙箱收掉，寫入的東西就
+一起消失）；寫到 `workRoot` 底下、但不屬於這次派工自己工作目錄的路徑則是 `ENOENT`（對圍籠而言該
+路徑根本不存在）。範圍是 `$HOME`+`workRoot`，不是「workspace 以外一律擋」，見本文件 §6 該代碼那
+一列。
+真機驗證：`tests/acceptance/pi-harness-bash-confinement-real.test.ts`——自己的 workspace 可讀、另一個
+run 的 workspace 回 ENOENT、`node --version`／`git --version`（工具鏈）仍然正常執行，皆經真 bwrap/
+socat + 本機 Ollama `qwen2.5:7b` 驗證；`$HOME` 底下種的檔案讀不到這項則是決定性的 fake-OpenRouter
+harness 驗證（同一支測試檔，不需要 Ollama，斷言比對實際 bash 工具結果文字，不受小模型回覆內容
+而定）。
 
 **已知的網路姿態落差（尚未解決，記在這裡供日後追蹤）**：pi 路徑的 Bash 網路政策是「全部允許」
 （透過一個永遠回答「允許」的 ask-callback 達成，因為 srt 的網路欄位是必填，留空等於全部拒絕）——

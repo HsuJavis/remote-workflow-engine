@@ -262,6 +262,33 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     }
   });
 
+  // issue #159 B8 follow-up (review minor): the sdk gateway's own buildBashConfinement call passes
+  // `sharedCliScratch` (claude-agent-sdk-client.ts:1332) so the host-shared `/tmp/claude-<uid>` CLI
+  // scratch joins `denyRead` — pi's call site never did, even though every pi dispatch already has
+  // its own per-dispatch tmpDir (CLI_SCRATCH_DIR) and so never needs the shared one.
+  it('denies reads of the host-shared CLI scratch (/tmp/claude-<uid>), mirroring the sdk gateway (issue #159 B8 follow-up)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-unit-shared-scratch-'));
+    try {
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: root },
+        resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+      });
+      const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts }));
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+      const sent = JSON.parse(f.stdinWritten.join(''));
+      const uid = process.getuid!();
+      expect(sent.sandbox.filesystem.denyRead).toContain(join(tmpdir(), `claude-${uid}`));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('never builds a sandbox config when posture is unconfined — bash runs unwrapped, never a false confinement claim', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts', confinementPosture: 'unconfined' });
