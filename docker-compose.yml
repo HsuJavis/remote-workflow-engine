@@ -52,12 +52,22 @@ services:
       RWE_BIND: "0.0.0.0"
       RWE_PORT: "${RWE_PORT:-8787}"
       RWE_CONFIG_PATH: "${RWE_CONFIG_PATH:-/app/rwe.config.json}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
-      RWE_SECRET_ANTHROPIC_API_KEY: "${RWE_SECRET_ANTHROPIC_API_KEY:-}"
-      RWE_SECRET_OPENROUTER_API_KEY: "${RWE_SECRET_OPENROUTER_API_KEY:-}"
-      RWE_SECRET_GITHUB_TOKEN: "${RWE_SECRET_GITHUB_TOKEN:-}"
+      # R2-D2 (2026-10-06): bare `KEY:` with no default forwards the host's value and OMITS the
+      # variable entirely when the host doesn't set it — unlike `"${KEY:-}"`, which sets the
+      # variable to a PRESENT EMPTY STRING. An empty-but-present RWE_SECRET_* shadows the real bare
+      # credential in the `??` fallback chains these keys feed (`??` only skips null/undefined, not
+      # ""), e.g. claude-agent-sdk-client.ts's `fromSecret('ANTHROPIC_API_KEY') ?? ... ??
+      # process.env['ANTHROPIC_API_KEY']` — a user who sets only the documented bare
+      # ANTHROPIC_API_KEY got every sdk call refused ANTHROPIC_AUTH_MISSING because the empty
+      # RWE_SECRET_ANTHROPIC_API_KEY this block used to pass short-circuited the chain before it
+      # ever reached the real key. Same shape for pi/OPENROUTER_API_KEY and OLLAMA_BASE_URL's own
+      # `?? 'http://localhost:11434'` default.
+      ANTHROPIC_API_KEY:
+      OPENROUTER_API_KEY:
+      OLLAMA_BASE_URL:
+      RWE_SECRET_ANTHROPIC_API_KEY:
+      RWE_SECRET_OPENROUTER_API_KEY:
+      RWE_SECRET_GITHUB_TOKEN:
     command: sh -c "npm ci && npm run start"
     restart: on-failure
 
@@ -74,12 +84,22 @@ services:
       RWE_BIND: "0.0.0.0"
       RWE_PORT: "${RWE_PORT:-8787}"
       RWE_CONFIG_PATH: "${RWE_CONFIG_PATH:-/app/rwe.config.json}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
-      RWE_SECRET_ANTHROPIC_API_KEY: "${RWE_SECRET_ANTHROPIC_API_KEY:-}"
-      RWE_SECRET_OPENROUTER_API_KEY: "${RWE_SECRET_OPENROUTER_API_KEY:-}"
-      RWE_SECRET_GITHUB_TOKEN: "${RWE_SECRET_GITHUB_TOKEN:-}"
+      # R2-D2 (2026-10-06): bare `KEY:` with no default forwards the host's value and OMITS the
+      # variable entirely when the host doesn't set it — unlike `"${KEY:-}"`, which sets the
+      # variable to a PRESENT EMPTY STRING. An empty-but-present RWE_SECRET_* shadows the real bare
+      # credential in the `??` fallback chains these keys feed (`??` only skips null/undefined, not
+      # ""), e.g. claude-agent-sdk-client.ts's `fromSecret('ANTHROPIC_API_KEY') ?? ... ??
+      # process.env['ANTHROPIC_API_KEY']` — a user who sets only the documented bare
+      # ANTHROPIC_API_KEY got every sdk call refused ANTHROPIC_AUTH_MISSING because the empty
+      # RWE_SECRET_ANTHROPIC_API_KEY this block used to pass short-circuited the chain before it
+      # ever reached the real key. Same shape for pi/OPENROUTER_API_KEY and OLLAMA_BASE_URL's own
+      # `?? 'http://localhost:11434'` default.
+      ANTHROPIC_API_KEY:
+      OPENROUTER_API_KEY:
+      OLLAMA_BASE_URL:
+      RWE_SECRET_ANTHROPIC_API_KEY:
+      RWE_SECRET_OPENROUTER_API_KEY:
+      RWE_SECRET_GITHUB_TOKEN:
     command: >
       sh -c "apt-get update &&
              apt-get install -y --no-install-recommends python3.11 python3.11-venv &&

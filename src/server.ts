@@ -845,7 +845,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     maxTimeoutMs: config?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
     maxAppendPromptBytes: config?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
     maxEffort: config?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
-    maxWorkflowVersions: config?.maxWorkflowVersions,
+    // R2-C2/R2-D7 (2026-10-06): `?? undefined` normalizes an explicit JSON `null` (NULL-WAS-DEFAULT
+    // lets it pass --check-config as "absent") to the SAME `undefined` the type already declares —
+    // defence in depth alongside the `!= null` check in workflow-catalog.ts's own read of this
+    // object, which is the actual enforcement point.
+    maxWorkflowVersions: config?.maxWorkflowVersions ?? undefined,
   };
   // v3 (DES-024/TASK-028/TASK-029): SQLite sibling catalog, same workRoot convention as
   // catalog.db/store/schedules.db — survives restart.

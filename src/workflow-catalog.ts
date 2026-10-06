@@ -226,7 +226,7 @@ export interface WorkflowCatalogOpts {
   /** Issue audit A1 (owner decision 2026-10-06): when set (the caller's own `auth.legacyOwner`,
    *  passed only while auth is enabled), backfill NULL-owner rows to this principal id at
    *  construction time — idempotent, same mechanics as the old hard-coded
-   *  `BOOT_BACKFILL_EMAIL`('hsuhungjung@gmail.com'), just operator-configured. Absent -> no
+   *  `BOOT_BACKFILL_EMAIL`, just operator-configured. Absent -> no
    *  backfill; see `authEnabled` for the "ownerless workflows" hint that fires instead. */
   backfillOwner?: string;
   /** Issue audit A1: whether auth is enabled for this boot — used ONLY to decide whether the
@@ -786,7 +786,12 @@ export class WorkflowCatalog {
     const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as { owner: string | null } | undefined;
     const count = (this._db.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE name = ?').get(name) as { n: number }).n;
     const maxWorkflowVersions = (this._ceilings as (Ceilings & { maxWorkflowVersions?: number }) | undefined)?.maxWorkflowVersions;
-    if (maxWorkflowVersions !== undefined && count >= maxWorkflowVersions) {
+    // R2-C2/R2-D7 (2026-10-06): `!= null` catches BOTH absent (undefined) and an explicit JSON
+    // `null` (NULL-WAS-DEFAULT treats null as "no ceiling", same as every other ceiling key this
+    // round normalized) — `!== undefined` alone let `null` through as a present value, and
+    // `count >= null` is true for every count (JS coerces null to 0), refusing the very first
+    // registration of any name.
+    if (maxWorkflowVersions != null && count >= maxWorkflowVersions) {
       throw codedError(
         'VERSION_CEILING_EXCEEDED',
         `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old one with workflow_deregister({name, version}), or raise the engine's maxWorkflowVersions ceiling`,
@@ -843,7 +848,9 @@ export class WorkflowCatalog {
         }
         const count = (this._db.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE name = ?').get(name) as { n: number }).n;
         const maxWorkflowVersions = (this._ceilings as (Ceilings & { maxWorkflowVersions?: number }) | undefined)?.maxWorkflowVersions;
-        if (maxWorkflowVersions !== undefined && count >= maxWorkflowVersions) {
+        // R2-C2/R2-D7: see the mirrored check in validateRegistration above — `!= null` treats an
+        // explicit `null` the same as absent.
+        if (maxWorkflowVersions != null && count >= maxWorkflowVersions) {
           throw codedError(
             'VERSION_CEILING_EXCEEDED',
             `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old one with workflow_deregister({name, version}), or raise the engine's maxWorkflowVersions ceiling`,

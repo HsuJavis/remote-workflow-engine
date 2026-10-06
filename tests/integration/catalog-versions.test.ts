@@ -287,6 +287,23 @@ describe('per-name version ceiling (ADR-014, S-1 debt closed, IT-084)', () => {
     await expect(catalog.register({ name: 'ceiling-test', script: `export const meta = { phases: [] };\nreturn 3;`, mermaid: 'graph LR' })).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
     expect(await catalog.listVersions('ceiling-test')).toHaveLength(2); // refused registration stores nothing
   });
+
+  // Repair round defect R2-C2/R2-D7 (2026-10-06): `rwe.config.json`'s `maxWorkflowVersions: null`
+  // passes --check-config clean (NULL-WAS-DEFAULT treats it as absent), and composeConfig forwards
+  // it UNCHANGED into `ServerConfig`/`Ceilings`. Before this fix, the ceiling check here was
+  // `maxWorkflowVersions !== undefined && count >= maxWorkflowVersions` — `null !== undefined` is
+  // true, so it evaluated `count >= null`, which is `true` for every `count` (JS coerces `null` to
+  // `0`), refusing even the FIRST registration of any name. check-config said "boots fine"; the
+  // real engine refused every workflow_register. Fix must treat an explicit `null` the same as
+  // "absent" (undefined), consistent with the NULL-WAS-DEFAULT contract this same round established
+  // for every other ceiling key.
+  it('maxWorkflowVersions: null behaves as "no ceiling", not as "ceiling 0" (R2-C2/R2-D7)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK, { ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: null } as never });
+    await expect(catalog.register({ name: 'ceiling-null', script: `export const meta = { phases: [] };\nreturn 1;`, mermaid: 'graph LR' }))
+      .resolves.toMatchObject({ version: 'v1' });
+    await expect(catalog.register({ name: 'ceiling-null', script: `export const meta = { phases: [] };\nreturn 2;`, mermaid: 'graph LR' }))
+      .resolves.toMatchObject({ version: 'v2' });
+  });
 });
 
 // Structural guard (TASK-105 dod): after this task lands, the compiler — not a reviewer — finds a

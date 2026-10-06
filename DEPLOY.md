@@ -566,9 +566,10 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > 名稱引用，不重複列值。**C9 更正**：這份表不是本文件唯一出現設定名稱的地方——`RWE_CONFIG_ENV_FILE`、
 > `RWE_UPDATE_FLAG`／`RWE_UPDATE_RESULT`／`RWE_UPDATE_LOCK`、`RWE_OFFICIAL_REMOTE`、`SYSTEMCTL`
 > 這幾個是**特權自我更新 unit**（`deploy/rwe-update.service`）自己的 `Environment=`，只在 §6b／§7
-> 解說；`auth.serviceAccountTokenTtlMs`（本表已有列）額外也在「服務帳號」一節被提到；`RWE_USER`／
-> `RWE_UPDATE_SKIP_TESTS` 分別只在 §6c（`deploy/rwectl` 的 `RWE_USER` override）與 §7 第 12 點
-> （自我更新的測試逃生閥）出現，不在這份表。這些都是部署腳本/unit 自己的環境變數，不是
+> 解說；`auth.serviceAccountTokenTtlMs`（本表已有列）額外也在「服務帳號」一節被提到；`RWE_USER`
+> 只在 §6c（`deploy/rwectl` 的 `RWE_USER` override）出現；**R2-D9 更正**：`RWE_UPDATE_SKIP_TESTS`
+> 除了 §7 第 12 點（自我更新的測試逃生閥）之外，§6b 概覽圖裡也畫了同一個環境變數，不是只在
+> §7 出現。這幾個都不在這份表。這些都是部署腳本/unit 自己的環境變數，不是
 > `rwe.config.json` 的鍵，所以沒有收進本表，但也請不要假設「沒出現在這裡 = 不存在」。
 > 涵蓋三種載體：`rwe.config.json` 的鍵（不進版控，由 `.example` 複製而來，**本身不含機密**）、
 > 環境變數（含 `RWE_SECRET_<NAME>` secret store）。金鑰/token 一律用環境變數，絕不寫進 JSON 設定檔。
@@ -584,7 +585,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` **與** `gateway:"pi"` 兩條路徑都吃這個鍵（`pi-gateway-client.ts` 同一套優先序）——`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設）。`gateway:"direct-fetch"` 不支援工具迴圈，這個鍵對它沒有意義 | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對。**不驗證格式**（B21）：寫錯（漏了 port、多打斜線）不會拒絕開機，只是那個條目永遠比對不上，效果等於沒加——加完要用「區網部署」一節的 `curl` 驗證指令實際確認，不要只看開機沒出錯就當作生效 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
-| `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base。**只有 `gateway:"direct-fetch"` 會用到**；`gateway:"sdk"` 的 CLI 子行程另外走自己的 `ANTHROPIC_BASE_URL`（指向本機 LiteLLM 代理，見 §1c(c)），`gateway:"pi"` 完全不支援 anthropic provider（見 §1b2），兩者都忽略這個鍵 | `string` / `'https://api.anthropic.com'` | 否 | v7 |
+| `rwe.config.json` → `anthropicBaseUrl` | **R2-D1 更正（原文方向寫反了）**：**只有 `gateway:"sdk"` 的 anthropic/\* 參照會用到**——composeConfig 只把這個鍵轉送進 `ClaudeAgentSdkGatewayClient`（`main.ts`），該 client 對 `provider==='anthropic'` 直接設成 CLI 子行程的 `ANTHROPIC_BASE_URL`（LiteLLM **被繞過**，不是打去本機代理）。`gateway:"direct-fetch"` 永遠打死 `https://api.anthropic.com/v1/messages`，完全不讀這個鍵；`gateway:"pi"` 沒有 anthropic provider（見 §1b2） | `string` / `'https://api.anthropic.com'` | 否 | v7 |
 | `rwe.config.json` → `anthropicAuth` | 認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔。**只在 `gateway:"sdk"` 下生效**（`resolveAnthropicAuth()`）；`gateway:"direct-fetch"` 不讀這個鍵（永遠走 api-key 形狀），`gateway:"pi"` 不支援 anthropic provider，兩者都忽略它。**是 opt-in override，不是必填**——不設時**自動判斷**：偵測到任何一個 OAuth token（`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` 或 `CLAUDE_CODE_OAUTH_TOKEN`）就自動走 `subscription`，否則走 `api-key`；只有要**強制**用某一種（例如兩者都設了、想忽略 token 優先用 api key）才需要明寫這個鍵。**打錯字不會拒絕開機**（B21）：寫的不是 `"api-key"`／`"subscription"` 這兩個字串之一（例如 `"apikey"`），程式只檢查是不是等於 `'subscription'`，不是就一律走 `api-key` 路徑——跟故意設 `"api-key"` 的效果相同，不會有任何警告 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷；打錯字一律靜默當 `"api-key"` | 否 | v7 |
 | `rwe.config.json` → `litellmPort` | LiteLLM 代理子行程監聽 port | `number` / 省略則綁 OS 分配的 ephemeral 空閒 port | 否 | v1 |
 | `rwe.config.json` → `schedulerDbPath` | 排程 SQLite 檔路徑 | `string` / `$workRoot/schedules.db` | 否 | v1 |
@@ -635,7 +636,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | env `RWE_PORT` | 覆蓋 `port` | `number` / `8787` | 否 | v1 |
 | env `RWE_WORK_ROOT` | 覆蓋 `workRoot` | `string` / 設定檔值或系統暫存目錄 | 否 | v1 |
 | env `RWE_LITELLM_VENV` | 只有 `deploy.sh` 讀：LiteLLM Python venv 的路徑（步驟 3 檢查／建立 `<venv>/bin/litellm`，並把 `<venv>/bin` 加進服務的 `PATH`）；引擎本身不讀這個變數 | `string` / `$HOME/.rwe-litellm-venv` | 否 | v24 |
-| env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 與 `auth.googleClientId`／`auth.googleClientSecret` 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔。**引擎自己會讀的固定名字不只是靠 `${secret:}` 引用到的那些**——`RWE_SECRET_ANTHROPIC_API_KEY`（sdk）、`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`（sdk）、`RWE_SECRET_OPENROUTER_API_KEY`（pi）、`RWE_SECRET_GITHUB_TOKEN`、`RWE_SECRET_GITHUB_WEBHOOK_SECRET`——這些都是程式碼直接按固定名字查這個 store，不需要任何設定檔裡的 `${secret:}` handle 先「引用」它們才會被讀到（各自的細節查本表對應列）。**每一個 `RWE_SECRET_*` 值在寫進 catalog/run 的稽核事件（`catalog.register`／`run.terminal` 等）之前都會被 redact-at-capture 機制濾掉**（`secretValueProvider`，見 §1b2「角色提示詞」一節同一類顧慮），不會原文落進 log。**但這個 store 本身不是所有子行程的唯一防線**：`gateway:"sdk"` 的 LiteLLM 代理子行程是用 `env:{...process.env}` 整段繼承**啟動這個伺服器的那個 process 自己的環境變數**（不是這個 secret store，是裸的 `process.env`，所以它連這個 store 管不到的其他環境變數也會拿到）；真正被嚴格白名單過的是**被 dispatch 的 agent 子行程**（實際執行工具迴圈那個，`claude` CLI 或 pi 子行程），見 §6「子行程環境變數白名單」與 §1c(c) | `string` / 無預設 | 依 MCP 引用或上述固定名字 | v1 |
+| env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 與 `auth.googleClientId`／`auth.googleClientSecret` 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔。**引擎自己會讀的固定名字不只是靠 `${secret:}` 引用到的那些**——`RWE_SECRET_ANTHROPIC_API_KEY`（sdk）、`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`（sdk）、`RWE_SECRET_OPENROUTER_API_KEY`（pi）、`RWE_SECRET_GITHUB_TOKEN`、`RWE_SECRET_GITHUB_WEBHOOK_SECRET`——這些都是程式碼直接按固定名字查這個 store，不需要任何設定檔裡的 `${secret:}` handle 先「引用」它們才會被讀到（各自的細節查本表對應列）。**每一個 `RWE_SECRET_*` 值在寫進 catalog/run 的稽核事件（`catalog.register`／`run.terminal` 等）之前都會被 redact-at-capture 機制濾掉**（`secretValueProvider`，見「情境配方」角色提示詞一節同一類顧慮——**R2-D9 更正**：該小節在「情境配方」而非 §1b2），不會原文落進 log。**但這個 store 本身不是所有子行程的唯一防線**：`gateway:"sdk"` 的 LiteLLM 代理子行程是用 `env:{...process.env}` 整段繼承**啟動這個伺服器的那個 process 自己的環境變數**（不是這個 secret store，是裸的 `process.env`，所以它連這個 store 管不到的其他環境變數也會拿到）；真正被嚴格白名單過的是**被 dispatch 的 agent 子行程**（實際執行工具迴圈那個，`claude` CLI 或 pi 子行程），見 §6「子行程環境變數白名單」與 §1c(c) | `string` / 無預設 | 依 MCP 引用或上述固定名字 | v1 |
 | env `RWE_SECRET_GITHUB_TOKEN` | `issue_report`／Issues 儀表板需要；GitHub PAT/fine-grained token，須有目標 repo `issues:write` 權限；缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`，`GET /api/issues` 回 200 `{degraded}`（不 500） | `string` / 無預設 | 否（缺少則降級） | v1 |
 | env `ANTHROPIC_API_KEY` | 每個 `anthropic/<model-id>` ref 用的 API key。`gateway:"direct-fetch"` **只認這個裸變數**（`src/gateway/client.ts`，不查 secret store）；`gateway:"sdk"` 兩種都認，見下一列 | `string` / 無預設 | 用到 anthropic model ref 時 | v1 |
 | env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store；**只有 `gateway:"sdk"` 這條路徑會讀它**（優先於裸 `ANTHROPIC_API_KEY`）。`gateway:"direct-fetch"` 不查 secret store，`gateway:"pi"` 完全不支援 anthropic provider（見 §1b2），兩者都只能靠上一列的裸變數或根本用不到 | `string` / 無預設 | 否 | v7 |
@@ -809,8 +810,10 @@ claims 檢查與 `auth-service.ts` 的 scope），不是改 `rwe.config.json` �
   也不會跟著生效到新身分上。
 - **搬家（§7）或換身分系統時，必須先做「identity remap」這一步**，二選一：(a) 讓新 IdP 簽出一模
   一樣的 email 字串（issuer 換了沒關係，字串本身不變，既有 refresh token 仍會失效但資料擁有權不受
-  影響）；或 (b) 手動改寫 `catalog.db`／run store／`schedules.db`／`webhooks.db`／CAS 各 namespace
-  目錄／`auth-tokens.db` 裡每一處 owner 欄位與 `principals` 的鍵，改成新身分字串，兩者擇一在**新
+  影響）；或 (b) 手動改寫 `catalog.db`／run store／`schedules.db`／`webhooks.db`／`cas/refs.db`
+  的 `refs.namespace` 欄位（**R2-D6 更正**：CAS namespace 不是目錄，是這個 SQLite 表的一欄，
+  `casNamespaceFor()` 回的就是 principal id 本身，見 `src/cas-store.ts`）／`auth-tokens.db` 裡每一處
+  owner 欄位與 `principals` 的鍵，改成新身分字串，兩者擇一在**新
   身分第一次登入之前**做，不然就是看得到資源名字、永遠打不開。
 
 **規劃中、尚未實作的方向（未來工作，不是這次迭代的範圍）**：公司內部 SSO 不走 Google OAuth，改用
@@ -1495,6 +1498,16 @@ docker compose --profile litellm up server-litellm
                                                 # 選用 profile：容器內額外安裝 Python 3.11 +
                                                 # litellm[proxy]
 ```
+**R2-D10 補充（鏡射 `docker-compose.yml` 檔頭註解的三個但書，這裡原本漏掉）**：
+- 免 LiteLLM 依賴不是只有 `gateway:"direct-fetch"` 一條路——`gateway:"pi"` 一樣不需要
+  LiteLLM，兩者皆可用預設 `server` service（不開 `litellm` profile）。
+- 這個 image 完全沒裝 `bwrap`／`socat`，Bash 圍籠**永遠量到 `UNCONFINED`**——任何經由容器對外
+  port 進來的呼叫都是非 loopback peer，遠端 `run_start`/`run_resume` 一律被拒；只有從容器內部
+  發起（例如 `docker compose exec server curl ...`）才算 loopback、能跑完整工具迴圈。這個
+  compose 檔適合本機實驗，不是圍籠生效的遠端執行目標。
+- `workRoot` 必須指到 `/app` 之外——bind-mount 進容器的是整個 repo（含 `.git`），落在 `/app`
+  底下會被開機時的 workRoot 守衛以 `WORKROOT_INSIDE_PROJECT` 拒絕；用 compose 已經準備好的具名
+  volume，把 `rwe.config.json` 的 `workRoot` 設成 `/data` 即可。
 
 **systemd（root）**（`deploy/rwe.service`，`Restart=on-failure` 自我修復）：
 ```bash
@@ -1502,10 +1515,17 @@ sudo cp deploy/rwe.service /etc/systemd/system/rwe.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now rwe.service
 ```
-`ExecStart` 用的是與手動啟動完全相同的 `npm run start`（此 repo 沒有另外維護一份編譯產物
-`dist/main.js`，見該檔案內註解）。三個部署封裝產物：`docker-compose.yml`（上方）、
-`deploy/rwe.service`（systemd unit，上方）、`scripts/smoke.sh`（非互動式煙霧測試，見下）。
-**本機與遠端主機的部署步驟完全相同**——沒有「本機才有的捷徑」。
+**R2-D5 更正**：`ExecStart` **不是** `npm run start`——「常見的坑 #1」正是 `npm` 這個坑本身：
+在精簡的 systemd 環境下 `/usr/bin/npm` 可能是（版本管理器裝 node 時留下的）失效符號連結，
+`ExecStart` 對命令名稱的解析又不吃 `Environment=PATH`，會直接 `status=203/EXEC` 失敗。`deploy/rwe.service`
+因此直接跑 `/usr/bin/node .../node_modules/tsx/dist/cli.mjs src/main.ts`（此 repo 沒有另外維護一份
+編譯產物 `dist/main.js`，等效於手動啟動的同一個進入點，只是跳過 `npm` 這層）——**版本管理器裝的
+node（nvm/volta/自建）要把 `/usr/bin/node` 換成它自己的絕對路徑**，否則一樣在開機時找不到執行檔。
+這份單元還把 `/home/rwe/.rwe-litellm-venv/bin` 放進 `Environment=PATH` 最前面（給 `gateway:"sdk"`
+在開機時會 spawn 的 `litellm` 子行程找得到執行檔用，見 A11；不需要 litellm 的 gateway 設定可以忽略
+這段 PATH）。三個部署封裝產物：`docker-compose.yml`（上方）、`deploy/rwe.service`（systemd unit，
+上方）、`scripts/smoke.sh`（非互動式煙霧測試，見下）。**本機與遠端主機的部署步驟完全相同**——
+沒有「本機才有的捷徑」。
 
 > `deploy/rwe.service` 是 **system-mode**（root、`/opt` 安裝路徑）的替代方案。這台專案自己的
 > production 主機實際跑的是下一節的 **user-mode** `deploy/rwe.user.service` +
@@ -2169,7 +2189,11 @@ curl -s http://localhost:8787/api/version
 > 明確指到你自己準備好的位置（例如先手動 clone 一份、裝好 node、寫好 `rwe.config.json`／
 > `rwe.env`，不必是「正式在跑」的部署，只要這幾個路徑讀得到正確內容）。兩種方式都做完前置準備後
 > 才能真的「跳過第五階段」（`phase5` 本身確實只搬 workRoot 資料，全新主機沒有舊資料要搬是對的，
-> 但那是**最後一步**，不是唯一要處理的落差）。
+> 但那是**最後一步**，不是唯一要處理的落差）。**R2-D4 已知陷阱（走 (b) 時尤其容易中招）**：
+> `phase6` 的 `disable` 這一步沒有容錯——若 (b) 準備的位置底下操作員帳號本來就沒有
+> `rwe.service`／`rwe-update.path` 這兩個 user unit（`disable` 一個不存在的 unit 回非零），
+> `set -euo pipefail` 下腳本會在 `enable --now` 之後、驗證完成之前中止；中止後 `rwe` 的新單元
+> 其實已經起來，手動接著跑 `phase7` 驗證即可，不代表部署失敗，只是這一步本身會回報錯誤。
 
 ### 為什麼
 
@@ -2459,10 +2483,18 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
 > `phase2`（工具鏈）、`phase3`/`phase3b`（deploy key + clone）、`phase4`（設定/secrets +
 > check-config）、`phase6`（systemd 單元 + 清 `~/.npm/_logs`/`~/.claude/debug`）、`phase7`
 > （驗證）直接把部署建在新主機的 `rwe` 底下——只是這次 `phase3b` 用的是**新主機**的 SSH deploy
-> key，`phase4`／`phase5`（workRoot）讀的「舊部署」是**舊主機的 `rwe`**（用 `OP_*` 系列環境變數
-> 指過去，不是指操作員自己的 checkout）；(B) 兩台主機都已經是 `rwe`-service-user 形狀（例如
+> key。**R2-D4 更正**：`phase4` 讀的 `OP_CONFIG`／`OP_ENV`／`OP_NODE_DIR`（§6c 表格）全是**本機
+> 檔案系統路徑**（`cp -a "$OP_NODE_DIR"`、`[ -r "$OP_CONFIG" ]` 這類判斷式），**不能**直接指到
+> 另一台主機——要先把舊主機 `rwe` 的 `rwe.config.json`／`rwe.env`／node 安裝複製到新主機上的本機
+> 路徑，再用 `OP_CONFIG`／`OP_ENV`／`OP_NODE_DIR`（或 `DEPLOY_TAG`）指到那些複製過去的本機路徑；
+> `workRoot` 的搬遷**不是** `phase5`（那只處理同一台主機換帳號，見下面第 11 點），照第 11 點的
+> 手動步驟把資料搬進新主機的 `RWE_WORKROOT`。(B) 兩台主機都已經是 `rwe`-service-user 形狀（例如
 > 災難復原、換一台等規格機器）——直接照下面各點手動對拷，不需要跑分階段腳本。本節以 (B) 的手動
-> 步驟為主文字，(A) 在對應的點附註要改用哪個 `phase`。
+> 步驟為主文字，(A) 在對應的點附註要改用哪個 `phase`。**(A) 的一個已知陷阱**：`phase6` 會無條件
+> 執行 `systemctl --user disable rwe.service rwe-update.path` 想停用操作員帳號底下的舊單元；全新
+> 主機上操作員根本沒有這兩個單元時，這個 `disable` 會以非零結束，腳本在 `set -euo pipefail` 下
+> 會在 `enable --now` 之後、驗證完成之前直接中止——若走純 §0/§2 起步（操作員帳號從沒裝過這兩個
+> user unit），跑 `phase6` 前先確認這點，或接受腳本在這裡中止後手動繼續跑 `phase7`。
 
 1. **新主機作業系統前置需求**——見 §1a：Node.js 22.19+、npm、（`gateway:"sdk"` 才需要的）
    Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**不要假設
@@ -2489,8 +2521,17 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
    同一個 tag（`sudo -u rwe -H git -C $RWE_CHECKOUT describe --tags`查）。兩種情況都要核對 repo
    範本跟**舊主機 `rwe` 目前即時在跑的單元**是否一致（`deploy/rwectl cat rwe.service`，不是
    `systemctl --user cat`——那只會印執行指令的人自己的 unit）：
-   - **repo 路徑**：單元範本用 `%h`，在 `rwe` 底下自動展開成 `/home/rwe/...`；只要新主機也把
-     checkout 放在 `$RWE_CHECKOUT` 這個慣例路徑（§6c 表格），單元範本照抄即可，不必手改路徑。
+   - **repo 路徑**：**R2-D3 更正（跟下面「跟 §7 的關係」一致，之前這裡寫錯了）**——repo 裡的單元
+     範本（`deploy/rwe.user.service`／`deploy/rwe-update.service`）寫死的是 `%h/Documents/remote-workflow`，
+     在 `rwe` 底下展開成 `/home/rwe/Documents/remote-workflow`，**不是** `$RWE_CHECKOUT` 預設的
+     `/home/rwe/remote-workflow`（少了 `Documents/` 這一層）——只有 §6c `phase6` 會把這個路徑改寫
+     成 `$RWE_CHECKOUT`，repo 範本本身**絕不能照抄**。(A) 全新主機：照抄的是 `phase6` 改寫**之後**
+     的結果，不是 repo 檔案本身，跑腳本就會自動處理。(B) 手動搬：直接複製**舊主機 `rwe` 目前已安裝
+     並生效**的單元（`/home/rwe/.config/systemd/user/` 底下那幾份，用 `deploy/rwectl cat
+     rwe.service` 核對），或對 repo 範本手動把字面上的 `%h/Documents/remote-workflow` 代換成
+     `$RWE_CHECKOUT` **展開後的實際路徑**（例如 `/home/rwe/remote-workflow`，不是保留 `%h`
+     token——腳本 `phase6` 的 `sed "s#%h/Documents/remote-workflow#$co#g"` 就是這樣做）——不要直接
+     `cp` repo 裡的範本檔案。
    - **port**：`deploy/rwe.service.d/override.conf` 的 `RWE_PORT` 是**這次部署自己的值**（查
      `deploy/rwectl cat rwe.service` 裡套用後的 `RWE_PORT`）；新主機若用不同的對外 port，改這個
      drop-in（不要動 `rwe.user.service` 本體），**且要跟第 8 點的隧道/反向代理設定的 port 對得
@@ -2606,9 +2647,12 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
       `workflows/<name>/runs/<runId>/`）、`assets/`、`_global_assets/`。
     - **順手檢查、通常是空的歷史殘留，有東西才需要搬**：`mcp-registry.db*`（pre-v24 的 MCP 資產
       註冊表，現在只在偵測到這個檔案存在時讀一次做遷移用，遷移完就不再寫入——新主機若已經是乾淨
-      的新 workRoot，這個檔案不存在是正常的，不必特地去生一個）、`_runs/`（`resolveInWorkspace`
-      在 `_runWorkspaces` 記憶體快取還沒被 `hydrateAll()` 重建之前的 fallback 路徑；正常重啟流程
-      下這個目錄應該是空的，但如果存在內容，連同 `workflows/` 一起搬，不要略過）。
+      的新 workRoot，這個檔案不存在是正常的，不必特地去生一個）、`_runs/`（**R2-D8 更正**：原本
+      寫的「`resolveInWorkspace` 在 `_runWorkspaces` 快取重建前的 fallback 路徑」是編出來的
+      機制——`resolveInWorkspace` 在 `src/` 底下沒有任何呼叫端，`hydrateAll()` 是 RunStore 自己的
+      方法，不碰 WorkflowCatalog 的任何快取；目前程式碼完全不會建立這個目錄，是沒人再寫入的舊版
+      殘留路徑。正常情況下這個目錄不存在/是空的，但如果意外存在內容，連同 `workflows/` 一起搬，
+      不要略過）。
     - **可丟，不必搬**：`cli-tmp/`／`pi-tmp/`（每次派工的暫存，開機會自動清空重建）。
       `.graph-analyzer-scratch/` 這個目錄在 v24 就已經隨 GraphAnalyzer 一起退役，現在的 workRoot
       下不會出現，舊版本這份清單列它是過時殘留，不是「現在還可能看到、但可以丟」的東西。
