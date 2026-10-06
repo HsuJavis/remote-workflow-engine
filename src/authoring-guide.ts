@@ -874,7 +874,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
         "which blocks the script's own event loop and so cannot be caught or reported from inside " +
-        'the script itself.',
+        'the script itself. ' +
+        // issue #157 (owner-approved, docs): `while(true){}` above is the SYNCHRONOUS case; an
+        // `await`ed Promise that never settles (`await new Promise(() => {})`) is the equivalent
+        // ASYNCHRONOUS one — the script's event loop stays free (so it is NOT the "cannot be caught
+        // from inside the script" case above), but nothing in the script itself ever resumes either.
+        'The same deadline is what ends the asynchronous equivalent too: a script that `await`s a ' +
+        'Promise that never resolves or rejects (e.g. `await new Promise(() => {})`) leaves the run ' +
+        '`running` indefinitely from the caller\'s side — polling `run_status` shows no progress and ' +
+        "no error — until EITHER `maxRunDurationMs` elapses (the same `SCRIPT_TIMEOUT` above) or " +
+        'someone calls `run_stop` on it; neither the script nor anything it awaits can end that wait ' +
+        'from the inside.',
     ),
   );
 
