@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
+import { UNTRUSTED_FRAME_PROSE } from '../../src/params/resolve.js';
 
 let server: Server;
 let tmpDir: string;
@@ -276,7 +277,10 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
       harness = log.harness ?? undefined;
       if (!harness?.prompt) await new Promise((r) => setTimeout(r, 100));
     }
-    const expected = 'SCRIPT PROMPT\n\n<user-instructions untrusted="true">\nUSER TEXT\n</user-instructions>';
+    const expected =
+      'SCRIPT PROMPT\n\n<user-instructions untrusted="true">\n' +
+      UNTRUSTED_FRAME_PROSE +
+      '\nUSER TEXT\n</user-instructions>';
     expect(harness?.prompt).toBe(expected);
   }, 10_000);
 

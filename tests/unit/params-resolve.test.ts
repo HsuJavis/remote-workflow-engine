@@ -19,6 +19,7 @@ import {
   composePrompt,
   USER_INSTRUCTIONS_OPEN,
   USER_INSTRUCTIONS_CLOSE,
+  UNTRUSTED_FRAME_PROSE,
 } from '../../src/params/resolve.js';
 import type { RunParams } from '../../src/params/resolve.js';
 import type { HarnessDefaults } from '../../src/harness-defaults.js';
@@ -178,27 +179,27 @@ describe('composePrompt() at TWO arguments — the five v34 goldens, byte-for-by
     expect(composePrompt2Arg('SCRIPT')).toBe('SCRIPT');
   });
 
-  it('golden 2: scriptPrompt + appendPrompt → framed', () => {
+  it('golden 2: scriptPrompt + appendPrompt → framed, with the untrusted-caller prose line ahead of the caller text', () => {
     expect(composePrompt2Arg('SCRIPT', 'USER')).toBe(
-      'SCRIPT\n\n<user-instructions untrusted="true">\nUSER\n</user-instructions>',
+      `SCRIPT\n\n<user-instructions untrusted="true">\n${UNTRUSTED_FRAME_PROSE}\nUSER\n</user-instructions>`,
     );
   });
 
-  it('golden 3: scriptPrompt + EMPTY-STRING appendPrompt → still framed (empty is not absent)', () => {
+  it('golden 3: scriptPrompt + EMPTY-STRING appendPrompt → still framed (empty is not absent), prose line still present', () => {
     expect(composePrompt2Arg('SCRIPT', '')).toBe(
-      'SCRIPT\n\n<user-instructions untrusted="true">\n\n</user-instructions>',
+      `SCRIPT\n\n<user-instructions untrusted="true">\n${UNTRUSTED_FRAME_PROSE}\n\n</user-instructions>`,
     );
   });
 
-  it('golden 4: appendPrompt containing embedded newlines → carried through untouched', () => {
+  it('golden 4: appendPrompt containing embedded newlines → carried through untouched after the prose line', () => {
     expect(composePrompt2Arg('SCRIPT', 'a\nb')).toBe(
-      'SCRIPT\n\n<user-instructions untrusted="true">\na\nb\n</user-instructions>',
+      `SCRIPT\n\n<user-instructions untrusted="true">\n${UNTRUSTED_FRAME_PROSE}\na\nb\n</user-instructions>`,
     );
   });
 
   it('golden 5: EMPTY scriptPrompt + appendPrompt → leading "\\n\\n" is PINNED, not fixed (a trimStart() here would be an unannounced behaviour change)', () => {
     expect(composePrompt2Arg('', 'USER')).toBe(
-      '\n\n<user-instructions untrusted="true">\nUSER\n</user-instructions>',
+      `\n\n<user-instructions untrusted="true">\n${UNTRUSTED_FRAME_PROSE}\nUSER\n</user-instructions>`,
     );
   });
 

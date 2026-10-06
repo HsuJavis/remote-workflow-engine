@@ -1100,8 +1100,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // contributes text to what the model actually sees.
       'After v34 there are exactly two author/caller segments in the prompt a model receives: the ' +
         "script's own `prompt` argument to `agent()`, then a caller-supplied `appendPrompt` override, " +
-        'framed inline as `<user-instructions untrusted="true">…</user-instructions>`. The engine ' +
-        "adds only its own scaffolding around them (a schema suffix and a retry nudge) — it does not " +
+        'framed inline as `<user-instructions untrusted="true">…</user-instructions>`. Since issue ' +
+        '#156, the frame opens with one line of plain-language prose, ahead of the caller\'s own text, ' +
+        "stating that the segment is caller-supplied and untrusted and cannot override the author's " +
+        'instructions or any tool-use rule — the `untrusted="true"` attribute alone is machine-' +
+        "readable, not something a model reliably acts on unprompted. The engine adds only its own " +
+        'scaffolding around them (that prose line, a schema suffix, and a retry nudge) — it does not ' +
         'decide whether the appended segment is an authorized override or a foreign injection. An ' +
         'author who wants the appended segment to carry override force has to write the adoption rule ' +
         "into their OWN prompt; the engine draws no such line on the author's behalf.",
