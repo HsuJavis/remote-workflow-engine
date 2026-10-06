@@ -743,7 +743,27 @@ Read/Bash/Glob 就讀得到，且派工結束後也不會清掉；現在的私�
 **`effort`/OpenRouter `reasoning.effort` 的請求形狀驗證**：已用錄製式 fake server 驗證。
 `system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位即時反映
 這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
-usage}`——不要用這份文件推測，直接查 `system_info`。
+usage}`——不要用這份文件推測，直接查 `system_info`。**issue #150 修正（2026-10-06）**：`effort` 現在是
+per-model、不是 per-provider 的事實——`run_agent_log.harness.effortApplied` 只在目標 model 的 catalog
+列真的宣告支援 reasoning 時才回報 `applied:true`，否則 `{applied:false, reason:'model does not
+support reasoning'}`（例如 `openrouter/openai/gpt-4.1`），而且這種情況下 pi 子行程**完全不會**送出
+`reasoning` 欄位（不是送一個會被忽略的值）。`models_list` 的 `effortAppliedOnTransport` 同步變成
+per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看該列自己的
+`capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。
+
+**issue #151 調查結論（2026-10-06，無程式缺陷）**：有 agent 回報 `openrouter/anthropic/*` 與
+`openrouter/google/*` 在 pi 下 `cacheRead`/`cacheWrite` 恆為 0。實測（`tests/acceptance/
+pi-harness-openrouter-cache-fake-server.test.ts`，錄製式 fake server，走真實的 PiGatewayClient ->
+pi 子行程 -> pi-ai 派送路徑）證實：請求端已經會自動對 `anthropic/*` 加上 Anthropic 的
+`cache_control:{type:'ephemeral'}` 斷點（pi-ai 自己的 `detectCompat` 偵測 `provider==='openrouter' &&
+model.id.startsWith('anthropic/')`，引擎沒加任何程式碼促成這件事）；usage 端也已經正確把 OpenRouter
+回傳的 `usage.prompt_tokens_details.{cached_tokens,cache_write_tokens}` 映射進
+`cacheRead`/`cacheWrite`，進而影響計費（`ratesPerM.cacheRead`/`cacheWrite`）。最可能的解釋，且非本引擎
+可修：Claude Haiku 4.5 的 cache 寫入門檻是 **4096 tokens**（openrouter.ai/docs 的 prompt-caching 頁面，
+2026-10-06 查證；多數其他 Claude 模型只要 1024–2048），原回報 run 的最後一輪本身只有 2779 input
+tokens，低於門檻。該檔案結尾附完整的真機驗證食譜（多輪、夠大的 prompt、注意 `tool_use_id` 前綴
+`toolu_bdrk_` 代表走 Bedrock 路由，`google/*` 是隱式快取不需要 `cache_control`）——目前環境沒有真的
+OpenRouter key，無法在這裡完成真機驗證，留給下一個有 key 的人跑。
 
 **回滾**：把 `rwe.config.json` 的 `"gateway"` 改回 `"sdk"`（或整個刪掉這個鍵，預設就是 `"sdk"`），
 重開引擎即可——沒有資料遷移、沒有殘留狀態（pi 的 `agentDir`/session 都是每次 dispatch 用過即丟的
