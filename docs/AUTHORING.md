@@ -300,6 +300,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
 - `UNKNOWN_RUN_PLACEHOLDER` — a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run's id) are supported
+- `ITEM_CAP_EXCEEDED` — parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which
 
 ## Provisioning skills and MCP servers: roles, config shapes, and the trust boundary
 

@@ -281,6 +281,18 @@ export const ERROR_CATALOG = {
   // ACCOUNT_PENDING_APPROVAL ('none' role) semantics a human principal gets — a service account's
   // role is never 'none', so the two refusals must stay visibly distinct on the wire.
   SERVICE_ACCOUNT_DISABLED: { see: null, hint: 'this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one' },
+
+  // issue #163 (B2/DOC): two codes that were thrown for years (guards.ts's parallel()/pipeline()
+  // item-cap refusal, and toErr()'s own uncaught-throw fallback) but were never catalog members —
+  // at TOP level this was invisible (the top-level completion path never runs a thrown error
+  // through toErrorCode() at all), but the instant either code crosses a nested workflow() boundary
+  // (_handleWorkflowRequest's `toErrorCode(err.code)`), an unrecognized string folds to
+  // INTERNAL_ERROR and the child's real failure (its own business-logic throw, or its own item-cap
+  // refusal) is hidden behind an engine-fault code. Adding both here is a closed-catalog-membership
+  // fix only — no call site, no toErrorCode()/toErrEnvelope() logic, and no throw-site code
+  // assignment changes.
+  SCRIPT_ERROR: { see: null, hint: "the script itself threw an uncaught error (not an engine refusal); at a nested workflow() frame this is the CHILD workflow's own thrown error, not a fault in the engine" },
+  ITEM_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which' },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;
