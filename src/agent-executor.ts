@@ -1,10 +1,11 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
+import type { ValidateFunction } from 'ajv';
 import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps, Tokens } from './types.js';
 import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
-import { ZERO_TOKENS, priceCall } from './run-guard.js';
+import { ZERO_TOKENS, priceCall, sumTokens } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
@@ -600,7 +601,14 @@ export class AgentTranscriptSink {
             if (thisTokens !== undefined) {
               const priced = priceCall(thisTokens, this._priceBook?.pinned[`${provider}/${prev?.model ?? ''}`]?.price ?? null);
               thisCostUSD = priced ?? 0;
-              thisUnpriced = priced === null;
+              // issue #160 BUG-4 follow-up: a zero-token call is EXACTLY priced at 0 regardless of
+              // whether the model's price is known — `priceCall` returns `null` for "rates
+              // unknown" whether or not any tokens were spent, so without the `sumTokens` guard a
+              // call aborted before provider/model resolved (both still '', no price-book entry)
+              // got `unpriced: true` for spending literally nothing, flipping the documented
+              // "never dispatched, so genuinely not an unpriced call" contract this record type
+              // otherwise honours everywhere else (see the terminal `_records.set` call below).
+              thisUnpriced = priced === null && sumTokens(thisTokens) > 0;
               this._guard?.addUsage(thisTokens, thisCostUSD, thisUnpriced, result.unmapped);
             }
             const tokens = addTokenVectors(priorTokens, thisTokens ?? ZERO_TOKENS);
@@ -759,13 +767,21 @@ export class AgentExecutor implements AgentSpawner {
     // that in). Passing the record's `tokens` here too would double it in. `getLiveAttemptUsage`
     // carries ONLY the currently in-flight attempt's own live-streamed delta, exactly what
     // `capture()`'s failed branch expects to merge onto the committed total.
+    // issue #160 BUG-4: this used to attach `tokens`/`partial` ONLY when something was already
+    // live-streamed onto this agentId's record (`liveAttempt !== undefined`) — the common case for
+    // a call cut short early (before any usage delta streamed) then recorded tokens:0 with NO
+    // `partial` flag at all, indistinguishable from "genuinely a free, exact, zero-cost call".
+    // `pi-gateway-client.ts`'s OWN abort branch (same logical event, reached when the gateway's own
+    // abort check wins instead of this executor-level race) was fixed under issue #152 to ALWAYS
+    // set `partial:true` with whatever `cumulative` holds, even 0 — "the known spend is a lower
+    // bound, possibly 0" is the one honest reading. Mirrored here: always partial:true for 'aborted'.
     const liveAttempt = this._sink.getLiveAttemptUsage(req.agentId);
     await this._sink.capture(
       req.runId,
       { agentId: req.agentId, label: req.opts.label },
       {
         ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
-        ...(liveAttempt !== undefined ? { tokens: liveAttempt, partial: true as const } : {}),
+        tokens: liveAttempt ?? ZERO_TOKENS, partial: true as const,
       },
       this._clock.isoNow(),
     );
@@ -876,7 +892,27 @@ export class AgentExecutor implements AgentSpawner {
 
     // D-V4: schema present → real JSON-schema validation with bounded retry-on-mismatch
     // (never a type-cast passthrough). No schema → single attempt, final text.
-    const validate = req.opts.schema ? ajv.compile(req.opts.schema as object) : undefined;
+    // issue #162 item C: `ajv.compile` throws SYNCHRONOUSLY for a non-object/non-boolean schema
+    // (e.g. a string) — Ajv's own `schema must be object or boolean`. Before this, that throw
+    // propagated out of `_runTracked` with no try/catch, AFTER `markQueued`/`markRunning` had
+    // already recorded this agent as 'running' and BEFORE any `_sink.capture(...)` terminal call —
+    // leaving an orphan transcript record stuck at `running` forever. Same pre-dispatch-guard shape
+    // as the `effort`/`agentType` guards immediately above: capture a terminal refusal, then throw.
+    let validate: ValidateFunction | undefined;
+    if (req.opts.schema) {
+      try {
+        validate = ajv.compile(req.opts.schema as object);
+      } catch (e) {
+        const detail = `INVALID_SCHEMA: agent()'s schema option is not a valid JSON Schema: ${e instanceof Error ? e.message : String(e)}`;
+        await this._sink.capture(
+          req.runId,
+          { agentId: req.agentId, label: req.opts.label },
+          { ok: false, provider: '', reason: 'terminal', detail },
+          this._clock.isoNow(),
+        );
+        throw codedError('INVALID_SCHEMA', detail);
+      }
+    }
     const attempts = validate ? SCHEMA_RETRY_ATTEMPTS : 1;
     // D-V4 hardening: the engine validates the agent's FINAL TEXT as JSON (no injected
     // StructuredOutput tool), so — especially for OpenAI models, which after a multi-turn tool loop

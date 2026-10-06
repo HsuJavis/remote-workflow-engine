@@ -30,7 +30,12 @@ describe('every GUIDE_EXAMPLES entry registers over real MCP HTTP (IT-118, DES-1
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0', id: 1, method: 'tools/call',
-          params: { name: 'workflow_register', arguments: { name: `guide-${ex.title}`, script: ex.script, mermaid: ex.mermaid } },
+          // Issue #154 B4: a workflow name may no longer contain '/' (it is joined as a single real
+          // path segment — see workflow-catalog.ts's validateRegistration). `ex.title` is a human
+          // label for THIS test's parametrization only ("fan-out/fan-in" reads fine as a title); it
+          // is not itself guide content an author would ever register verbatim, so sanitizing it
+          // here changes nothing about what GUIDE_EXAMPLES teaches.
+          params: { name: 'workflow_register', arguments: { name: `guide-${ex.title.replace(/[/\\]/g, '-')}`, script: ex.script, mermaid: ex.mermaid } },
         }),
       });
       const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };

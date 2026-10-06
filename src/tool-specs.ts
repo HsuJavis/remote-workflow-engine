@@ -82,6 +82,7 @@ export type SetupKey =
   | 'suspendedRunId'  // a run already driven to `suspended`, consumed by run_resume's happy path
   | 'suspendTargetRunId' // a live run consumed by run_suspend's happy path
   | 'stopTargetRunId'    // a live run consumed by run_stop's happy path
+  | 'stoppedRunId'    // a run already driven to `stopped`, for run_result's RUN_STOPPED fixture (issue #160 BUG-1)
   | 'seededPath'      // a file seeded into terminalRunId's workspace, for workspace_pull/delete
   | 'scheduleId'      // a schedule minted by schedule_create, for schedule_setEnabled
   | 'deletableScheduleId' // a SECOND schedule, consumed by schedule_delete's happy path
@@ -752,13 +753,16 @@ export const TOOL_SPECS = [
     // total plus `unpricedCalls`/`unmappedMessages`; `meta.budgetEnforceable` names which limits can
     // actually bind given the models this run can reach, and which of those have no known price.
     // dash-auth-spec.md section C (2026-09-30): `meta.warnings` — see the description string.
-    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price). If any agent() call inside this run failed or timed out — it still resolved `null` to the script, which still completed normally — `meta.warnings` carries one `{code: 'AGENT_FAILED', message}` entry naming how many; call run_status for the per-agent `agentFailures` detail.",
+    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. On a run stopped via run_stop, `result.error.code` is `RUN_STOPPED` — it never completed, so there is no script return value. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price). If any agent() call inside this run failed or timed out — it still resolved `null` to the script, which still completed normally — `meta.warnings` carries one `{code: 'AGENT_FAILED', message}` entry naming how many; call run_status for the per-agent `agentFailures` detail.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     // Service accounts spec: WORKFLOW_NOT_ALLOWED joins its three NESTING_*/DESCENDANT_CAP_EXCEEDED
     // siblings for the same reason they are here — an uncaught nested workflow() refusal becomes
     // THIS run's own terminal `result.error`.
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
+    // issue #160 BUG-1: RUN_STOPPED joins RUN_NOT_TERMINAL — a stopped run is terminal (unlike a
+    // genuinely live one) but carries no script result, so it gets its own typed code rather than
+    // either RUN_NOT_TERMINAL (wrong: it IS terminal) or a silent RUN_FAILED.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'RUN_STOPPED', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     // Gate 6.5+7 round 2 (verifier): `adminCrossRead` was MISSING here while DES-151 states in so
     // many words that "`run_result` is added to the audited set" and `AuditAction` names it. Without
@@ -771,6 +775,7 @@ export const TOOL_SPECS = [
       errors: {
         RUN_NOT_FOUND: { runId: ABSENT_ID },
         RUN_NOT_TERMINAL: { runId: ref('liveRunId') },
+        RUN_STOPPED: { runId: ref('stoppedRunId') },
       },
     },
   },
@@ -872,13 +877,22 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_list', entity: 'run', key: null,
-    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that.",
-    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'number' } }),
+    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that. `limit` must be a whole number >= 0 (max 500, larger values clamped); `0` returns no rows (pre-existing, unchanged); a non-integer or negative value is refused INVALID_ARGUMENT.",
+    // issue #160 BUG-2: `type:'number'` let a float (e.g. 1.5) straight through ajv, where the
+    // store's own `Math.min(limit, 500)` bound it unmodified into a SQL `LIMIT ?`, and
+    // better-sqlite3 threw a raw, uncoded 'datatype mismatch' for it. `integer`+`minimum:0` refuses
+    // it HERE, typed, before it ever reaches the store (the store also clamps defensively for any
+    // non-wire caller — see sqlite-run-store.ts `list()`).
+    // issue #160 BUG-2 follow-up (review D1-item1): `minimum` is `0`, not `1` — an explicit
+    // `limit:0` meaning "return []" is pre-existing, owner-acknowledged behavior (issue #160's own
+    // DOC section), a design choice the owner rules require be left unchanged. Only floats and
+    // negative values (the actual ceiling-bypass/raw-error defects) are refused.
+    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', minimum: 0 } }),
     outputSchema: OUT,
-    errors: [] as ErrorCode[],
+    errors: ['INVALID_ARGUMENT'] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {}, errors: {} },
+    fixture: { happy: {}, errors: { INVALID_ARGUMENT: { limit: 1.5 } } },
   },
 
   // ---- workspace (6) ----
@@ -1078,7 +1092,7 @@ export const TOOL_SPECS = [
       kind: { type: 'string', enum: ['cron', 'once', 'resident'], description: "Defaults to 'cron' when omitted." },
       cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'. Fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-6, Sun=0; 7 is refused, not aliased to 0) — each '*', a number, a range 'a-b', or a comma list, optionally with a '/step'. Standard Vixie/POSIX day rule: day-of-month and day-of-week are each 'restricted' only when the field does NOT start with '*' (so '*/2' still counts as unrestricted even though it filters values). When BOTH are restricted, a date matches if day-of-month OR day-of-week matches (not AND) — e.g. '0 9 1 * 1' fires on the 1st of the month OR every Monday. Must have a next fire within a 4-year search horizon." },
       at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'. An UNCLAIMED trigger never fires, no matter how far past `at` is — it fires on the next tick only once a workflow claims it (workflow_register({triggers:[id]})); a past `at` on an ALREADY-claimed trigger also fires on the next tick." },
-      tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
+      tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted. An unrecognised zone name is refused INVALID_TZ (field:'tz'), distinct from a malformed cron expression." },
       args: { description: 'Run arguments handed to every firing.' },
       enabled: { type: 'boolean', description: 'Defaults to true when omitted — a schedule created disabled never fires.' },
     // v24 Gate 7.5 (D-1, REQ-115 clause 1 + ADR-026 scenario S-5): the row required `workflow`, so
@@ -1100,12 +1114,17 @@ export const TOOL_SPECS = [
     // resolved when it FIRES (`resolveScheduleTarget`, which records UNCLAIMED /
     // CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE as refusals), because a
     // trigger created before its workflow exists has nothing to resolve yet.
-    errors: ['INVALID_CRON', 'INVALID_AT', 'FORBIDDEN_ROLE'],
+    // issue #160 BUG-3: INVALID_TZ joins INVALID_CRON — an invalid `tz` (e.g. not a real IANA
+    // zone) is its own field-specific refusal, never folded into the cron field's message.
+    errors: ['INVALID_CRON', 'INVALID_TZ', 'INVALID_AT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {
       happy: { cron: '* * * * *' },
-      errors: { INVALID_CRON: { cron: 'not a cron expression' } },
+      errors: {
+        INVALID_CRON: { cron: 'not a cron expression' },
+        INVALID_TZ: { cron: '0 9 * * *', tz: 'Mars/Olympus_Mons' },
+      },
     },
   },
   {

@@ -443,13 +443,18 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 
 ## 1a. 前置條件
-- **Node.js 22.19 以上**（owner decision，A4）。兩個原因都成立、取較高者：(1) 沙箱子行程
+- **Node.js 22.19 以上**（owner decision，A4）。三個原因都成立、取最高者：(1) 沙箱子行程
   `src/sandbox/child-entry.ts` 與啟動用的 `tsx` 都依賴 Node 22 原生 `--experimental-transform-types`
-  type-stripping（Node 22.7 起才有）；(2) `package.json` 的 `dependencies`（不是
-  `optionalDependencies`——每一種 `gateway` 選擇都會裝到）裡的 `@earendil-works/pi-coding-agent`／
-  `@earendil-works/pi-ai` 自己宣告 `engines.node:">=22.19.0"`，即使這台部署從未把 `gateway` 設成
-  `"pi"`。`package.json` 已加 `"engines":{"node":">=22.19.0"}`，`npm install`／`npm ci` 版本不符時
-  會印警告（不會擋裝）。
+  type-stripping（本身 Node 22.7 起即可）；(2) `src/sandbox/host.ts` 的 `SandboxHost.run()` 一律用
+  `--permission` 啟動沙箱子行程（見下方「沙箱子行程的三層防護」），這個旗標要到 22.19 才穩定——舊版
+  Node 上 `--permission` 仍是實驗旗標甚至不存在，子行程會直接啟動失敗，每次 `run_start` 都會以
+  `ABORTED` 收場；(3) `package.json` 的 `dependencies`（不是 `optionalDependencies`——每一種
+  `gateway` 選擇都會裝到）裡的 `@earendil-works/pi-coding-agent`／`@earendil-works/pi-ai` 自己宣告
+  `engines.node:">=22.19.0"`，即使這台部署從未把 `gateway` 設成 `"pi"`。`package.json` 已加
+  `"engines":{"node":">=22.19.0"}`，`npm install`／`npm ci` 版本不符時會印警告（不會擋裝）。`src`
+  目錄本身（含 `node_modules`，實際未被讀取但原規劃保留）在啟動時用 `realpathSync` 解析過一次，所以
+  用 symlink 做自我更新/原子切版的部署（見「自我更新」一節）沒有額外限制——子行程看到的一律是當時
+  指到的真實路徑。
 - npm（隨 Node 附帶）。
 - **`bubblewrap`（`bwrap`）與 `socat`**：真正的 Claude CLI sandbox 硬性需要這兩個執行檔，缺一個
   Bash 圍籠就直接量成 `unconfined`（見 §1c(e)，遠端送出的 run 會被拒絕）——`sudo apt install
@@ -632,6 +637,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxTimeoutMs` | `timeoutMs` 的 engine 端 ceiling，**兩處都管**：送出時的 `overrides.timeoutMs`，以及註冊時腳本宣告的 `meta.params.agents.<label>.timeoutMs.default`。超過一律拒絕、不靜默改小。唯一不受此上限約束的是腳本內 `agent()` 的逐次 opts。`0`、負數或非整數**開機與 `--check-config` 皆拒絕**（共用驗證器 `assertPositiveInteger`） | `number` / `600000`；必須是正整數 | 否 | v21 |
 | `rwe.config.json` → `maxAppendPromptBytes` | `overrides.appendPrompt` 的位元組上限；超過在送出時以 `PARAM_OUT_OF_RANGE` 拒絕（不截斷、原文不回顯於錯誤訊息）。`0`、負數或非整數**開機與 `--check-config` 皆拒絕**（`assertPositiveInteger`） | `number` / `1024`；必須是正整數 | 否 | v21 |
 | `rwe.config.json` → `maxEffort` | `overrides.effort`／`meta.params` 宣告的 `effort` 上限（`low\|medium\|high\|xhigh\|max` 五階）。五個合法值以外的任何字串**開機與 `--check-config` 皆拒絕**，訊息列出五個合法值（`isEffort()`，`src/params/contract.ts`——跟 `resolveHarnessParams` 本身判斷合法 effort 用的是同一個函式） | `string` / `'high'`；五個合法值以外的字串拒絕開機 | 否 | v21 |
+| `rwe.config.json` → `maxRunDurationMs` | sandbox 腳本整個 run 的牆鐘（wall-clock）逾時上限——涵蓋整個 run 期間所有 `agent()`/`workflow()` 往返（不是單次呼叫，那是上面的 `maxTimeoutMs`），由 host 端計時器強制（能中止卡死子行程事件迴圈的同步 `while(true){}`，因為那會擋住子行程自己的事件迴圈，只有 host 端、獨立行程的計時器能中止它）。到期：SIGKILL 子行程、run 以 `SCRIPT_TIMEOUT` 失敗收場。`0`、負數或非整數**開機與 `--check-config` 皆拒絕**（共用驗證器 `assertPositiveInteger`，`src/config-numeric.ts`——跟上面 `maxTimeoutMs`／`maxAppendPromptBytes` 同一個函式，ADR-028 fail-closed）。同一個期限也套用在巢狀 `workflow()` 自己的 sandbox（非每層各自計時）。suspend/resume 不受影響：每次 resume 都是全新一次 `run()` 呼叫，期限重新起算。sandbox 子行程另有固定（非設定檔可調）的記憶體上限（`--max-old-space-size=512`，512 MiB）；超過時以 `SCRIPT_OOM` 失敗收場，絕不洩漏 V8 自己的當機內容（heap 統計、原始路徑、Node 版本）給呼叫端 | `number` / `14400000`（4 小時，見 `src/sandbox/host.ts` 的 `DEFAULT_MAX_RUN_DURATION_MS`） | 否 | F-1 |
 | `rwe.config.json` → `auth.enabled` | OAuth 2.0 身份認證 toggle；`false`（省略）= 開放行為（無 auth） | `boolean` / `false` | 否 | v15 |
 | `rwe.config.json` → `auth.issuer` | 這台引擎當作 OAuth 授權伺服器時對外宣告的 base URL（寫進 AS metadata、`WWW-Authenticate` 與 client redirect 的 `iss`）；省略時自動用 `http://<bind>:<實際 port>`，公開部署（HTTPS tunnel）必須明寫成對外網址。**不驗證格式**（B21，跟 `publicBaseUrl` 同一個寬鬆程度）：寫一個解析不出 host 的字串，不會被拒絕開機，只是不會被加進 Host/Origin 白名單（見「外部 ingress 安全」一節），效果是打錯字之後這台引擎自己的公開網址反而連不上自己的 `/mcp` | `string` / `http://<bind>:<port>` | 否（公開部署時建議設定） | v15 |
 | `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證。可寫明碼，或 `${secret:NAME}`（同下一列）。**`auth.enabled:true` 時沒有任何開機檢查這個鍵是不是真的填了值**——完全省略也能正常開機，直到有人真的走 Google 登入才會失敗；**不是**會擋開機的必填鍵，只是功能上一定要有才能用 Google 登入 | `string` / — | 功能上必要，但開機不驗證（見前一句） | v15 |
@@ -1514,6 +1520,35 @@ server-memory` 就是現成例子：預設把資料寫進自己 npx package 目�
 才看到語焉不詳的啟動失敗。本身不留狀態的 server（每個請求/回應處理完就沒事了，多數 server 是這種
 形狀）兩個占位符都不需要；拿不準的話，優先選不留狀態的 server，真的要留狀態就把它指到
 `${run:dir}`。
+
+**(i) 工作流程腳本沙箱（`src/sandbox/`）的三層防護（issue #157 最終修復）**：上面 (a)-(h) 全部是
+`gateway:"sdk"` 路徑**被 dispatch 的 agent** 受的限制；這裡講的是完全不同的另一個信任邊界——**workflow
+腳本本身**（`workflow_register` 的 `script` 欄位，`agent()`/`parallel()`/`workflow()` 呼叫之外的那段
+使用者/呼叫端撰寫的 JS）跑在哪裡。每次 `run_start`/`run_resume`/巢狀 `workflow()` 都會由
+`SandboxHost.run()`（`src/sandbox/host.ts`）`fork()` 出一個全新、獨立的 OS 子行程執行該腳本，三層
+防護彼此獨立，攻破其中一層仍會被下一層擋下：
+
+1. **腳本本身跑在 `node:vm` context 裡**（`src/sandbox/guards.ts` 的 `evaluateScript`）：所有注入
+   腳本的物件/函式都是在這個 context 的 realm 裡原生建出來的（不是在引擎主行程建好再單純砍掉
+   `[[Prototype]]`），連 context 的 global 物件本身（`globalThis`/頂層 `this`）都被重新接上 context
+   自己的 `Object.prototype`；context 另外關掉「從字串產生程式碼」（`codeGeneration:{strings:false}`）
+   ，腳本本身以 strict mode 編譯、以空接收者呼叫（頂層 `this === undefined`）。這層仍只是「衛生習慣」
+   ，`node:vm` 官方文件本身就明講它不是一個完整的安全邊界——下面兩層才是真正兜底的。
+2. **子行程啟動時環境變數是空的**：`fork()` 明確傳 `env:{}`，不繼承引擎自己的 `process.env`（供應商
+   金鑰、`RWE_SECRET_*` 全部不在裡面）——就算第 1 層未來被繞過，拿到的那個 `process` 本身也不帶任何
+   機密。
+3. **子行程本身在 Node 的 permission model（`--permission`）下啟動**：只開
+   `--allow-fs-read=<引擎原始碼 src/ 目錄的 realpath>/*`（子行程自己載入程式碼唯一需要讀的範圍，
+   `node_modules` 經驗證完全不需要），不給 `--allow-fs-write`/`--allow-child-process`/
+   `--allow-worker`/`--allow-addons`/`--allow-wasi` 任何一個——所以就算第 1 層被繞過、子行程真的拿到
+   一個 `process`，`fs.readFileSync`/`child_process.execSync` 這類操作仍會在 Node 自己的 permission
+   層被擋下（`ERR_ACCESS_DENIED`），讀不到任意主機檔案，也起不了任意指令。**這一層需要 Node.js
+   22.19 以上**（見 §1a 前置條件——比引擎其餘部分的 22.6 下限更高，舊版 Node 上 `--permission` 不穩定
+   甚至不存在，子行程會直接啟動失敗）。
+
+三層獨立疊加對子行程啟動時間的影響：量測約 +6%（中位數 fork→完成一個空白腳本，約 135ms→144ms），
+可忽略不計。三層防護互不依賴：安全稽核/滲透測試應三層分開驗證，不能以「第 1 層守住了」代表另外
+兩層也守住——這正是三層防護存在的理由。
 
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 

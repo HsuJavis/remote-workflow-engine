@@ -345,7 +345,11 @@ describe('the guide states the script-body form (UT-215, defect D6)', () => {
   });
 
   it('says `export const meta` is the one exception and that dropping its export costs AGENT_UNDECLARED', () => {
-    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 900);
+    // Window widened from 900 (issue #154 B1 re-opened): the paragraph now also states the
+    // function-wrapper DEAD-CODE rule (SCRIPT_INVALID) between the no-wrapper sentence and the
+    // meta-exception sentence this case checks for — the two assertions below are still about the
+    // SAME paragraph, just with more accurate content in between.
+    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 1400);
     expect(para).toMatch(/export const meta/);
     expect(para).toMatch(/AGENT_UNDECLARED/);
   });
@@ -509,7 +513,8 @@ describe('buildAuthoringGuide — v36: the untimed-call caveat and the refusalRe
 
 // v37 (DES-258, ARCH-107, TASK-256, REQ-117, REQ-218): a new "host path grants" paragraph a cold
 // author cannot infer from the tool schema alone — what Bash may touch, what an escape looks like
-// from inside the sandbox (an ordinary EACCES, never a typed engine refusal), and where a shared
+// from inside the sandbox (an ordinary EROFS — the deny is enforced as a read-only mount, never a
+// permission-bit EACCES — and never a typed engine refusal), and where a shared
 // host path comes from (an operator grant, visible per-run in agent.confinement). Deliberately
 // titled "host path grants", never "sandbox" — authoring-guide.ts already owns that word for the
 // node:vm script sandbox (SANDBOX_GLOBALS section above), and the same collision ARCH-175 avoided
@@ -522,11 +527,13 @@ describe('buildAuthoringGuide — v37: the host-path-grants paragraph (DES-258, 
     expect(text).toMatch(/host path grants/i);
   });
 
-  it('states Bash may write inside the run workspace and nowhere else, and an escape arrives as an ordinary EACCES in the tool result, never a typed engine refusal', () => {
+  it('states Bash may write inside the run workspace and nowhere else, and an escape arrives as an ordinary EROFS in the tool result, never a typed engine refusal', () => {
+    // issue #159 (DOC): the deny is enforced as a read-only bind mount (bwrap/srt), which surfaces
+    // at the syscall level as EROFS, not a permission-bit EACCES — corrected from the prior wording.
     const section = text.slice(text.search(/host path grants/i));
     expect(section).toMatch(/\bBash\b/);
     expect(section).toMatch(/run workspace/i);
-    expect(section).toMatch(/EACCES/);
+    expect(section).toMatch(/EROFS/);
     expect(section).not.toMatch(/typed engine (refusal|error)/i);
   });
 
@@ -537,9 +544,9 @@ describe('buildAuthoringGuide — v37: the host-path-grants paragraph (DES-258, 
     expect(section).toMatch(/agent\.confinement/);
   });
 
-  it('adds NO GUIDE_EXAMPLES entry for this section — an EACCES happens inside a tool result the workflow script never sees', () => {
+  it('adds NO GUIDE_EXAMPLES entry for this section — an EROFS happens inside a tool result the workflow script never sees', () => {
     const titles = GUIDE_EXAMPLES.map((ex: { title: string }) => ex.title.toLowerCase());
-    expect(titles.some((t: string) => t.includes('host path') || t.includes('sandbox') || t.includes('eacces'))).toBe(false);
+    expect(titles.some((t: string) => t.includes('host path') || t.includes('sandbox') || t.includes('erofs') || t.includes('eacces'))).toBe(false);
   });
 });
 
@@ -881,6 +888,8 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     // namespace, never routed through toErrEnvelope/ERROR_CATALOG
     'BASH_MODE_INVALID', // workflow_register SCAN_VIOLATION detail.violations[].code
     'BASH_READONLY_CONFLICT', // same
+    'AGENT_OPTS_SPREAD', // issue #154 B2: same SCAN_VIOLATION detail.violations[].code family —
+    'AGENT_OPTS_SHORTHAND', // a spread/shorthand entry in an agent() options literal
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
     'MCP_SERVER_NOT_CONNECTED', // issue #106: a non-fatal harness warning (run_agent_log / run_status warnings), not a refusal code
@@ -904,6 +913,9 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     // secret-store var names an operator can set — both are configuration var names, never engine
     // error codes.
     'RWE_SECRET_OPENROUTER_API_KEY', 'OPENROUTER_API_KEY',
+    'ERR_ACCESS_DENIED', // Node's own `node:permission` error code (sandbox/guards.ts's layer-3 OS
+    // containment, §1c(i) layer 3) — a Node runtime error code, not one of this engine's own
+    // ERROR_CATALOG tool-call refusal codes.
   ]);
 
   it('every UPPER_SNAKE token adjacent to "refused"/"warns"/backtick code style resolves to ERROR_CATALOG or the explicit allowlist', () => {

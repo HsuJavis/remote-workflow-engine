@@ -167,6 +167,12 @@ export const ERROR_CATALOG = {
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
   PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
+  // issue #162 item C: an agent()'s `schema` option is not a valid JSON Schema (e.g. a string, or
+  // any shape Ajv itself rejects at compile time, such as `schema must be object or boolean`) — a
+  // refused, terminal, RECORDED dispatch (same pre-dispatch-guard shape as PARAM_OUT_OF_RANGE/
+  // PARAM_UNKNOWN just above/below in agent-executor.ts), never an uncaught engine-side crash that
+  // leaves the agent's transcript record stuck at `running` forever.
+  INVALID_SCHEMA: { see: 'workflow_authoring_guide', hint: "an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error" },
   // issue #89 item 1: rendered from LOCKED_KEYS itself — never re-typed — so this hint cannot
   // drift from the constant the validator actually enforces (it had: six names here, omitting
   // `bash`, against LOCKED_KEYS's real seven).
@@ -210,6 +216,9 @@ export const ERROR_CATALOG = {
   NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. a legacy or refused registration)' },
   INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
   INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
+  // issue #160 BUG-3: distinct from INVALID_CRON — this names the tz field, not the cron field,
+  // when the two were previously conflated (an invalid IANA zone surfaced as field:'cron').
+  INVALID_TZ: { see: null, hint: 'the `tz` value is not a valid IANA time zone name' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
   // (mcp-facade.ts:308/322) — see NOT_TRIGGER_OWNER above.
   TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
@@ -221,6 +230,10 @@ export const ERROR_CATALOG = {
   // Run lifecycle
   RUN_NOT_FOUND: { see: null, hint: 'no run is recorded under this runId' },
   RUN_NOT_TERMINAL: { see: null, hint: 'this operation requires the run to be in a terminal state' },
+  // issue #160 BUG-1: a stopped run IS terminal (run_status/run_list already report it that way),
+  // but run_stop records no script result — run_result answers this typed code instead of either
+  // forging a fake success or misreporting RUN_NOT_TERMINAL.
+  RUN_STOPPED: { see: null, hint: 'the run was stopped (run_stop) before it completed; it has no script return value' },
   RUN_ADMISSION_LIMIT: { see: null, hint: 'the configured maxConcurrentRuns is already reached' },
   ILLEGAL_TRANSITION: { see: null, hint: 'the requested run-status transition is not allowed from its current state' },
   AGENT_LOG_NOT_FOUND: { see: null, hint: 'no transcript is recorded for this agentId on this run' },
@@ -236,6 +249,10 @@ export const ERROR_CATALOG = {
   // Workspace / assets / seeds / CAS
   WORKSPACE_ESCAPE: { see: null, hint: 'the resolved path escapes the run or asset workspace root' },
   RESERVED_PREFIX: { see: 'workflow_authoring_guide', hint: "the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)" },
+  // Issue #154 B4: a workflow name that is empty, whitespace, contains `/` or is exactly `.`/`..`,
+  // or exceeds the length bound — distinct from RESERVED_PREFIX (a well-formed name the engine still
+  // refuses) since this is "not a name at all", checked by path-verdict.ts's isValidBareName.
+  INVALID_NAME: { see: 'workflow_authoring_guide', hint: "the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters" },
   HOOKS_UNSUPPORTED: { see: null, hint: 'the requested Claude hook is not supported by the sandbox' },
   // v26 (DES-170, TASK-175, issue #64): now guide-pointing — a caller reading tools/list's item
   // schemas needs the same door to workflow_authoring_guide the other authoring refusals get.
@@ -281,6 +298,38 @@ export const ERROR_CATALOG = {
   // ACCOUNT_PENDING_APPROVAL ('none' role) semantics a human principal gets — a service account's
   // role is never 'none', so the two refusals must stay visibly distinct on the wire.
   SERVICE_ACCOUNT_DISABLED: { see: null, hint: 'this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one' },
+
+  // issue #163 (B2/DOC): two codes that were thrown for years (guards.ts's parallel()/pipeline()
+  // item-cap refusal, and toErr()'s own uncaught-throw fallback) but were never catalog members —
+  // at TOP level this was invisible (the top-level completion path never runs a thrown error
+  // through toErrorCode() at all), but the instant either code crosses a nested workflow() boundary
+  // (_handleWorkflowRequest's `toErrorCode(err.code)`), an unrecognized string folds to
+  // INTERNAL_ERROR and the child's real failure (its own business-logic throw, or its own item-cap
+  // refusal) is hidden behind an engine-fault code. Adding both here is a closed-catalog-membership
+  // fix only — no call site, no toErrorCode()/toErrEnvelope() logic, and no throw-site code
+  // assignment changes.
+  SCRIPT_ERROR: { see: null, hint: "the script itself threw an uncaught error (not an engine refusal); at a nested workflow() frame this is the CHILD workflow's own thrown error, not a fault in the engine" },
+  ITEM_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which' },
+  // issue #162 A/B: an agent()/workflow() script's RETURN value that cannot cross the sandbox's
+  // child->parent IPC boundary — either because it is not JSON-serializable (a circular reference,
+  // a BigInt) or because it exceeds the engine's return-value size cap (child-entry.ts). Before
+  // this, the child's own uncaught serialization throw escaped as an unhandled rejection and could
+  // crash the child with a raw Node-internal stack trace, surfaced to the caller as an opaque
+  // ABORTED with a leaked internal path/Node version in the message.
+  RESULT_NOT_SERIALIZABLE: { see: 'workflow_authoring_guide', hint: 'an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values' },
+  RESULT_TOO_LARGE: { see: 'workflow_authoring_guide', hint: "an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload" },
+  // F-1 (sandbox robustness sweep): a HOST-side (not vm-internal) wall-clock deadline on the whole
+  // run — covers a synchronous infinite loop (`while(true){}`, which blocks the sandboxed child's own
+  // event loop and so cannot be caught from inside it) just as much as a hung/looping sequence of
+  // awaited agent()/workflow() calls. Catalogued (not left to fold to INTERNAL_ERROR) so a nested
+  // workflow()'s own timeout surfaces to its parent script with this same code — see run-manager.ts's
+  // `toErrorCode(err.code)` at the nested-workflow() boundary for why an uncatalogued code would
+  // otherwise lose its identity there.
+  SCRIPT_TIMEOUT: { see: 'workflow_authoring_guide', hint: "the sandboxed script did not complete within the engine's run-duration deadline (maxRunDurationMs) and was terminated — reduce the work per run, or split it across multiple shorter runs/phases" },
+  // F-1: the sandbox child's own V8 heap limit (SANDBOX_CHILD_EXEC_ARGV's `--max-old-space-size`) was
+  // reached and the process was terminated — same catalog-membership rationale as SCRIPT_TIMEOUT
+  // above (closed-catalog, not INTERNAL_ERROR, at a nested workflow() boundary).
+  SCRIPT_OOM: { see: 'workflow_authoring_guide', hint: "the sandboxed script exhausted its memory limit and was terminated — avoid unbounded in-memory accumulation (e.g. append-only arrays/strings across many agent() calls); process data in smaller chunks or summarize incrementally" },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

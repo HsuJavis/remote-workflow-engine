@@ -191,6 +191,13 @@ export interface ServerConfig {
   maxTimeoutMs?: number;
   maxAppendPromptBytes?: number;
   maxEffort?: Effort;
+  // F-1 (sandbox robustness sweep): the sandboxed script's own wall-clock run deadline
+  // (SandboxHost.run(), src/sandbox/host.ts) — covers the WHOLE run's duration (every awaited
+  // agent()/workflow() round trip across every phase), not a single agent() call (that is
+  // `maxTimeoutMs` above). Absent -> host.ts's own generous `DEFAULT_MAX_RUN_DURATION_MS`. A
+  // positive integer, validated at composeConfig() (ADR-028 fail-closed), forwarded to RunManager
+  // and from there to every SandboxHost it constructs (top-level and nested).
+  maxRunDurationMs?: number;
   // v22 (ARCH-071, ADR-014, TASK-107): per-name version ceiling — same composeConfig wiring
   // convention as the three ceilings above. Goes into the SAME WorkflowCatalogOpts.ceilings object
   // (no new plumbing); absent -> WorkflowCatalog treats it as uncapped (front door, not a GC).
@@ -1026,7 +1033,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // CALLS this function later (on a nested workflow() dispatch), by which point construction has
   // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
   // relies on).
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders, maxRunDurationMs: config?.maxRunDurationMs });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/

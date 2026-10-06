@@ -297,3 +297,19 @@ describe('workflow_publish advertises the refusal a wire caller actually gets fo
     expect(channelDesc).toMatch(/INVALID_ARGUMENT/);
   });
 });
+
+// REPAIR (issue #160 BUG-2 follow-up, review D1-item1): commit 081bea5 tightened run_list.limit to
+// `{type:'integer', minimum:1}`, which refuses an explicit `limit:0` with INVALID_ARGUMENT at the
+// wire. But `limit:0` meaning "return []" is PRE-EXISTING, owner-acknowledged behavior (issue #160's
+// own DOC section), not a defect — a design choice the task's owner rules require be left unchanged
+// and only flagged. `minimum:0` still refuses every float (ajv's `integer` check) and every negative
+// value, which are the actual BUG-2 defects (raw driver error / ceiling bypass) — only an explicit
+// `0` is let back through, unchanged from before the fix.
+describe('run_list.limit keeps 0 as a valid value — the owner-acknowledged "limit:0 means []" behavior must not be refused by the BUG-2 schema tightening (issue #160 BUG-2 follow-up)', () => {
+  it('limit schema is integer with minimum 0 (not 1) — 0 is not refused, floats/negatives still are', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_list')!;
+    const limitSchema = (spec.inputSchema as unknown as { properties: Record<string, { type?: string; minimum?: number }> }).properties['limit'];
+    expect(limitSchema?.type).toBe('integer');
+    expect(limitSchema?.minimum).toBe(0);
+  });
+});

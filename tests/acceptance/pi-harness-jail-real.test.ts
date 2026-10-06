@@ -160,6 +160,26 @@ describe('pi harness v1 — file-tool jail, driven deterministically (review B3/
     }
   }, 30_000);
 
+  it('B11: a Read escape refusal names the workspace root, never the resolved host-absolute path it escaped to', async () => {
+    // issue #159 (B11): assertJailed() used to interpolate the fully-resolved absolute path into
+    // the refusal — on a real deployment that leaks the engine's internal data-directory layout
+    // (e.g. /home/rwe/.local/share/rwe-data/workflows/<wf>/runs/...) instead of naming the
+    // workspace root as docs/AUTHORING.md promises. `outdir` here stands in for that "internal
+    // layout the model has no business seeing" directory — a real spawned pi child, real file jail.
+    const fake = await startScriptedServer([{ name: 'read', args: { path: '../outdir/secret.txt' } }]);
+    try {
+      const gw = new PiGatewayClient({ secretSource: { resolve: () => 'fake-key' }, timeoutMs: 30_000, retries: 0, openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1` });
+      const { results } = await driveScript(gw, ws, ['Read']);
+      expect(results[0]?.isError).toBe(true);
+      const text = JSON.stringify(results[0]?.result);
+      expect(text).toMatch(/PATH_ESCAPES_WORKSPACE/);
+      expect(text).toContain(ws); // names the workspace root, as the authoring guide promises
+      expect(text).not.toContain(outdir); // never the resolved host-absolute directory it escaped to
+    } finally {
+      await new Promise((r) => fake.server.close(() => r(undefined)));
+    }
+  }, 30_000);
+
   it('jail/M5-parity: ls of a symlinked outside directory is refused', async () => {
     const fake = await startScriptedServer([{ name: 'ls', args: { path: 'linkdir' } }]);
     try {

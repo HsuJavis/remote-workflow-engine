@@ -174,6 +174,14 @@ export interface RunManagerDeps {
    *  unconditionally). `{live:true, workflows}` = live; `workflows` present+non-empty is the
    *  allowlist a requested name must be in. */
   serviceAccountStatus?: (principal: string) => { live: boolean; workflows?: string[] } | undefined;
+  /** F-1 (sandbox robustness sweep): forwarded verbatim onto every `SandboxHost` this manager
+   *  constructs (top-level — `_newSandbox` — and every nested `workflow()` frame's own host) as
+   *  `SandboxHostConfig.maxRunDurationMs`. Deliberately NOT part of `ceilings`/`Ceilings` above:
+   *  those bound the USER-override rung (a caller/author-settable per-call value); this is a
+   *  host-side ENGINE limit no script or caller can see or raise. Validated a positive integer at
+   *  construction (same convention as `maxWorkflowDepth` etc. via `_positiveInt`); absent ->
+   *  `DEFAULT_MAX_RUN_DURATION_MS` (host.ts's own default). */
+  maxRunDurationMs?: number;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -346,6 +354,23 @@ interface RunEntry {
   name?: string;
   status: RunStatus;
   guard: RunGuard;
+  /** issue #163 B1: a SECOND, independent concurrency gate (same `runConcurrency` width as `guard`,
+   *  no budget — it only ever calls `acquireSlot()`/`release()`, never `assertBudget()`) for nested
+   *  `workflow()` dispatch (`_handleWorkflowRequest`). `_handleWorkflowRequest` used to build a new
+   *  `SandboxHost` and fork a child for EVERY nested `workflow()` call with no throttling at all —
+   *  unlike `_handleAgentRequest`, which has always queued at `guard`'s cap. A wide `parallel()` of
+   *  nested `workflow()` calls therefore forked all N children ~simultaneously, which at high N
+   *  (confirmed ~250+) floods Node's child_process IPC and loses a `process.send()` done/error
+   *  message even though the child itself ran to completion — surfacing as the reported
+   *  `INTERNAL_ERROR "sandbox child process terminated before completion"`. A SEPARATE RunGuard
+   *  instance (not `guard` itself) is required: a nested workflow() frame holds its slot for the
+   *  ENTIRE duration of its own `nested.run()`, which in turn dispatches its own agent() calls
+   *  through `_handleAgentRequest` — if that reused `guard`, an N-wide fan-out of nested workflow()
+   *  calls at N >= runConcurrency would hold every slot on `guard` before any of them reached their
+   *  own agent() calls, which then could never acquire a slot: deadlock. Two independent pools of
+   *  the SAME width give nested workflow() the same throttling contract agent() already has,
+   *  without nested workflow() and agent() dispatch competing for the same slots. */
+  workflowGuard: RunGuard;
   /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the SAME `{usd, tokens}` limits `guard` was built
    *  from (`parseBudget(spec.budget, {source:'store'})`), kept alongside it — `RunGuard` exposes no
    *  public accessor for its own two totals (`budgetView()` stays the pre-v26, token-only view),
@@ -617,6 +642,10 @@ export class RunManager {
   private readonly _diskFloor: { assert(): void } | undefined;
   private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
   private readonly _serviceAccountStatus: ((principal: string) => { live: boolean; workflows?: string[] } | undefined) | undefined;
+  /** F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc. `undefined` (not defaulted here) ->
+   *  every `SandboxHost` constructed below applies ITS OWN default — one definition of the default
+   *  (host.ts's `DEFAULT_MAX_RUN_DURATION_MS`), never two that could drift. */
+  private readonly _maxRunDurationMs: number | undefined;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
   private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
   private readonly _runs = new Map<string, RunEntry>();
@@ -680,6 +709,14 @@ export class RunManager {
     this._diskFloor = deps.diskFloor;
     this._probeLookup = deps.probeLookup;
     this._serviceAccountStatus = deps.serviceAccountStatus;
+    // F-1: validated here (construction-time, config-load check — same convention as every
+    // `_positiveInt` field above) but NOT defaulted here — `undefined` is forwarded as-is to every
+    // `SandboxHost` constructed below, which applies ITS OWN default (host.ts's own single
+    // `DEFAULT_MAX_RUN_DURATION_MS`, never a second copy of the same default value in this file).
+    if (deps.maxRunDurationMs !== undefined && (!Number.isInteger(deps.maxRunDurationMs) || deps.maxRunDurationMs < 1)) {
+      throw new Error(`maxRunDurationMs must be a positive integer, got ${deps.maxRunDurationMs}`);
+    }
+    this._maxRunDurationMs = deps.maxRunDurationMs;
   }
 
   /** Service accounts spec send-back D1: the ONE admission check shared by start(), resume(), and
@@ -1184,6 +1221,9 @@ export class RunManager {
     // direct-construction test caller; both mean the v25 token-only shape.
     const budgetLimits = parseBudget(spec.budget, { source: 'store' });
     const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
+    // issue #163 B1: see RunEntry.workflowGuard's own doc for why this must be a SEPARATE RunGuard
+    // instance from `guard`, not a shared one.
+    const workflowGuard = new RunGuard({ concurrency: this._concurrency, budget: null });
     // v26 integration (DES-178, TASK-178, REQ-127, clarification 27): the pin computed just above
     // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
     // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
@@ -1199,6 +1239,7 @@ export class RunManager {
       name: spec.name,
       status: 'queued',
       guard,
+      workflowGuard,
       budgetLimits,
       abortController: new AbortController(),
       sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
@@ -1613,10 +1654,24 @@ export class RunManager {
     if (entry) {
       if (entry.status === 'completed') return { ok: true, value: entry.result };
       if (entry.status === 'failed' && entry.resultError) return { ok: false, error: entry.resultError };
+      // issue #160 BUG-1: `stopped` is a TERMINAL status (line 184's `TERMINAL` array, and
+      // `withTerminalRun` below both already treat it as such) but a stopped run never has an
+      // `entry.result`/`entry.resultError` — `stop()` records no script outcome. Without this
+      // branch a stopped run fell through to the generic RUN_NOT_TERMINAL return below, even
+      // though run_status/run_list both already report it as terminal (`terminalAt` set).
+      if (entry.status === 'stopped') {
+        return { ok: false, error: { code: 'RUN_STOPPED', message: `Run ${runId} was stopped before it completed; it has no script return value` } };
+      }
     }
     const stored = await this._store.getResult(runId);
     if (stored) return { ok: true, value: stored.value };
     const view = await this._store.getRun(runId);
+    // issue #160 BUG-1 (persisted-store path, mirrors the in-memory branch above): a restart
+    // loses the in-process `_runs` entry, so a stopped run must be recognised here too, before
+    // the generic RUN_NOT_TERMINAL fallback.
+    if (view?.status === 'stopped') {
+      return { ok: false, error: { code: 'RUN_STOPPED', message: `Run ${runId} was stopped before it completed; it has no script return value` } };
+    }
     // v35 (DES-232, ARCH-142, TASK-236, REQ-205): GATED — `getError` is read only when the STORED
     // status is `failed`. Ungated, this would answer `{ok:false, error}` for a run `run_status`
     // reports `interrupted` (a crash between the column write and the transition, then REQ-060's
@@ -1801,6 +1856,8 @@ export class RunManager {
     // direct-construction test caller; both mean the v25 token-only shape.
     const budgetLimits = parseBudget(spec.budget, { source: 'store' });
     const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
+    // issue #163 B1: see RunEntry.workflowGuard's own doc — same separate-pool reasoning on resume.
+    const workflowGuard = new RunGuard({ concurrency: this._concurrency, budget: null });
     // DES-068 (TASK-071): hydrate the guard's spent count from the persisted journal transcripts so
     // the budget cap is correctly enforced on resume. Fold-only (pure); never adds snapshot totals.
     // v26 (DES-183, TASK-183, ADR-047(b)): UNCONDITIONAL — the old `if (spec.budget !== null...)`
@@ -1835,6 +1892,7 @@ export class RunManager {
       status: view.status,
       legacySubstitution,
       guard,
+      workflowGuard,
       budgetLimits,
       abortController: new AbortController(),
       sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
@@ -1951,6 +2009,9 @@ export class RunManager {
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
       onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
       currentPhase: () => this._currentPhaseFor(runId),
+      // F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc — `undefined` forwards to host.ts's own
+      // default, never a second copy of that default value here.
+      maxRunDurationMs: this._maxRunDurationMs,
     });
   }
 
@@ -2301,6 +2362,14 @@ export class RunManager {
       // v26 (DES-175, REQ-124): this frame's OWN phase() call lands on its sub-card, not the parent
       // timeline — zero warnings on a legal parent script, per DES-176's own boundary.
       onPhase: (title) => { node.phases!.push(title); },
+      // F-1: the SAME deadline the top-level host got (`_newSandbox`) — a decision, not an
+      // oversight: a nested workflow() that times out surfaces to the PARENT script as a catchable
+      // `SCRIPT_TIMEOUT` (same path as any other delegate failure, `makeWorkflow` in guards.ts),
+      // which is consistent with every other nested-frame limit in this file being inherited from
+      // the parent run rather than reset per frame (the shared budget above, the shared
+      // maxWorkflowDescendants cap). A parent could still exceed ITS OWN deadline waiting on a
+      // nested frame that is individually within bounds — no narrower, per-frame deadline exists.
+      maxRunDurationMs: this._maxRunDurationMs,
     });
     // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
     // above, which wins (see `SandboxHost.run`'s own doc).
@@ -2309,11 +2378,25 @@ export class RunManager {
     // suspended or stopped. Kill it when its generation is aborted.
     const killNested = () => { void nested.abort(`${runId}-nested`, 'stop'); };
     generation.addEventListener('abort', killNested, { once: true });
+    // issue #163 B1: throttle nested workflow() dispatch exactly like _handleAgentRequest already
+    // throttles agent() dispatch — queue at `workflowGuard`'s cap (same `runConcurrency` width as
+    // `guard`, a SEPARATE pool: see RunEntry.workflowGuard's own doc for why it must not be `guard`
+    // itself). Before this, a wide parallel() of nested workflow() calls forked every child OS
+    // process essentially simultaneously with no limit at all.
+    const releaseWorkflowSlot = await entry.workflowGuard.acquireSlot();
     let outcome: Awaited<ReturnType<SandboxHost['run']>>;
     try {
+      // Re-check here, AFTER the (possibly long) queue wait above: the once-listener registered
+      // before that wait (`killNested`) may already have fired and been consumed — against a
+      // SandboxHost that had forked no child yet, a no-op (see `SandboxHost.abort()`) — while this
+      // frame sat queued. With no recheck, acquiring the slot post-abort would still fork a real
+      // child and run it to completion with no listener left to kill it, reintroducing issue #53's
+      // "stop() doesn't kill nested children" bug for exactly this queued-at-abort-time case.
+      if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
       outcome = await nested.run(`${runId}-nested`, registered.script, childArgs, null);
     } finally {
       generation.removeEventListener('abort', killNested);
+      releaseWorkflowSlot();
     }
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);

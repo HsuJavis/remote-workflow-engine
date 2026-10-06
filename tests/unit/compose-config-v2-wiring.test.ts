@@ -436,6 +436,9 @@ const PROBES: Record<string, unknown> = {
   maxTimeoutMs: 900000,
   maxAppendPromptBytes: 2048,
   maxEffort: 'medium',
+  // F-1 (sandbox robustness sweep): the sandboxed script's own wall-clock run deadline
+  // (SandboxHost.run()) — same wiring-gap class as every case above.
+  maxRunDurationMs: 7_200_000,
   maxWorkflowVersions: 12,
   mcpEgressAllowlist: ['https://mcp.example/'],
   // Issue #73: the model-probe block — a fully-specified value, so the validated+normalized object
@@ -835,5 +838,20 @@ describe('casQuota / diskFloor normalization at composeConfig()', () => {
   it('a malformed value refuses to start', async () => {
     await expect(composeConfig({ casQuota: { user: 'lots' }, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/casQuota/);
     await expect(composeConfig({ diskFloor: { percent: 500 }, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/diskFloor/);
+  });
+});
+
+// F-1 (sandbox robustness sweep): maxRunDurationMs — same ADR-028 fail-closed validation
+// convention as modelProbe/casQuota/diskFloor above (positive integer, or absent).
+describe('maxRunDurationMs validation at composeConfig() (F-1)', () => {
+  it('a non-integer or non-positive value refuses to start, naming the key', async () => {
+    await expect(composeConfig({ maxRunDurationMs: 0, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/maxRunDurationMs/);
+    await expect(composeConfig({ maxRunDurationMs: -5, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/maxRunDurationMs/);
+    await expect(composeConfig({ maxRunDurationMs: 1.5, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/maxRunDurationMs/);
+  });
+
+  it('absent -> undefined (host.ts applies its own default), boot proceeds', async () => {
+    const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['maxRunDurationMs']).toBeUndefined();
   });
 });

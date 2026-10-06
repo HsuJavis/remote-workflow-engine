@@ -14,6 +14,10 @@ export interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
+  // issue #155 B3: every ungrouped dynamic (loop/switch-body) agent() call landing in this lane —
+  // no static slot (S1-S4 don't apply), but still checkable for LANE placement (and, when the call
+  // carries a literal allowedTools, for TOOLS too). Absent/undefined when the lane has none.
+  dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 
 export interface ExpectedSlot {
@@ -22,6 +26,11 @@ export interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
+  // issue #155 B1: shared by every arm-slot of ONE if/else (`alt`) group whose arms were split
+  // across different lanes (each arm opens its own phase()) — lets checkEdges refuse a direct
+  // arm-to-arm edge even though the arms are two different slots in two different lanes. Absent
+  // for every other slot kind, and for a same-lane alt group (still one merged slot, as before).
+  altGroup?: number;
 }
 
 export interface ExpectedEdge {
@@ -80,6 +89,60 @@ if (cond) {
   await agent('a', { prompt: 'p' });
 } else {
   await agent('b', { prompt: 'p' });
+}
+`;
+
+// issue #155 B1: each if/else arm opens its OWN phase() (a lane boundary) before dispatching its
+// agent — unlike `ifElseScript` above, where both arms share lane 0 and merge into one slot.
+const ifElseSeparatePhasesScript = `
+export const meta = { name: 'ifelsephases', params: { agents: { a: {}, b: {}, c: {} } } };
+phase('p1');
+await agent('a', { prompt: 'p' });
+if (cond) {
+  phase('hot');
+  await agent('b', { prompt: 'p' });
+} else {
+  phase('cold');
+  await agent('c', { prompt: 'p' });
+}
+`;
+
+// issue #155 B1 (fan-in half): a real slot follows the split branch — both arms must fan IN to it,
+// never just the textually-last one.
+const ifElseSeparatePhasesThenMoreScript = `
+export const meta = { name: 'ifelsephasesthen', params: { agents: { a: {}, b: {}, c: {}, d: {} } } };
+phase('p1');
+await agent('a', { prompt: 'p' });
+if (cond) {
+  phase('hot');
+  await agent('b', { prompt: 'p' });
+} else {
+  phase('cold');
+  await agent('c', { prompt: 'p' });
+}
+phase('done');
+await agent('d', { prompt: 'p' });
+`;
+
+// issue #155 B1 (consecutive split branches): TWO if/else blocks in a row, each arm its own
+// phase() — branch 2's anchor must be EVERY arm of branch 1, not just the textually-last one.
+const twoConsecutiveSplitBranchesScript = `
+export const meta = { name: 'twosplits', params: { agents: { a: {}, b: {}, c: {}, d: {}, e: {} } } };
+phase('p1');
+await agent('a', { prompt: 'p' });
+if (cond1) {
+  phase('hot');
+  await agent('b', { prompt: 'p' });
+} else {
+  phase('cold');
+  await agent('c', { prompt: 'p' });
+}
+if (cond2) {
+  phase('warm');
+  await agent('d', { prompt: 'p' });
+} else {
+  phase('cool');
+  await agent('e', { prompt: 'p' });
 }
 `;
 
@@ -157,6 +220,17 @@ for (const item of items) {
 }
 `;
 
+// issue #155 B3/TOOLS-DOC: a dynamic (loop-body) call that DOES carry a literal allowedTools array
+// — checkTools must still validate the diagram's `tools:` text for it (only absent/variable
+// allowedTools is exempted, per the authoring guide's documented rule 3).
+const loopBodyWithToolsScript = `
+export const meta = { name: 'loopbodytools', params: { agents: { a: {} } } };
+phase('one');
+for (const item of items) {
+  await agent('a', { prompt: item, allowedTools: ['Read'] });
+}
+`;
+
 export const GRAPH_FIXTURES: GraphFixture[] = [
   {
     name: 'linear 3-phase',
@@ -197,7 +271,7 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
       ok: true,
       graph: {
         lanes: [{ index: 0, title: 'branch', dynamic: false, slots: [0] }],
-        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' } }],
+        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' }, altGroup: 1 }],
         edges: [],
       },
     },
@@ -209,8 +283,83 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
       ok: true,
       graph: {
         lanes: [{ index: 0, title: 'branch', dynamic: false, slots: [0] }],
-        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' } }],
+        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' }, altGroup: 1 }],
         edges: [],
+      },
+    },
+  },
+  {
+    // issue #155 B1: the anchor slot (0, 'a') must edge to EACH arm's slot (1 'hot'/b, 2 'cold'/c)
+    // — never arm-to-arm (1→2), which the pre-fix deriveExpectedGraph wrongly demanded because the
+    // intervening phase() wiped the still-open alt group's memory.
+    name: 'if/else, each arm opens its own phase() — anchor fans out to both arms, never arm-to-arm',
+    script: ifElseSeparatePhasesScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single', tools: { a: 'default' } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt', tools: { b: 'default' }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }],
+      },
+    },
+  },
+  {
+    // issue #155 B1 (fan-in half): the slot AFTER the split branch fans in from EVERY arm.
+    name: 'if/else, each arm its own phase(), THEN a real slot — fans in from BOTH arms',
+    script: ifElseSeparatePhasesThenMoreScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+          { index: 3, title: 'done', dynamic: false, slots: [3] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single', tools: { a: 'default' } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt', tools: { b: 'default' }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
+          { index: 3, lane: 3, labels: ['d'], kind: 'single', tools: { d: 'default' } },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }, { from: 1, to: 3 }, { from: 2, to: 3 }],
+      },
+    },
+  },
+  {
+    // issue #155 B1 (consecutive split branches): branch 2's anchors are EVERY arm of branch 1.
+    name: 'two consecutive if/else branches, each arm its own phase() — full fan-out/fan-in chain',
+    script: twoConsecutiveSplitBranchesScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+          { index: 3, title: 'warm', dynamic: false, slots: [3] },
+          { index: 4, title: 'cool', dynamic: false, slots: [4] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single', tools: { a: 'default' } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt', tools: { b: 'default' }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
+          { index: 3, lane: 3, labels: ['d'], kind: 'alt', tools: { d: 'default' }, altGroup: 2 },
+          { index: 4, lane: 4, labels: ['e'], kind: 'alt', tools: { e: 'default' }, altGroup: 2 },
+        ],
+        edges: [
+          { from: 0, to: 1 }, { from: 0, to: 2 },
+          { from: 1, to: 3 }, { from: 2, to: 3 },
+          { from: 1, to: 4 }, { from: 2, to: 4 },
+        ],
       },
     },
   },
@@ -345,7 +494,7 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
     expected: {
       ok: true,
       graph: {
-        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [] }],
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }, { label: 'b' }] }],
         slots: [],
         edges: [],
       },
@@ -357,7 +506,19 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
     expected: {
       ok: true,
       graph: {
-        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [] }],
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] }],
+        slots: [],
+        edges: [],
+      },
+    },
+  },
+  {
+    name: 'agent() inside a for body with a literal allowedTools — dynamicLabels carries it (#155 B3/TOOLS-DOC)',
+    script: loopBodyWithToolsScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [], dynamicLabels: [{ label: 'a', tools: ['Read'] }] }],
         slots: [],
         edges: [],
       },

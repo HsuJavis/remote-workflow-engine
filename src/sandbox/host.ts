@@ -6,10 +6,65 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import type { Tokens } from '../types.js';
 
 const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.ts');
+
+// #157 B1 layer 2: the sandbox child's own env — empty, not the parent's. See the `fork()` call
+// site's own doc for why this is both the strictest posture and sufficient for this child's needs.
+const SANDBOX_CHILD_ENV: NodeJS.ProcessEnv = {};
+
+// #157 layer 3 (OS/Node-level containment, defense in depth under layers 1+2): even if a future
+// regression reopens the in-realm escape (layer 1) AND somehow the child carried secrets anyway
+// (layer 2), Node's permission model (stable since Node 22.19) still denies the child fs/child-
+// process/worker/addon access outright. `--allow-fs-read` is scoped to exactly the engine's OWN
+// source directory (`src/`, resolved to its REAL path — a production install may be reached through
+// a symlink swapped atomically by self-update, and the permission model matches the literal path the
+// loader resolves to, not the symlink it was entered through) — the only reads child-entry.ts/
+// guards.ts's own module graph needs (confirmed empirically: no `node_modules` read ever occurs —
+// every import across that module graph is either a relative `.ts` file or a `node:` builtin).
+// Deliberately NOT granted: --allow-fs-write, --allow-child-process, --allow-worker, --allow-addons,
+// --allow-wasi — the sandbox child has no legitimate need for any of them (agent()/workflow() calls
+// round-trip over IPC to this trusted host, which dispatches its OWN, separately-confined child for
+// agent work; the sandbox child itself never spawns anything).
+const SANDBOX_SRC_DIR = realpathSync(dirname(dirname(CHILD_ENTRY)));
+
+// F-1 (sandbox robustness sweep): caps the sandbox child's own V8 heap. A memory-growth loop in a
+// script (e.g. an unbounded array/string accumulation across many agent() calls) now surfaces as a
+// coded SCRIPT_OOM (see `run()`'s `exit` handler below) instead of the OS eventually OOM-killing the
+// process with no diagnosis, or — worse — degrading the whole host under memory pressure. 512 MiB is
+// generous for a workflow script's own bookkeeping (it never holds model output itself: that streams
+// back over IPC into the run's own journal/store, not into the script's variables) while still
+// bounding the worst case. NOT currently configurable, by choice: making it config-driven would turn
+// `SANDBOX_CHILD_EXEC_ARGV` from a constant into a per-run-computed array, which breaks the "exact
+// array fork() receives" invariant `sandbox-host-env-scrub.test.ts` pins — revisit with a real
+// operator need, not speculatively.
+export const SANDBOX_CHILD_MAX_OLD_SPACE_MB = 512;
+
+export const SANDBOX_CHILD_EXEC_ARGV: readonly string[] = [
+  '--experimental-transform-types',
+  '--disable-warning=ExperimentalWarning',
+  '--permission',
+  `--allow-fs-read=${SANDBOX_SRC_DIR}/*`,
+  `--max-old-space-size=${SANDBOX_CHILD_MAX_OLD_SPACE_MB}`,
+];
+
+// F-1: generous default for `SandboxHostConfig.maxRunDurationMs` — a run's script lifetime spans
+// EVERY agent()/workflow() round trip across every phase (bounded per-call by `maxTimeoutMs`,
+// default 600_000ms), not a single call, so the run-wide deadline must be much larger. 4 hours
+// comfortably covers a long multi-phase workflow while still catching a genuine infinite loop
+// (`while(true){}`, which blocks the child's own event loop and so can never be caught from inside
+// it) or an abandoned/hung run instead of holding its concurrency slot forever.
+export const DEFAULT_MAX_RUN_DURATION_MS = 4 * 60 * 60 * 1000;
+
+// F-1: the V8 fingerprint printed to stderr when a child is terminated for exceeding its own heap
+// limit (`--max-old-space-size`) — a FATAL ERROR that aborts the process (Node has no catchable JS
+// exception for this; it is not a normal uncaught exception). Matched against the RAW stderr tail
+// (never the sanitized one — the OOM branch below never surfaces ANY of the raw text to the caller,
+// sanitized or not, since it is V8's own internal crash dump: heap statistics, absolute source
+// paths, the Node version).
+const V8_OOM_FINGERPRINT_RE = /FATAL ERROR:.*heap|JavaScript heap out of memory/i;
 
 export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
@@ -27,6 +82,32 @@ export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: numb
  *  `BUDGET_EXCEEDED`, so a script now reads a closed-catalog code a `tools/list` reader can
  *  anticipate. `AgentCapError` is the one still surfacing as its class name (out of scope here,
  *  recorded so the next reader knows it is a leftover, not a design). */
+/** issue #162 A/B (defense in depth): `stderrTail` below is RAW text from the child's own stdio
+ *  pipe — if the child crashes for ANY reason (OOM, a real engine bug, a future change to
+ *  child-entry.ts that reintroduces an uncaught throw), Node's default uncaught-exception
+ *  reporting prints a stack trace through its own internal modules, which names absolute source
+ *  paths (this engine's own install path on the host it's running on) and the exact Node version —
+ *  implementation details that must never cross the trust boundary into a caller-visible ABORTED
+ *  message (a possibly-remote, possibly-untrusted caller). Scrubs unconditionally, whether or not
+ *  the crash was ever classified — the one place this content is surfaced to a caller. */
+// g2 minor (sandbox robustness sweep): the prior `\bv\d+\.\d+\.\d+\b` matched ANY vX.Y.Z-shaped
+// substring — including a legitimate script-authored message naming a dependency/semver version
+// (e.g. "dependency v1.2.3 failed"), mangling it into unreadable nonsense. Narrowed to the two
+// shapes that are actually NODE'S OWN version: the exact running `process.version` (the sandbox
+// child is forked from this same binary, so a leaked version string is always this literal), and/or
+// Node's own "Node.js vX.Y.Z" uncaught-exception trailer line format — never a bare "vX.Y.Z" with no
+// Node-identifying context.
+const NODE_VERSION_LITERAL_RE = new RegExp(process.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+const NODE_JS_VERSION_LINE_RE = /\bNode\.js v\d+\.\d+\.\d+\b/g;
+
+export function sanitizeStderrTail(raw: string): string {
+  return raw
+    .replace(/node:internal\/[^\s:)]+/g, '<node internal>')
+    .replace(/(?:\/[\w.-]+)+\.(?:ts|js|mjs|cjs)(?=:\d+|\b)/g, '<path>')
+    .replace(NODE_JS_VERSION_LINE_RE, 'Node.js <node version>')
+    .replace(NODE_VERSION_LITERAL_RE, '<node version>');
+}
+
 export function ipcErrorCode(err: unknown, fallback: string): string {
   if (err && typeof err === 'object') {
     const e = err as { code?: unknown; name?: unknown };
@@ -68,6 +149,14 @@ export interface SandboxHostConfig {
    *  read would stamp the LATER phase, not the one the agent() call was actually issued under.
    *  Absent -> no phase snapshot travels with this call (dry-run seam / no phase tracking wired). */
   currentPhase?: () => { title: string; index: number } | undefined;
+  /** F-1 (sandbox robustness sweep): wall-clock deadline for ONE `run()` execution — covers the
+   *  WHOLE script lifetime, including every awaited agent()/workflow() round trip, not just CPU
+   *  time: a synchronous `while(true){}` blocks the child's own event loop, so only a HOST-side
+   *  timer (running in a separate OS process) can ever terminate it. Defaults to
+   *  `DEFAULT_MAX_RUN_DURATION_MS`. Suspend/resume are unaffected: `resume()` installs a brand-new
+   *  `SandboxHost`/`run()` call (run-manager.ts's own issue #53 note on `entry.sandbox` identity), so
+   *  each LIVE execution gets its own fresh deadline — time spent suspended never counts against it. */
+  maxRunDurationMs?: number;
 }
 
 const DEFAULT_AGENT_RESPONSE = 'stub-response';
@@ -100,9 +189,14 @@ export class SandboxHost {
     const wireBudget = this._config.budget !== undefined ? this._config.budget : budget === null ? null : { usd: null, tokens: budget };
     return new Promise((resolve) => {
       let settled = false;
+      // F-1: cleared inside `settle` itself (every settle path — done/error/exit/spawn-error, AND
+      // the deadline firing on itself below) so exactly one of "the run finished" / "the deadline
+      // fired" ever wins, and a run that finishes normally never leaves a live timer behind.
+      let deadlineTimer: NodeJS.Timeout | undefined;
       const settle = (outcome: RunOutcome) => {
         if (settled) return;
         settled = true;
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
         this._active.delete(runId);
         resolve(outcome);
       };
@@ -110,18 +204,64 @@ export class SandboxHost {
       mkdirSync(this._config.workspaceRoot, { recursive: true });
       const child = fork(CHILD_ENTRY, [], {
         cwd: this._config.workspaceRoot,
-        execArgv: ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
+        execArgv: [...SANDBOX_CHILD_EXEC_ARGV],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        // #157 B1 layer 2 (defense in depth): `fork()` defaults to inheriting the FULL parent env —
+        // this engine process's own (provider API keys, per main.ts's documented "read straight from
+        // process.env"). The script-escape path that could have READ that env is closed in
+        // guards.ts (commit 149d887); this independently ensures the child never CARRIES it at all,
+        // so a future regression in the reachability fix would not also be a secrets leak.
+        // child-entry.ts/guards.ts read no `process.env.*` of their own, so an empty env is both the
+        // strictest posture and sufficient (verified: a child forked with `env: {}` boots and runs a
+        // real script to completion).
+        env: SANDBOX_CHILD_ENV,
       });
       this._active.set(runId, { child, settle });
+
+      // F-1: the wall-clock deadline for this ONE execution. Started here (not after 'ready') so a
+      // child that never even boots (a corrupt install, a missing CHILD_ENTRY file) is also bounded,
+      // not just a child that boots and then hangs. Fires in the HOST process, never the child's own
+      // event loop — the only thing that can terminate a synchronous `while(true){}`, which blocks
+      // the child's event loop and so can never notice its own deadline from the inside.
+      const deadlineMs = this._config.maxRunDurationMs ?? DEFAULT_MAX_RUN_DURATION_MS;
+      deadlineTimer = setTimeout(() => {
+        settle({
+          error: {
+            code: 'SCRIPT_TIMEOUT',
+            message: `the script did not complete within its ${deadlineMs}ms run-duration deadline (maxRunDurationMs) and was terminated`,
+          },
+        });
+        child.kill('SIGKILL');
+      }, deadlineMs);
+      // Node-only API (no-op under some non-Node runtimes' timer shims) — don't hold this process's
+      // event loop open for a potentially multi-hour timer when every OTHER reason to stay alive
+      // (the HTTP listener, other in-flight runs) has already gone away.
+      deadlineTimer.unref?.();
 
       // Capture the child's stderr so an uncaught crash (an exception/rejection that exits the
       // process before it can send 'done'/'error') is not lost — its tail is surfaced in the
       // ABORTED message below instead of an opaque "terminated before completion". (Previously the
       // pipe had no reader, so every sandbox-child crash reason was discarded.)
       let stderrTail = '';
+      // F-1 (real-check finding): a REAL V8 heap-limit abort prints `<-- Last few GCs -->`, THEN
+      // `<-- JS stacktrace -->`, THEN the `FATAL ERROR: ...` line, THEN 10-20 native frames each
+      // naming the engine's own install path (`N: 0x... node::Abort() [<long path>]`) — measured at
+      // ~2.5KB total. `stderrTail`'s 2000-char windowed trim (needed to bound what an ordinary crash
+      // surfaces in the ABORTED message) can push the FATAL ERROR line itself out of the window
+      // before `exit` fires, which would misclassify a real OOM as a generic ABORTED. Detected
+      // independently, as each chunk arrives, against a SEPARATE small untrimmed buffer (never fed
+      // into the caller-visible `stderrTail`/ABORTED path) — `sawOomFingerprint` is sticky (sets
+      // once, never clears) so a later chunk evicting the fingerprint from `oomCarry` can't un-detect
+      // it; `oomCarry` itself keeps only the last 200 chars of raw stream (prepended to each new
+      // chunk before testing) so a fingerprint split exactly across two `'data'` events is still
+      // matched, without accumulating the whole crash dump a second time.
+      let sawOomFingerprint = false;
+      let oomCarry = '';
       child.stderr?.on('data', (d: Buffer) => {
-        stderrTail = (stderrTail + d.toString()).slice(-2000);
+        const text = d.toString();
+        stderrTail = (stderrTail + text).slice(-2000);
+        if (!sawOomFingerprint && V8_OOM_FINGERPRINT_RE.test(oomCarry + text)) sawOomFingerprint = true;
+        oomCarry = (oomCarry + text).slice(-200);
       });
 
       child.on('message', (msg: any) => {
@@ -183,10 +323,24 @@ export class SandboxHost {
       });
 
       child.on('exit', (code, signal) => {
+        const rawTail = stderrTail.trim();
+        // F-1: a V8 heap-limit abort is NOT an ordinary crash — it is a FATAL ERROR that aborts the
+        // process outright (no catchable JS exception), so it always reaches this branch, never
+        // guards.ts's own classification. Checked via the STICKY `sawOomFingerprint` set as each
+        // stderr chunk arrived (see its own doc above) — NEVER by re-testing the windowed, trimmed
+        // `rawTail` here, which a real crash's many native frames can push the fingerprint line out
+        // of before `exit` fires (measured in this change's own real-check: a real OOM's ~2.5KB dump
+        // overflows the 2000-char window). V8's own crash dump content (heap statistics, absolute
+        // source paths, the Node version) must never cross the trust boundary either way — the code
+        // alone is the caller-visible signal, with a clean, fixed message.
+        if (sawOomFingerprint) {
+          settle({ error: { code: 'SCRIPT_OOM', message: 'the sandboxed script exhausted its memory limit and was terminated' } });
+          return;
+        }
         // A killed/crashed child that never sent done/error (e.g. aborted mid-script). Include the
         // exit code/signal and the tail of the child's own stderr so a real crash (uncaught error,
-        // OOM, determinism-guard throw) is diagnosable instead of opaque.
-        const detail = stderrTail.trim();
+        // determinism-guard throw) is diagnosable instead of opaque.
+        const detail = sanitizeStderrTail(rawTail);
         settle({
           error: {
             code: 'ABORTED',

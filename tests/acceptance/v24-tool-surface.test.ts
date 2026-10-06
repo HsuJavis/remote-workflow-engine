@@ -271,6 +271,14 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
     await pollStatus(toSuspend, (s) => s === 'suspended');
     setup.suspendedRunId = toSuspend;
 
+    // issue #160 BUG-1: a run already driven to `stopped`, for run_result's RUN_STOPPED fixture —
+    // distinct from `stopTargetRunId` above, which run_stop's OWN happy fixture stops during the
+    // test loop itself (after run_result's row has already had its turn, declared order).
+    const toStop = await startLiveRun();
+    await callOk('run_stop', { runId: toStop });
+    await pollStatus(toStop, (s) => s === 'stopped');
+    setup.stoppedRunId = toStop;
+
     // schedule_delete's happy fixture DESTROYS its target, and it sorts before schedule_setEnabled
     // in TOOL_SPECS — one shared id would make the later row fail for the earlier row's reason.
     const deletable = await callOk('schedule_create', { cron: '0 0 2 1 *' });

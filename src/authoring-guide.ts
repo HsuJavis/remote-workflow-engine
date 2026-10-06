@@ -407,9 +407,13 @@ function numberWord(n: number): string {
 // or (when the posture is not known at render time) states both.
 const HOST_PATH_GRANTS_CONFINED =
   '`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as ' +
-  "an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a " +
-  'script that shells out to a global cache sees a failed command, not a special error your ' +
-  'script can branch on.\n\n' +
+  // issue #159 (DOC): the confinement mechanism denies by mounting the denied region READ-ONLY
+  // (bwrap/srt — see gateway/bash-confinement.ts's own "Read-only file system" comments), which
+  // surfaces at the syscall level as EROFS, not an EACCES permission-bit denial. Corrected from
+  // the previous (wrong) "an ordinary EACCES" claim.
+  "an ordinary `EROFS` (read-only filesystem) inside the agent's own tool result, not as an " +
+  'engine refusal — a script that shells out to a global cache sees a failed command, not a ' +
+  'special error your script can branch on.\n\n' +
   'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
   "something a script requests — the list applied to a given run appears in that run's own " +
   '`agent.confinement` log line.';
@@ -747,10 +751,20 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     section(
       'The sandbox API',
       'A workflow script runs inside a restricted VM context with exactly these globals — nothing else ' +
-        `is reachable (\`${SANDBOX_GLOBALS.join('\`, \`')}\`; \`Date\`/\`Math\` are GUARDED, see below):\n\n` +
+        `is reachable (\`${SANDBOX_GLOBALS.join('\`, \`')}\`; \`Date\`/\`Math\`/\`Intl\` are GUARDED, see below). ` +
+        'The script body IS the function the engine calls — write statements and a `return`, with no ' +
+        '`function`/`async function` DECLARATION wrapped around any of it (`const thunk = () => ' +
+        "agent(...)`, used for parallel()/pipeline(), is fine — only a top-level `function` STATEMENT " +
+        'is refused, `PARSE_ERROR`, issue #154). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` ' +
+        "DIRECTLY — `agent('label', {...})`, not `const a = agent; a(...)` or `agent.call(...)` — " +
+        'registration can only see a call it can read at the call site; an alias, a `.call`/`.bind`, or ' +
+        'any other indirection is refused `SCRIPT_INVALID` (issue #154).\n\n' +
         "- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string " +
         'identifier (`/^[A-Za-z_][\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; ' +
-        '`options` MUST be a literal object (no variable, no spread).\n' +
+        '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +
+        'property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be ' +
+        'checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / ' +
+        '`AGENT_OPTS_SHORTHAND` at registration, issue #154).\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +
@@ -775,14 +789,92 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "THAT workflow's own `meta.params.agents` defaults — your run's `overrides.agents` never reach " +
         'them (labels belong to the workflow that declares them, even when a name collides) — and its ' +
         "models are priced into, and bound by, your run's budget.\n\n" +
-        '`Date` and `Math` are present but GUARDED — three calls are refused `DETERMINISM_GUARD` ' +
-        "because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value " +
-        'baked into that key would change it on replay and re-dispatch an already-paid call:\n\n' +
+        '`Date`, `Math`, and `Intl` are present but GUARDED — the calls below are refused ' +
+        '`DETERMINISM_GUARD` because resume replays agent() calls keyed by prompt+opts, so a ' +
+        'wall-clock or random value baked into that key would change it on replay and re-dispatch an ' +
+        'already-paid call:\n\n' +
         determinismGuardRows() +
-        '\n\nThis is documented as HYGIENE, not a security boundary — `node:vm` is not a sandbox, and ' +
-        'the real containment is the per-run child PROCESS, which holds no secrets/store/network ' +
-        'handle, not these two guarded globals. `setTimeout`, `fetch`, `console`, `require`, ' +
-        '`process`, and `fs` are simply absent from the context, not merely shadowed.',
+        // #157 B1: this paragraph used to claim the vm context ITSELF was the security boundary
+        // ("process... simply absent from the context, not merely shadowed... holds no secrets/
+        // store/network handle") — that was FALSE as implemented: `<injected>.constructor.
+        // constructor(...)` reached the sandbox child process's own `process`/`fetch`, which (before
+        // #157's fix) carried the engine's full inherited env. Both halves are now actually true —
+        // the escape itself is closed (every value exposed into the context is realm-safe) AND the
+        // child process now holds no inherited secrets regardless — but the paragraph is rewritten
+        // to describe the REAL, now-closed containment rather than repeat a claim that happened to
+        // be right for the wrong reason.
+        '\n\n`setTimeout`, `fetch`, `require`, `process`, and `fs` are genuinely absent from this ' +
+        'context (not merely shadowed) — standard `node:vm` behavior, unrelated to the guards above. ' +
+        // issue #157 B3: `console` is a default global of ANY vm context (like `Intl` was before it
+        // was guarded above) that this engine never removes — it is present, not absent, so it does
+        // not belong in the "genuinely absent" list this sentence used to include it in. Documented
+        // here rather than removed (an owner-decision call, not a security fix either way: removing
+        // it would be a design choice, not a defect) — it is harmless to leave present: it writes to
+        // an inert per-realm stream a real forked child's own stdout never surfaces (confirmed: a
+        // script's `console.log(...)` produces no observable output anywhere this engine reads).
+        '`console` IS present (unlike the five above) but writes nowhere observable — a `node:vm` ' +
+        'context gets its own inert console whose output never reaches this engine\'s logs or your ' +
+        'run\'s result; it is harmless, just not useful; `log(...)` (listed above) is this engine\'s ' +
+        'own no-op placeholder, included for forward compatibility, not a working substitute today.' +
+        // #157 B1 (Gate 8 v2 re-review): the prior wording here claimed layer 1 alone meant "there is
+        // no live reference back to engine internals to find" — false as a general claim even after
+        // that round's fix: a RETURNED Promise, a static method's own un-severed prototype, and a
+        // guard thrower's own `.prototype` object each turned out to be a separate value this engine
+        // exposes that the first pass missed, each re-opening the same escape. `node:vm` itself
+        // documents that it is not a security boundary (any value or function this engine builds and
+        // hands in is a NEW surface to re-check, every time); this guide should not promise otherwise.
+        //
+        // #157 (final blocker, Gate 8 v3 re-review): the script's own top-level `this`/`globalThis`
+        // turned out to be the one surface the per-property fixes above never reached (`vm.createContext`
+        // never re-realms the global object it is handed). This paragraph now names all THREE
+        // independent layers this engine actually runs, in the order a defeat of one falls back to the
+        // next — see guards.ts's `evaluateScript` and host.ts's `SandboxHost.run` for the real code.
+        '\n\nSecurity containment here is THREE independent layers, not one — defeating any single one ' +
+        'still leaves your script stopped by the next:\n\n' +
+        '1. **In-realm hardening** (`node:vm`, hygiene, not a boundary by itself): every value exposed ' +
+        'into your script — `agent`/`parallel`/`pipeline`/`phase`/`log`/`workflow`, the `Math.random`/' +
+        '`Intl.DateTimeFormat`/`Date.now` guards, the budget accessors — is built NATIVE to your ' +
+        "script's own vm context (not merely given its `[[Prototype]]` severed after the fact), and so " +
+        "is the context's global object itself (`globalThis`/top-level `this`), reparented to the " +
+        "context's own `Object.prototype` instead of keeping the engine's. The context additionally " +
+        'disables code generation from strings (`codeGeneration: { strings: false }`), so even the ' +
+        "context's own (otherwise harmless) `Function`/`eval` cannot build new code from a string, and " +
+        'your script body is compiled strict-mode and invoked with no receiver, so a bare top-level ' +
+        '`this` is `undefined`, not the global object — closing `this.constructor...`, `eval(...)`, ' +
+        '`globalThis.constructor...`, and (as a side effect of strict mode) `arguments.callee`/`.caller` ' +
+        'and `Error.prepareStackTrace` reassignment (a classic `vm`-sandbox stack-walking escape, ' +
+        'locked to always-`undefined` on this call\'s own `Error`) all at once. `node:vm` itself still ' +
+        'documents that it does not provide a complete boundary, so this layer is treated as hygiene, ' +
+        'not as the reason the next two layers are "just in case".\n\n' +
+        '2. **Empty child environment**: your script runs in a real, separate OS process (layer 3 ' +
+        "below), forked with NO inherited environment at all — no provider API keys, no " +
+        '`RWE_SECRET_*`, nothing from the engine\'s own process.env. Even if layer 1 were ever defeated ' +
+        'by an escape nobody has found yet, the process it reaches carries no secrets to begin with.\n\n' +
+        "3. **OS-level containment of that same process**: it is launched under Node's own permission " +
+        'model (`--permission`), with filesystem READ permitted only for the engine\'s own source ' +
+        'directory (nothing else — not your workspace, not the rest of the host) and NO permission at ' +
+        'all to write files, spawn a child process, start a worker thread, or load a native addon. So ' +
+        'even a live `process` handle reached through a future layer-1 regression cannot read an ' +
+        'arbitrary host file or run a shell command — both fail closed with `ERR_ACCESS_DENIED`.\n\n' +
+        'Treat anything a script can reach as untrusted until it leaves the forked child regardless — ' +
+        'these layers are independent precisely so that a gap found in one is still caught by another.\n\n' +
+        "A script's own top-level `return` value (and an agent()/workflow() call's resolved value, " +
+        'which crosses the same boundary) must be JSON-serializable — no circular references, no ' +
+        "BigInt — and under 10MB serialized; either violation is refused "
+        + '(`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a ' +
+        'summary or a reference (an id, a CAS blob hash) instead of a large payload. ' +
+        '`RESULT_NOT_SERIALIZABLE` also rejects an agent()/workflow()/phase() call whose OWN ' +
+        "arguments aren't JSON-serializable (there is no size check on a call's own arguments, so " +
+        "`RESULT_TOO_LARGE` never applies there) — that failure is local to the one call your script " +
+        'made and is catchable with a normal try/catch, not run-terminating.\n\n' +
+        'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
+        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, a generous multi-hour default " +
+        "covering every agent()/workflow() round trip across every phase — not a single call, which " +
+        "`timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either " +
+        'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
+        'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
+        "which blocks the script's own event loop and so cannot be caught or reported from inside " +
+        'the script itself.',
     ),
   );
 
@@ -797,11 +889,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       '**The script body is a bare async function body.** The statements you send as `script` ARE ' +
         'the body of an `async function` the engine wraps for you: `await` at the top level is ' +
         'fine, and a `return` returns the run result. Do not wrap it yourself — ' +
-        '`export default async function () { … }`, a `function` wrapper of any kind, and any ' +
-        'top-level `import` are refused `PARSE_ERROR` (which names the line and the construct). ' +
-        '`export const meta = {…}` is the ONE exception, and it must be written exactly that way, ' +
-        'as a literal object: dropping the `export` makes the whole declaration invisible to the ' +
-        'engine, and every `agent()` label is then refused `AGENT_UNDECLARED`.\n\n' +
+        '`export default async function () { … }`, a top-level `function`/`async function` ' +
+        'STATEMENT, and any top-level `import` are refused `PARSE_ERROR` (which names the line and ' +
+        "the construct). A `const` arrow function used as a thunk (for `parallel()`/`pipeline()`, " +
+        'or called back out by name) is fine — but an `agent()`/`phase()` call written inside ANY ' +
+        'function (a `const`-bound arrow, a nested `function` declaration, …) that the script never ' +
+        'demonstrably reaches is refused `SCRIPT_INVALID`, issue #154: the engine counts the call ' +
+        'site as live and the run silently dispatches nothing. ' +
+        '`export const meta = {…}` is the ONE exception to the no-wrapper rule, and it must be ' +
+        'written exactly that way, as a literal object: dropping the `export` makes the whole ' +
+        'declaration invisible to the engine, and every `agent()` label is then refused ' +
+        '`AGENT_UNDECLARED`.\n\n' +
         'Every `agent(label, ...)` call in the script needs a matching `meta.params.agents.<label>` ' +
         'declaration — `model`, `effort`, and `timeoutMs` are all required, each with a `.default` (v24: ' +
         'there is no implicit engine default per agent). `appendPrompt`, `skills`, and `mcp` are optional. ' +
@@ -886,7 +984,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'contract is refused before your script runs at all. `appendPrompt` is the separate, ' +
         "author-OPT-IN channel for a caller's own free-text instructions, framed so the model can " +
         "tell them apart from yours — a `string`-typed arg you interpolate verbatim carries no such " +
-        'framing, so a loose `{type:\'string\'}` (no `enum`/`maxLength`-style `max`) lets ANY text ' +
+        'framing, so a loose `{type:\'string\'}` (no `enum`, no byte-length `max`) lets ANY text ' +
         'through your own bound; constrain it with `enum`/`max`, or route free text through ' +
         '`appendPrompt` instead.\n\n' +
         `\`meta.params.knobs\` and \`meta.defaults\` are retired — a script that declares either is ` +
@@ -978,7 +1076,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // guide that always asserted confinement was a false claim on a host measured 'unconfined'
       // (this one). The grant LIST itself stays static (no GuideCeilings.grantedHostPaths, no new
       // ServerConfig hop — the owner left that half of DES-258's question unresolved on purpose).
-      // No GUIDE_EXAMPLES entry either way (an EACCES happens inside a tool result the workflow
+      // No GUIDE_EXAMPLES entry either way (an EROFS happens inside a tool result the workflow
       // script never sees, so an example demonstrating one would teach an invalid example).
       hostPathGrantsBody(ceilings.confinementPosture),
     ),
@@ -1101,7 +1199,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // interacting with fan-out width at all.
       `\`parallel([a, b, c, ...])\` dispatches every thunk, and this deployment runs up to ` +
         `**${ceilings.runConcurrency}** of them at a time (\`runConcurrency\`, operator-configurable). ` +
-        'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.\n\n' +
+        'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated. ' +
+        'This applies identically whether the fanned-out thunks call `agent()` or nested `workflow()` ' +
+        '— a wide `parallel()` of nested `workflow()` calls is throttled by its own same-sized pool, ' +
+        'never left to fork every child process at once (issue #163).\n\n' +
         "`run_start`'s `budget` takes TWO independent limits — `{usd?, tokens?}` — either of which " +
         'may be omitted or `null` for unbounded. Each is a **stop-dispatching signal, not a hard ' +
         'ceiling**, and this is the honest description of what the engine can enforce. Before each ' +
@@ -1152,16 +1253,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '}\n' +
         '```\n\n' +
         // v25 (DES-169, REQ-120, issue #63): the example above rethrew every time until v25, because
-        // the code rode on `name` and nothing set `code`. The realm caveat is stated rather than
-        // fixed — see the DES entry: it is a property of `node:vm`, not of errors, and holds for
-        // `args` too, so "fix it for errors" would teach a half-truth.
-        'Branch on `e.code` — not on `e instanceof Error`. Your script runs in a `node:vm` context ' +
-        'whose intrinsics are a different realm from the engine that raises these errors, so ' +
-        '`instanceof` is **false** for anything the engine hands you: engine errors, and `args` and ' +
-        'its contents alike (`args instanceof Object` is false; `Array.isArray(args.xs)` is true — ' +
-        'realm-safe checks work). Errors you construct yourself inside the script are ordinary and ' +
-        'unaffected. Every engine refusal carries the same `e.code`/`e.name` catalog code as ' +
-        '`run_result.error.code`, plus a human `e.message`.\n\n' +
+        // the code rode on `name` and nothing set `code`. The realm caveat BELOW was stated rather
+        // than fixed back then — see the DES entry; that has since changed (#157 B1 — the realm
+        // mismatch itself was the same hazard a sandbox-escape vector exploited, so fixing the
+        // SECURITY hole fixed this caveat as a side effect).
+        '`e.code` is still the recommended handle — a plain own property, simplest to branch on, and ' +
+        'unaffected by anything below. `e instanceof Error` and `args instanceof Object` now also ' +
+        'work correctly (fixed by #157 B1): every value the engine hands your script — errors, ' +
+        '`args`, agent()/workflow() results — is built natively in your script\'s own realm, not the ' +
+        'engine\'s, so standard checks (`instanceof`, `Array.isArray`) behave exactly as they would ' +
+        'for a value you constructed yourself. Every engine refusal carries the same `e.code`/`e.name` ' +
+        'catalog code as `run_result.error.code`, plus a human `e.message`.\n\n' +
         // issue #127: an agent() call cut short by run_suspend/run_stop, a timeout, or a terminal
         // provider error still charges whatever it spent — the pre-#127 engine silently dropped it,
         // so cost/budget under-counted real provider spend and a budget could be exceeded without
@@ -1273,9 +1375,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`|label|` saying what it means. Members of one `parallel([...])` (or of the two arms of one ' +
         'branch) are never edged to each other — they fan in to whatever follows.\n\n' +
         'A script whose shape a static read cannot resolve at all — an `agent()` inside a `for`, ' +
-        '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rules 3 and 4 ' +
-        'have nothing to compare there. Declare the agent\'s node inside that lane anyway; the ' +
-        'label check (both ways) still applies.\n\n' +
+        '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rule 4 has no ' +
+        'edges to compare there. Declare the agent\'s node inside that lane anyway: rule 2 (LANE) ' +
+        'still requires it, and rule 3 (TOOLS) still applies whenever that call declares a literal ' +
+        '`allowedTools` array — only an absent or variable `allowedTools` on a dynamic-lane call ' +
+        'skips rule 3, same as everywhere else.\n\n' +
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +

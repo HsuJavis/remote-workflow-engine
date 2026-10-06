@@ -248,7 +248,7 @@ const VALID_SPEC_TYPES = ['string', 'number', 'enum'] as const;
 // `min`/`max` must never register as-is and poison every later read of the stored row. Typed
 // rejection, nothing stored. Unchanged in v24 — still the one shape guard every declared spec
 // (an agent's model/effort/timeoutMs/appendPrompt, or an args entry) goes through.
-function validateSpecShape(param: string, spec: ParamSpec): Err | null {
+function validateSpecShape(param: string, spec: ParamSpec, effortLenient = false): Err | null {
   if (!(VALID_SPEC_TYPES as readonly string[]).includes(spec.type)) {
     return invalid(param, `type must be one of ${VALID_SPEC_TYPES.join(', ')}`);
   }
@@ -277,17 +277,50 @@ function validateSpecShape(param: string, spec: ParamSpec): Err | null {
   if (spec.type === 'enum' && (spec.min !== undefined || spec.max !== undefined)) {
     return invalid(param, "min/max do not apply to a type:'enum' spec — enum membership is its own bound");
   }
+  // issue #161 B3: a type:'enum' spec with no `enum` at all registers a knob that is misleadingly
+  // UNRESTRICTED (checkValueAgainstSpec's membership check only fires `enum !== undefined`, so
+  // `{type:'enum'}` alone accepts any string); `enum:[]` is the opposite and worse failure — it
+  // registers a knob that admits NO value at all (`[].includes(x)` is always false). Reject both at
+  // registration, same precedent as the min/max-on-enum rejection above.
+  // EXCEPTION — the agent's own `effort` key (`effortLenient`): omitting `enum` there has an
+  // existing, documented meaning — `boundEffort` (above) defaults a missing/non-array `enum` to
+  // `ALL_EFFORTS`, clamped by the `maxEffort` ceiling — so `{type:'enum', default:'low'}` with no
+  // `enum` is "every effort the ceiling allows", not an unrestricted/unusable knob. An EXPLICIT
+  // `enum:[]` on effort is still rejected: `Array.isArray([])` is true, so `boundEffort` does NOT
+  // fall back for it — a declared empty array disables every override regardless of the key.
+  if (spec.type === 'enum' && spec.enum === undefined && !effortLenient) {
+    return invalid(param, "a type:'enum' spec requires a non-empty enum array");
+  }
+  if (spec.type === 'enum' && Array.isArray(spec.enum) && spec.enum.length === 0) {
+    return invalid(param, "a type:'enum' spec requires a non-empty enum array");
+  }
+  // issue #161 B4: min > max registers a knob that rejects every value — neither bound is wrong
+  // individually (both are numbers), only their relationship is.
+  if (spec.min !== undefined && spec.max !== undefined && spec.min > spec.max) {
+    return invalid(param, 'min must be <= max');
+  }
+  // issue #161 B5: an unknown field (a typo like `maxLength`/`required`, or the engine-internal
+  // `ceilingKey` — never author-set per its own doc comment on ParamSpec) silently registers as a
+  // no-op today. `unit`/`description` are legitimate author-facing documentation fields: an `args`
+  // entry's ParamSpec is surfaced VERBATIM on `workflow_describe` (workflow-view.ts), so both are
+  // read by a caller even though neither is enforced here.
+  const KNOWN_SPEC_FIELDS = ['type', 'default', 'enum', 'min', 'max', 'unit', 'description'];
+  for (const k of Object.keys(spec)) {
+    if (!KNOWN_SPEC_FIELDS.includes(k)) {
+      return invalid(param, `unknown field "${k}"`);
+    }
+  }
   return null;
 }
 
 /** model/effort/timeoutMs share one shape: declared, spec-valid, and carrying a `.default` — v24's
  *  "all three REQUIRED with .default" (DES-144). Extra semantic checks (alias / effort-rank /
  *  ceiling) are layered on top per key by the caller. */
-function validateRequiredKeySpec(param: string, spec: unknown): Err | null {
+function validateRequiredKeySpec(param: string, spec: unknown, effortLenient = false): Err | null {
   if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) {
     return invalid(param, 'must be an object');
   }
-  const shapeErr = validateSpecShape(param, spec as ParamSpec);
+  const shapeErr = validateSpecShape(param, spec as ParamSpec, effortLenient);
   if (shapeErr) return shapeErr;
   if ((spec as ParamSpec).default === undefined) {
     return invalid(param, 'must declare a default (v24: no implicit engine default per agent)');
@@ -333,8 +366,18 @@ function validateOneAgentSpec(
       if (err) return err;
     }
   }
+  // Issue #154 B3: every semantic check above validates `model.default` against the ENGINE's own
+  // concerns (catalog existence, format) — none of them check it against THIS SAME SPEC's own
+  // declared `enum`. A `default` outside the author's own `enum` registered fine, then the
+  // IDENTICAL value as a run-time override was refused `PARAM_OUT_OF_RANGE` — a self-contradictory
+  // contract. `checkValueAgainstSpec` is the SAME validator `args.*` defaults already go through
+  // (line ~472) for exactly this purpose; reused here, not re-typed.
+  if (typeof model.default === 'string') {
+    const ownBoundsErr = checkValueAgainstSpec(`agents.${label}.model.default`, model.default, model);
+    if (!ownBoundsErr.ok) return invalid(`agents.${label}.model`, ownBoundsErr.message);
+  }
 
-  const effortErr = validateRequiredKeySpec(`agents.${label}.effort`, spec.effort);
+  const effortErr = validateRequiredKeySpec(`agents.${label}.effort`, spec.effort, /* effortLenient */ true);
   if (effortErr) return effortErr;
   const effort = spec.effort as ParamSpec;
   if (!isEffort(effort.default)) {
@@ -342,6 +385,12 @@ function validateOneAgentSpec(
   }
   if (EFFORT_RANK[effort.default] > EFFORT_RANK[DEFAULT_CEILINGS.maxEffort]) {
     return invalid(`agents.${label}.effort`, `default exceeds the engine ceiling ${DEFAULT_CEILINGS.maxEffort}`);
+  }
+  // Issue #154 B3: same asymmetry as model above — `isEffort`/the ceiling check never consult THIS
+  // SPEC's own `effort.enum` (e.g. an author narrowing the choices to `['medium','high']`).
+  {
+    const ownBoundsErr = checkValueAgainstSpec(`agents.${label}.effort.default`, effort.default, effort);
+    if (!ownBoundsErr.ok) return invalid(`agents.${label}.effort`, ownBoundsErr.message);
   }
 
   const timeoutErr = validateRequiredKeySpec(`agents.${label}.timeoutMs`, spec.timeoutMs);
@@ -352,6 +401,13 @@ function validateOneAgentSpec(
   }
   if (timeoutMs.default > DEFAULT_CEILINGS.maxTimeoutMs) {
     return invalid(`agents.${label}.timeoutMs`, `default exceeds the engine ceiling ${DEFAULT_CEILINGS.maxTimeoutMs}`);
+  }
+  // Issue #154 B3: same asymmetry again — only the ENGINE ceiling was ever checked; an author's own
+  // declared `min`/`max` on this same spec (e.g. `min: 70000`) never gated `.default` at
+  // registration, only a later override attempt (`PARAM_OUT_OF_RANGE`).
+  {
+    const ownBoundsErr = checkValueAgainstSpec(`agents.${label}.timeoutMs.default`, timeoutMs.default, timeoutMs);
+    if (!ownBoundsErr.ok) return invalid(`agents.${label}.timeoutMs`, ownBoundsErr.message);
   }
 
   if (spec.appendPrompt !== undefined) {
@@ -526,11 +582,15 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
   // never fires. This matches how `maxAppendPromptBytes`/`MAX_SUPPLIED_BYTES` already express
   // string limits elsewhere in this module.
   const bound = spec.type === 'string' ? Buffer.byteLength(value as string, 'utf8') : (value as number);
+  // issue #156/#161 DOC: for a type:'string' spec, `min`/`max` bound the UTF-8 BYTE length (see
+  // `bound` above) — the message must say so, or a caller sees e.g. "exceeds the maximum of 5" for
+  // '中文' (6 bytes, 2 characters) with no indication the 5 is a byte count, not a character count.
+  const unitSuffix = spec.type === 'string' ? ' bytes' : '';
   if (spec.min !== undefined && bound < spec.min) {
     return {
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
-      message: `${param} is below the minimum of ${spec.min}`,
+      message: `${param} is below the minimum of ${spec.min}${unitSuffix}`,
       detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max } },
     };
   }
@@ -543,7 +603,7 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
       // fired without re-deriving effectiveAgentBounds.
       message: spec.ceilingKey !== undefined
         ? `${param} exceeds the engine ceiling ${spec.ceilingKey} ${spec.max}`
-        : `${param} exceeds the maximum of ${spec.max}`,
+        : `${param} exceeds the maximum of ${spec.max}${unitSuffix}`,
       detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max }, ...(spec.ceilingKey !== undefined ? { ceiling: spec.ceilingKey } : {}) },
     };
   }
@@ -553,13 +613,33 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
 /** The rejection table over ONE agent's overrides — reused per label by `validateUserOverrides`.
  *  `spec` is already the EFFECTIVE (author ∩ ceiling) bound for this agent (via
  *  `effectiveAgentBounds`). */
+/** issue #156/#161 DOC: a non-object value (a string, array, or null) passed where this module
+ *  expects a plain `{key: value}` map — guarded BEFORE any `Object.entries`/`Object.keys` call over
+ *  it, because JS iterates a string character-by-character and an array by numeric index, producing
+ *  a confusing `"0"`-keyed refusal instead of a shape error. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 function validateOneAgentOverride(
   label: string,
   eff: AgentParamSpec,
-  raw: Record<string, unknown>,
+  raw: unknown,
   catalog: ModelCatalogSnapshot,
   warn: (w: ModelRefWarning) => void,
 ): { ok: true; value: Record<string, unknown> } | Err {
+  if (!isPlainObject(raw)) {
+    return invalid(
+      `agents.${label}`,
+      `agent override must be an object mapping tunable key to value, not ${Array.isArray(raw) ? 'an array' : typeof raw}`,
+    );
+  }
+  // issue #156 DOC: a locked/unknown-key refusal's `detail.tunable` must list only the keys THIS
+  // agent actually declared — advertising e.g. `appendPrompt` to an agent that never declared it
+  // tells the caller a knob exists that `PARAM_UNKNOWN` will immediately refuse.
+  const declaredTunable = (TUNABLE_KEYS as readonly string[]).filter(
+    (k) => (eff as unknown as Record<string, unknown>)[k] !== undefined,
+  );
   const value: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(raw)) {
     if ((LOCKED_KEYS as readonly string[]).includes(key)) {
@@ -567,7 +647,7 @@ function validateOneAgentOverride(
         ok: false,
         code: 'PARAM_LOCKED',
         message: `"${key}" is a locked parameter and cannot be overridden`,
-        detail: { param: key, agent: label, tunable: [...TUNABLE_KEYS] },
+        detail: { param: key, agent: label, tunable: declaredTunable },
       };
     }
     if (!(TUNABLE_KEYS as readonly string[]).includes(key)) {
@@ -575,7 +655,7 @@ function validateOneAgentOverride(
         ok: false,
         code: 'PARAM_UNKNOWN',
         message: `"${key}" is not a recognized override`,
-        detail: { param: key, agent: label, tunable: [...TUNABLE_KEYS] },
+        detail: { param: key, agent: label, tunable: declaredTunable },
       };
     }
 
@@ -586,6 +666,22 @@ function validateOneAgentOverride(
         code: 'PARAM_UNKNOWN',
         message: `agent "${label}" does not declare "${key}"`,
         detail: { param: key, agent: label },
+      };
+    }
+
+    // issue #156 B1: timeoutMs needs a hard engine-side floor (integer >= 1) independent of the
+    // author's own min — unlike REGISTRATION (validateOneAgentSpec above, "default must be an
+    // integer >= 1"), this OVERRIDE door only ever enforced an author-declared min/max, so an agent
+    // whose author left timeoutMs unbounded admitted 0 / -1 / 1.5 into the stored "effective"
+    // snapshot. Checked before the generic spec check (which has no opinion on integrality) and
+    // only when `val` is actually a number (a wrong-type value like "fast" still gets the generic
+    // PARAM_OUT_OF_RANGE "wrong type" message below, unchanged).
+    if (key === 'timeoutMs' && typeof val === 'number' && (!Number.isInteger(val) || val < 1)) {
+      return {
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: 'timeoutMs must be an integer >= 1',
+        detail: { param: 'timeoutMs', agent: label, supplied: val },
       };
     }
 
@@ -699,6 +795,15 @@ export function validateUserOverrides(
     };
   }
   const agentsIn = obj.agents ?? {};
+  // issue #156 DOC: `overrides.agents` itself must be a plain object — a string or array used to be
+  // iterated char/index-wise by the `Object.entries` loop below, producing a confusing numeric-
+  // looking label (`"0"`) instead of a shape refusal.
+  if (!isPlainObject(agentsIn)) {
+    return invalid(
+      'agents',
+      `overrides.agents must be an object mapping agent label to its override fields, not ${Array.isArray(agentsIn) ? 'an array' : typeof agentsIn}`,
+    );
+  }
   const known = Object.keys(c.agents);
   const resultAgents: Record<string, Record<string, unknown>> = {};
   const warnings: ModelRefWarning[] = [];

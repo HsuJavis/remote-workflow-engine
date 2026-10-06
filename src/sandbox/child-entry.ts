@@ -19,6 +19,20 @@ import type { SandboxBudget } from '../types.ts';
 interface Spend { usd: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } }
 const ZERO_SPEND: Spend = { usd: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 
+// F-2: the SAME safe-message strategy as guards.ts's own `safeMessage` (inlined, not imported, for
+// the identical reason `ZERO_SPEND` above is inlined) — `String(err)` throws on `Object.create(null)`
+// or a stringification-poisoned object, so a classification exception here must never itself throw.
+function safeMessage(err: unknown): string {
+  try {
+    if (err instanceof Error) return err.message;
+  } catch { /* fall through to the next strategy */ }
+  try {
+    return String(err);
+  } catch {
+    return 'the script threw a value that could not be converted to a message';
+  }
+}
+
 // Extends the DES-006 ParentMsg 'init' shape with the fields a standalone child process needs
 // at spawn time (script text, runId) that the seam's steady-state protocol doesn't carry.
 interface StartMsg {
@@ -47,8 +61,64 @@ const pendingWorkflow = new Map<number, { resolve: (v: unknown) => void; reject:
 // real accounting as of that call) — never a hard-coded stub.
 let spentSoFar: Spend = ZERO_SPEND;
 
+// issue #162 A/B: the engine's documented return-value size cap (AUTHORING.md) — generous for an
+// ordinary summary/result object while bounding the IPC message Node has to serialize and the
+// parent has to buffer.
+const MAX_RESULT_BYTES = 10 * 1024 * 1024;
+
+// g2 minor (sandbox robustness sweep, item 4): `send()` is now the RUN-TERMINATING path only —
+// 'ready'/'phase' (small literals, never unserializable in practice) and the run's own final
+// 'done'/'error' (child-entry.ts's `main()` already pre-checks 'done' with JSON.stringify; 'error'
+// envelopes are small catalogued literals this process built itself). `trySend` below is the one
+// non-terminating path: an agent()/workflow() call REQUEST, whose opts/args are script-authored
+// values that can carry the same shape (a circular reference, a BigInt) — for THAT case the failure
+// must reject the one call, not end the run (see `trySend`'s own doc).
 function send(msg: unknown): void {
-  process.send?.(msg);
+  try {
+    process.send?.(msg);
+  } catch (e) {
+    // issue #162 A/B: `process.send()` throws SYNCHRONOUSLY when its argument is not
+    // JSON-serializable (a circular reference, a BigInt) — Node's own IPC 'json' serialization,
+    // with a raw stack trace through `node:internal/child_process/serialization` (file paths, line
+    // numbers, the running Node version: internal engine implementation details). Before this, that
+    // throw was never caught anywhere — every caller of `send()` is itself called from `main()`,
+    // which is invoked un-awaited (`void main(msg)` below) — so it became an UNHANDLED REJECTION in
+    // this child process, which Node's default handling can turn into a crash, printing that raw
+    // stack to stderr; `host.ts`'s `stderrTail` then spliced it verbatim into the caller-visible
+    // ABORTED message (a trust-boundary leak — see host.ts's `sanitizeStderrTail` for the second,
+    // defense-in-depth layer of this same fix). Falls back to a SANITIZED, catalogued error carrying
+    // no stack/internal path; a second `process.send` failure (the sanitized object is a small plain
+    // literal and should never itself be unserializable) is swallowed — there is genuinely nothing
+    // more this process can do, and it still exits below.
+    const runId = (msg as { runId?: unknown } | null)?.runId;
+    try {
+      process.send?.({
+        t: 'error',
+        runId,
+        error: { code: 'RESULT_NOT_SERIALIZABLE', message: `a value sent to the parent is not JSON-serializable: ${safeMessage(e)}` },
+      });
+    } catch {
+      /* already sanitized; nothing more to do */
+    }
+  }
+}
+
+/** g2 minor item 4: a NON-terminal outbound message — today, only an agent()/workflow() call
+ *  REQUEST — whose payload fails Node's IPC 'json' serialization. Before this fix, `send()`'s single
+ *  generic catch treated this identically to a failure sending the run's own final result: it ended
+ *  the WHOLE RUN with `RESULT_NOT_SERIALIZABLE`, even though the actual defect is entirely local to
+ *  the script's own `agent()`/`workflow()` call (a circular or BigInt value the script itself built
+ *  and handed to one call) and is exactly the kind of recoverable, catalogued failure a script's own
+ *  `try/catch` is supposed to be able to handle (same precedent as a BUDGET_EXCEEDED refusal,
+ *  IT-140). Returns `true` on success, or the coded failure to reject that one call with — never
+ *  sends the run-terminating fallback and never touches `process.exit`. */
+function trySend(msg: unknown): true | { code: string; message: string } {
+  try {
+    process.send?.(msg);
+    return true;
+  } catch (e) {
+    return { code: 'RESULT_NOT_SERIALIZABLE', message: `the value passed to this call is not JSON-serializable: ${safeMessage(e)}` };
+  }
 }
 
 process.on('message', (msg: InMsg) => {
@@ -128,7 +198,15 @@ async function main(msg: StartMsg): Promise<void> {
     async agent(prompt: string, opts?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingAgent.set(callSeq, { resolve, reject }));
-      send({ t: 'agent', runId: msg.runId, callSeq, prompt, opts: opts ?? {} });
+      // g2 minor item 4: a non-serializable `opts` (circular reference, BigInt) rejects THIS call —
+      // the pending entry is removed (nothing will ever resolve/reject it over IPC) and the error is
+      // thrown synchronously, which an `async` function turns into a rejected `result` for the
+      // caller's own try/catch — never a run-terminating message.
+      const sent = trySend({ t: 'agent', runId: msg.runId, callSeq, prompt, opts: opts ?? {} });
+      if (sent !== true) {
+        pendingAgent.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
       return result;
     },
     args: msg.args,
@@ -136,16 +214,62 @@ async function main(msg: StartMsg): Promise<void> {
     async workflow(nameOrRef: unknown, wfArgs?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingWorkflow.set(callSeq, { resolve, reject }));
-      send({ t: 'workflow', runId: msg.runId, callSeq, ref: nameOrRef, args: wfArgs });
+      // g2 minor item 4: same non-terminal handling as agent() above — a non-serializable `wfArgs`
+      // rejects THIS workflow() call only.
+      const sent = trySend({ t: 'workflow', runId: msg.runId, callSeq, ref: nameOrRef, args: wfArgs });
+      if (sent !== true) {
+        pendingWorkflow.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
       return result;
     },
     phase(title: string): void {
-      send({ t: 'phase', runId: msg.runId, title });
+      // g2 minor item 4: `phase()` is synchronous (void), not awaited — a non-serializable `title`
+      // (typed `string` at compile time only; a script can hand it anything at runtime) rejects
+      // THIS call synchronously, same non-terminal handling as agent()/workflow() above, never the
+      // run-terminating send().
+      const sent = trySend({ t: 'phase', runId: msg.runId, title });
+      if (sent !== true) {
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
     },
   };
 
-  const result = await evaluateScript(msg.script, api);
+  // F-2 (defense in depth): `evaluateScript` classifies every script-thrown value internally (its
+  // own try/catch, hardened not to itself throw on a non-stringifiable thrown value — see guards.ts
+  // `safeMessage`) and is expected to always RESOLVE with a `ScriptResult`, never reject. This
+  // wrapper is the second, independent layer: if some future regression (or an unanticipated failure
+  // during `vm.createContext`/context setup, before the script's own try/catch is even entered) ever
+  // makes it reject anyway, that exception must not propagate out of `main()` uncaught — `main()` is
+  // invoked un-awaited (`void main(msg)` below), so an uncaught rejection here would crash this child
+  // process the same way issue #162's `send()` throw once did. Always yields SCRIPT_ERROR, with the
+  // SAME safe, fixed-fallback message extraction guards.ts uses (inlined — this module does not
+  // resolve local `.js`→`.ts` value imports, see the `checkMeta` note in guards.ts).
+  let result: Awaited<ReturnType<typeof evaluateScript>>;
+  try {
+    result = await evaluateScript(msg.script, api);
+  } catch (e) {
+    result = { kind: 'error', error: { code: 'SCRIPT_ERROR', message: safeMessage(e) } };
+  }
   if (result.kind === 'done') {
+    // issue #162 A/B: an explicit pre-check (mirrors guards.ts's own MAX_SCRIPT_BYTES pattern) —
+    // computing `JSON.stringify` here ALSO catches a circular/BigInt return value with a controlled
+    // code+message for the single most common case (the script's own `return`), rather than relying
+    // only on `send()`'s generic catch above (which still covers every OTHER outbound message).
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(result.value) ?? 'null';
+    } catch (e) {
+      send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_NOT_SERIALIZABLE', message: `the returned value is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}` } });
+      process.exit(0);
+      return;
+    }
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    if (bytes > MAX_RESULT_BYTES) {
+      send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_TOO_LARGE', message: `the returned value is ${bytes} bytes, exceeding the ${MAX_RESULT_BYTES}-byte return-value cap` } });
+      process.exit(0);
+      return;
+    }
     send({ t: 'done', runId: msg.runId, result: result.value });
   } else {
     // v36 (DES-248): `refusalRef` hoisted to a SIBLING of `error` on the wire — `host.ts`'s

@@ -18,6 +18,9 @@ interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
+  // issue #155 B3/TOOLS-DOC — mirrors the canonical TASK-185 home's ExpectedLane in lockstep (see
+  // this file's own header comment above for why that's a structural copy, not an import).
+  dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 interface ExpectedSlot {
   index: number;
@@ -25,6 +28,8 @@ interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
+  // issue #155 B1 — mirrors the canonical TASK-185 home's ExpectedSlot in lockstep.
+  altGroup?: number;
 }
 interface ExpectedGraph {
   lanes: ExpectedLane[];
@@ -271,7 +276,13 @@ export function checkMermaid(
       (def.effort !== undefined && effort !== def.effort) ||
       (def.timeoutMs !== undefined && timeoutMs !== def.timeoutMs)
     ) {
-      return err('VALUE_MISMATCH', { line: node.line });
+      // issue #155 B2b: name the label and the specific declared field(s) that disagreed, same as
+      // every other v2 rule's self-describing `expected` — only the fields `def` actually declares.
+      const expectedValue: { label: string; model?: string; effort?: string; timeoutMs?: number } = { label };
+      if (def.model !== undefined) expectedValue.model = def.model;
+      if (def.effort !== undefined) expectedValue.effort = def.effort;
+      if (def.timeoutMs !== undefined) expectedValue.timeoutMs = def.timeoutMs;
+      return err('VALUE_MISMATCH', { line: node.line, expected: expectedValue });
     }
   }
 
@@ -340,6 +351,17 @@ function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
       }
     }
   }
+  // issue #155 B3: a dynamic (loop/switch-body) call gets no static slot, but the authoring guide's
+  // own rule 2 still requires its node to sit inside the right lane — only rules 3 (conditionally)
+  // and 4 are documented as exempt for it.
+  for (const lane of expected.lanes) {
+    for (const entry of lane.dynamicLabels ?? []) {
+      const block = subgraphBlocks[lane.index];
+      if (nodeInLane(labelToNodes.get(entry.label), block) === undefined) {
+        return err('LANE_MISMATCH', { line: labelToNodes.get(entry.label)?.[0]?.line ?? 1, expected: lane });
+      }
+    }
+  }
   return null;
 }
 
@@ -356,6 +378,20 @@ function checkTools(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
       const actual = node?.text.split('<br/>')[2]?.trim();
       if (actual !== expectedStr) {
         return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label, tools: toolsExpected } });
+      }
+    }
+  }
+  // issue #155 B3/TOOLS-DOC: a dynamic-lane call that DOES declare a literal allowedTools array is
+  // checkable — only the documented absent/variable case (dynamicLabels entry with no `tools`) is
+  // exempt.
+  for (const lane of expected.lanes) {
+    for (const entry of lane.dynamicLabels ?? []) {
+      if (entry.tools === undefined) continue;
+      const node = nodeInLane(labelToNodes.get(entry.label), subgraphBlocks[lane.index]);
+      const expectedStr = entry.tools.length === 0 ? 'tools: none' : `tools: ${[...entry.tools].sort().join(', ')}`;
+      const actual = node?.text.split('<br/>')[2]?.trim();
+      if (actual !== expectedStr) {
+        return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label: entry.label, tools: entry.tools } });
       }
     }
   }
@@ -394,6 +430,13 @@ function checkEdges(
   for (const slot of expected.slots) {
     for (const id of idsForSlot(slot)) nodeToSlot.set(id, slot.index);
   }
+  // issue #155 B1 follow-up: before B1, E1 only ever emitted `{i, i+1}`, so rule (b)'s
+  // `|fromSlot-toSlot| !== 1` was an exact (if indirect) test for "not an expected edge". B1 made
+  // the expected edge SET non-linear (an anchor fanning out to several arms, several arms fanning in
+  // to one slot) — slot-index adjacency no longer means "expected" and non-adjacency no longer means
+  // "not expected". Membership in `expected.edges` (checked both directions, matching how arm (a)'s
+  // reachability and `<-->`'s symmetry are both already direction-agnostic here) is the real test.
+  const expectedEdgeKeys = new Set(expected.edges.flatMap((e) => [`${e.from}>${e.to}`, `${e.to}>${e.from}`]));
 
   // (a) reachability through non-agent intermediates.
   for (const ee of expected.edges) {
@@ -403,7 +446,14 @@ function checkEdges(
     const targets = new Set(idsForSlot(toSlot));
     const starts = idsForSlot(fromSlot);
     const reached = starts.some((startId) => pathThroughNonAgents(startId, targets, adj, nodes));
-    if (!reached) return err('EDGE_MISMATCH', { line: 1, expected: ee });
+    // issue #155 DOC: self-describing `expected` — labels, not bare slot indices (LANE_MISMATCH /
+    // TOOLS_MISMATCH are already self-describing; this one wasn't).
+    if (!reached) {
+      return err('EDGE_MISMATCH', {
+        line: 1,
+        expected: { from: { index: fromSlot.index, labels: fromSlot.labels }, to: { index: toSlot.index, labels: toSlot.labels } },
+      });
+    }
   }
 
   // (b) a direct agent→agent edge linking non-consecutive slots needs a `|label|`.
@@ -412,8 +462,13 @@ function checkEdges(
     const fromSlot = nodeToSlot.get(e.from);
     const toSlot = nodeToSlot.get(e.to);
     if (fromSlot === undefined || toSlot === undefined) continue;
-    if (Math.abs(fromSlot - toSlot) !== 1 && !e.label) {
-      return err('EDGE_MISMATCH', { line: e.line, expected: { from: fromSlot, to: toSlot } });
+    if (!expectedEdgeKeys.has(`${fromSlot}>${toSlot}`) && !e.label) {
+      const fromS = slotById.get(fromSlot);
+      const toS = slotById.get(toSlot);
+      return err('EDGE_MISMATCH', {
+        line: e.line,
+        expected: { from: { index: fromSlot, labels: fromS?.labels ?? [] }, to: { index: toSlot, labels: toS?.labels ?? [] } },
+      });
     }
   }
 
@@ -423,6 +478,31 @@ function checkEdges(
     const ids = new Set(idsForSlot(slot));
     for (const e of edges) {
       if (ids.has(e.from) && ids.has(e.to)) return err('EDGE_MISMATCH', { line: e.line, expected: slot });
+    }
+  }
+
+  // (c2) issue #155 B1: no edge between two DIFFERENT slots that are arms of the SAME alt group —
+  // rule (c) above only catches two labels packed into ONE slot (same lane); a split alt group's
+  // arms are two different slots in two different lanes, so they need their own check.
+  const altGroupSlots = new Map<number, ExpectedSlot[]>();
+  for (const slot of expected.slots) {
+    if (slot.altGroup === undefined) continue;
+    const arr = altGroupSlots.get(slot.altGroup) ?? [];
+    arr.push(slot);
+    altGroupSlots.set(slot.altGroup, arr);
+  }
+  for (const armSlots of altGroupSlots.values()) {
+    if (armSlots.length < 2) continue;
+    const armIds = armSlots.map((s) => ({ slot: s, ids: new Set(idsForSlot(s)) }));
+    for (const e of edges) {
+      const from = armIds.find((a) => a.ids.has(e.from));
+      const to = armIds.find((a) => a.ids.has(e.to));
+      if (from && to && from.slot.index !== to.slot.index) {
+        return err('EDGE_MISMATCH', {
+          line: e.line,
+          expected: { from: { index: from.slot.index, labels: from.slot.labels }, to: { index: to.slot.index, labels: to.slot.labels } },
+        });
+      }
     }
   }
 
