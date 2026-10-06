@@ -370,10 +370,27 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // Issue audit A8 (owner decision 2026-10-06): an unrecognized `gateway` value used to fall through
   // silently to the direct-fetch default (nothing here validated the raw string) — refused at boot
   // now, naming the offending value and the full valid set, never a silent fallback.
-  if (fileConfig.gateway !== undefined && !(['sdk', 'direct-fetch', 'pi'] as const).includes(fileConfig.gateway)) {
+  // NULL-WAS-DEFAULT (repair round, 2026-10-06): `!= null` (not `!== undefined`) so an explicit
+  // JSON `null` — which `?? 'sdk'` below already treats as "use the default" — is still absent, not
+  // a refused bad value. Same reasoning applies to every other `!== undefined`/`=== undefined`
+  // guard this repair round touches below.
+  if (fileConfig.gateway != null && !(['sdk', 'direct-fetch', 'pi'] as const).includes(fileConfig.gateway)) {
     throw new Error(
       `rwe.config.json: gateway "${fileConfig.gateway}" is not a valid value (must be one of "sdk" | "direct-fetch" | "pi"). ` +
         'Refusing to start (ADR-028 fail-closed: a typo must never silently fall back to a different gateway).',
+    );
+  }
+  // Repair round defect A1-LEGACYOWNER-TYPE (2026-10-06): `auth.legacyOwner` is a principal-id
+  // STRING (src/auth/auth-service.ts), compared with `===` against `principal.id` (authz.ts) — a
+  // number or boolean can never match that comparison, and an empty string is indistinguishable
+  // from "no backfill wanted" everywhere else this repair round's A1 logging (workflow-catalog.ts)
+  // treats it. Every other key this repair round touches refuses the wrong type at boot; this one
+  // didn't. `== null` (not `!== undefined`) so an explicit `null` stays "absent, no backfill" —
+  // same NULL-WAS-DEFAULT convention as every other guard in this function.
+  if (auth?.legacyOwner != null && (typeof auth.legacyOwner !== 'string' || auth.legacyOwner === '')) {
+    throw new Error(
+      `rwe.config.json: auth.legacyOwner must be a non-empty string principal id, got ${JSON.stringify(auth.legacyOwner)}. ` +
+        'Refusing to start (ADR-028 fail-closed: a non-string/empty value can never match a principal id and would silently disable backfill).',
     );
   }
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
@@ -418,7 +435,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // RAW value is still what reaches ServerConfig.seedRefAllowlist below (RunManager normalizes it
   // again at construction — same convention as every other RunManager-owned cap/ceiling: composeConfig
   // validates, the runtime owner still does its own pass).
-  if (fileConfig.seedRefAllowlist !== undefined) {
+  if (fileConfig.seedRefAllowlist != null) {
     normalizeSeedRefAllowlist(fileConfig.seedRefAllowlist);
   }
   // Issue audit A9/B4/B21 (owner decision 2026-10-06): the caps/ceilings RunManager/createServer
@@ -439,7 +456,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // is `undefined`, so `EFFORT_RANK[e] <= undefined` is false for every `e`) — the engine still
   // booted, with every effort override/declaration refused from then on. Reuses `isEffort`
   // (params/contract.ts) — the SAME membership check `resolveHarnessParams` itself would use.
-  if (fileConfig.maxEffort !== undefined && !isEffort(fileConfig.maxEffort)) {
+  if (fileConfig.maxEffort != null && !isEffort(fileConfig.maxEffort)) {
     throw new Error(
       `rwe.config.json: maxEffort "${fileConfig.maxEffort}" is not a valid effort (must be one of low/medium/high/xhigh/max). ` +
         'Refusing to start (ADR-028 fail-closed).',
@@ -452,7 +469,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // first time an author's `asset_push({kind:'mcp'})` mysteriously gets EGRESS_DENIED. A non-array
   // value gets its own clear refusal (mirrors `normalizeSeedRefAllowlist`'s own shape check) rather
   // than iterating a string's characters or throwing a raw "is not iterable" on a number.
-  if (fileConfig.mcpEgressAllowlist !== undefined) {
+  if (fileConfig.mcpEgressAllowlist != null) {
     if (!Array.isArray(fileConfig.mcpEgressAllowlist)) {
       throw new Error(`rwe.config.json: mcpEgressAllowlist must be an array, got ${typeof fileConfig.mcpEgressAllowlist}. Refusing to start (ADR-028 fail-closed).`);
     }

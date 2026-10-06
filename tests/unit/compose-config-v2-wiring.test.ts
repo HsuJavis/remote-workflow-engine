@@ -717,6 +717,81 @@ describe('composeConfig() shares every boot-refusal rule with a real boot (A9, o
   });
 });
 
+// Repair round defect NULL-WAS-DEFAULT (2026-10-06): before this round, an explicit JSON `null`
+// meant "use the default" for several of these same keys (`gateway` fell back to `?? "sdk"`,
+// `agentSlots` to `?? 32`, etc. — see the call sites this guards). The new A8/A9/B4/B21 refusal
+// guards above were written with `!== undefined`/`value === undefined` checks, which treat an
+// explicit `null` as a PRESENT bad value and refuse a config that used to boot clean. "No
+// behaviour change for valid configs" (the A8/A9/B21 owner decisions) means `null` must still be
+// absent, same as before this round.
+describe('an explicit JSON null is still treated as absent, not a bad value (NULL-WAS-DEFAULT)', () => {
+  it('gateway: null still defaults to "sdk" (does not refuse)', async () => {
+    const cfg = await composeConfig({ gateway: null } as any, FAKE_DEPS);
+    expect(cfg.gateway).toBeDefined();
+  });
+
+  it('seedRefAllowlist: null still boots (does not refuse)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', seedRefAllowlist: null } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([
+    'agentSlots', 'runConcurrency', 'maxWorkflowDepth', 'maxWorkflowDescendants',
+    'maxConcurrentRuns', 'maxTimeoutMs', 'maxAppendPromptBytes', 'maxWorkflowVersions',
+  ])('%s: null still boots (does not refuse)', async (key) => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', [key]: null } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+
+  it('maxEffort: null still boots (does not refuse)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', maxEffort: null } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+
+  it('mcpEgressAllowlist: null still boots (does not refuse)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: null } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+});
+
+// Repair round defect A1-LEGACYOWNER-TYPE (2026-10-06): `auth.legacyOwner` is a principal-id
+// STRING (auth-service.ts), but nothing checked that at boot — a number or an empty string passed
+// `--check-config` clean. Every other key this repair round touches refuses the wrong type; this
+// one didn't. A number can never match a principal-id comparison (authz.ts: `owner === principal.id`
+// is always string-vs-string), so it silently produces an owner column no caller can ever own.
+describe('auth.legacyOwner: a non-string/empty value refuses to start (A1-LEGACYOWNER-TYPE)', () => {
+  it('refuses a numeric legacyOwner', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', auth: { legacyOwner: 123 } } as any, FAKE_DEPS),
+    ).rejects.toThrow(/auth\.legacyOwner/);
+  });
+
+  it('refuses an empty-string legacyOwner', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', auth: { legacyOwner: '' } } as any, FAKE_DEPS),
+    ).rejects.toThrow(/auth\.legacyOwner/);
+  });
+
+  it('still accepts a non-empty string legacyOwner (no behaviour change for a valid config)', async () => {
+    const cfg = await composeConfig(
+      { gateway: 'direct-fetch', auth: { legacyOwner: 'ops@example.com' } } as any,
+      FAKE_DEPS,
+    );
+    expect(((cfg as Record<string, unknown>)['auth'] as Record<string, unknown>)['legacyOwner']).toBe('ops@example.com');
+  });
+
+  it('still accepts an absent legacyOwner (null or omitted)', async () => {
+    await expect(composeConfig({ gateway: 'direct-fetch', auth: {} } as any, FAKE_DEPS)).resolves.toBeDefined();
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', auth: { legacyOwner: null } } as any, FAKE_DEPS),
+    ).resolves.toBeDefined();
+  });
+});
+
 // Issue #73: `modelProbe` is validated at config load (fail-closed) and defaulted when absent — a
 // bad value must refuse the boot rather than silently disable or mis-schedule the probe.
 describe('modelProbe is validated and defaulted by composeConfig (#73)', () => {
