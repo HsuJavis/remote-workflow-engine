@@ -945,3 +945,58 @@ describe('buildAuthoringGuide — "Service accounts (non-interactive access)" se
     expect(sec).toContain('DEPLOY.md');
   });
 });
+
+// issue #153 L1 (owner-approved, 2026-10-07): under `gateway:"pi"` the provider table renders only
+// the 2 providers harnessProviders allows (providerCapsRows), but the surrounding prose still said
+// "exactly one of three providers" / "not Anthropic-direct" — self-contradictory with the table it
+// introduces, and actively wrong under pi (anthropic is not a usable alternative there at all).
+describe('the "Providers and the model catalog" prose agrees with the rendered table (issue #153 L1)', () => {
+  it('no activeHarness (static docs): states three providers, matching the full table', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const s = sectionOf(text, 'Providers and the model catalog');
+    expect(s).toMatch(/exactly one of (the )?three providers/i);
+    expect(s).toMatch(/anthropic/);
+  });
+
+  it('activeHarness:\'pi\': states two providers, never claims "not Anthropic-direct" as an alternative', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, activeHarness: 'pi', harnessProviders: ['openrouter', 'ollama'] });
+    const s = sectionOf(text, 'Providers and the model catalog');
+    expect(s).not.toMatch(/exactly one of three providers/i);
+    expect(s).toMatch(/exactly one of (the )?two providers|openrouter.{0,20}ollama|ollama.{0,20}openrouter/i);
+    expect(s).not.toMatch(/not Anthropic-direct/i);
+  });
+
+  it('activeHarness:\'sdk\': states three providers (unchanged regression guard)', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, activeHarness: 'sdk' });
+    const s = sectionOf(text, 'Providers and the model catalog');
+    expect(s).toMatch(/exactly one of (the )?three providers/i);
+  });
+});
+
+// issue #153 L2 (owner-approved, 2026-10-07): the live pi guide's "Providers and the model catalog"
+// section still ended with harnessDisclosureParagraph()'s "This deployment may instead be configured
+// with gateway:\"pi\" ... (default and production stay \"sdk\")" — false and backwards on a
+// deployment that already IS gateway:"pi" (and "production stay sdk" is not a fact this guide can
+// assert about every deployment either).
+describe('the harness-disclosure paragraph does not contradict an already-known active harness (issue #153 L2)', () => {
+  it('activeHarness:\'pi\': leads with the ACTIVE fact, never the hypothetical "may instead be configured" framing', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, activeHarness: 'pi', harnessProviders: ['openrouter', 'ollama'] });
+    const s = sectionOf(text, 'Providers and the model catalog');
+    expect(s).not.toMatch(/may instead be configured with `gateway:"pi"`/);
+    expect(s).not.toMatch(/production stay `"sdk"`/);
+    expect(s).toMatch(/active harness: pi/i);
+  });
+
+  it('activeHarness:\'sdk\': leads with the active sdk fact, still discloses pi as the alternative', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, activeHarness: 'sdk' });
+    const s = sectionOf(text, 'Providers and the model catalog');
+    expect(s).toMatch(/active harness: sdk/i);
+    expect(s).toMatch(/gateway:"pi"/);
+  });
+
+  it('no activeHarness (static docs): keeps the existing hypothetical framing, unchanged', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const s = sectionOf(text, 'Providers and the model catalog');
+    expect(s).toMatch(/may instead be configured with `gateway:"pi"`/);
+  });
+});

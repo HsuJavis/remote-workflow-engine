@@ -95,24 +95,22 @@ export interface GuideExample {
 // (`scripts/gen-authoring-md.ts`) and a `workflow_authoring_guide` response must both render the
 // SAME text regardless of which providers a given deployment has actually reachable.
 export const EXAMPLE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
+// issue #154 B4 + #153 L2 (owner-approved, 2026-10-07): under `gateway:"pi"`, `EXAMPLE_MODEL`'s
+// `anthropic/*` ref is refused `PROVIDER_UNSUPPORTED_BY_HARNESS` at registration (checkModelRef's
+// harnessProviders gate, providers.ts) — every worked example needs an openrouter/ollama ref pi
+// actually accepts. This is OpenRouter's real catalog id for the SAME model `EXAMPLE_MODEL` names
+// (the cross-provider identity #153's own live cache data point — the `openrouter/anthropic/
+// claude-haiku-4.5` row — already exercised), not an invented one; an empty/static catalog snapshot
+// (the common test/first-boot case) accepts it anyway with a warning (checkModelRef's "could not
+// check" rule), so no live OpenRouter key is needed for a GUIDE_EXAMPLES_PI entry to register.
+export const EXAMPLE_MODEL_PI = 'openrouter/anthropic/claude-haiku-4.5';
 
-// One agent contract block, reused verbatim by every example below (DES-144: model/effort/
-// timeoutMs are all REQUIRED with a `.default`).
-function agentSpec(effort: 'low' | 'medium' | 'high', timeoutMs: number): string {
-  return `{ model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
-}
-
-/** v26 (DES-185, ARCH-119, TASK-190): a v2-conformant stadium (agent) node —
- *  `id(["label<br/>model · effort · timeoutMs<br/>tools: …"])`. The middle segment must literally
- *  equal the agent's resolved `model.default`/`effort.default`/`timeoutMs.default` (checkMermaid's
- *  existing v1 value-triple check, step 7) — `EXAMPLE_MODEL` itself, since 2026-09-26 every example
- *  declares the same full ref. `tools` is the sorted, comma-space `allowedTools` array, `'none'`
- *  for `[]`, or `'default'` when the call carries no `allowedTools` key — ARCH-119 rule (12) skips
- *  comparing the 'default' case entirely, so the exact text there is never checked, but writing it
- *  out keeps every example visually consistent. */
-function stadiumNode(id: string, label: string, effort: string, timeoutMs: number, tools: 'default' | 'none' | string[]): string {
-  const toolsText = tools === 'default' ? 'tools: default' : tools === 'none' ? 'tools: none' : `tools: ${[...tools].sort().join(', ')}`;
-  return `${id}(["${label}<br/>${EXAMPLE_MODEL} · ${effort} · ${timeoutMs}<br/>${toolsText}"])`;
+/** issue #154 B4 + #153 L2: picks the example model ref for the harness actually in scope at render
+ *  time — `undefined` (the static `docs/AUTHORING.md`, built once before any host boots, same "can't
+ *  know yet" case `confinementPosture`/`activeHarness` elsewhere in this file already have) falls
+ *  back to `EXAMPLE_MODEL`, a deliberate neutral pick rather than rendering the page twice. */
+function exampleModelFor(harness?: 'sdk' | 'pi'): string {
+  return harness === 'pi' ? EXAMPLE_MODEL_PI : EXAMPLE_MODEL;
 }
 
 // v26 (DES-185, ARCH-119/107, ADR-039, TASK-190): the thirteen named patterns, each a real script +
@@ -123,7 +121,33 @@ function stadiumNode(id: string, label: string, effort: string, timeoutMs: numbe
 // `tools: default`, a dynamic title, a nested `workflow()` rectangle) and all five of ADR-039's
 // contract edges (agent-before-phase, nested `workflow()`, `parallel()` of `workflow()`, tools
 // absent, dynamic title) appear here in their LEGAL, registering form — no negative fixture.
-export const GUIDE_EXAMPLES: GuideExample[] = [
+//
+// issue #154 B4 + #153 L2 (2026-10-07): parameterized over `exampleModel` so the SAME thirteen
+// patterns can be built once per harness — `GUIDE_EXAMPLES` (sdk/anthropic, below) and
+// `GUIDE_EXAMPLES_PI` (openrouter, for a pi-mode registration) are both `buildGuideExamples()`
+// calls; nothing inside this function changed except the two helpers now closing over the
+// parameter instead of the (now-removed) module-level `EXAMPLE_MODEL` constant.
+function buildGuideExamples(exampleModel: string): GuideExample[] {
+  // One agent contract block, reused verbatim by every example below (DES-144: model/effort/
+  // timeoutMs are all REQUIRED with a `.default`).
+  function agentSpec(effort: 'low' | 'medium' | 'high', timeoutMs: number): string {
+    return `{ model: { type: 'string', default: '${exampleModel}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
+  }
+
+  /** v26 (DES-185, ARCH-119, TASK-190): a v2-conformant stadium (agent) node —
+   *  `id(["label<br/>model · effort · timeoutMs<br/>tools: …"])`. The middle segment must literally
+   *  equal the agent's resolved `model.default`/`effort.default`/`timeoutMs.default` (checkMermaid's
+   *  existing v1 value-triple check, step 7) — `exampleModel` itself, since every example in ONE
+   *  built array declares the same full ref. `tools` is the sorted, comma-space `allowedTools`
+   *  array, `'none'` for `[]`, or `'default'` when the call carries no `allowedTools` key — ARCH-119
+   *  rule (12) skips comparing the 'default' case entirely, so the exact text there is never
+   *  checked, but writing it out keeps every example visually consistent. */
+  function stadiumNode(id: string, label: string, effort: string, timeoutMs: number, tools: 'default' | 'none' | string[]): string {
+    const toolsText = tools === 'default' ? 'tools: default' : tools === 'none' ? 'tools: none' : `tools: ${[...tools].sort().join(', ')}`;
+    return `${id}(["${label}<br/>${exampleModel} · ${effort} · ${timeoutMs}<br/>${toolsText}"])`;
+  }
+
+  return [
   {
     title: 'single agent',
     script:
@@ -359,7 +383,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `export const meta = {\n` +
       `  description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',\n` +
       `  phases: [{ title: 'code' }],\n` +
-      `  params: { agents: { coder: { model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
+      `  params: { agents: { coder: { model: { type: 'string', default: '${exampleModel}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
       `};\n` +
       `phase('code');\n` +
       `return await agent('coder', { prompt: 'Use the repo-search skill to say where the retry policy is defined', allowedTools: [] });`,
@@ -383,7 +407,16 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `subgraph "judge"\n${stadiumNode('judge', 'judge', 'low', 60000, 'none')}\nend`,
     expectRegister: 'ok',
   },
-];
+  ];
+}
+
+// issue #154 B4 + #153 L2: the two deployment-shaped example corpora `buildGuideExamples()` builds.
+// `GUIDE_EXAMPLES` keeps the pre-existing anthropic ref (unchanged — every importer that pinned it
+// stays exactly as valid as before); `GUIDE_EXAMPLES_PI` is the SAME thirteen patterns with the
+// pi-harness-accepted ref, for a pi-mode registration (tests/integration/guide-examples-register.
+// test.ts registers BOTH, against a real engine, one per gateway).
+export const GUIDE_EXAMPLES: GuideExample[] = buildGuideExamples(EXAMPLE_MODEL);
+export const GUIDE_EXAMPLES_PI: GuideExample[] = buildGuideExamples(EXAMPLE_MODEL_PI);
 
 function section(title: string, body: string): string {
   return `## ${title}\n\n${body}`;
@@ -525,6 +558,35 @@ function exampleRows(examples: readonly GuideExample[]): string {
   ).join('\n\n');
 }
 
+/** issue #154 B4 + #153 L2: the examples below are registered verbatim by every GUIDE_EXAMPLES[*]
+ *  test (scan-agent-calls, register-bash-subsumption-warning, val-mermaid-renders, guide-examples-
+ *  register) — swapping `GUIDE_EXAMPLES` out from under them per-harness would break that contract,
+ *  so this picks a SEPARATE harness-shaped corpus for the RENDERED page only. `'pi'` leads with the
+ *  pi-accepted corpus; `'sdk'`/unknown render the pre-existing anthropic one (the static
+ *  `docs/AUTHORING.md` neutral pick — it cannot know a deployment's harness at build time, same
+ *  limit `skillsActivationParagraph`/`harnessDisclosureParagraph` already document, and showing all
+ *  26 scripts twice would roughly double the page for a fact one sentence already states). */
+function registeredExamplesBody(harness?: 'sdk' | 'pi'): string {
+  if (harness === 'pi') {
+    return (
+      `**Active harness: pi** — every example below declares \`${EXAMPLE_MODEL_PI}\` (the ` +
+      `openrouter-routed equivalent of this guide's canonical model), the ref this deployment's ` +
+      `\`gateway:"pi"\` actually accepts; an \`anthropic/*\` ref is refused \`PROVIDER_UNSUPPORTED_BY_HARNESS\` here.\n\n` +
+      exampleRows(GUIDE_EXAMPLES_PI)
+    );
+  }
+  const note =
+    harness === 'sdk'
+      ? `**Active harness: sdk** — every example below declares \`${EXAMPLE_MODEL}\`, usable as-is on this deployment.`
+      : `This guide is generated once and is not per-deployment: the examples below declare the ` +
+        `neutral \`${EXAMPLE_MODEL}\` ref, usable as-is under \`gateway:"sdk"\` (the default). Under ` +
+        `\`gateway:"pi"\`, every \`anthropic/*\` ref — including these — is refused ` +
+        `\`PROVIDER_UNSUPPORTED_BY_HARNESS\`; swap in an \`openrouter/\`/\`ollama/\` ref instead (the ` +
+        `LIVE \`workflow_authoring_guide\` response on a pi deployment renders this same section with ` +
+        `\`${EXAMPLE_MODEL_PI}\` already substituted).`;
+  return `${note}\n\n${exampleRows(GUIDE_EXAMPLES)}`;
+}
+
 /** Issue #147: how a declared skill actually reaches the model is harness-specific, and the two
  *  rules are NOT interchangeable — a cold author reading only the sdk rule (the pre-#147 Skills
  *  section) would write `allowedTools: []` on a pi deployment and get `SKILL_REQUIRES_READ_TOOL`,
@@ -562,16 +624,28 @@ function skillsActivationParagraph(harness?: 'sdk' | 'pi'): string {
   );
 }
 
-/** pi harness v1 (spec "Disclosure"): static text describing the ALTERNATIVE `gateway:"pi"`
- *  configuration — this guide is generated once (`npm run gen:authoring`), not per-deployment, so it
- *  cannot read a live `ServerConfig.harnessProviders` the way `system_info`'s `harness` field does;
- *  it instead documents the gap honestly as a configuration fact, and points at `system_info` for
- *  which one THIS deployment actually runs. Kept in sync with `harness-info.ts`'s own data (the
- *  provider list and unsupported-tools list are literals there; read the same list here). */
-function harnessDisclosureParagraph(): string {
+/** pi harness v1 (spec "Disclosure"): static text describing the `gateway:"pi"` configuration.
+ *  issue #153 L2 (owner-approved, 2026-10-07): now harness-aware, same "lead with the fact that's
+ *  actually true" convention `skillsActivationParagraph` above already follows — a LIVE
+ *  `workflow_authoring_guide` response on a pi deployment used to still say this deployment "may
+ *  instead be configured with gateway:\"pi\" (default and production stay sdk)", which is false and
+ *  backwards when `gateway:"pi"` is the one already running (and "production stay sdk" was never a
+ *  fact this per-build-once guide could assert about every deployment to begin with — dropped
+ *  outright, not just reworded, for all three renders below). `undefined` (the static
+ *  `docs/AUTHORING.md`, built once before any host boots, so it cannot read a live
+ *  `ServerConfig.harnessProviders` the way `system_info`'s `harness` field does) keeps the original
+ *  hypothetical framing and points at `system_info` for which one THIS deployment actually runs.
+ *  Kept in sync with `harness-info.ts`'s own data (the provider list and unsupported-tools list are
+ *  literals there; read the same list here). */
+function harnessDisclosureParagraph(harness?: 'sdk' | 'pi'): string {
+  const lead =
+    harness === 'pi'
+      ? '**Active harness: pi.** This deployment runs `gateway:"pi"`'
+      : harness === 'sdk'
+        ? '**Active harness: sdk.** This deployment could instead be configured with `gateway:"pi"` in rwe.config.json'
+        : 'This deployment may instead be configured with `gateway:"pi"` in rwe.config.json';
   return (
-    'This deployment may instead be configured with `gateway:"pi"` in rwe.config.json (default and ' +
-    'production stay `"sdk"`) — a different harness with the SAME agent()/tool contract but a ' +
+    `${lead} — a different harness with the SAME agent()/tool contract but a ` +
     "narrower surface: only `openrouter`/`ollama` models are usable (an `anthropic/*` ref is refused " +
     "`PROVIDER_UNSUPPORTED_BY_HARNESS` at registration/run_start/admission — route a Claude model " +
     'through `openrouter/anthropic/...` instead); the tool surface is limited to Read/Write/Edit/' +
@@ -910,7 +984,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "  phases: [{ title: 'summarize' }],\n" +
         '  params: {\n' +
         '    agents: {\n' +
-        `      writer: { model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n` +
+        `      writer: { model: { type: 'string', default: '${exampleModelFor(ceilings.activeHarness)}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n` +
         '    },\n' +
         '  },\n' +
         '};\n' +
@@ -1131,13 +1205,23 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Providers and the model catalog',
-      'A full model ref\'s provider prefix names exactly one of three providers, each with its own ' +
+      // issue #153 L1 (owner-approved, 2026-10-07): under a known `harnessProviders` (gateway:"pi")
+      // the table right below renders only those providers — this lead sentence and the "no openai
+      // row" sentence after it must agree with the SAME count/set, not unconditionally claim three
+      // and name anthropic as a reachable alternative when it is refused PROVIDER_UNSUPPORTED_BY_HARNESS.
+      (ceilings.harnessProviders !== undefined
+        ? `A full model ref's provider prefix names exactly one of the ${numberWord(ceilings.harnessProviders.length)} providers ` +
+          `this deployment supports under its active harness (${ceilings.harnessProviders.join('/')}), each with its own `
+        : 'A full model ref\'s provider prefix names exactly one of three providers, each with its own ') +
         'declared capability row — read from the SAME table `parseModelRef`/`checkModelRef` check ' +
         'against, labelled **declared, not probed**: nothing here is learned by dispatching a call.\n\n' +
         providerCapsRows(ceilings.harnessProviders) +
-        '\n\nThere is no `openai` row: OpenRouter is the many-model front door for everything that is ' +
-        'not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a ' +
-        'different `<provider>/<model-id>` ref, not a new provider.\n\n' +
+        (ceilings.harnessProviders !== undefined
+          ? '\n\nThere is no `openai` row: OpenRouter is the many-model front door for everything not ' +
+            'reachable directly on this deployment\'s active harness.\n\n'
+          : '\n\nThere is no `openai` row: OpenRouter is the many-model front door for everything that is ' +
+            'not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a ' +
+            'different `<provider>/<model-id>` ref, not a new provider.\n\n') +
         "`models_list` shows the CATALOG this deployment can reach — every row's `ref` field is the " +
         'exact `<provider>/<model-id>` string to paste into `model.default`/a run_start override ' +
         '(see "Engine ceilings" above for the full-ref rule). One row per model — there is no alias ' +
@@ -1187,7 +1271,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'suffixes are the same model on another pricing tier. There is no score-per-dollar field — compute it from ' +
         '`ratesPerM`. Cap every agent with `timeoutMs` and the run budget so a model that loops on tools cannot run away ' +
         '(visible as high `avgCacheReadTokens` and low `avgOutputTokens` in `observed.tools`).\n\n' +
-        harnessDisclosureParagraph(),
+        harnessDisclosureParagraph(ceilings.activeHarness),
     ),
   );
 
@@ -1693,7 +1777,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Registered examples',
-      exampleRows(GUIDE_EXAMPLES),
+      registeredExamplesBody(ceilings.activeHarness),
     ),
   );
 
