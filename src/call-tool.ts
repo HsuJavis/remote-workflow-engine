@@ -438,7 +438,7 @@ export async function callTool(
       const observed = deps.observedStats?.getAll();
       const rows = entries
         .filter((e) => matchesCatalogFilter(e, a as CatalogFilter))
-        .map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`)));
+        .map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`), deps.harnessProviders));
       try {
         return { result: queryModels(rows, a as ModelsQuery) };
       } catch (err) {

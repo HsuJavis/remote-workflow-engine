@@ -660,10 +660,18 @@ export class PiGatewayClient implements GatewayClient {
       this._eventSink({ kind: 'agent.planted_config_removed', runId: req.runId, agentId: req.agentId, attempt: 1, root: workspace, removed: plantedConfigRemoved });
     }
 
+    // issue #150: `false` ONLY on an explicit "this endpoint has no reasoning dial" catalog pin
+    // (`Caps.reasoning === false`, e.g. openrouter/openai/gpt-4.1's `supported_parameters` omitting
+    // 'reasoning') — undefined/'unknown' (no pin, or the catalog said nothing) keeps the pre-#150
+    // default of assuming support, so a reasoning-capable model whose catalog row never declared
+    // `supported_parameters` never silently loses its effort dial. The SAME fact drives both the
+    // child's model registration (below) and `effortApplied` (further down) — one computation, never
+    // two opinions that could disagree.
+    const reasoningSupported = req.caps?.reasoning !== false;
     const model: PiChildConfig['model'] =
       parsed.provider === 'ollama'
         ? { provider: 'ollama', model: parsed.model, baseUrl: this._config.ollamaBaseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434' }
-        : { provider: 'openrouter', model: parsed.model };
+        : { provider: 'openrouter', model: parsed.model, reasoningSupported };
     const apiKey = parsed.provider === 'openrouter' ? resolveOpenrouterKey(this._config) : undefined;
     if (parsed.provider === 'openrouter' && apiKey === undefined) {
       return { ok: false, provider: 'openrouter', reason: 'terminal', retryable: false, transport: 'pi', detail: 'OPENROUTER_AUTH_MISSING: no OpenRouter API key in the secret store (RWE_SECRET_OPENROUTER_API_KEY) or OPENROUTER_API_KEY env' };
@@ -821,12 +829,21 @@ export class PiGatewayClient implements GatewayClient {
     // asked for none at all. Every consumer from here down (the harness record, childConfig) reads
     // this ONE resolved value, never `req.opts.effort` directly, so they can never disagree.
     const effort = effectiveEffort(req.opts.effort, parsed.provider, req.caps);
+    // issue #150: `applied:true` for openrouter now additionally requires `reasoningSupported` (the
+    // SAME fact `buildModelConfig()`'s `reasoning` flag just used, above) — before this fix, every
+    // openrouter call reported `applied:true` regardless of whether the catalog said the model could
+    // even take a reasoning directive, including openrouter/openai/gpt-4.1 (`supported_parameters`
+    // omits 'reasoning'). An explicit `reasoningSupported:false` means the child never put a
+    // `reasoning` field on the wire at all (pi-ai gates every reasoning branch on `model.reasoning`),
+    // so `applied:true` would be a claim this gateway cannot back up.
     const effortApplied: { applied: true; param: string; restPath: string[]; value: unknown } | { applied: false; reason: string } | undefined =
       effort === undefined
         ? undefined
-        : parsed.provider === 'openrouter'
-          ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: effort }
-          : { applied: false, reason: 'ollama has no reasoning dial' };
+        : parsed.provider !== 'openrouter'
+          ? { applied: false, reason: 'ollama has no reasoning dial' }
+          : reasoningSupported
+            ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: effort }
+            : { applied: false, reason: 'model does not support reasoning' };
 
     // Captured (not just dispatched) so the SECOND onHarness call below — once the child's `mcp_init`
     // event arrives with the real turn-1 tool list (issue #106 parity: `summarizeMcpInit`) — can

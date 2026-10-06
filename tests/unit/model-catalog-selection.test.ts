@@ -115,6 +115,31 @@ describe('OpenRouter rows carry selection data straight from /api/v1/models (iss
     expect(r.effortAppliedOnTransport).toBe(false);
   });
 
+  // issue #150: `effortAppliedOnTransport` is now harness-aware — the sdk-gateway fact above (`false`
+  // for every openrouter row, VAL-186) only holds when the caller passes no `harnessProviders` at
+  // all. Under the pi harness (`harnessProviders` set — the same signal models_list's own
+  // anthropic-row filter gates on), `reasoning.effort` DOES reach the wire, but only for a model
+  // whose catalog row actually declares reasoning support.
+  it('effortAppliedOnTransport is harness-aware: true under pi for a reasoning-capable openrouter model, false for one the catalog says has none', async () => {
+    const entries = await catalog();
+    const e = entries.find((x) => x.ref === 'openrouter/anthropic/claude-haiku-4.5')!;
+    const piRow = enrichModelEntry(e, FETCHED_AT, undefined, undefined, ['openrouter', 'ollama']);
+    expect(piRow.capabilities.reasoning.supported).toBe(true);
+    expect(piRow.effortAppliedOnTransport).toBe(true);
+
+    const noReasoning = entries.find((x) => x.ref === 'openrouter/openai/gpt-audio')!;
+    const piRowNoReasoning = enrichModelEntry(noReasoning, FETCHED_AT, undefined, undefined, ['openrouter', 'ollama']);
+    expect(piRowNoReasoning.capabilities.reasoning.supported).toBe(false);
+    expect(piRowNoReasoning.effortAppliedOnTransport).toBe(false);
+  });
+
+  it('effortAppliedOnTransport under pi is false for ollama (no reasoning dial, same as the sdk gateway)', async () => {
+    const entries = await catalog();
+    const qwen = entries.find((x) => x.ref === 'ollama/qwen2.5:7b')!;
+    const piRow = enrichModelEntry(qwen, FETCHED_AT, undefined, undefined, ['openrouter', 'ollama']);
+    expect(piRow.effortAppliedOnTransport).toBe(false);
+  });
+
   it('pricing (price / ratesPerM) is unchanged by the enrichment', async () => {
     const r = row(await catalog(), 'openrouter/anthropic/claude-haiku-4.5');
     expect(r.price).toEqual({ in: '$1/1M', out: '$5/1M' });

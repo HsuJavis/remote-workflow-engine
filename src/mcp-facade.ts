@@ -20,6 +20,7 @@ import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from 
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
 import { parseMeta, resolvePhases, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
+import type { Provider } from './providers.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec, type ModelRefWarning } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
@@ -126,6 +127,11 @@ export interface McpFacadeDeps {
    *  author to learn it from a refused run. Absent (unit construction, or a deployment where the
    *  probe never ran) renders the guide's dual-posture generic text rather than asserting either. */
   confinementPosture?: 'confined' | 'unconfined';
+  /** issue #150: this deployment's `ServerConfig.harnessProviders` (present, `['openrouter',
+   *  'ollama']`, only under `gateway:"pi"`) — forwarded so `workflow_authoring_guide` renders the
+   *  pi-harness-correct provider-effort text instead of the sdk gateway's, on a pi deployment. Same
+   *  "absent renders the generic/sdk text" rule `confinementPosture` above already has. */
+  harnessProviders?: readonly Provider[];
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -316,6 +322,7 @@ export class McpFacade {
   private readonly runConcurrency: number;
   private readonly gatewayAttempts?: number;
   private readonly confinementPosture?: 'confined' | 'unconfined';
+  private readonly harnessProviders?: readonly Provider[];
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -342,6 +349,7 @@ export class McpFacade {
     this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
     this.gatewayAttempts = deps.gatewayAttempts;
     this.confinementPosture = deps.confinementPosture;
+    this.harnessProviders = deps.harnessProviders;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -895,6 +903,7 @@ export class McpFacade {
           ...this.ceilings,
           runConcurrency: this.runConcurrency,
           confinementPosture: this.confinementPosture,
+          harnessProviders: this.harnessProviders,
         }),
       },
     };

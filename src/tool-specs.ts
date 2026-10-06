@@ -1298,7 +1298,9 @@ export const TOOL_SPECS = [
       '- capabilities {toolUse, toolChoice, structuredOutput, promptCaching, vision, reasoning {supported, efforts, defaultEffort, mandatory}} — DECLARED by the source, never probed: ' +
       'OpenRouter supported_parameters (tools, tool_choice, structured_outputs/response_format, reasoning), its reasoning block, cache prices (promptCaching), input image modality (vision); ' +
       'Ollama capabilities (tools, vision, thinking); the anthropic static table (toolUse, toolChoice, promptCaching, vision).\n' +
-      "- effortAppliedOnTransport: whether THIS engine's dispatch path actually carries an agent's `effort` to the model — true for anthropic; false for openrouter (the hop drops it) and ollama (no dial). " +
+      "- effortAppliedOnTransport: whether THIS engine's dispatch path actually carries an agent's `effort` to THIS model — a live, per-model fact, not a blanket per-provider one: true for anthropic; " +
+      "false for ollama (no dial, any gateway); for openrouter it depends on the deployed gateway — false under the sdk gateway (the hop drops it), true under the pi harness for a model whose own row " +
+      "declares reasoning support (capabilities.reasoning.supported). Check this field per row, not a provider-level assumption; `run_agent_log.harness.effortApplied` confirms it per call. " +
       "Use this, not effortDeclared, to decide whether setting effort does anything. `toolUseDeclared` / `effortDeclared` (boolean, or 'unknown' when the catalog said nothing) and `declaredSource` " +
       "('upstream'|'static'|'unknown') are the older DECLARED flags, never probed by dispatching a call; effortDeclared only says the upstream catalog lists a reasoning parameter (deprecated in favour of " +
       'capabilities.reasoning + effortAppliedOnTransport).\n' +

@@ -29,6 +29,7 @@ import { TOOL_SPECS } from './tool-specs.js';
 // v26 (DES-187, ARCH-121, TASK-193, ADR-041) — 2026-09-26 (alias mechanism removed): the provider
 // capability table, read from the same data `parseModelRef`/`checkModelRef` check against.
 import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
+import type { Provider } from './providers.js';
 import { PI_UNSUPPORTED_TOOLS } from './harness-info.js';
 
 export interface GuideCeilings {
@@ -53,6 +54,15 @@ export interface GuideCeilings {
    *  `ServerConfig` field (ARCH-177's rule against opening one for a value nobody reads stands,
    *  uncorrected: this value already has a reader). */
   confinementPosture?: 'confined' | 'unconfined';
+  /** issue #150: this deployment's `ServerConfig.harnessProviders` — present (`['openrouter',
+   *  'ollama']`) only under `gateway:"pi"`, same as every other harness-gated signal in this engine
+   *  (`models_list`'s anthropic-row filter, `ModelCatalogSnapshot.harnessProviders`). `undefined` at
+   *  render time means either the sdk gateway (openrouter's `reasoning.effort` never reaches the
+   *  wire — VAL-186, unchanged) OR `scripts/gen-authoring-md.ts` building `docs/AUTHORING.md` before
+   *  any host boots (same "cannot know which deployment will serve this page" limit
+   *  `confinementPosture` above already has) — the live `workflow_authoring_guide` MCP response
+   *  (mcp-facade.ts) is the one render that actually has this value. */
+  harnessProviders?: readonly Provider[];
 }
 
 export interface GuideExample {
@@ -605,13 +615,32 @@ function seedShapeRows(): string {
 }
 
 /** v26 (DES-187, TASK-193, ADR-041): one row per provider, read from `PROVIDER_CAPS` — the SAME
- *  table `resolveAlias`/`validateAliases` check against. */
-function providerCapsRows(): string {
+ *  table `resolveAlias`/`validateAliases` check against.
+ *  issue #150: harness-aware. `harnessProviders === undefined` renders the sdk gateway's own
+ *  OBSERVED fact (`effortDelivered`, VAL-186) unchanged — true for every pre-#150 caller
+ *  (`scripts/gen-authoring-md.ts` has no live deployment to ask, same limit `confinementPosture`
+ *  already has). Present (pi harness) renders what's actually true under pi: openrouter's
+ *  `reasoning.effort` DOES reach the wire, but only per-model (a catalog capability, not a
+ *  per-provider constant) — `models_list`'s `effortAppliedOnTransport` is the live, per-model answer;
+ *  ollama still has no dial either way. */
+function providerCapsRows(harnessProviders?: readonly Provider[]): string {
+  if (harnessProviders !== undefined) {
+    return PROVIDERS.filter((p) => (harnessProviders as readonly string[]).includes(p)).map((p) => {
+      const caps = PROVIDER_CAPS[p];
+      return p === 'openrouter'
+        ? `- \`${p}\` — tool surface: ${caps.tools}, effort applies: per model — this harness (pi) DOES carry ` +
+          "`reasoning.effort` to the wire, but only for a model whose catalog row declares reasoning support; " +
+          'check `models_list`\'s `effortAppliedOnTransport` for the live, per-model answer (`run_agent_log.harness.effortApplied` confirms it per call).'
+        : `- \`${p}\` — tool surface: ${caps.tools}, effort applies: no (no reasoning dial under any gateway)`;
+    }).join('\n');
+  }
   return PROVIDERS.map((p) => {
     const caps = PROVIDER_CAPS[p];
     // v26 Gate 7.5 round 1 (REQ-126, VAL-186): rendered from `effortDelivered`, the OBSERVED fact,
     // not from `effort !== null`, which only says the provider has a dial. openrouter has one and the
-    // dispatch path never delivers it; a manual that says otherwise sends authors chasing a no-op.
+    // sdk gateway's dispatch path never delivers it; a manual that says otherwise sends authors
+    // chasing a no-op. (Under the pi harness this is per-model, not per-provider — the live
+    // `workflow_authoring_guide` response renders that case instead; see this function's own doc.)
     return `- \`${p}\` — tool surface: ${caps.tools}, effort applies: ${caps.effortDelivered ? 'yes' : 'no'}${
       caps.effort !== null && !caps.effortDelivered
         ? ' (the provider has a reasoning dial, but this deployment\'s dispatch path does not carry it — `effortApplied` says so per call)'
@@ -953,7 +982,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       'A full model ref\'s provider prefix names exactly one of three providers, each with its own ' +
         'declared capability row — read from the SAME table `parseModelRef`/`checkModelRef` check ' +
         'against, labelled **declared, not probed**: nothing here is learned by dispatching a call.\n\n' +
-        providerCapsRows() +
+        providerCapsRows(ceilings.harnessProviders) +
         '\n\nThere is no `openai` row: OpenRouter is the many-model front door for everything that is ' +
         'not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a ' +
         'different `<provider>/<model-id>` ref, not a new provider.\n\n' +
@@ -985,8 +1014,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "what THIS engine measured for the model over 30 days (split `prose` vs `tools` calls — " +
         '`avgCostUsdPerCall` includes the harness overhead, so it predicts a run\'s cost better than unit ' +
         'price); `benchmarks` are third-party scores republished by OpenRouter (null when none). ' +
-        '`effortAppliedOnTransport` says whether an agent\'s `effort` actually reaches that model on this ' +
-        "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.\n\n" +
+        // issue #150: per-model and harness-aware now, computed the SAME way on every row this
+        // deployment ever serves — never a blanket per-provider claim (ollama never carries it under
+        // either gateway; the sdk gateway's dispatch path never carries it for openrouter either; the
+        // pi harness DOES, but only for a model whose own row declares reasoning support).
+        '`effortAppliedOnTransport` says whether an agent\'s `effort` actually reaches THIS model on this ' +
+        'engine\'s dispatch path — a live, per-model fact (never a blanket per-provider one), whatever ' +
+        '`effortDeclared` (the upstream catalog\'s own declaration) says.\n\n' +
         'Reading the numbers: `null` means "not published / not measured", never a low score — OpenRouter ' +
         'republishes only Artificial Analysis intelligence/coding/agentic (plus Design Arena), so compare models ' +
         'only on dimensions both have; there is no instruction-following or tool-calling score. `observed.successRate` ' +

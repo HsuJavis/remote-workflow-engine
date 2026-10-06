@@ -57,7 +57,12 @@ export function buildHarnessAnnounce(harnessProviders?: readonly Provider[]): Ha
     version: PI_HARNESS_VERSION,
     providers: harnessProviders,
     unsupportedTools: PI_UNSUPPORTED_TOOLS,
-    effort: 'mapped to pi\'s thinkingLevel; effortApplied is only ever true for a verified outbound request (OpenRouter\'s reasoning.effort — see DEPLOY.md); ollama has no reasoning dial.',
+    // issue #150: effortApplied is per-MODEL now, not blanket-true for every openrouter call — a
+    // model the pinned catalog says has no reasoning dial (capabilities.reasoning.supported:false,
+    // e.g. openrouter/openai/gpt-4.1) gets NO reasoning field on the wire at all and reports
+    // effortApplied:false ("model does not support reasoning"), never a claim this harness cannot
+    // back up.
+    effort: 'mapped to pi\'s thinkingLevel; effortApplied is true only for a verified outbound request to a model whose catalog row supports reasoning (OpenRouter\'s reasoning.effort — see DEPLOY.md), false otherwise; ollama has no reasoning dial.',
     // issue #152: made explicit that partial:true on abort/timeout is unconditional (even a known
     // figure of exactly 0 — pi's child->parent protocol only reports usage on a COMPLETE message_end/
     // error event, so an attempt killed before its first one has nothing to report) and that this

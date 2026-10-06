@@ -262,4 +262,37 @@ describe('pi harness v1 — OpenRouter request shape via a recording fake server
     const body = fake.requests[0]!.body as Record<string, unknown>;
     expect((body['reasoning'] as { effort?: string } | undefined)?.effort).toBe('high');
   }, 20_000);
+
+  // issue #150: `run_agent_log.harness.effortApplied` used to claim `{param:'thinkingLevel', value}`
+  // for EVERY openrouter call, including a model the pinned catalog says has NO reasoning dial at all
+  // (openrouter/openai/gpt-4.1 — OpenRouter's own `supported_parameters` omits 'reasoning', so
+  // `ModelBook`'s `capsFromRow` pins `caps.reasoning:false`). Real end-to-end proof (not just the
+  // internal `reasoningSupported` plumbing tests/unit/pi-gateway-client.test.ts already covers): a
+  // `caps.reasoning:false` dispatch must never put a `reasoning` field on the wire at all — "ideally
+  // don't send reasoning at all" per the issue — because `buildModelConfig()`'s `reasoning` flag is
+  // now `false` for this model, and pi-ai's openai-completions provider gates every reasoning-shaped
+  // branch (including the plain openrouter `reasoning.effort` shape) on `model.reasoning`.
+  it('an openrouter model the catalog says has no reasoning dial gets NO reasoning field at all on the wire, even with effort requested (issue #150)', async () => {
+    fake.requests.length = 0;
+    const gw = new PiGatewayClient({
+      secretSource: { resolve: () => 'fake-key-not-real' },
+      timeoutMs: 15_000,
+      openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`,
+    });
+    let appliedSeen: { applied: boolean; reason?: string } | undefined;
+    const result = await gw.invoke({
+      prompt: 'hi',
+      opts: { model: 'openrouter/openai/gpt-4.1', effort: 'high', allowedTools: [] },
+      runId: 'fake-or-no-reasoning-r1',
+      agentId: 'fake-or-no-reasoning-a1',
+      workspace: ws,
+      caps: { reasoning: false, tools: true, source: 'upstream' },
+      onHarness: async (h, applied) => { appliedSeen = applied as { applied: boolean; reason?: string } | undefined; },
+    });
+    expect(result.ok).toBe(true);
+    expect(fake.requests.length).toBeGreaterThan(0);
+    const body = fake.requests[0]!.body as Record<string, unknown>;
+    expect(body['reasoning']).toBeUndefined();
+    expect(appliedSeen).toEqual({ applied: false, reason: 'model does not support reasoning' });
+  }, 20_000);
 });
