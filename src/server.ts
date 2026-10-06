@@ -1077,7 +1077,17 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt count
   // — forwarded so `workflow_describe`'s advertised `timeoutMs.attempts`/`worstCaseMs` reflect what
   // THIS deployment actually retries (the composeConfig wiring class, twice bitten).
-  const gatewayAttempts = 1 + Math.max(0, config?.retries ?? 1);
+  // Owner decision 2026-10-06 (describe/retries mismatch fix): this used to hard-code the
+  // direct-fetch-only "retries defaults to 1" rule (server.ts's own `LiteLLMGatewayClient`
+  // construction above) regardless of which gateway is actually deployed. `config?.gateway` being
+  // ALREADY SET means composeConfig() built an sdk/pi gateway and forwarded `fileConfig.retries`
+  // RAW onto it (main.ts) — those gateways' own `attemptsFor()` (client.ts, DES-249) defaults an
+  // unset `retries` to 0 extra retries (1 attempt), never 1. `config?.gateway` undefined means the
+  // local `gateway` built just above (or RunManager's own DEFAULT_GATEWAY_CONFIG fallback) applies,
+  // which DOES default retries to 1 (2 attempts) — so the two branches here mirror the two REAL
+  // defaults instead of overstating one of them.
+  const gatewayDefaultRetries = config?.gateway !== undefined ? 0 : 1;
+  const gatewayAttempts = 1 + Math.max(0, config?.retries ?? gatewayDefaultRetries);
   // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` rides `config?.confinementPosture`
   // — the SAME value the `buildToolDeps` door below already reads, set once at boot by `main.ts`'s
   // real probe; `undefined` on every test/zero-config boot, which the guide already treats as

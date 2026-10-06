@@ -72,6 +72,27 @@ describe('workflow_describe advertises COMPUTED attempts/worstCaseMs from the de
     expect(timeoutMs?.attempts).toBe(2);
     expect(timeoutMs?.worstCaseMs).toBe(60000 * 2);
   });
+
+  // Issue audit (describe/retries mismatch, owner decision 2026-10-06): `config?.gateway` set means
+  // main.ts's composeConfig() already built an sdk/pi gateway and forwarded `fileConfig.retries`
+  // RAW (undefined when unset) onto it — attemptsFor(undefined, t) = 1 (0 extra retries), NOT the
+  // direct-fetch-only default of 1 retry/2 attempts this suite's own DEFAULT case above locks. The
+  // OLD `gatewayAttempts` formula (`1 + Math.max(0, config?.retries ?? 1)`) advertised 2 regardless
+  // of which gateway was actually deployed — this proves the advertised number now follows the real
+  // per-gateway default, not a single hard-coded one.
+  it('a pre-built config.gateway (the sdk/pi shape) with NO retries configured advertises 1 attempt, not the direct-fetch default of 2', async () => {
+    const fakeSdkGateway = { invoke: async () => ({ ok: false, provider: 'anthropic', reason: 'terminal', retryable: false, detail: 'unused' }) };
+    server = await createServer({ port: 0, bind: '127.0.0.1', gateway: fakeSdkGateway } as never);
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const call = callerFor(baseUrl);
+    await registerPublishedVia(call, 'it239-sdk-default-retries', AGENT_SCRIPT);
+    const described = (await call('workflow_describe', { name: 'it239-sdk-default-retries' })) as {
+      result?: { params?: { agents?: Record<string, { timeoutMs?: { attempts?: number; worstCaseMs?: number } }> } };
+    };
+    const timeoutMs = described.result?.params?.agents?.['worker']?.timeoutMs;
+    expect(timeoutMs?.attempts).toBe(1);
+    expect(timeoutMs?.worstCaseMs).toBe(60000 * 1);
+  });
 });
 
 describe('BOTH initialize results carry instructions with ENVELOPE_NOTE and a COMPUTED guide size (DES-239b, IT)', () => {
