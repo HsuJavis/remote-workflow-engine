@@ -1601,7 +1601,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'SEE it before pushing: `system_info`\'s `policy.mcpEgressAllowlist` (owner decision ' +
         '2026-09-30) reports this deployment\'s effective list to any authenticated caller, and an ' +
         '`EGRESS_DENIED` refusal from `workspace_push({kind:\'mcp\'})` points back at that same ' +
-        'field.\n\n' +
+        'field. Two narrower checks run even BEFORE the allowlist, so a config that trips one of ' +
+        "them never sees `EGRESS_DENIED` at all, no matter the allowlist: an unknown `${run:...}` " +
+        "placeholder (`UNKNOWN_RUN_PLACEHOLDER` — see \"Per-run MCP state\" below) and a config whose " +
+        "`type` is EXPLICITLY set to something other than `'http'`/`'stdio'` (e.g. `type:'sse'`) — " +
+        "the latter is `MCP_PROBE_FAILED`/`UNSUPPORTED_TRANSPORT`, the same code the probe itself " +
+        'would give, just returned before the probe (and the allowlist) are ever reached. A config ' +
+        "with a `url` but NO `type` at all is not covered by this: it still reaches the allowlist " +
+        'first, exactly as before.\n\n' +
         // issue #126: a stdio MCP server's own persisted state (not the engine's secrets/data
         // covered above — its OWN files) is shared host-wide unless the config opts into a
         // per-run private directory via ${run:dir}/${run:id}.

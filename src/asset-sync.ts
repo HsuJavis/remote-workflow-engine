@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path';
 import { pathVerdict, lexicalVerdict, isValidBareName } from './path-verdict.js';
 import { codedError } from './errors.js';
 import type { Clock } from './clock.js';
-import { classifyTransport, PROBE_TIMEOUT_MS, type McpProbe, type McpServerConfig } from './mcp-probe.js';
+import { classifyTransport, PROBE_TIMEOUT_MS, UNSUPPORTED_TRANSPORT_MESSAGE, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { isEgressAllowed } from './seedref-egress.js';
 import { validateRunPlaceholders, UnknownRunPlaceholderError } from './mcp-run-state.js';
 
@@ -546,6 +546,50 @@ export class AssetSyncService {
     }
 
     if (req.kind === 'mcp') {
+      // issue #159 (DOC): a config's SHAPE is checked before any NETWORK POLICY question about it —
+      // both of the two checks below are pure/synchronous (no fetch, no spawn, no DNS), so moving
+      // them ahead of the egress gate costs nothing and means a caller gets told the PRECISE,
+      // actionable reason instead of a blanket EGRESS_DENIED that happens to fire first because the
+      // config also carries a `url` field.
+      //
+      // issue #126 B: an unknown ${run:xxx} placeholder is refused BEFORE the probe (which may
+      // spawn a real process / make a network call) — `${run:dir}`/`${run:id}` themselves are
+      // left UNRESOLVED here and stored verbatim; resolution is per-dispatch (the gateway), never
+      // at push time, so the SAME stored config serves every future run with its own isolated dir.
+      // Moved ahead of the egress check below (issue #159): an http-shaped config (a `url` field)
+      // that ALSO carries an unknown placeholder used to hit EGRESS_DENIED first whenever the
+      // allowlist didn't happen to match — masking the actually-actionable typo. A `stdio` config
+      // (no `url`) was never affected (the egress check never applied to it to begin with), so this
+      // reorder changes nothing for any config that passes today.
+      try {
+        validateRunPlaceholders(req.config);
+      } catch (err) {
+        if (err instanceof UnknownRunPlaceholderError) {
+          return { error: 'UNKNOWN_RUN_PLACEHOLDER', detail: { message: err.message } };
+        }
+        throw err;
+      }
+      // issue #159: an EXPLICITLY-typed, unsupported transport (e.g. `type:'sse'`) that also
+      // carries a `url` field used to hit the SAME EGRESS_DENIED-before-probe masking as the
+      // placeholder case above — `probe()` is the only place that would ever call
+      // `classifyTransport()` and say UNSUPPORTED_TRANSPORT, and the egress check ran first. Scoped
+      // deliberately narrow — `typeof req.config.type === 'string' && req.config.type !== 'http'` —
+      // rather than a blanket `classifyTransport(...) === 'unsupported'`: the wider check also
+      // classifies a config with a `url` but NO `type` at all as unsupported, and that bare shape is
+      // an established, widely-used test/fixture shorthand for "an http-like MCP server" across this
+      // suite (asset-mcp-config-wiring.test.ts, nested-asset-skill-mcp-scope.test.ts, val-021-
+      // secret-store.test.ts, …) that a lenient injected `McpProbe` (FakeMcpProbe) has always
+      // accepted without ever consulting `classifyTransport` — refusing it here, before the probe is
+      // even reached, would be a real behavior change for all of those, never asked for by this fix.
+      // A `type:'stdio'` config with a non-`npx` `command` is also `'unsupported'` but carries no
+      // `url`, so it was never reachable before the egress check anyway (same reasoning as the
+      // placeholder case above) — left to `probe()` exactly as before.
+      if (typeof req.config.url === 'string' && typeof req.config.type === 'string' && req.config.type !== 'http') {
+        return {
+          error: 'MCP_PROBE_FAILED',
+          detail: { code: 'UNSUPPORTED_TRANSPORT', message: UNSUPPORTED_TRANSPORT_MESSAGE, transport: classifyTransport(req.config) },
+        };
+      }
       if (typeof req.config.url === 'string') {
         const verdict = isEgressAllowed(req.config.url, this._egressAllowlist);
         // Owner decision 2026-09-30: EGRESS_DENIED's code is shared with seedRef (errors.ts's
@@ -561,18 +605,6 @@ export class AssetSyncService {
             },
           };
         }
-      }
-      // issue #126 B: an unknown ${run:xxx} placeholder is refused BEFORE the probe (which may
-      // spawn a real process / make a network call) — `${run:dir}`/`${run:id}` themselves are
-      // left UNRESOLVED here and stored verbatim; resolution is per-dispatch (the gateway), never
-      // at push time, so the SAME stored config serves every future run with its own isolated dir.
-      try {
-        validateRunPlaceholders(req.config);
-      } catch (err) {
-        if (err instanceof UnknownRunPlaceholderError) {
-          return { error: 'UNKNOWN_RUN_PLACEHOLDER', detail: { message: err.message } };
-        }
-        throw err;
       }
       const probed = await this._probe.probe(req.config);
       if (!probed.ok) {
