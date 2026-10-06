@@ -73,7 +73,8 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     const result = checkMermaid(src, ['a', 'b'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
     expect(result.ok).toBe(false);
     expect(result.rule).toBe('EDGE_MISMATCH');
-    expect(result.expected).toEqual({ from: 0, to: 1 });
+    // issue #155 DOC: `expected` carries human-readable labels, not bare slot indices.
+    expect(result.expected).toEqual({ from: { index: 0, labels: ['a'] }, to: { index: 1, labels: ['b'] } });
   });
 
   it('a direct agent→agent edge skipping a slot needs a |label| (arm b)', () => {
@@ -94,6 +95,8 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     const result = checkMermaid(src, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
     expect(result.ok).toBe(false);
     expect(result.rule).toBe('EDGE_MISMATCH');
+    // issue #155 DOC: `expected` carries human-readable labels, not bare slot indices.
+    expect(result.expected).toEqual({ from: { index: 0, labels: ['a'] }, to: { index: 2, labels: ['c'] } });
     // …and the SAME diagram with the jump labelled is accepted — the label is what the rule asks for.
     const labelled = src.replace('a-->c', 'a-->|retry|c');
     expect((checkMermaid(labelled, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
@@ -129,6 +132,173 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
       edges: [{ from: 0, to: 1 }, { from: 1, to: 2 }],
     };
     expect((checkMermaid(src, ['writer', 'critic'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
+  });
+
+  // issue #155 B1: if/else arms that each open their own phase() land in different lanes, so they
+  // are two DIFFERENT slots sharing `altGroup` — rule (c) must refuse a direct edge between them the
+  // same way it already refuses one between two labels of the SAME (same-lane) alt slot.
+  describe('no direct edge between two arms of a split alt group (B1)', () => {
+    // a non-agent diamond `d` between the anchor and both arms, as the authoring guide's own
+    // "ternary/if→diamond with a labelled edge per arm" pattern does — a DIRECT a-->b/a-->c would
+    // separately trip rule (b)'s non-consecutive-agent-edge-needs-a-label check.
+    const src = (extra: string) =>
+      [
+        'graph LR', 'subgraph "p1"', 'a(["a"])', 'd{"branch"}', 'end',
+        'subgraph "hot"', 'b(["b"])', 'end', 'subgraph "cold"', 'c(["c"])', 'end',
+        'a-->d', 'd-->|hot|b', 'd-->|cold|c', extra,
+      ].filter(Boolean).join('\n');
+    const expected = {
+      lanes: [
+        { index: 0, title: 'p1', dynamic: false, slots: [0] },
+        { index: 1, title: 'hot', dynamic: false, slots: [1] },
+        { index: 2, title: 'cold', dynamic: false, slots: [2] },
+      ],
+      slots: [
+        { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+        { index: 1, lane: 1, labels: ['b'], kind: 'alt' as const, tools: { b: 'default' as const }, altGroup: 1 },
+        { index: 2, lane: 2, labels: ['c'], kind: 'alt' as const, tools: { c: 'default' as const }, altGroup: 1 },
+      ],
+      edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }],
+    };
+
+    it('the anchor fanning out to both arms, with no arm-to-arm edge, registers ok', () => {
+      const result = checkMermaid(src(''), ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('adding a direct b-->c (arm-to-arm) edge is refused EDGE_MISMATCH, even though both slots have a single label', () => {
+      const result = checkMermaid(src('b-->c'), ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('EDGE_MISMATCH');
+    });
+
+    // issue #155 B1 follow-up: rule (b)'s "non-consecutive" test used to be `|fromSlot-toSlot|!==1`,
+    // an exact proxy for E1's old `{i,i+1}`-only edge set. B1 made the expected edge set non-linear
+    // (`{0,1},{0,2}`, or `{1,3},{2,3}` on the fan-in side) — a DIRECT agent→agent edge that the
+    // expected graph actually asks for (e.g. anchor-->arm) must NOT be penalized just because its
+    // slot indices aren't adjacent integers.
+    it('a direct anchor-->arm edge (no diamond, slots 0 and 2) needs no |label| — it IS an expected edge', () => {
+      const directSrc = [
+        'graph LR', 'subgraph "p1"', 'a(["a"])', 'end',
+        'subgraph "hot"', 'b(["b"])', 'end', 'subgraph "cold"', 'c(["c"])', 'end',
+        'a-->b', 'a-->c',
+      ].join('\n');
+      const result = checkMermaid(directSrc, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('both fan-in arms (slots 1 and 2, both to slot 3) need no |label| — neither is penalized over the other', () => {
+      const fanInExpected = {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+          { index: 3, title: 'done', dynamic: false, slots: [3] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt' as const, tools: { b: 'default' as const }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt' as const, tools: { c: 'default' as const }, altGroup: 1 },
+          { index: 3, lane: 3, labels: ['d'], kind: 'single' as const, tools: { d: 'default' as const } },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }, { from: 1, to: 3 }, { from: 2, to: 3 }],
+      };
+      const fanInSrc = [
+        'graph LR', 'subgraph "p1"', 'a(["a"])', 'end',
+        'subgraph "hot"', 'b(["b"])', 'end', 'subgraph "cold"', 'c(["c"])', 'end',
+        'subgraph "done"', 'd(["d"])', 'end',
+        'a-->b', 'a-->c', 'b-->d', 'c-->d',
+      ].join('\n');
+      const result = checkMermaid(fanInSrc, ['a', 'b', 'c', 'd'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected: fanInExpected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('a direct a-->c edge inside a plain linear 3-slot chain, skipping slot 1, still needs a |label| (regression guard)', () => {
+      const linearExpected = {
+        lanes: [0, 1, 2].map((i) => ({ index: i, title: ['one', 'two', 'three'][i]!, dynamic: false, slots: [i] })),
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } },
+          { index: 2, lane: 2, labels: ['c'], kind: 'single' as const, tools: { c: 'default' as const } },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 1, to: 2 }],
+      };
+      const linearSrc = [
+        'graph LR', 'subgraph "one"', 'a(["a"])', 'end', 'subgraph "two"', 'b(["b"])', 'end',
+        'subgraph "three"', 'c(["c"])', 'end', 'a-->b', 'b-->c', 'a-->c',
+      ].join('\n');
+      const result = checkMermaid(linearSrc, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected: linearExpected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('EDGE_MISMATCH');
+    });
+  });
+
+  // issue #155 B3/TOOLS-DOC: an agent() dispatched inside a loop/switch body got NO ExpectedSlot at
+  // all, so neither checkLanes nor checkTools ever looked at it — its diagram placement (and, when
+  // it carries a literal allowedTools, its `tools:` text) was unconstrained.
+  describe('dynamic lanes are still lane/tools-checked (B3/TOOLS-DOC)', () => {
+    it('a dynamic-lane agent drawn in the WRONG lane is LANE_MISMATCH', () => {
+      const src = 'graph LR\nsubgraph "pre"\nb(["b"])\na(["a"])\nend\nsubgraph "loop"\nend';
+      const expected = {
+        lanes: [
+          { index: 0, title: 'pre', dynamic: false, slots: [0] },
+          { index: 1, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] },
+        ],
+        slots: [{ index: 0, lane: 0, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } }],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['b', 'a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('LANE_MISMATCH');
+    });
+
+    it('the same dynamic-lane agent drawn in the CORRECT lane registers ok', () => {
+      const src = 'graph LR\nsubgraph "pre"\nb(["b"])\nend\nsubgraph "loop"\na(["a"])\nend';
+      const expected = {
+        lanes: [
+          { index: 0, title: 'pre', dynamic: false, slots: [0] },
+          { index: 1, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] },
+        ],
+        slots: [{ index: 0, lane: 0, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } }],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['b', 'a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('a dynamic-lane agent with no literal allowedTools is NOT tools-checked (documented exemption stays)', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: none"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('a dynamic-lane agent WITH a literal allowedTools whose tools: text disagrees is TOOLS_MISMATCH', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: none"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a', tools: ['Read'] }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('TOOLS_MISMATCH');
+    });
+
+    it('a dynamic-lane agent WITH a literal allowedTools whose tools: text agrees registers ok', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: Read"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a', tools: ['Read'] }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
   });
 });
 

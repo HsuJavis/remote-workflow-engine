@@ -27,6 +27,10 @@ export interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
+  // issue #155 B3: every ungrouped dynamic (loop/switch-body) agent() call landing in this lane —
+  // no static slot (S1-S4 don't apply), but still checkable for LANE placement (and, when the call
+  // carries a literal allowedTools, for TOOLS too). Absent/undefined when the lane has none.
+  dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 
 export interface ExpectedSlot {
@@ -35,6 +39,11 @@ export interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
+  // issue #155 B1: shared by every arm-slot of ONE if/else (`alt`) group whose arms were split
+  // across different lanes (each arm opens its own phase()) — lets checkEdges refuse a direct
+  // arm-to-arm edge even though the arms are two different slots in two different lanes. Absent
+  // for every other slot kind, and for a same-lane alt group (still one merged slot, as before).
+  altGroup?: number;
 }
 
 export interface ExpectedEdge {
@@ -65,6 +74,14 @@ const FALLBACK_CALL: ScanCall = { line: 0, label: '', index: -1, allowedTools: '
 /** T1: the literal `allowedTools` array SORTED, or `'default'` when the call carries none. */
 function toolsFor(allowedTools: ScanCall['allowedTools']): string[] | 'default' {
   return allowedTools === 'absent' || allowedTools === undefined ? 'default' : [...allowedTools].sort();
+}
+
+/** issue #155 B3/TOOLS-DOC: the literal `allowedTools` array SORTED, or `undefined` when the call
+ *  carries none OR a non-literal (variable) one — unlike `toolsFor`, never `'default'`, since
+ *  `ExpectedLane.dynamicLabels[].tools` must distinguish "nothing to check" (undefined, omit the
+ *  field) from "default" (`toolsFor`'s sentinel is for a STATIC slot's `tools` map, not this). */
+function literalToolsFor(allowedTools: ScanCall['allowedTools']): string[] | undefined {
+  return allowedTools === 'absent' || allowedTools === undefined ? undefined : [...allowedTools].sort();
 }
 
 /** `deriveExpectedGraph(nodes, scan, contract?) → {ok:true; graph} | {ok:false; rule; line; label;
@@ -104,6 +121,32 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
   // consecutive ungrouped agents, S1) starts a fresh slot.
   let openGroupKey: string | undefined;
   let lastSlotIndex: number | undefined;
+
+  // issue #155 B1: an `alt` group whose arms land in DIFFERENT lanes (each arm opens its own
+  // phase()) cannot be represented as one slot — `ExpectedSlot.lane` is a single scalar. Each arm
+  // gets its OWN slot (tagged `altGroup`), but the group's EDGES still need to fan out from the one
+  // anchor slot that preceded the whole branch to EVERY arm, and from EVERY arm to whatever slot
+  // follows the branch — never arm-to-arm. `altGroupTotal` (a prepass over every call, regardless of
+  // lane) is how we know an arm is the group's LAST one, so the group can "close" and hand off its
+  // accumulated arm list to whichever slot gets created next.
+  const altGroupTotal = new Map<string, number>();
+  for (const c of safeCalls) {
+    if (c.group?.kind === 'alt') {
+      const k = `alt:${c.group.id}`;
+      altGroupTotal.set(k, (altGroupTotal.get(k) ?? 0) + 1);
+    }
+  }
+  const altGroupSeen = new Map<string, number>();
+  // Every anchor slot this group's arms fan OUT from — usually one (`lastSlotIndex` at the time the
+  // group's first arm appeared), but when this group starts IMMEDIATELY after another split alt
+  // group just closed (two consecutive if/else branches, each arm its own phase()), its anchors are
+  // THAT group's own arm slots: every outcome of branch 1 fans into every arm of branch 2, not just
+  // the textually-last one.
+  const altGroupAnchor = new Map<string, number[]>();
+  const altGroupArms = new Map<string, number[]>();
+  // Set once a split alt group has seen its LAST arm — consumed (and cleared) by the NEXT slot this
+  // loop creates, which gets edges from every one of that group's arms instead of just `lastSlotIndex`.
+  let pendingAltArms: number[] | undefined;
 
   for (const node of safeNodes) {
     if (!node || typeof node !== 'object') continue;
@@ -152,33 +195,74 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
       // never treated as dynamic even when `parseWorkflowSkeleton`'s own loop-body detection also
       // fired on it (an if/else arm sits inside a DYNAMIC_OPENERS `if (` span) — `scan.calls[i].group`
       // is the more specific signal and wins.
-      lanes[currentLaneIndex]!.dynamic = true;
+      const lane = lanes[currentLaneIndex]!;
+      lane.dynamic = true;
+      // issue #155 B3/TOOLS-DOC: still record the label (and, when literal, the allowedTools) so
+      // checkLanes/checkTools can keep checking PLACEMENT (and, when literal, TOOLS) for this call
+      // even though it gets no static slot — rules 3(conditionally)/4 remain exempt, unchanged.
+      const tools = literalToolsFor(call.allowedTools);
+      const entry: { label: string; tools?: string[] } = { label: call.label };
+      if (tools !== undefined) entry.tools = tools;
+      (lane.dynamicLabels ??= []).push(entry);
       continue;
     }
 
     const label = call.label;
     const groupKey = group !== undefined ? `${group.kind}:${group.id}` : undefined;
-    if (groupKey !== undefined && groupKey === openGroupKey && lastSlotIndex !== undefined) {
-      // S2/S3: another member of the group already open at the top of the stack — extend it.
+    if (groupKey !== undefined && groupKey === openGroupKey && lastSlotIndex !== undefined && slots[lastSlotIndex]!.lane === currentLaneIndex) {
+      // S2/S3: another member of the group already open, in the SAME lane (no intervening phase())
+      // — extend that one slot, exactly as before this fix.
       const slot = slots[lastSlotIndex]!;
       slot.labels.push(label);
       slot.tools[label] = toolsFor(call.allowedTools);
+      if (group!.kind === 'alt') altGroupSeen.set(groupKey, (altGroupSeen.get(groupKey) ?? 0) + 1);
       continue;
     }
 
-    // S1/S2/S3: a fresh slot — a plain sequential call (S1) or the FIRST member of a new
-    // parallel/alt group (S2/S3).
+    // S1/S2/S3: a fresh slot — a plain sequential call (S1), the FIRST member of a new
+    // parallel/alt group (S2/S3), or (B1) a LATER arm of an alt group whose previous arm sits in a
+    // DIFFERENT lane (an intervening phase() means it can't be merged into that arm's slot).
     const slotIndex = slots.length;
+    const isAltArm = group !== undefined && group.kind === 'alt';
+    const altKey = isAltArm ? `alt:${group!.id}` : undefined;
+    const isAltContinuation = altKey !== undefined && altGroupArms.has(altKey);
     slots.push({
       index: slotIndex,
       lane: currentLaneIndex,
       labels: [label],
       kind: group !== undefined ? group.kind : 'single',
       tools: { [label]: toolsFor(call.allowedTools) },
+      ...(altKey !== undefined ? { altGroup: group!.id } : {}),
     });
     lanes[currentLaneIndex]!.slots.push(slotIndex);
-    // E1: one edge between consecutive slots, across lane boundaries too.
-    if (lastSlotIndex !== undefined) edges.push({ from: lastSlotIndex, to: slotIndex });
+
+    if (altKey !== undefined) {
+      // B1: fan OUT from this group's anchor slot(s) to every arm — never arm-to-arm — and track
+      // the arm so the slot that eventually follows the branch can fan IN from every one of them.
+      if (isAltContinuation) {
+        for (const anchor of altGroupAnchor.get(altKey) ?? []) edges.push({ from: anchor, to: slotIndex });
+        altGroupArms.get(altKey)!.push(slotIndex);
+      } else {
+        // The anchor is normally just `lastSlotIndex`; when a split alt group JUST closed right
+        // before this one opened, `pendingAltArms` holds ITS arms — every one of them is an anchor
+        // for this group too (two consecutive branches fan fully into each other, not through only
+        // the textually-last arm of the first).
+        const anchors = pendingAltArms ?? (lastSlotIndex !== undefined ? [lastSlotIndex] : []);
+        altGroupAnchor.set(altKey, anchors);
+        altGroupArms.set(altKey, [slotIndex]);
+        for (const anchor of anchors) edges.push({ from: anchor, to: slotIndex });
+        pendingAltArms = undefined; // consumed — this group now owns the "what's pending" slot
+      }
+      altGroupSeen.set(altKey, (altGroupSeen.get(altKey) ?? 0) + 1);
+      if (altGroupSeen.get(altKey) === altGroupTotal.get(altKey)) pendingAltArms = altGroupArms.get(altKey);
+    } else if (pendingAltArms !== undefined) {
+      // This slot is whatever follows a NOW-COMPLETE split alt group — fan IN from every arm.
+      for (const armSlot of pendingAltArms) edges.push({ from: armSlot, to: slotIndex });
+      pendingAltArms = undefined;
+    } else {
+      // E1 (unchanged): one edge between consecutive slots, across lane boundaries too.
+      if (lastSlotIndex !== undefined) edges.push({ from: lastSlotIndex, to: slotIndex });
+    }
     lastSlotIndex = slotIndex;
     openGroupKey = groupKey;
   }

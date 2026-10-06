@@ -1333,9 +1333,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`|label|` saying what it means. Members of one `parallel([...])` (or of the two arms of one ' +
         'branch) are never edged to each other — they fan in to whatever follows.\n\n' +
         'A script whose shape a static read cannot resolve at all — an `agent()` inside a `for`, ' +
-        '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rules 3 and 4 ' +
-        'have nothing to compare there. Declare the agent\'s node inside that lane anyway; the ' +
-        'label check (both ways) still applies.\n\n' +
+        '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rule 4 has no ' +
+        'edges to compare there. Declare the agent\'s node inside that lane anyway: rule 2 (LANE) ' +
+        'still requires it, and rule 3 (TOOLS) still applies whenever that call declares a literal ' +
+        '`allowedTools` array — only an absent or variable `allowedTools` on a dynamic-lane call ' +
+        'skips rule 3, same as everywhere else.\n\n' +
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +
