@@ -116,6 +116,51 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
       rmSync(workRoot, { recursive: true, force: true });
     }
   }, 240_000);
+
+  // issue #159 B8 (owner approved): confined Bash under pi must deny-by-default for reads the SAME
+  // way the sdk gateway's own buildBashConfinement() policy does (issue #101) — $HOME and workRoot
+  // denied, this dispatch's own workspace and the home-resident toolchain re-opened. Before this
+  // test existed, nothing in this suite ever planted a file directly under $HOME and tried to read
+  // it back through confined pi Bash — the sibling-workspace and node-only toolchain tests above
+  // don't cover this specific claim. Mirrors val-253's own "$HOME is off limits" real-tier proof
+  // (val-253-bash-confinement.test.ts), but for READ (pi's own mechanism) rather than WRITE (sdk's).
+  it.skipIf(!HAS_CONFINED_RUNTIME)("issue #159 B8: confined bash denies reads under $HOME; own workspace and the toolchain (node+git) still work" + WHY_NOT, async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-confined-home-'));
+    const ws = join(workRoot, 'ws');
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, 'own.txt'), 'own-file-content');
+    const homeDir = process.env['HOME'];
+    if (homeDir === undefined) throw new Error('HOME must be set for this test');
+    const probe = join(homeDir, `rwe-pi-b8-home-probe-${Date.now()}.txt`);
+    writeFileSync(probe, 'HOME_SHOULD_BE_UNREADABLE');
+    try {
+      const gw = new PiGatewayClient({
+        ollamaBaseUrl: 'http://localhost:11434',
+        timeoutMs: 60_000,
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot, homeDir, allowReadPaths: [dirname(process.execPath)] },
+      });
+      const result = await retryReal(() => gw.invoke({
+        prompt: `Call the bash tool ONCE with this exact command and then report the raw output verbatim: cat own.txt; echo SEP; cat ${probe} 2>&1; echo SEP; node --version; echo SEP; git --version`,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] },
+        runId: 'confined-home-r1',
+        agentId: 'confined-home-a1',
+        workspace: ws,
+      }));
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const text = String(result.content);
+        expect(text).toContain('own-file-content');
+        // ENOENT (tmpfs-over-denied-$HOME), never the real planted content.
+        expect(text).not.toContain('HOME_SHOULD_BE_UNREADABLE');
+        expect(text).toMatch(/v\d+\.\d+\.\d+/); // node --version
+        expect(text).toMatch(/git version \d+\.\d+/); // git --version
+      }
+    } finally {
+      rmSync(probe, { force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 240_000);
 });
 
 describe('pi harness v1 — srt-mux socket cleanup (residual fix)', () => {

@@ -116,9 +116,16 @@ export const ERROR_CATALOG = {
   // a bare OPENROUTER_API_KEY env var) at the moment an openrouter/* model was about to dispatch.
   OPENROUTER_AUTH_MISSING: { see: 'workflow_authoring_guide', hint: 'no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or a bare OPENROUTER_API_KEY environment variable before dispatching an openrouter/* model under gateway:"pi"' },
   // pi harness v1 (file-tool jail, session-runner.ts): the SAME path-containment check the sdk
-  // gateway's own tools enforce, under a different literal — a Read/Write/Edit/Glob/Grep/LS/Bash call
+  // gateway's own tools enforce, under a different literal — a Read/Write/Edit/Glob/Grep/LS call
   // resolved to a path outside the run's own workspace.
-  PATH_ESCAPES_WORKSPACE: { see: 'workflow_authoring_guide', hint: "a tool call (Read/Write/Edit/Glob/Grep/LS/Bash) under gateway:\"pi\" resolved to a path outside this run's own workspace — including through a symlink planted inside the workspace that points outside it; every file tool is jailed to the workspace root and refuses rather than follow the link" },
+  // issue #159 B8 (DOC): `Bash` used to be listed here too — wrong. `assertJailed` (the JS check
+  // that throws this exact code) is never on Bash's path at all; confined Bash's containment is a
+  // SEPARATE, kernel-level mechanism (the OS sandbox's denyRead/denyWrite, bash-confinement.ts) that
+  // fails with a different symptom (a command result like "No such file or directory" or "Read-only
+  // file system" from the shell itself, never this JS-thrown error) and a different scope (denies
+  // $HOME and the whole workRoot, not merely "outside the workspace" — see the Host path grants
+  // section of this guide for what it actually denies and re-opens).
+  PATH_ESCAPES_WORKSPACE: { see: 'workflow_authoring_guide', hint: "a tool call (Read/Write/Edit/Glob/Grep/LS) under gateway:\"pi\" resolved to a path outside this run's own workspace — including through a symlink planted inside the workspace that points outside it; every one of those five file tools is jailed to the workspace root and refuses rather than follow the link. `Bash` is NOT jailed this way: its containment is the kernel sandbox (see the Host path grants section) — a confined Bash command reading outside the workspace fails with an ordinary shell-level error (e.g. \"No such file or directory\"), never this code, and is not limited to the workspace alone (it also denies $HOME and the whole workRoot, while leaving the system toolchain and any operator-granted host path readable)" },
   // pi harness v1 (mcp-config-resolver.ts / session-runner.ts): a declared MCP server's resolved
   // config has neither an `http`/`https` url nor a `command` to spawn — nothing runnable for pi's
   // own `pi.registerMcpServer()` to connect.
