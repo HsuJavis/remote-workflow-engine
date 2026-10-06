@@ -442,10 +442,12 @@ export const GLOBAL_SKILL_BODY_MAX_BYTES = 16 * 1024;
  *  failure — same "degrades honestly" convention as `readGlobalSkillDescription`. Reads the EXACT
  *  SAME single path that function does (`<globalRoot>/skill/<name>/SKILL.md`) — never any other
  *  file in the skill's tree, so a sibling exec/bin file or data file can never reach this response.
- *  Truncated at a BYTE boundary (`Buffer.subarray`, not a string `.slice`) so a multi-byte UTF-8
- *  character straddling the cutoff cannot inflate the returned byte size past the bound; `truncated`
- *  tells the caller the text was cut, since silently returning a shorter string would read as the
- *  skill's whole content. */
+ *  Truncated at a BYTE boundary (`Buffer.subarray`, not a string `.slice`): a multi-byte UTF-8
+ *  character straddling that cutoff decodes to a replacement character (U+FFFD), which can
+ *  re-encode LONGER than the partial bytes it replaced — the trailing `while` below trims back to
+ *  the bound (rarely more than one character) so the returned `body`'s OWN byte length is the hard
+ *  guarantee, not just the pre-decode subarray length. `truncated` tells the caller the text was
+ *  cut, since silently returning a shorter string would read as the skill's whole content. */
 function readGlobalSkillBody(globalRoot: string, name: string): { body: string; truncated: boolean } | null {
   let raw: Buffer;
   try {
@@ -454,7 +456,9 @@ function readGlobalSkillBody(globalRoot: string, name: string): { body: string; 
     return null;
   }
   if (raw.byteLength <= GLOBAL_SKILL_BODY_MAX_BYTES) return { body: raw.toString('utf-8'), truncated: false };
-  return { body: raw.subarray(0, GLOBAL_SKILL_BODY_MAX_BYTES).toString('utf-8'), truncated: true };
+  let body = raw.subarray(0, GLOBAL_SKILL_BODY_MAX_BYTES).toString('utf-8');
+  while (Buffer.byteLength(body, 'utf-8') > GLOBAL_SKILL_BODY_MAX_BYTES) body = body.slice(0, -1);
+  return { body, truncated: true };
 }
 
 /**

@@ -297,6 +297,27 @@ describe('AssetSyncService.listGlobal — opt-in SKILL.md body for discovery (is
     }
   });
 
+  // A 4-byte UTF-8 character (an emoji) straddling the exact byte cutoff decodes, pre-fix, to a
+  // 3-byte replacement character (U+FFFD) — which can land the naive subarray().toString() result
+  // ONE OR TWO BYTES OVER the bound, not under it. The hard guarantee has to be on the DECODED
+  // body's own byte length, not the pre-decode subarray length.
+  it('a multi-byte character straddling the exact byte cutoff never pushes the decoded body over the bound', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-multibyte-'));
+    try {
+      const svc = svcIn(dir);
+      const prefix = '---\ndescription: d.\n---\n\n';
+      // pad with 1-byte ASCII so the 4-byte emoji's first byte lands exactly ON the cutoff.
+      const pad = 'x'.repeat(GLOBAL_SKILL_BODY_MAX_BYTES - Buffer.byteLength(prefix, 'utf-8'));
+      const big = prefix + pad + '\u{1F600}'.repeat(50); // grinning-face emoji, 4 bytes each in utf-8
+      await svc.push({ scope: 'global', kind: 'skill', name: 'emoji-kit', files: [{ path: 'SKILL.md', contentB64: Buffer.from(big).toString('base64') }], pushedBy: 'admin' });
+      const [row] = await svc.listGlobal('skill', { includeBody: true }) as Array<{ body: string | null; bodyTruncated: boolean }>;
+      expect(row.bodyTruncated).toBe(true);
+      expect(Buffer.byteLength(row.body ?? '', 'utf-8')).toBeLessThanOrEqual(GLOBAL_SKILL_BODY_MAX_BYTES);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('never returns a sibling file\'s content (only SKILL.md) — includeBody:true on a skill with a bin/ CLI file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-146-sibling-'));
     try {

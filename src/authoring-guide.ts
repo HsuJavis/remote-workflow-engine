@@ -26,6 +26,9 @@ import { SANDBOX_GLOBALS, DETERMINISM_GUARDED } from './sandbox/guards.js';
 // v26 (DES-187, ARCH-121, TASK-193): the three seed shapes and workspace_push's own description,
 // read from the SAME schema `tools/list` serves — a cold client's only documentation (ADR-032).
 import { TOOL_SPECS } from './tool-specs.js';
+// issue #146: the SAME enforced byte bound workspace_list's own description states (tool-specs.ts)
+// — interpolated here too, not transcribed, so the two can never say a different number.
+import { GLOBAL_SKILL_BODY_MAX_BYTES } from './asset-sync.js';
 // v26 (DES-187, ARCH-121, TASK-193, ADR-041) — 2026-09-26 (alias mechanism removed): the provider
 // capability table, read from the same data `parseModelRef`/`checkModelRef` check against.
 import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
@@ -1501,8 +1504,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "every global asset of that kind — name plus (skill) its SKILL.md description or (mcp) its " +
         'transport type, nothing more. Add `includeBody:true` (skills only) to also read the FULL ' +
         'SKILL.md text — its instructions and any dependency it names (e.g. "requires MCP X") — ' +
-        'BEFORE you declare/register against it (capped at 16 KiB, `bodyTruncated:true` past the ' +
-        "cap; refused `INVALID_ARGUMENT` outside `{scope:'global', kind:'skill'}`). That text is " +
+        `BEFORE you declare/register against it (capped at ${GLOBAL_SKILL_BODY_MAX_BYTES / 1024} ` +
+        "KiB, `bodyTruncated:true` past the cap; refused `INVALID_ARGUMENT` outside " +
+        "`{scope:'global', kind:'skill'}`). That text is " +
         'visible to every approved principal this way, same as the description already is — an ' +
         "admin pushing a global skill must never put a secret in its SKILL.md.",
     ),

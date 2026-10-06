@@ -12,6 +12,11 @@ import { LOCKED_KEYS } from './params/contract.js';
 // `run_start` schema's `seed.items.contentB64` description and validateSeedSpec's refusal message
 // (run-manager.ts, via workspace-seed.ts) can never drift apart. Pure (no I/O), no cycle.
 import { SEED_ITEM_HINT } from './workspace-seed.js';
+// issue #146: workspace_list's own `includeBody` description states the real enforced byte bound —
+// interpolated, not transcribed, so it cannot drift from what AssetSyncService actually enforces
+// the way LOCKED_KEYS's old hand-typed copy (above) once did. Pure value (no cycle: asset-sync.ts
+// imports neither this file nor authoring-guide.ts).
+import { GLOBAL_SKILL_BODY_MAX_BYTES } from './asset-sync.js';
 // issue #97: the delivery-contract facts webhook_create's description states — header names,
 // the signature/HMAC key relationship, and the timestamp skew window — are the SAME exported values
 // server.ts's POST /hooks/:id route and webhook-registry.ts's deliver() enforce, so a drift between
@@ -982,7 +987,8 @@ export const TOOL_SPECS = [
       // the SAME single SKILL.md path the description field already reads, just the whole text
       // instead of one frontmatter line; never any other file in the skill's tree.
       "`{scope:'global', kind:'skill', includeBody:true}` ALSO returns each skill's own SKILL.md " +
-      'text (frontmatter + body, capped at 16 KiB and flagged `bodyTruncated:true` past the cap) — ' +
+      `text (frontmatter + body, capped at ${GLOBAL_SKILL_BODY_MAX_BYTES / 1024} KiB and flagged ` +
+      '`bodyTruncated:true` past the cap) — ' +
       'so you can read its instructions and any dependency it names (e.g. "requires MCP X") BEFORE ' +
       'declaring/registering it; default (omitted or false) keeps the response name+description-only ' +
       "as before. `includeBody` is refused INVALID_ARGUMENT outside {scope:'global', kind:'skill'}. " +
