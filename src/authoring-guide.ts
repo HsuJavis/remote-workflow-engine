@@ -750,7 +750,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `is reachable (\`${SANDBOX_GLOBALS.join('\`, \`')}\`; \`Date\`/\`Math\` are GUARDED, see below):\n\n` +
         "- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string " +
         'identifier (`/^[A-Za-z_][\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; ' +
-        '`options` MUST be a literal object (no variable, no spread).\n' +
+        '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +
+        'property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be ' +
+        'checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / ' +
+        '`AGENT_OPTS_SHORTHAND` at registration, issue #154).\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +

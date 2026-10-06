@@ -291,7 +291,17 @@ export type AgentCallViolationCode =
   /** Issue #78(c): `bash:'readonly'` whose tool surface is not a read-only shell — a literal
    *  `allowedTools` that also grants a write tool, names no Bash, or is absent/non-literal (the
    *  deployment default carries Write/Edit, which this scan cannot see). */
-  | 'BASH_READONLY_CONFLICT';
+  | 'BASH_READONLY_CONFLICT'
+  /** Issue #154 B2: a spread element (`...extra`) inside an otherwise-literal `agent()` options
+   *  object. The prior scan only required the WHOLE argument to start with `{` and end with `}`
+   *  (AGENT_OPTS_NOT_LITERAL) then split top-level entries looking for a `:` — a spread entry has
+   *  none and was silently `continue`d past, so every key it carries (confirmed: `allowedTools`)
+   *  was invisible to this scan while still reaching `agent-executor.ts`'s dispatch verbatim. */
+  | 'AGENT_OPTS_SPREAD'
+  /** Issue #154 B2 (shorthand-property gap, advisor-flagged alongside spread): `{ allowedTools }`
+   *  — the key name IS a literal the scan could see, but its value comes from a variable, not from
+   *  the object literal itself, so it carries the same unverifiable-value hazard as a spread. */
+  | 'AGENT_OPTS_SHORTHAND';
 
 export interface AgentCallViolation {
   line: number;
@@ -690,8 +700,29 @@ export function scanAgentCalls(script: string): AgentCallScan {
       violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
     } else {
       for (const entry of splitTopLevel(optsText.slice(1, -1))) {
+        const trimmedEntry = entry.trim();
+        if (trimmedEntry === '') continue;
         const colonIdx = entry.indexOf(':');
-        if (colonIdx === -1) continue;
+        if (colonIdx === -1) {
+          // Issue #154 B2: a spread (`...extra`) or shorthand (`{ key }`) entry has no top-level
+          // `:` — it used to be silently skipped here, which is exactly how `allowedTools` was
+          // smuggled past this scan and reached `agent-executor.ts`'s dispatch unexamined.
+          if (trimmedEntry.startsWith('...')) {
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_SPREAD',
+              hint: 'a spread (`...x`) inside agent() options hides every key it carries from this scan — write each option as a literal key instead of spreading an object into it',
+            });
+          } else {
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_SHORTHAND',
+              key: trimmedEntry,
+              hint: `'${trimmedEntry}' is a shorthand property — its value comes from a variable, not a literal, so it cannot be checked statically. Write '${trimmedEntry}: <literal>' instead`,
+            });
+          }
+          continue;
+        }
         let key = entry.slice(0, colonIdx).trim();
         if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
         if (key === 'allowedTools') {

@@ -79,13 +79,18 @@ describe('unknown agent() option keys are refused at scan time (UT-165, #55)', (
     expect(v?.hint).toContain('meta.params.agents.plan.appendPrompt.default');
   });
 
-  // Conservative boundaries — a scan that refuses what it cannot read would break working scripts.
-  it('a spread entry carries no key and is left alone', () => {
-    expect(scanAgentCalls('agent("plan", { ...base, prompt: "p" });').violations).toEqual([]);
+  // Issue #154 B2: this used to be "left alone" (a spread/shorthand entry has no top-level `:`, so
+  // the old scan silently skipped it) — confirmed to smuggle `allowedTools` straight past this scan
+  // and into `agent-executor.ts`'s dispatch unexamined. "Cannot read" must now mean REFUSED, not
+  // ignored; see tests/unit/agent-opts-spread.test.ts for the full fix coverage.
+  it('a spread entry carries no key ⇒ AGENT_OPTS_SPREAD, not left alone', () => {
+    const { violations } = scanAgentCalls('agent("plan", { ...base, prompt: "p" });');
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_SPREAD')).toBe(true);
   });
 
-  it('shorthand ({ prompt }) carries no colon and is left alone', () => {
-    expect(scanAgentCalls('agent("plan", { prompt });').violations).toEqual([]);
+  it('shorthand ({ prompt }) carries no colon ⇒ AGENT_OPTS_SHORTHAND, not left alone', () => {
+    const { violations } = scanAgentCalls('agent("plan", { prompt });');
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_SHORTHAND')).toBe(true);
   });
 
   it('a quoted key is unquoted before the check ("nosuchknob" refuses the same as nosuchknob)', () => {
