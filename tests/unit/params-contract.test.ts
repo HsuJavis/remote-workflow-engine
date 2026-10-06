@@ -1228,3 +1228,39 @@ describe('validateSpecShape() / parseParamContract() — an unknown field on a d
   });
 });
 
+// issue #156/#161 DOC: string min/max are UTF-8 BYTE bounds (checkValueAgainstSpec casts to
+// Buffer.byteLength for a type:'string' spec) but the PARAM_OUT_OF_RANGE message text carried no
+// unit, so e.g. '中文' rejected by max:5 read as "exceeds the maximum of 5" with no indication the
+// 5 is bytes, not characters.
+describe('checkValueAgainstSpec() — a string spec\'s min/max violation message names the unit (bytes) (issue #156/#161 DOC)', () => {
+  it('a string max violation message says "bytes"', () => {
+    const r = checkValueAgainstSpec('bio', 'x'.repeat(10), { type: 'string', max: 5 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toBe('bio exceeds the maximum of 5 bytes');
+  });
+
+  it('a string min violation message says "bytes"', () => {
+    const r = checkValueAgainstSpec('bio', 'ab', { type: 'string', min: 5 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toBe('bio is below the minimum of 5 bytes');
+  });
+
+  it('regression pin: a NUMBER spec\'s min/max violation message is unaffected (no "bytes" suffix)', () => {
+    const over = checkValueAgainstSpec('n', 999, { type: 'number', max: 10 });
+    const under = checkValueAgainstSpec('n', 1, { type: 'number', min: 10 });
+    expect(over.ok).toBe(false);
+    expect(under.ok).toBe(false);
+    if (!over.ok) expect(over.message).toBe('n exceeds the maximum of 10');
+    if (!under.ok) expect(under.message).toBe('n is below the minimum of 10');
+  });
+
+  it('regression pin: appendPrompt\'s own dedicated override message is UNCHANGED (still no "bytes" suffix — pinned by UT-269 above)', () => {
+    const contract: ParamContract = {
+      agents: { plan: baseAgentSpec({ appendPrompt: { type: 'string', default: '', max: 100 } }) },
+      args: {},
+    };
+    const r = validateUserOverrides(contract, { agents: { plan: { appendPrompt: 'x'.repeat(150) } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toBe('appendPrompt exceeds the maximum of 100');
+  });
+});

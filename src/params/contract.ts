@@ -559,11 +559,15 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
   // never fires. This matches how `maxAppendPromptBytes`/`MAX_SUPPLIED_BYTES` already express
   // string limits elsewhere in this module.
   const bound = spec.type === 'string' ? Buffer.byteLength(value as string, 'utf8') : (value as number);
+  // issue #156/#161 DOC: for a type:'string' spec, `min`/`max` bound the UTF-8 BYTE length (see
+  // `bound` above) — the message must say so, or a caller sees e.g. "exceeds the maximum of 5" for
+  // '中文' (6 bytes, 2 characters) with no indication the 5 is a byte count, not a character count.
+  const unitSuffix = spec.type === 'string' ? ' bytes' : '';
   if (spec.min !== undefined && bound < spec.min) {
     return {
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
-      message: `${param} is below the minimum of ${spec.min}`,
+      message: `${param} is below the minimum of ${spec.min}${unitSuffix}`,
       detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max } },
     };
   }
@@ -576,7 +580,7 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
       // fired without re-deriving effectiveAgentBounds.
       message: spec.ceilingKey !== undefined
         ? `${param} exceeds the engine ceiling ${spec.ceilingKey} ${spec.max}`
-        : `${param} exceeds the maximum of ${spec.max}`,
+        : `${param} exceeds the maximum of ${spec.max}${unitSuffix}`,
       detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max }, ...(spec.ceilingKey !== undefined ? { ceiling: spec.ceilingKey } : {}) },
     };
   }
