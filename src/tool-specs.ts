@@ -877,13 +877,18 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_list', entity: 'run', key: null,
-    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that.",
-    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'number' } }),
+    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that. `limit` must be a whole number >= 1 (max 500, larger values clamped); a non-integer or non-positive value is refused INVALID_ARGUMENT.",
+    // issue #160 BUG-2: `type:'number'` let a float (e.g. 1.5) straight through ajv, where the
+    // store's own `Math.min(limit, 500)` bound it unmodified into a SQL `LIMIT ?`, and
+    // better-sqlite3 threw a raw, uncoded 'datatype mismatch' for it. `integer`+`minimum:1` refuses
+    // it HERE, typed, before it ever reaches the store (the store also clamps defensively for any
+    // non-wire caller — see sqlite-run-store.ts `list()`).
+    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', minimum: 1 } }),
     outputSchema: OUT,
-    errors: [] as ErrorCode[],
+    errors: ['INVALID_ARGUMENT'] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {}, errors: {} },
+    fixture: { happy: {}, errors: { INVALID_ARGUMENT: { limit: 1.5 } } },
   },
 
   // ---- workspace (6) ----

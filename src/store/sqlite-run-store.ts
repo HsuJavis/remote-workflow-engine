@@ -442,7 +442,16 @@ export class SqliteRunStore implements RunStore {
     if (filter.status !== undefined) { clauses.push('r.status = ?'); params.push(filter.status); }
     if (filter.principal !== undefined) { clauses.push('r.principal = ?'); params.push(filter.principal); }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-    const limit = Math.min(filter.limit ?? 50, 500);
+    // issue #160 BUG-2: `filter.limit` used to be bound into `LIMIT ?` unmodified. A non-integer
+    // (e.g. 1.5) made better-sqlite3 throw a bare, uncoded 'datatype mismatch' Error against the
+    // INTEGER-affinity clause (escaping the call-tool error-wrapping machinery as a raw string); a
+    // negative value (e.g. -1) was worse — `Math.min(-1, 500)` is still `-1`, and SQLite's
+    // `LIMIT -1` means "no limit", silently bypassing the 500-row cap this function's own doc
+    // promises. `Math.trunc` first (never bind a float), then clamp to `[1, 500]` — defense in
+    // depth here for any in-process caller, in addition to the wire-level `integer`/`minimum`
+    // schema on `run_list.limit` in tool-specs.ts which refuses the bad value earlier, typed.
+    const rawLimit = filter.limit ?? 50;
+    const limit = Math.max(1, Math.min(Math.trunc(rawLimit), 500));
     const rows = this._db.prepare(`
       SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by, r.error,
              (SELECT MIN(t.ts) FROM transitions t
