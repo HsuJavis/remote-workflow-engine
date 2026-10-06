@@ -14,7 +14,7 @@
 // union constrains the other.
 import { mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync, statSync, renameSync, rmdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { pathVerdict, lexicalVerdict } from './path-verdict.js';
+import { pathVerdict, lexicalVerdict, isValidBareName } from './path-verdict.js';
 import { codedError } from './errors.js';
 import type { Clock } from './clock.js';
 import { classifyTransport, PROBE_TIMEOUT_MS, type McpProbe, type McpServerConfig } from './mcp-probe.js';
@@ -487,6 +487,15 @@ export class AssetSyncService {
   }
 
   private _skillRoot(scope: AssetScope, workflow: string | undefined, name: string): string {
+    // Issue #154 B4 follow-up: `workflow` is joined directly into a real filesystem path — the SAME
+    // exposure the workflow-catalog.ts B4 fix closed at registration, named explicitly in that
+    // issue's plan as a second site needing the same check. `push()` below already refuses an
+    // invalid `workflow` before ever reaching here (returning the clean `{error}` shape its callers
+    // expect); this is the backstop for this method's OTHER two callers (the provisioning-check read
+    // and `delete()`), which have no such pre-check of their own.
+    if (scope === 'workflow' && workflow !== undefined && !isValidBareName(workflow)) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${workflow}' is not a valid path segment`);
+    }
     return scope === 'workflow' ? join(this._workRoot, workflow!, 'skill', name) : join(this._globalRoot, 'skill', name);
   }
 
@@ -525,6 +534,16 @@ export class AssetSyncService {
     const pushedBy = req.pushedBy ?? 'local';
     const pushedAt = this._clock.isoNow();
     const workflow = req.scope === 'workflow' ? req.workflow : undefined;
+    // Issue #154 B4 follow-up: `workflow` (the owning workflow's name, distinct from `req.name`'s
+    // own check three lines up) is joined directly into `_skillRoot`'s real filesystem path with no
+    // check at all — `../../../../tmp/evil` escaped `_workRoot` entirely, confirmed end-to-end
+    // (a real directory materialized outside it). In production this is reached only after
+    // mcp-facade.ts's workspacePush checks `catalog.exists(a['workflow'])` (issue #102), and no
+    // malformed name can register post-B4 — but AssetSyncService is a reusable class with no such
+    // guarantee about ITS OWN callers, so this is checked here too, at the actual join site.
+    if (workflow !== undefined && !isValidBareName(workflow)) {
+      return { error: 'INVALID_NAME' };
+    }
 
     if (req.kind === 'mcp') {
       if (typeof req.config.url === 'string') {

@@ -16,9 +16,9 @@ describe('sandbox globals + determinism guard drift locks (UT-201, DES-187)', ()
     // The real lock: the context object the VM is constructed from must match SANDBOX_GLOBALS.
     // evaluateScript builds `sandbox` internally; this test asserts the EXPORTED constant lists the
     // same names a real dispatch actually exposes (agent/parallel/pipeline/phase/log/args/budget/
-    // workflow/Date/Math).
+    // workflow/Date/Math/Intl — Intl added issue #157 B2).
     expect([...SANDBOX_GLOBALS].sort()).toEqual(
-      ['Date', 'Math', 'agent', 'args', 'budget', 'log', 'parallel', 'phase', 'pipeline', 'workflow'].sort(),
+      ['Date', 'Intl', 'Math', 'agent', 'args', 'budget', 'log', 'parallel', 'phase', 'pipeline', 'workflow'].sort(),
     );
   });
 
@@ -30,8 +30,8 @@ describe('sandbox globals + determinism guard drift locks (UT-201, DES-187)', ()
     }
   });
 
-  it('DETERMINISM_GUARDED covers exactly the three guarded calls, each with why + instead', () => {
-    expect(DETERMINISM_GUARDED.length).toBe(3);
+  it('DETERMINISM_GUARDED covers exactly the four guarded calls (issue #157 B2 added Intl.DateTimeFormat), each with why + instead', () => {
+    expect(DETERMINISM_GUARDED.length).toBe(4);
     for (const g of DETERMINISM_GUARDED) {
       expect(g.why).toBeTruthy();
       expect(g.instead).toBeTruthy();

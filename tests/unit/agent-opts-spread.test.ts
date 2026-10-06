@@ -1,0 +1,57 @@
+// Issue #154 B2: a spread element (`...extra`) or a shorthand property (`{ allowedTools }`) inside
+// an otherwise-literal `agent()` options object is invisible to `scanAgentCalls` — the entry has no
+// top-level `:`, so the scan loop's `if (colonIdx === -1) continue;` skips it silently. Confirmed to
+// smuggle `allowedTools` past the engine's only confinement check: `agent-executor.ts` applies
+// `opts.allowedTools` from the caller-supplied options verbatim at dispatch with no re-validation
+// against the statically-scanned contract, so a key the scanner never saw reaches the real agent.
+//
+// RED before the fix: every case below reports zero violations and `allowedTools: 'absent'`, even
+// though a spread/shorthand entry sits right next to (or inside) an otherwise-literal object — the
+// scanner doesn't merely fail to validate the hidden entry's value, it never sees that the key was
+// declared at all.
+//
+// Mock policy (unit): pure string scan, no I/O, no mocks — same tier as agent-opts-unknown-key.test.ts.
+import { describe, it, expect } from 'vitest';
+import { scanAgentCalls } from '../../src/workflow-meta.js';
+
+describe('agent() options spread / shorthand entries are refused, not silently skipped (#154 B2)', () => {
+  it('a bare spread as the whole options body ⇒ a violation, not zero', () => {
+    const script = `const extra = { allowedTools: ['Bash'] }; agent('a', { ...extra });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_SPREAD')).toBe(true);
+  });
+
+  it('a spread ALONGSIDE literal keys is still caught — the literal keys do not make it "literal enough"', () => {
+    const script = `const extra = { timeoutMs: 1, retries: 9 }; agent('a', { prompt: 'p', allowedTools: [], ...extra });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_SPREAD')).toBe(true);
+    // the declared allowedTools: [] must still be read correctly alongside the flagged spread
+    expect(calls[0]?.allowedTools).toEqual([]);
+  });
+
+  it('the exact #154 repro: spread smuggling allowedTools past the scan ⇒ caught, not "absent" with zero violations', () => {
+    const script = `const extra={allowedTools:["Bash"],timeoutMs:1,retries:9}; phase("p1"); return await agent("a",{prompt:"Reply OK", ...extra})`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_SPREAD')).toBe(true);
+  });
+
+  it('a shorthand property ({ allowedTools }) is also refused — the key is visible but its value is a variable', () => {
+    const script = `const allowedTools = ['Bash']; agent('a', { prompt: 'p', allowedTools });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_SHORTHAND')).toBe(true);
+  });
+
+  it('the hint for a spread names the construct, not a generic message', () => {
+    const script = `agent('a', { ...extra });`;
+    const { violations } = scanAgentCalls(script);
+    const v = violations.find((x) => x.code === 'AGENT_OPTS_SPREAD');
+    expect(v?.hint).toMatch(/spread/i);
+  });
+
+  it('a fully literal options object is unaffected (no false positive)', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['Read'], label: 'x' });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations).toEqual([]);
+  });
+});

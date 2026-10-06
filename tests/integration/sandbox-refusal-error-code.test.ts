@@ -133,20 +133,26 @@ describe('IT-140: an engine refusal reaches the script as `.code` (REQ-120, issu
     expect(dump.name).toBe('NESTING_DEPTH_EXCEEDED');
   }, 30000);
 
-  it('DOCUMENTED LIMIT: cross-realm `instanceof` is false for everything the engine hands the script', async () => {
-    // Not a bug being tolerated silently — a boundary the guide now states (DES-169). The script
-    // runs in a `node:vm` context whose intrinsics are a different realm from the child process
-    // that constructs these values, so `instanceof` fails for engine-raised ERRORS *and* for `args`
-    // alike. Fixing it only for errors would teach a half-truth: an author who learned "instanceof
-    // works" would still be wrong about `args`. `Array.isArray` and `.code` are realm-safe and are
-    // what the guide tells authors to use.
+  it('REALM-CORRECT since #157 B1: `instanceof` now holds for everything the engine hands the script', async () => {
+    // This case used to pin the OPPOSITE: `instanceof` was false for engine-raised errors AND for
+    // `args`, because both were embedding-realm (sandbox child process) objects exposed directly
+    // into the vm context — exactly the hazard #157 B1 is about (an embedding-realm object's
+    // prototype chain reaches the embedding realm's `Function`, which is what `.constructor.
+    // constructor(...)` exploited to escape the sandbox). The fix makes every such value NATIVE to
+    // the script's own vm context (`sanitizeThrownError`/`makeReRealm` in guards.ts), which — as a
+    // side effect the comment this replaces explicitly asked for — also makes `instanceof` true,
+    // since the script's own `Error`/`Object` globals are now the SAME constructors these values
+    // were built from. This comment and the guide sentence it pins (authoring-guide.ts, the
+    // `e instanceof Error` paragraph) were REWRITTEN rather than deleted, per that comment's own
+    // instruction, not loosened independently of a real fix.
     //
-    // IF a future iteration makes the boundary realm-correct, REWRITE this case to assert `true`
-    // (and update the guide sentence it pins) — do not delete it.
+    // `.code` remains the recommended handle regardless (it is simpler and was always correct); this
+    // case now documents that `instanceof`/`Array.isArray` are an equally valid alternative.
     const dump = resultOf(await refusingHost().run('it140-realm', DUMP('await agent("researcher", { prompt: "lens A" });'), { k: 1 }, 500));
-    expect(dump.isError).toBe(false);
-    expect(dump.argsIsObject).toBe(false);
-    // …which is exactly why `.code` (a plain own property, not a prototype identity) is the handle.
+    expect(dump.isError).toBe(true);
+    expect(dump.argsIsObject).toBe(true);
+    // …and `.code` still works exactly as before — the fix changed WHICH realm these values belong
+    // to, not their shape.
     expect(dump.code).toBe('BUDGET_EXCEEDED');
   }, 30000);
 });

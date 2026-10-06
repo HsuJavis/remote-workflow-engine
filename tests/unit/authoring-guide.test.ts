@@ -345,7 +345,11 @@ describe('the guide states the script-body form (UT-215, defect D6)', () => {
   });
 
   it('says `export const meta` is the one exception and that dropping its export costs AGENT_UNDECLARED', () => {
-    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 900);
+    // Window widened from 900 (issue #154 B1 re-opened): the paragraph now also states the
+    // function-wrapper DEAD-CODE rule (SCRIPT_INVALID) between the no-wrapper sentence and the
+    // meta-exception sentence this case checks for — the two assertions below are still about the
+    // SAME paragraph, just with more accurate content in between.
+    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 1400);
     expect(para).toMatch(/export const meta/);
     expect(para).toMatch(/AGENT_UNDECLARED/);
   });
@@ -881,6 +885,8 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     // namespace, never routed through toErrEnvelope/ERROR_CATALOG
     'BASH_MODE_INVALID', // workflow_register SCAN_VIOLATION detail.violations[].code
     'BASH_READONLY_CONFLICT', // same
+    'AGENT_OPTS_SPREAD', // issue #154 B2: same SCAN_VIOLATION detail.violations[].code family —
+    'AGENT_OPTS_SHORTHAND', // a spread/shorthand entry in an agent() options literal
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
     'MCP_SERVER_NOT_CONNECTED', // issue #106: a non-fatal harness warning (run_agent_log / run_status warnings), not a refusal code

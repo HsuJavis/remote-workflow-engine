@@ -27,7 +27,8 @@ import { parseMeta, parseMetaParams, parseWorkflowSkeleton, checkMetaPhases } fr
 import { deriveExpectedGraph } from './skeleton-graph.js';
 // Issue #91: the SAME literal `path-verdict.ts`'s asset-tree check refuses a reserved-prefix path
 // segment with — reused, not re-typed, so the two checks can never drift on what "reserved" means.
-import { RESERVED_PREFIX } from './path-verdict.js';
+import { RESERVED_PREFIX, isValidBareName } from './path-verdict.js';
+import { isPathContained } from './path-containment.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
 import type { Clock } from './clock.js';
@@ -597,6 +598,24 @@ export class WorkflowCatalog {
       throw codedError(
         'RESERVED_PREFIX',
         `RESERVED_PREFIX: workflow name '${name}' starts with the engine-reserved '${RESERVED_PREFIX}' prefix (ARCH-093) — the engine registers no ${RESERVED_PREFIX}* workflows`,
+      );
+    }
+
+    // Issue #154 B4 (CRITICAL): checked SECOND, right after RESERVED_PREFIX and before any other
+    // registration work, for the same reason RESERVED_PREFIX is checked first — a script/mermaid
+    // full of unrelated errors must still come back INVALID_NAME, not some other code that happened
+    // to run first. Before this check, the ONLY thing ever validated about `name` was this prefix:
+    // empty/whitespace/`..`/an embedded `/`/an unbounded length all registered successfully, and the
+    // raw name was later joined UNSANITIZED into a real host path (`workFolder(name)`, this
+    // workflow's own run-workspace `cwd`) with no containment check anywhere on that path — a
+    // sufficiently-dotted name (e.g. `../../../../tmp/evil`) escaped `workRoot` entirely onto an
+    // arbitrary host path the engine process can write to. `isValidBareName` (path-verdict.ts)
+    // requires a single non-empty, slash-free, non-`.`/`..`, length-bounded segment — the ONE shape
+    // that can never add, remove, or escape a directory level when joined.
+    if (!isValidBareName(name)) {
+      throw codedError(
+        'INVALID_NAME',
+        `INVALID_NAME: workflow name '${name}' must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters`,
       );
     }
 
@@ -1241,7 +1260,19 @@ export class WorkflowCatalog {
   }
 
   workFolder(name: string): string {
-    return join(this._workRoot, 'workflows', name);
+    const folder = join(this._workRoot, 'workflows', name);
+    // Issue #154 B4, layer 2 (defense in depth): `validateRegistration` is the primary fix — a name
+    // that reaches here has normally already passed `isValidBareName` there — but this is a
+    // CONTAINMENT check (not a charset check) specifically so it does not reject the `'_adhoc'`
+    // sentinel (run-manager.ts's `spec.name ?? '_adhoc'`) or any other internally-constructed name
+    // that never goes through registration at all: anything that resolves INSIDE `_workRoot` is
+    // accepted regardless of its shape, and only a genuine escape is refused. A future caller that
+    // bypasses `validateRegistration` (an internal call, a migration, …) still cannot produce a path
+    // outside `_workRoot` through this method.
+    if (!isPathContained(folder, this._workRoot)) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${name}' resolves outside the engine's workRoot`);
+    }
+    return folder;
   }
 
   runWorkspace(name: string, runId: string): string {

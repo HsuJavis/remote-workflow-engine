@@ -236,6 +236,10 @@ export const ERROR_CATALOG = {
   // Workspace / assets / seeds / CAS
   WORKSPACE_ESCAPE: { see: null, hint: 'the resolved path escapes the run or asset workspace root' },
   RESERVED_PREFIX: { see: 'workflow_authoring_guide', hint: "the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)" },
+  // Issue #154 B4: a workflow name that is empty, whitespace, contains `/` or is exactly `.`/`..`,
+  // or exceeds the length bound — distinct from RESERVED_PREFIX (a well-formed name the engine still
+  // refuses) since this is "not a name at all", checked by path-verdict.ts's isValidBareName.
+  INVALID_NAME: { see: 'workflow_authoring_guide', hint: "the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters" },
   HOOKS_UNSUPPORTED: { see: null, hint: 'the requested Claude hook is not supported by the sandbox' },
   // v26 (DES-170, TASK-175, issue #64): now guide-pointing — a caller reading tools/list's item
   // schemas needs the same door to workflow_authoring_guide the other authoring refusals get.

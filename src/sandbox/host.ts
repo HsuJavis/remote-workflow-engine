@@ -11,6 +11,10 @@ import type { Tokens } from '../types.js';
 
 const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.ts');
 
+// #157 B1 layer 2: the sandbox child's own env — empty, not the parent's. See the `fork()` call
+// site's own doc for why this is both the strictest posture and sufficient for this child's needs.
+const SANDBOX_CHILD_ENV: NodeJS.ProcessEnv = {};
+
 export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
 
@@ -112,6 +116,15 @@ export class SandboxHost {
         cwd: this._config.workspaceRoot,
         execArgv: ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        // #157 B1 layer 2 (defense in depth): `fork()` defaults to inheriting the FULL parent env —
+        // this engine process's own (provider API keys, per main.ts's documented "read straight from
+        // process.env"). The script-escape path that could have READ that env is closed in
+        // guards.ts (commit 149d887); this independently ensures the child never CARRIES it at all,
+        // so a future regression in the reachability fix would not also be a secrets leak.
+        // child-entry.ts/guards.ts read no `process.env.*` of their own, so an empty env is both the
+        // strictest posture and sufficient (verified: a child forked with `env: {}` boots and runs a
+        // real script to completion).
+        env: SANDBOX_CHILD_ENV,
       });
       this._active.set(runId, { child, settle });
 
