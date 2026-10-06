@@ -1243,8 +1243,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'the USD limit only (`remaining()` is `null` when no USD limit is armed); `budget.tokens()` ' +
         'answers the token limit — it returns the four-column `{input, output, cacheRead, ' +
         'cacheWrite, sum}` spent so far. A USD budget counts only calls the model catalog can price ' +
-        '— an unpriced call adds 0 to USD spend and never trips a USD limit — so set `budget.tokens` ' +
-        'for a limit that binds on every model, including local ones with no listed price.\n\n' +
+        '— an unpriced call (the catalog has no rate for that model at all) adds 0 to USD spend and ' +
+        'never trips a USD limit. ' +
+        // issue #158 F3 (owner-approved, keep behaviour): an `ollama/*` model is NOT "unpriced" in
+        // that sense — local inference genuinely costs nothing, so the catalog prices it at exactly
+        // $0 (not "no known rate"). The practical consequence is the same one line above already
+        // implies for a truly unpriced model (a USD budget never trips on it), but for a DIFFERENT
+        // reason an author sizing a budget should know: every call to it is a real, priced $0, not a
+        // gap in the catalog's knowledge, and `meta.unpricedCalls`/`budgetEnforceable.unpricedModels`
+        // (run_result) report it as priced, never as unpriced.
+        'An `ollama/*` (local) model is priced at exactly $0 for the SAME reason — running it costs ' +
+        'nothing, not "price unknown" — so a USD budget never trips on it either, but it reports as ' +
+        'PRICED (not unpriced) everywhere a caller checks. Either way, set `budget.tokens` for a ' +
+        'limit that binds on every model, local or not.\n\n' +
         // v26 Gate 7.5 round 1 (defect D4): the four columns are priced at FOUR rates, and an
         // author sizing a USD budget for a cache-heavy workflow has no other way to learn which
         // cache-write multiplier the engine assumes.
