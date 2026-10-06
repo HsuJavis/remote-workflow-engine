@@ -8,11 +8,13 @@
 # if your config keeps `gateway:"sdk"`.
 #
 # Confinement: this image ships neither `bwrap` nor `socat`, so the Bash sandbox is always
-# UNCONFINED here. Every MCP call also arrives over the compose network bridge, i.e. as a
-# non-loopback peer — combined, this container refuses every `run_start`/`run_resume` whose version
-# was registered remotely or whose request itself looks remote (see README "已知限制"). Treat this
-# compose file as a way to boot the engine for local/loopback use (or behind a reverse proxy that
-# itself runs on the host), not as a confined remote-run target.
+# UNCONFINED here. With an UNCONFINED posture, a non-loopback peer is refused on its own (see
+# README "已知限制") — and every call that reaches this container through the published port
+# arrives over the compose network bridge, i.e. already as a non-loopback peer, REGARDLESS of where
+# the workflow version was registered. So in practice every external `run_start`/`run_resume` this
+# container receives is refused; only a caller running INSIDE the container (e.g. `docker compose
+# exec server curl ...`, a true loopback peer) gets past that check. Treat this compose file as a
+# way to boot the engine for local experimentation, not as a confined remote-run target.
 #
 # `workRoot` must resolve OUTSIDE `/app` (the bind-mounted repo has a `.git`, which the boot-time
 # workRoot guard refuses — `WORKROOT_INSIDE_PROJECT`). The named volume below gives both services an

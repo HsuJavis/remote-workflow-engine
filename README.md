@@ -228,7 +228,7 @@
 
 - **Node.js 22.19 以上**（`pi` 套件——`@earendil-works/pi-coding-agent`／`pi-ai`，`gateway:"pi"`
   用得到——在 `package.json` 宣告的最低版本；這個下限同時涵蓋沙箱子行程用到的 Node 22 原生
-  TypeScript 支援 `--experimental-transform-types`，該旗標本身較早的 22.7 就有）
+  TypeScript 支援 `--experimental-transform-types`，該旗標本身在更早的 22.x 版本就已存在）
 - npm（隨 Node 附帶）
 - **`bubblewrap`（`bwrap`）與 `socat`**：不論 `gateway` 選哪個，Bash 圍籠（Claude CLI sandbox）都需要
   這兩個執行檔，缺一個就是 `unconfined`（本機送出的 run 仍照跑，遠端送出的會被拒絕）——
