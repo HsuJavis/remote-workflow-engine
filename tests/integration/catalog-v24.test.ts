@@ -152,9 +152,7 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
 
   it('an AGENT_UNDECLARED refusal (a script agent() call with no meta.params.agents block) leaves the version-row count unchanged [T1]', async () => {
     const script = `
-      workflow(async ({ agent }) => {
-        await agent('reviewer', {});
-      });
+      await agent('reviewer', {});
     `;
     const before = await catalog.list();
     await expect(
@@ -166,9 +164,7 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
 
   it('a SCAN_VIOLATION refusal (e.g. no label on the agent() call) leaves the version-row count unchanged [T1]', async () => {
     const script = `
-      workflow(async ({ agent }) => {
-        await agent('do the thing with no label arg');
-      });
+      await agent('do the thing with no label arg');
     `;
     const before = await catalog.list();
     await expect(catalog.register({ name: 'wf-v24-scanviol', script, mermaid: 'flowchart LR' })).rejects.toMatchObject({ code: 'SCAN_VIOLATION' });
