@@ -416,7 +416,18 @@ const HOST_PATH_GRANTS_CONFINED =
   'special error your script can branch on.\n\n' +
   'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
   "something a script requests — the list applied to a given run appears in that run's own " +
-  '`agent.confinement` log line.';
+  '`agent.confinement` log line.\n\n' +
+  // issue #159 B8: this section used to describe WRITE confinement only, leaving `Bash`'s read
+  // policy for a reader to guess at (or wrongly assume from PATH_ESCAPES_WORKSPACE's own hint,
+  // which is a DIFFERENT, file-tool-only mechanism — see the error catalog entry for that code).
+  "`Bash`'s READS are deny-by-default too, but scoped differently than writes: the whole engine " +
+  'home directory and the whole `workRoot` (every run\'s workspace, not just other runs\' — this ' +
+  "one's own workspace, the system toolchain (node/git/...), and any operator-granted host path " +
+  'are re-opened on top of that denial. A read outside those re-opened paths fails as an ordinary ' +
+  'shell-level error (e.g. "No such file or directory"), never a special engine refusal — same as ' +
+  'the write case above, just the opposite default. A host path with no relationship to $HOME or ' +
+  'workRoot (e.g. `/etc/hostname`) is NOT denied by this — the policy only closes those two ' +
+  'specific regions, it is not a blanket "Bash cannot see anything outside the workspace" jail.';
 
 const HOST_PATH_GRANTS_UNCONFINED =
   'On this deployment, `Bash` is **not confined**: the boot-time probe found no working sandbox ' +

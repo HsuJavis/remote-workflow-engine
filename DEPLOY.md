@@ -908,19 +908,19 @@ gateway 設了 `RWE_SECRET_OPENROUTER_API_KEY` 都會生效。pi 下解析出來
   與營運者的 `sandbox.allowReadPaths` 無關——**不需要營運者動作**，列在這裡是為了讓看到 Bash 逾時
   又查不出原因的人知道這個歷史。
 
-**Bash 的讀取圍籠（issue #159 B8 修正）：跟 `gateway:"sdk"` 共用同一份 `buildBashConfinement()` 政策，
-不是另一套、也不是整個主機檔案系統都拒讀**。圍籠生效時（§1c(e) 量到 `confined`），pi 的 confined
-Bash 走的是 §1c(f) 說的那份 `denyRead`：**引擎自己整個家目錄（`$HOME`）+ 整個 `workRoot`**，`allowRead`
-再把這次派工自己的工作目錄、`sandbox.allowHostPaths`、以及家目錄內的工具鏈重新開放——跟 sdk gateway
-一字不差，兩個 gateway 呼叫的是同一個函式（`src/gateway/bash-confinement.ts`）。**沒有列進 `denyRead`
-的主機路徑（例如 `/etc/hostname`、`/usr`、系統層的 `/tmp`）依然可讀**，這不是漏洞、是刻意不做的
-設計（業主裁決：只鏡射 sdk 既有的政策，不另外發明一套「整個 Bash 都關進 workspace」的更嚴格圍籠）。
-`errors.ts`／本文件 §6 的 `PATH_ESCAPES_WORKSPACE` 一條以前誤把 `Bash` 也列進「跟 Read 一樣被圍進
-workspace」的工具清單，已更正——`Bash` 從不丟這個碼，讀到圍籠外的東西失敗樣貌是 shell 層的一般錯誤
-（`cat`：`No such file or directory`；寫入是 `EROFS`），範圍是 `$HOME`+`workRoot`，不是「workspace
-以外一律擋」。真機驗證：`tests/acceptance/pi-harness-bash-confinement-real.test.ts`（真 bwrap/socat +
-本機 Ollama `qwen2.5:7b`）——自己的 workspace 可讀、另一個 run 的 workspace 回 ENOENT、`$HOME` 底下
-種的檔案讀不到，`node --version`／`git --version`（工具鏈）仍然正常執行。
+**Bash 的讀取圍籠：跟 `gateway:"sdk"` 共用同一份 `buildBashConfinement()` 政策，不是另一套、也不是
+整個主機檔案系統都拒讀**。圍籠生效時（§1c(e) 量到 `confined`），pi 的 confined Bash 走的是 §1c(f)
+說的那份 `denyRead`：**引擎自己整個家目錄（`$HOME`）+ 整個 `workRoot`**，`allowRead` 再把這次派工
+自己的工作目錄、`sandbox.allowHostPaths`、以及家目錄內的工具鏈重新開放——跟 sdk gateway 一字不差，
+兩個 gateway 呼叫的是同一個函式（`src/gateway/bash-confinement.ts`）。**沒有列進 `denyRead` 的主機
+路徑（例如 `/etc/hostname`、`/usr`、系統層的 `/tmp`）依然可讀**，這不是漏洞、是刻意不做的設計
+（業主裁決：只鏡射 sdk 既有的政策，不另外發明一套「整個 Bash 都關進 workspace」的更嚴格圍籠）。
+`Bash` 從不丟 `PATH_ESCAPES_WORKSPACE`（那是 Read/Write/Edit/Glob/Grep/LS 這五個檔案工具專屬的 JS
+層檢查）——讀到圍籠外的東西失敗樣貌是 shell 層的一般錯誤（`cat`：`No such file or directory`；寫入
+是 `EROFS`），範圍是 `$HOME`+`workRoot`，不是「workspace 以外一律擋」，見本文件 §6 該代碼那一列。
+真機驗證：`tests/acceptance/pi-harness-bash-confinement-real.test.ts`（真 bwrap/socat + 本機 Ollama
+`qwen2.5:7b`）——自己的 workspace 可讀、另一個 run 的 workspace 回 ENOENT、`$HOME` 底下種的檔案讀不到，
+`node --version`／`git --version`（工具鏈）仍然正常執行。
 
 **已知的網路姿態落差（尚未解決，記在這裡供日後追蹤）**：pi 路徑的 Bash 網路政策是「全部允許」
 （透過一個永遠回答「允許」的 ask-callback 達成，因為 srt 的網路欄位是必填，留空等於全部拒絕）——
@@ -1000,13 +1000,12 @@ per-model、不是 per-provider 的事實——`run_agent_log.harness.effortAppl
 `supported_parameters` 沒有 `reasoning`）回報 `{applied:false, reason:'model does not support
 reasoning'}`，且 pi 子行程**完全不會**送出 `reasoning` 欄位（不是送一個會被忽略的值）。`models_list` 的
 `effortAppliedOnTransport` 同步變成 per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看
-該列自己的 `capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。**issue #153 L3
-修正（2026-10-07）**：catalog 對這個 model **完全沒說**（`reasoning:'unknown'`，或這次呼叫根本沒拿到
-任何 pin）以前會回報 `applied:true`（維持 issue #150 之前「假設支援」的舊預設），跟同一列在
-`models_list.effortAppliedOnTransport` 的保守 `false` 自相矛盾——兩邊現在都用同一個嚴格判斷
-（`=== true`），這種「不知道」的情況改回報 `{applied:false, reason:'model reasoning support
-unknown'}`。**只有這個回報改了**：pi 子行程的實際送出行為不變——對一個 catalog 沒表態的 model，pi
-依然會嘗試把 `reasoning` 欄位送上線（賭這個 model 可能真的支援、只是 catalog 沒登記），不確定的只是
+該列自己的 `capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。catalog 對這個
+model **完全沒說**（`reasoning:'unknown'`，或這次呼叫根本沒拿到任何 pin）時，`effortApplied` 也回報
+`{applied:false, reason:'model reasoning support unknown'}`——跟 `models_list.effortAppliedOnTransport`
+用的是同一個嚴格判斷（`capabilities.reasoning.supported === true`），兩邊永遠一致，不會一邊說
+applied 一邊說沒有。**這個回報跟實際送出行為是兩回事**：pi 子行程對一個 catalog 沒表態的 model
+依然會嘗試把 `reasoning` 欄位送上線（賭這個 model 可能真的支援、只是 catalog 沒登記）——不確定的只是
 「有沒有真的生效」這個聲稱，不是要不要嘗試。
 
 **issue #151 調查結論（2026-10-06；anthropic/* 未找到程式缺陷，google/* 尚未查明）**：有 agent 回報 `openrouter/anthropic/*` 與
