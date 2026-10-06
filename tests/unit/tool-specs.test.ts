@@ -313,3 +313,16 @@ describe('run_list.limit keeps 0 as a valid value — the owner-acknowledged "li
     expect(limitSchema?.minimum).toBe(0);
   });
 });
+
+// issue #155 B2a (owner-approved, 2026-10-07): VALUE_MISMATCH/COLLAPSED_EDGE now self-map (RULE_CODE,
+// workflow-catalog.ts) instead of folding into MERMAID_INVALID — the tool's advertised errors[] must
+// name both, same "every code this tool can throw is on its errors list" convention this file's own
+// workflow_publish case above pins for INVALID_ARGUMENT/INVALID_CHANNEL.
+describe('workflow_register advertises VALUE_MISMATCH/COLLAPSED_EDGE as their own codes (issue #155 B2a)', () => {
+  it('errors[] lists VALUE_MISMATCH and COLLAPSED_EDGE alongside MERMAID_INVALID', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'workflow_register')!;
+    expect(spec.errors).toContain('VALUE_MISMATCH');
+    expect(spec.errors).toContain('COLLAPSED_EDGE');
+    expect(spec.errors).toContain('MERMAID_INVALID');
+  });
+});

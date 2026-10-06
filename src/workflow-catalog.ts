@@ -69,19 +69,24 @@ export interface DiagramRow {
 // module used to hide every OTHER rule's code decision behind. `satisfies Record<Rule, ErrorCode>`
 // IS the "never" exhaustiveness check the design calls for: a new `Rule` member added to
 // check-mermaid.ts without a matching key here is a compile error, not a silent MERMAID_INVALID.
-// The five pre-existing "strays" (no distinct code of their own) map to MERMAID_INVALID EXPLICITLY
-// — a named, greppable decision instead of the ternary's silence; DIAGRAM_SCRIPT_MISMATCH keeps its
-// existing DIAGRAM_MISMATCH mapping; the four v2 rules are real ERROR_CATALOG rows and self-map.
+// The three pre-existing "strays" (no distinct code of their own — genuinely unparsable shapes) map
+// to MERMAID_INVALID EXPLICITLY — a named, greppable decision instead of the ternary's silence;
+// DIAGRAM_SCRIPT_MISMATCH keeps its existing DIAGRAM_MISMATCH mapping; the four v2 rules are real
+// ERROR_CATALOG rows and self-map.
+// issue #155 B2a (owner-approved, 2026-10-07): `VALUE_MISMATCH`/`COLLAPSED_EDGE` PROMOTED out of the
+// strays above — both used to fold into MERMAID_INVALID, which a code-branching client could not
+// tell apart from a genuinely unparsable diagram. They are now real ERROR_CATALOG rows (errors.ts)
+// and self-map here, same treatment as the four v2 rules.
 export const RULE_CODE = {
   SIZE: 'MERMAID_INVALID',
   SUBGRAPH_TITLE: 'MERMAID_INVALID',
   MERMAID_INVALID: 'MERMAID_INVALID',
   DUPLICATE_NODE: 'MERMAID_INVALID',
-  COLLAPSED_EDGE: 'MERMAID_INVALID',
+  COLLAPSED_EDGE: 'COLLAPSED_EDGE',
   UNDECLARED_NODE: 'MERMAID_INVALID',
   AGENT_LABEL_FORMAT: 'MERMAID_INVALID',
   DIAGRAM_SCRIPT_MISMATCH: 'DIAGRAM_MISMATCH',
-  VALUE_MISMATCH: 'MERMAID_INVALID',
+  VALUE_MISMATCH: 'VALUE_MISMATCH',
   LOOP_LABEL: 'MERMAID_INVALID',
   DIAGRAM_DIRECTION: 'DIAGRAM_DIRECTION',
   LANE_MISMATCH: 'LANE_MISMATCH',

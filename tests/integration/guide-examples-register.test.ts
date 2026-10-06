@@ -8,8 +8,26 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import { GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
+import { GUIDE_EXAMPLES, GUIDE_EXAMPLES_PI } from '../../src/authoring-guide.js';
 import { extractDocPairs } from '../helpers/doc-examples.js';
+
+// issue #154 B4 sanitizer, shared by both gateway suites below.
+function safeName(prefix: string, title: string): string {
+  return `${prefix}-${title.replace(/[/\\]/g, '-')}`;
+}
+
+async function registerOverHttp(server: Server, name: string, script: string, mermaid: string): Promise<unknown> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'workflow_register', arguments: { name, script, mermaid } },
+    }),
+  });
+  const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { version?: unknown; result?: { version?: unknown } };
+}
 
 describe('every GUIDE_EXAMPLES entry registers over real MCP HTTP (IT-118, DES-157)', () => {
   let server: Server;
@@ -25,27 +43,57 @@ describe('every GUIDE_EXAMPLES entry registers over real MCP HTTP (IT-118, DES-1
   it.each((GUIDE_EXAMPLES ?? []) as Array<{ title: string; script: string; mermaid: string }>)(
     'registers "%s" and asserts {version}',
     async (ex) => {
-      const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'tools/call',
-          // Issue #154 B4: a workflow name may no longer contain '/' (it is joined as a single real
-          // path segment — see workflow-catalog.ts's validateRegistration). `ex.title` is a human
-          // label for THIS test's parametrization only ("fan-out/fan-in" reads fine as a title); it
-          // is not itself guide content an author would ever register verbatim, so sanitizing it
-          // here changes nothing about what GUIDE_EXAMPLES teaches.
-          params: { name: 'workflow_register', arguments: { name: `guide-${ex.title.replace(/[/\\]/g, '-')}`, script: ex.script, mermaid: ex.mermaid } },
-        }),
-      });
-      const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
-      const parsed = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { version?: unknown; result?: { version?: unknown } };
+      // Issue #154 B4: a workflow name may no longer contain '/' (it is joined as a single real
+      // path segment — see workflow-catalog.ts's validateRegistration). `ex.title` is a human
+      // label for THIS test's parametrization only ("fan-out/fan-in" reads fine as a title); it
+      // is not itself guide content an author would ever register verbatim, so sanitizing it
+      // here changes nothing about what GUIDE_EXAMPLES teaches.
+      const parsed = (await registerOverHttp(server, safeName('guide', ex.title), ex.script, ex.mermaid)) as { version?: unknown; result?: { version?: unknown } };
       expect(parsed.version ?? parsed.result?.version).toBeDefined();
     },
   );
 
   it('at least one example is exercised (the it.each above is not silently empty)', () => {
     expect(GUIDE_EXAMPLES.length).toBeGreaterThan(0);
+  });
+});
+
+// issue #154 B4 + #153 L2 (owner-approved, 2026-10-07): under `gateway:"pi"` every `GUIDE_EXAMPLES`
+// entry's `anthropic/*` model ref is refused `PROVIDER_UNSUPPORTED_BY_HARNESS` — the worked examples
+// must be harness-aware. `GUIDE_EXAMPLES_PI` (authoring-guide.ts) is the SAME thirteen patterns with
+// an `openrouter/anthropic/...` ref pi actually accepts, and must register clean under a pi-mode
+// server exactly like `GUIDE_EXAMPLES` does under the default sdk one above — this is the "register
+// every example under BOTH gateways" guard.
+describe('every GUIDE_EXAMPLES_PI entry registers over real MCP HTTP under gateway:"pi" (issue #154 B4, #153 L2)', () => {
+  let piServer: Server;
+
+  beforeAll(async () => {
+    // Same seam `tests/integration/pi-harness-disclosure.test.ts` uses: no real pi child is
+    // spawned, only the provider allow-list composeConfig() derives from `gateway:"pi"`.
+    piServer = await createServer({ port: 0, bind: '127.0.0.1', harnessProviders: ['openrouter', 'ollama'] });
+  });
+
+  afterAll(async () => {
+    await piServer?.close();
+  });
+
+  it.each((GUIDE_EXAMPLES_PI ?? []) as Array<{ title: string; script: string; mermaid: string }>)(
+    'registers "%s" under gateway:"pi" and asserts {version}',
+    async (ex) => {
+      const parsed = (await registerOverHttp(piServer, safeName('guide-pi', ex.title), ex.script, ex.mermaid)) as { version?: unknown; result?: { version?: unknown }; error?: unknown };
+      expect(parsed.version ?? parsed.result?.version, JSON.stringify(parsed.error ?? parsed)).toBeDefined();
+    },
+  );
+
+  it('at least one example is exercised (the it.each above is not silently empty)', () => {
+    expect(GUIDE_EXAMPLES_PI.length).toBeGreaterThan(0);
+  });
+
+  it('GUIDE_EXAMPLES_PI is the same corpus as GUIDE_EXAMPLES, titles and count, model ref swapped only', () => {
+    expect(GUIDE_EXAMPLES_PI.map((e) => e.title)).toEqual(GUIDE_EXAMPLES.map((e) => e.title));
+    for (const ex of GUIDE_EXAMPLES_PI as Array<{ script: string }>) {
+      expect(ex.script).not.toContain('anthropic/claude-haiku-4-5-20251001');
+    }
   });
 });
 
