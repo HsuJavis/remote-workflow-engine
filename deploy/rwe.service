@@ -6,19 +6,27 @@ After=network.target
 Type=simple
 User=rwe
 WorkingDirectory=/opt/remote-workflow-engine
-# DEPLOY.md "常見的坑" #1: ExecStart must NOT be `npm` -- under a minimal systemd environment PATH,
+# DEPLOY.md "常見的坑" #1: ExecStart must NOT be `npm` -- under a minimal systemd environment,
 # `/usr/bin/npm` can be a dead symlink (node installed via a version manager), which fails as
 # `status=203/EXEC`. Run node directly against tsx instead (same entrypoint as manual startup;
 # this repo has no build step producing a compiled dist/main.js, see package.json's "scripts").
-# Adjust both lines below if this host's node lives somewhere other than PATH already covers.
+# systemd resolves a bare ExecStart= command name against ITS OWN fixed, compiled-in search path
+# (/usr/local/bin, /usr/bin, their sbin/ counterparts) -- NOT the Environment=PATH below, which only
+# reaches the started PROCESS, never ExecStart='s own executable lookup (systemd.service(5)
+# "COMMAND LINES"). `/usr/bin/node` below is correct for an apt/distro-packaged Node; if this host's
+# node is version-managed (nvm/volta/a local build), replace `/usr/bin/node` with its absolute path
+# (`node -e 'console.log(process.execPath)'` as the `rwe` user finds it) -- a bare name will NOT be
+# found via the PATH env var below, that pitfall is exactly what this fix avoids.
 #
 # audit A11: gateway:"sdk" (the engine's own default) spawns `litellm` AT BOOT regardless of
-# provider -- a missing `litellm` on PATH fails this unit with `spawn litellm ENOENT`. Either put a
-# litellm venv's bin/ first on PATH (as below; same convention as deploy/rwe.user.service), or set
-# `gateway:"direct-fetch"` + `useLiteLLMProxy:false` (or `gateway:"pi"`) in rwe.config.json, which
-# need no litellm at all -- see README.md "前置需求" / DEPLOY.md §1a/§1b2.
+# provider -- a missing `litellm` on PATH fails this unit with `spawn litellm ENOENT`. Unlike
+# ExecStart='s own executable, that spawn is a normal child_process call from inside the already-
+# running node process, so it DOES use the PATH below. Either put a litellm venv's bin/ first on
+# PATH (as below; same convention as deploy/rwe.user.service), or set `gateway:"direct-fetch"` +
+# `useLiteLLMProxy:false` (or `gateway:"pi"`) in rwe.config.json, which need no litellm at all --
+# see README.md "前置需求" / DEPLOY.md §1a/§1b2.
 Environment=PATH=/home/rwe/.rwe-litellm-venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=node /opt/remote-workflow-engine/node_modules/tsx/dist/cli.mjs src/main.ts
+ExecStart=/usr/bin/node /opt/remote-workflow-engine/node_modules/tsx/dist/cli.mjs src/main.ts
 # Self-healing seam (DES-022): a crashed server process is restarted automatically.
 Restart=on-failure
 RestartSec=2

@@ -69,8 +69,9 @@ if [ ! -f "$RWE_CONFIG_PATH" ]; then
   # 只把 export 出去的 RWE_WORK_ROOT 環境變數寫回剛建立的設定檔本身，否則它只對這一次
   # `deploy.sh` 啟動的行程有效：第二次 `./deploy.sh`（沒重新設 RWE_WORK_ROOT）、純粹的
   # `npm start`、systemd unit、以及自我更新的 `--check-config`，全都只看設定檔，會落回範例檔
-  # 原本的系統路徑 (/var/lib/remote-workflow-engine)，資料看起來像憑空消失（A5）。用 node（已在
-  # 步驟 1 裝好）原地改寫，不依賴 jq。
+  # 原本的系統路徑 (/var/lib/remote-workflow-engine)，資料看起來像憑空消失（A5）。用 node（本腳本
+  # 的前置需求，不是步驟 1 才裝的——步驟 1 的 `npm install` 本來就需要 node 才能跑）原地改寫，
+  # 不依賴 jq。
   node -e '
     const fs = require("fs");
     const path = process.argv[1];

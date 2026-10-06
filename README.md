@@ -226,8 +226,9 @@
 
 ## 前置需求
 
-- **Node.js 22.19 以上**（`tsx` 與沙箱子行程依賴的 Node 22 原生 TypeScript 支援（`--experimental-transform-types`）
-  在 22.19 才有；這也是 `pi` 套件（`@earendil-works/pi-coding-agent`/`pi-ai`）宣告的最低版本）
+- **Node.js 22.19 以上**（`pi` 套件——`@earendil-works/pi-coding-agent`／`pi-ai`，`gateway:"pi"`
+  用得到——在 `package.json` 宣告的最低版本；這個下限同時涵蓋沙箱子行程用到的 Node 22 原生
+  TypeScript 支援 `--experimental-transform-types`，該旗標本身較早的 22.7 就有）
 - npm（隨 Node 附帶）
 - **`bubblewrap`（`bwrap`）與 `socat`**：不論 `gateway` 選哪個，Bash 圍籠（Claude CLI sandbox）都需要
   這兩個執行檔，缺一個就是 `unconfined`（本機送出的 run 仍照跑，遠端送出的會被拒絕）——
@@ -237,9 +238,12 @@
     消費者：`agent()` 呼叫（`workflow_register` 不走 gateway）。留著預設值卻沒裝 `litellm`，
     服務會在**開機階段**就拒絕啟動（見「已知限制」）。
   - `"direct-fetch"` + `useLiteLLMProxy:false`：完全不需要 Python/LiteLLM（本機 Ollama 直連）。
-  - `"pi"`：原生支援 OpenRouter 與 Ollama，同樣**不需要** Python/LiteLLM。額外需要一支真正的
-    `rg`（ripgrep）執行檔在 PATH 上——這通常由 Claude CLI 依賴的 `@anthropic-ai/sandbox-runtime`
-    自動冒充，只有在那個套件完全沒裝的平台才需要自己裝 ripgrep。詳見 DEPLOY.md §1b2。
+  - `"pi"`：原生支援 OpenRouter 與 Ollama，同樣**不需要** Python/LiteLLM。額外的硬性依賴：
+    `@anthropic-ai/sandbox-runtime`（pi 的圍籠函式庫）啟動時會檢查 PATH 上有一支真正的
+    `rg`（ripgrep）執行檔，缺了就拒絕初始化——**引擎自己會處理**：只要本引擎安裝的
+    `@anthropic-ai/claude-agent-sdk-<platform>` 套件在，就用它內附的 `claude` 執行檔冒充
+    （`argv0:'rg'`），不必額外裝系統套件；只有那個套件完全沒裝（平台不支援）的機器才需要自己裝
+    ripgrep。詳見 DEPLOY.md §1b2。
 - 至少一個可用的 LLM 供應商（Anthropic / OpenRouter API key，或本機 Ollama）
 
 ## 快速開始 Quickstart
