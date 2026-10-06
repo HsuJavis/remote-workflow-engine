@@ -778,9 +778,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "THAT workflow's own `meta.params.agents` defaults — your run's `overrides.agents` never reach " +
         'them (labels belong to the workflow that declares them, even when a name collides) — and its ' +
         "models are priced into, and bound by, your run's budget.\n\n" +
-        '`Date` and `Math` are present but GUARDED — the calls below are refused `DETERMINISM_GUARD` ' +
-        "because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value " +
-        'baked into that key would change it on replay and re-dispatch an already-paid call:\n\n' +
+        '`Date`, `Math`, and `Intl` are present but GUARDED — the calls below are refused ' +
+        '`DETERMINISM_GUARD` because resume replays agent() calls keyed by prompt+opts, so a ' +
+        'wall-clock or random value baked into that key would change it on replay and re-dispatch an ' +
+        'already-paid call:\n\n' +
         determinismGuardRows() +
         // #157 B1: this paragraph used to claim the vm context ITSELF was the security boundary
         // ("process... simply absent from the context, not merely shadowed... holds no secrets/
@@ -792,12 +793,24 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // to describe the REAL, now-closed containment rather than repeat a claim that happened to
         // be right for the wrong reason.
         '\n\n`setTimeout`, `fetch`, `require`, `process`, and `fs` are genuinely absent from this ' +
-        'context (not merely shadowed) — standard `node:vm` behavior, unrelated to the two guards ' +
-        'above. The actual security containment is two independent layers: every value this engine ' +
-        'exposes into your script (including `Date`/`Math` above) is built natively in your script\'s ' +
-        'own realm rather than the engine\'s, so there is no live reference back to engine internals ' +
-        'to find; and separately, the per-run child PROCESS your script runs in is forked with an ' +
-        'empty environment, so even a future gap in the first layer would not also be a secrets leak.',
+        'context (not merely shadowed) — standard `node:vm` behavior, unrelated to the guards above. ' +
+        // issue #157 B3: `console` is a default global of ANY vm context (like `Intl` was before it
+        // was guarded above) that this engine never removes — it is present, not absent, so it does
+        // not belong in the "genuinely absent" list this sentence used to include it in. Documented
+        // here rather than removed (an owner-decision call, not a security fix either way: removing
+        // it would be a design choice, not a defect) — it is harmless to leave present: it writes to
+        // an inert per-realm stream a real forked child's own stdout never surfaces (confirmed: a
+        // script's `console.log(...)` produces no observable output anywhere this engine reads).
+        '`console` IS present (unlike the five above) but writes nowhere observable — a `node:vm` ' +
+        'context gets its own inert console whose output never reaches this engine\'s logs or your ' +
+        'run\'s result; it is harmless, just not useful; `log(...)` (listed above) is this engine\'s ' +
+        'own no-op placeholder, included for forward compatibility, not a working substitute today.' +
+        '\n\nThe actual security containment is two independent layers: every value this engine ' +
+        'exposes into your script (including `Date`/`Math`/`Intl` above) is built natively in your ' +
+        'script\'s own realm rather than the engine\'s, so there is no live reference back to engine ' +
+        'internals to find; and separately, the per-run child PROCESS your script runs in is forked ' +
+        'with an empty environment, so even a future gap in the first layer would not also be a ' +
+        'secrets leak.',
     ),
   );
 
