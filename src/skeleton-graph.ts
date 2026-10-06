@@ -27,6 +27,10 @@ export interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
+  // issue #155 B3: every ungrouped dynamic (loop/switch-body) agent() call landing in this lane —
+  // no static slot (S1-S4 don't apply), but still checkable for LANE placement (and, when the call
+  // carries a literal allowedTools, for TOOLS too). Absent/undefined when the lane has none.
+  dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 
 export interface ExpectedSlot {
@@ -35,6 +39,11 @@ export interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
+  // issue #155 B1: shared by every arm-slot of ONE if/else (`alt`) group whose arms were split
+  // across different lanes (each arm opens its own phase()) — lets checkEdges refuse a direct
+  // arm-to-arm edge even though the arms are two different slots in two different lanes. Absent
+  // for every other slot kind, and for a same-lane alt group (still one merged slot, as before).
+  altGroup?: number;
 }
 
 export interface ExpectedEdge {
@@ -65,6 +74,14 @@ const FALLBACK_CALL: ScanCall = { line: 0, label: '', index: -1, allowedTools: '
 /** T1: the literal `allowedTools` array SORTED, or `'default'` when the call carries none. */
 function toolsFor(allowedTools: ScanCall['allowedTools']): string[] | 'default' {
   return allowedTools === 'absent' || allowedTools === undefined ? 'default' : [...allowedTools].sort();
+}
+
+/** issue #155 B3/TOOLS-DOC: the literal `allowedTools` array SORTED, or `undefined` when the call
+ *  carries none OR a non-literal (variable) one — unlike `toolsFor`, never `'default'`, since
+ *  `ExpectedLane.dynamicLabels[].tools` must distinguish "nothing to check" (undefined, omit the
+ *  field) from "default" (`toolsFor`'s sentinel is for a STATIC slot's `tools` map, not this). */
+function literalToolsFor(allowedTools: ScanCall['allowedTools']): string[] | undefined {
+  return allowedTools === 'absent' || allowedTools === undefined ? undefined : [...allowedTools].sort();
 }
 
 /** `deriveExpectedGraph(nodes, scan, contract?) → {ok:true; graph} | {ok:false; rule; line; label;
@@ -152,7 +169,15 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
       // never treated as dynamic even when `parseWorkflowSkeleton`'s own loop-body detection also
       // fired on it (an if/else arm sits inside a DYNAMIC_OPENERS `if (` span) — `scan.calls[i].group`
       // is the more specific signal and wins.
-      lanes[currentLaneIndex]!.dynamic = true;
+      const lane = lanes[currentLaneIndex]!;
+      lane.dynamic = true;
+      // issue #155 B3/TOOLS-DOC: still record the label (and, when literal, the allowedTools) so
+      // checkLanes/checkTools can keep checking PLACEMENT (and, when literal, TOOLS) for this call
+      // even though it gets no static slot — rules 3(conditionally)/4 remain exempt, unchanged.
+      const tools = literalToolsFor(call.allowedTools);
+      const entry: { label: string; tools?: string[] } = { label: call.label };
+      if (tools !== undefined) entry.tools = tools;
+      (lane.dynamicLabels ??= []).push(entry);
       continue;
     }
 

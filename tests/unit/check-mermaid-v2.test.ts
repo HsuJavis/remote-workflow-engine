@@ -133,6 +133,74 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     };
     expect((checkMermaid(src, ['writer', 'critic'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
   });
+
+  // issue #155 B3/TOOLS-DOC: an agent() dispatched inside a loop/switch body got NO ExpectedSlot at
+  // all, so neither checkLanes nor checkTools ever looked at it — its diagram placement (and, when
+  // it carries a literal allowedTools, its `tools:` text) was unconstrained.
+  describe('dynamic lanes are still lane/tools-checked (B3/TOOLS-DOC)', () => {
+    it('a dynamic-lane agent drawn in the WRONG lane is LANE_MISMATCH', () => {
+      const src = 'graph LR\nsubgraph "pre"\nb(["b"])\na(["a"])\nend\nsubgraph "loop"\nend';
+      const expected = {
+        lanes: [
+          { index: 0, title: 'pre', dynamic: false, slots: [0] },
+          { index: 1, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] },
+        ],
+        slots: [{ index: 0, lane: 0, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } }],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['b', 'a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('LANE_MISMATCH');
+    });
+
+    it('the same dynamic-lane agent drawn in the CORRECT lane registers ok', () => {
+      const src = 'graph LR\nsubgraph "pre"\nb(["b"])\nend\nsubgraph "loop"\na(["a"])\nend';
+      const expected = {
+        lanes: [
+          { index: 0, title: 'pre', dynamic: false, slots: [0] },
+          { index: 1, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] },
+        ],
+        slots: [{ index: 0, lane: 0, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } }],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['b', 'a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('a dynamic-lane agent with no literal allowedTools is NOT tools-checked (documented exemption stays)', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: none"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('a dynamic-lane agent WITH a literal allowedTools whose tools: text disagrees is TOOLS_MISMATCH', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: none"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a', tools: ['Read'] }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('TOOLS_MISMATCH');
+    });
+
+    it('a dynamic-lane agent WITH a literal allowedTools whose tools: text agrees registers ok', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: Read"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a', tools: ['Read'] }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+  });
 });
 
 // UT-208 (DES-184, ARCH-119, TASK-189, v26, REQ-128): the two LANE_MISMATCH arms `checkLanes` opens

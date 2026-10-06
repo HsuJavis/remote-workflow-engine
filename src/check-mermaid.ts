@@ -18,6 +18,9 @@ interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
+  // issue #155 B3/TOOLS-DOC — mirrors skeleton-graph.ts's ExpectedLane in lockstep (UT-115's
+  // four-file allowlist comment above, same convention).
+  dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 interface ExpectedSlot {
   index: number;
@@ -25,6 +28,8 @@ interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
+  // issue #155 B1 — mirrors skeleton-graph.ts's ExpectedSlot in lockstep.
+  altGroup?: number;
 }
 interface ExpectedGraph {
   lanes: ExpectedLane[];
@@ -346,6 +351,17 @@ function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
       }
     }
   }
+  // issue #155 B3: a dynamic (loop/switch-body) call gets no static slot, but the authoring guide's
+  // own rule 2 still requires its node to sit inside the right lane — only rules 3 (conditionally)
+  // and 4 are documented as exempt for it.
+  for (const lane of expected.lanes) {
+    for (const entry of lane.dynamicLabels ?? []) {
+      const block = subgraphBlocks[lane.index];
+      if (nodeInLane(labelToNodes.get(entry.label), block) === undefined) {
+        return err('LANE_MISMATCH', { line: labelToNodes.get(entry.label)?.[0]?.line ?? 1, expected: lane });
+      }
+    }
+  }
   return null;
 }
 
@@ -362,6 +378,20 @@ function checkTools(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
       const actual = node?.text.split('<br/>')[2]?.trim();
       if (actual !== expectedStr) {
         return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label, tools: toolsExpected } });
+      }
+    }
+  }
+  // issue #155 B3/TOOLS-DOC: a dynamic-lane call that DOES declare a literal allowedTools array is
+  // checkable — only the documented absent/variable case (dynamicLabels entry with no `tools`) is
+  // exempt.
+  for (const lane of expected.lanes) {
+    for (const entry of lane.dynamicLabels ?? []) {
+      if (entry.tools === undefined) continue;
+      const node = nodeInLane(labelToNodes.get(entry.label), subgraphBlocks[lane.index]);
+      const expectedStr = entry.tools.length === 0 ? 'tools: none' : `tools: ${[...entry.tools].sort().join(', ')}`;
+      const actual = node?.text.split('<br/>')[2]?.trim();
+      if (actual !== expectedStr) {
+        return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label: entry.label, tools: entry.tools } });
       }
     }
   }

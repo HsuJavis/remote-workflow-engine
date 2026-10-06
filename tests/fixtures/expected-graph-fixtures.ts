@@ -14,6 +14,10 @@ export interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
+  // issue #155 B3: every ungrouped dynamic (loop/switch-body) agent() call landing in this lane —
+  // no static slot (S1-S4 don't apply), but still checkable for LANE placement (and, when the call
+  // carries a literal allowedTools, for TOOLS too). Absent/undefined when the lane has none.
+  dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 
 export interface ExpectedSlot {
@@ -22,6 +26,11 @@ export interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
+  // issue #155 B1: shared by every arm-slot of ONE if/else (`alt`) group whose arms were split
+  // across different lanes (each arm opens its own phase()) — lets checkEdges refuse a direct
+  // arm-to-arm edge even though the arms are two different slots in two different lanes. Absent
+  // for every other slot kind, and for a same-lane alt group (still one merged slot, as before).
+  altGroup?: number;
 }
 
 export interface ExpectedEdge {
@@ -154,6 +163,17 @@ export const meta = { name: 'loopbody', params: { agents: { a: {} } } };
 phase('one');
 for (const item of items) {
   await agent('a', { prompt: item });
+}
+`;
+
+// issue #155 B3/TOOLS-DOC: a dynamic (loop-body) call that DOES carry a literal allowedTools array
+// — checkTools must still validate the diagram's `tools:` text for it (only absent/variable
+// allowedTools is exempted, per the authoring guide's documented rule 3).
+const loopBodyWithToolsScript = `
+export const meta = { name: 'loopbodytools', params: { agents: { a: {} } } };
+phase('one');
+for (const item of items) {
+  await agent('a', { prompt: item, allowedTools: ['Read'] });
 }
 `;
 
@@ -345,7 +365,7 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
     expected: {
       ok: true,
       graph: {
-        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [] }],
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }, { label: 'b' }] }],
         slots: [],
         edges: [],
       },
@@ -357,7 +377,19 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
     expected: {
       ok: true,
       graph: {
-        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [] }],
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] }],
+        slots: [],
+        edges: [],
+      },
+    },
+  },
+  {
+    name: 'agent() inside a for body with a literal allowedTools — dynamicLabels carries it (#155 B3/TOOLS-DOC)',
+    script: loopBodyWithToolsScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [], dynamicLabels: [{ label: 'a', tools: ['Read'] }] }],
         slots: [],
         edges: [],
       },
