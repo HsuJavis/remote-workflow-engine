@@ -57,7 +57,12 @@ export function buildHarnessAnnounce(harnessProviders?: readonly Provider[]): Ha
     version: PI_HARNESS_VERSION,
     providers: harnessProviders,
     unsupportedTools: PI_UNSUPPORTED_TOOLS,
-    effort: 'mapped to pi\'s thinkingLevel; effortApplied is only ever true for a verified outbound request (OpenRouter\'s reasoning.effort — see DEPLOY.md); ollama has no reasoning dial.',
+    // issue #150: effortApplied is per-MODEL now, not blanket-true for every openrouter call — a
+    // model the pinned catalog says has no reasoning dial (capabilities.reasoning.supported:false,
+    // e.g. openrouter/openai/gpt-4.1) gets NO reasoning field on the wire at all and reports
+    // effortApplied:false ("model does not support reasoning"), never a claim this harness cannot
+    // back up.
+    effort: 'mapped to pi\'s thinkingLevel; effortApplied is true only for a verified outbound request to a model whose catalog row supports reasoning (OpenRouter\'s reasoning.effort — see DEPLOY.md), false otherwise; ollama has no reasoning dial.',
     usage: 'summed over every assistant message_end (pi has no stable per-message id); partial:true on abort/timeout; pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
   };
 }

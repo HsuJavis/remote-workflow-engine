@@ -15,6 +15,7 @@ import type { ProbeResult } from './model-probe.js';
 // STATIC_ANTHROPIC_RATES) — both uses are inside functions, never at module evaluation, so the
 // cycle is inert.
 import { PROVIDER_CAPS, isProvider } from '../providers.js';
+import type { Provider } from '../providers.js';
 import type { ObservedForRef } from './observed-stats.js';
 
 /** What a row's `observed` says when nothing was measured (or no ObservedStats is wired). */
@@ -720,7 +721,23 @@ export function computeCostLevel(e: ModelEntry): number | null {
  *  wired through `ModelBook.snapshot()`) — optional and defaulting to `null` so a direct call with
  *  no catalog context (a unit test, or `check-mermaid.ts`-style internal use) keeps DES-179's
  *  original honest "we never looked" default unchanged. */
-export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null, probe?: ProbeResult, observed?: ObservedForRef): EnrichedModelEntry {
+/** issue #150: harness-aware `effortAppliedOnTransport`. Absent `harnessProviders` (the sdk gateway,
+ *  every pre-#150 caller) keeps the OLD static per-provider fact (`PROVIDER_CAPS.effortDelivered`,
+ *  VAL-186) unchanged. Present (pi harness: `deps.harnessProviders` is set exactly under
+ *  `gateway:"pi"`, the same signal `models_list`'s own anthropic-row filter already gates on) —
+ *  openrouter now DOES carry `reasoning.effort` to the wire, but only for a model whose catalog row
+ *  actually declares reasoning support (`capabilities.reasoning.supported`), the SAME fact
+ *  `pi-gateway-client.ts`'s `effortApplied`/session-runner.ts's `buildModelConfig` reasoning flag use
+ *  — three readings of one signal, never three independent opinions. Ollama has no reasoning dial
+ *  under either gateway. */
+function effortAppliedOnTransport(e: ModelEntry, harnessProviders: readonly Provider[] | undefined): boolean {
+  if (harnessProviders === undefined) {
+    return isProvider(e.provider) ? PROVIDER_CAPS[e.provider].effortDelivered : false;
+  }
+  return e.provider === 'openrouter' && e.capabilities?.reasoning?.supported === true;
+}
+
+export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null, probe?: ProbeResult, observed?: ObservedForRef, harnessProviders?: readonly Provider[]): EnrichedModelEntry {
   // capability: truncate at 200 chars (199 + '…'); empty/null → fallback "${provider} model"
   let capability = e.description?.trim() ?? '';
   if (!capability) capability = `${e.provider} model`;
@@ -765,7 +782,7 @@ export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null 
       vision: capabilities?.vision ?? null,
       reasoning: capabilities?.reasoning ?? { supported: null, efforts: null, defaultEffort: null, mandatory: null },
     },
-    effortAppliedOnTransport: isProvider(e.provider) ? PROVIDER_CAPS[e.provider].effortDelivered : false,
+    effortAppliedOnTransport: effortAppliedOnTransport(e, harnessProviders),
     pricingDetail: pricingDetail ?? null,
     local: e.provider === 'ollama' ? (local ?? null) : null,
     lifecycle: lifecycle ?? { releasedAt: null, knowledgeCutoff: null, expiresAt: null },

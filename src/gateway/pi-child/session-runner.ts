@@ -213,11 +213,18 @@ async function resolveModel(config: PiChildConfig, runtime: ModelRuntime) {
   // config.api ?? defaults?.api` order) — every openrouter model this engine dispatches now always
   // uses the OpenAI-completions wire shape, independent of whatever vendor namespace its id happens
   // to share with pi's static catalog.
+  // issue #150: `reasoningSupported` (pi-gateway-client.ts, from the pinned catalog's
+  // `Caps.reasoning`) decides whether this registration's `reasoning` flag is true at all — `false`
+  // only on an EXPLICIT catalog "no reasoning dial" (e.g. openai/gpt-4.1); absent/undefined keeps the
+  // pre-#150 default of `true`. A `false` here is load-bearing: pi-ai's openai-completions provider
+  // gates every reasoning/thinking branch (including the plain `reasoning.effort` openrouter shape)
+  // on `model.reasoning`, so this is the ONE place that actually stops a non-reasoning model's wire
+  // request from carrying a `reasoning` field it cannot use.
   runtime.registerProvider('openrouter', {
     baseUrl: config.openrouterBaseUrl ?? 'https://openrouter.ai/api/v1',
     apiKey: config.apiKey,
     api: 'openai-completions',
-    models: [buildModelConfig(config.model.model, true)],
+    models: [buildModelConfig(config.model.model, config.model.reasoningSupported ?? true)],
   });
   const model = runtime.getModel('openrouter', config.model.model);
   if (!model) throw new Error(`MODEL_REGISTRATION_FAILED: openrouter/${config.model.model} did not register`);

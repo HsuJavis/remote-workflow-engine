@@ -537,6 +537,53 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(harness2.h.effortApplied).toEqual({ reason: 'ollama has no reasoning dial' });
   });
 
+  // issue #150: before this fix, `effortApplied` claimed `applied:true` for EVERY openrouter call
+  // regardless of catalog capability — including a model the PINNED catalog explicitly says has no
+  // reasoning dial (openrouter/openai/gpt-4.1: `supported_parameters` omits 'reasoning', so
+  // `ModelBook`'s `capsFromRow` pins `caps.reasoning:false`). That is a claim this gateway cannot
+  // back up: pi-ai's openai-completions provider gates every reasoning-shaped branch on
+  // `model.reasoning`, so a `reasoningSupported:false` registration (session-runner.ts) never puts a
+  // `reasoning` field on the wire at all.
+  it('reports effortApplied:false ("model does not support reasoning") for an openrouter model the pinned catalog says has no reasoning dial (issue #150)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts', secretSource: { resolve: () => 'fake-key' } });
+    let harness: any;
+    const promise = gw.invoke(req({
+      opts: { model: 'openrouter/openai/gpt-4.1', effort: 'high' } as AgentOpts,
+      caps: { reasoning: false, tools: true, source: 'upstream' },
+      onHarness: async (h, applied) => { harness = { h, applied }; },
+    }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    expect(harness.applied).toEqual({ applied: false, reason: 'model does not support reasoning' });
+    expect(harness.h.effortApplied).toEqual({ reason: 'model does not support reasoning' });
+    // The child's own model registration carries the SAME fact, so it never registers `reasoning:true`
+    // for this model (buildModelConfig's flag, session-runner.ts) — never two opinions that disagree.
+    const sentConfig = JSON.parse(f.stdinWritten.join('').trim().split('\n')[0]!);
+    expect(sentConfig.model).toEqual({ provider: 'openrouter', model: 'openai/gpt-4.1', reasoningSupported: false });
+  });
+
+  // A model the catalog said NOTHING about ('unknown', or no caps pinned at all) keeps the pre-#150
+  // behavior of assuming support — never a guessed false negative that would strip the dial from a
+  // genuinely reasoning-capable model whose catalog row lacks `supported_parameters` (issue #150).
+  it('keeps effortApplied:true when the catalog caps are "unknown" rather than an explicit false (issue #150)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts', secretSource: { resolve: () => 'fake-key' } });
+    let harness: any;
+    const promise = gw.invoke(req({
+      opts: { model: 'openrouter/some/model', effort: 'high' } as AgentOpts,
+      caps: { reasoning: 'unknown', tools: 'unknown', source: 'unknown' },
+      onHarness: async (h, applied) => { harness = { h, applied }; },
+    }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    expect(harness.applied).toEqual({ applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: 'high' });
+  });
+
   it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rwe-pi-unit-harness-bash-')); // review R2-1: real per-test workRoot
     try {

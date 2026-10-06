@@ -484,7 +484,7 @@ async function handleDashboardRequest(
         (e) => harnessProviders === undefined || (harnessProviders as readonly string[]).includes(e.provider),
       );
       const observed = observedStats?.getAll(); // issue #104: one snapshot per request, joined by ref
-      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`))));
+      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`), harnessProviders)));
       return;
     }
     if (path === '/api/runs') {
@@ -1075,7 +1075,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // 2026-09-26 (alias mechanism removed): `chooseExampleModelAlias`/`aliasProbes` (issue #89 item 6,
   // v0.23.0) are RETIRED with the alias table they existed to pick a verified example from — the
   // guide's examples now use static full refs directly (`authoring-guide.ts`).
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture });
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture, harnessProviders: config?.harnessProviders });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each

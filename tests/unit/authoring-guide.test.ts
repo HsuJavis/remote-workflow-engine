@@ -589,6 +589,36 @@ describe('buildAuthoringGuide — v37 correction: the host-path-grants section s
   });
 });
 
+// issue #150: the provider-caps table (and the effortAppliedOnTransport sentence) used to state a
+// single sdk-gateway fact unconditionally — "effort applies: no" for openrouter — which is wrong
+// under `gateway:"pi"` for a model whose catalog row supports reasoning. Same "render the live fact,
+// generic text when none is known" pattern the v37 confinementPosture correction above established.
+describe('buildAuthoringGuide — issue #150: the provider-caps table is harness-aware (sdk vs pi)', () => {
+  it('with no harnessProviders in scope (the generated static docs/AUTHORING.md), keeps the sdk-gateway fact unchanged: openrouter effort applies: no', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const section = text.slice(text.search(/`openrouter` — tool surface/));
+    expect(section).toMatch(/`openrouter` — tool surface: all, effort applies: no/);
+  });
+
+  it('under the pi harness (harnessProviders set), states openrouter effort applies PER MODEL — never a blanket "no" — and points to the live effortAppliedOnTransport field', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, harnessProviders: ['openrouter', 'ollama'] });
+    const section = text.slice(text.search(/`openrouter` — tool surface/));
+    expect(section).not.toMatch(/`openrouter` — tool surface: all, effort applies: no\b/);
+    expect(section).toMatch(/per model/i);
+    expect(section).toMatch(/effortAppliedOnTransport/);
+    // ollama still has no dial under pi either.
+    expect(section).toMatch(/`ollama` — tool surface: all, effort applies: no/);
+    // anthropic is never dispatched under pi — never rendered as a usable row here.
+    expect(section).not.toMatch(/`anthropic` —/);
+  });
+
+  it('the effortAppliedOnTransport sentence itself is per-model, not a blanket per-provider claim', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/effortAppliedOnTransport.*actually reaches THIS model/i);
+    expect(text).not.toMatch(/it does not for openrouter or ollama/i);
+  });
+});
+
 // issues #81/#83: the guide never said how a declared skill is activated, and its only skills
 // example paired the skill with `allowedTools: ['Read', 'Edit']` — which made it look like a
 // skill needs file tools to be read. It does not: the engine puts the SDK's Skill tool on the

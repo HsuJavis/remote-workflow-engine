@@ -91,7 +91,19 @@ export interface PiChildConfig {
 
 export type PiChildModelConfig =
   | { provider: 'ollama'; model: string; baseUrl: string }
-  | { provider: 'openrouter'; model: string };
+  | {
+      provider: 'openrouter'; model: string;
+      /** issue #150: whether the PINNED catalog capability (`Caps.reasoning`, via the parent's
+       *  `req.caps`) says this model's endpoint supports a reasoning dial at all — `false` only when
+       *  the catalog EXPLICITLY declares no support (e.g. openrouter/openai/gpt-4.1's
+       *  `supported_parameters` omits `'reasoning'`); absent/`undefined` (no pin, or the catalog said
+       *  nothing) keeps the PRE-#150 behavior of assuming support, never guessing a false negative.
+       *  Threads straight into `buildModelConfig()`'s `reasoning` flag (session-runner.ts) — `false`
+       *  here means pi's own `compat.thinkingFormat === 'openrouter' && model.reasoning` gate (and
+       *  every other `model.reasoning`-gated branch in pi-ai's openai-completions provider) never
+       *  fires, so NO `reasoning` field reaches the wire at all for that model. */
+      reasoningSupported?: boolean;
+    };
 
 /** Projected from `buildBashConfinement()`'s SandboxSettings output (shared with the sdk gateway —
  *  field names are identical in both the SDK's own `SandboxSettings` and srt's
