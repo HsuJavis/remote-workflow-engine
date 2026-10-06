@@ -7,6 +7,8 @@
   "maxWorkflowDepth": 4,
   "maxWorkflowDescendants": 256,
   "maxConcurrentRuns": 64,
+  "agentSlots": 32,
+  "runConcurrency": 24,
   "workspaceTtlMs": 0,
   "maxTimeoutMs": 600000,
   "maxAppendPromptBytes": 1024,
@@ -14,6 +16,15 @@
   "gateway": "sdk",
   "seedRefAllowlist": [],
   "maxBlobBytes": 268435456,
+  "casQuota": {
+    "user": "1GiB",
+    "author": "5GiB",
+    "admin": "unlimited"
+  },
+  "diskFloor": {
+    "percent": 5,
+    "bytes": "5GiB"
+  },
   "modelProbe": {
     "enabled": true,
     "intervalMs": 604800000,
@@ -35,9 +46,7 @@
   "principals": {
     "alice@example.com": { "role": "admin" }
   },
-  "mcpEgressAllowlist": [
-    "https://api.example.com"
-  ],
+  "mcpEgressAllowlist": [],
   "sandbox": {
     "allowHostPaths": []
   }

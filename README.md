@@ -264,10 +264,12 @@
 ```bash
 # anthropic 供應商：兩種認證擇一 —— API key，或 Pro/Max 訂閱制的 OAuth token
 export ANTHROPIC_API_KEY=sk-ant-...                  # 用 API key 時
-# export RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN=...      # 用訂閱制時；偵測到這個 token 且沒有另外設
-                                                      #   api key 時會自動選 subscription 模式，
-                                                      #   rwe.config.json 的 anthropicAuth 只在要
-                                                      #   「強制」指定某一種模式時才需要設
+# export RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN=...      # 用訂閱制時；只要偵測到這個 token 就自動選
+                                                      #   subscription 模式——即使同時也設了 API
+                                                      #   key，token 還是優先，不是「沒有另外設
+                                                      #   api key 時」才生效；rwe.config.json 的
+                                                      #   anthropicAuth 只在要「強制」指定某一種
+                                                      #   模式時才需要設（詳見 DEPLOY.md §1b 同一列）
 # export OPENROUTER_API_KEY=sk-or-...                # 用 openrouter 供應商時；本機 Ollama 免金鑰
 # export RWE_SECRET_GITHUB_TOKEN=...                 # 若要用 issue_report/Issues 儀表板
 ./deploy.sh --background
