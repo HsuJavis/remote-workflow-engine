@@ -345,6 +345,23 @@ interface RunEntry {
   name?: string;
   status: RunStatus;
   guard: RunGuard;
+  /** issue #163 B1: a SECOND, independent concurrency gate (same `runConcurrency` width as `guard`,
+   *  no budget — it only ever calls `acquireSlot()`/`release()`, never `assertBudget()`) for nested
+   *  `workflow()` dispatch (`_handleWorkflowRequest`). `_handleWorkflowRequest` used to build a new
+   *  `SandboxHost` and fork a child for EVERY nested `workflow()` call with no throttling at all —
+   *  unlike `_handleAgentRequest`, which has always queued at `guard`'s cap. A wide `parallel()` of
+   *  nested `workflow()` calls therefore forked all N children ~simultaneously, which at high N
+   *  (confirmed ~250+) floods Node's child_process IPC and loses a `process.send()` done/error
+   *  message even though the child itself ran to completion — surfacing as the reported
+   *  `INTERNAL_ERROR "sandbox child process terminated before completion"`. A SEPARATE RunGuard
+   *  instance (not `guard` itself) is required: a nested workflow() frame holds its slot for the
+   *  ENTIRE duration of its own `nested.run()`, which in turn dispatches its own agent() calls
+   *  through `_handleAgentRequest` — if that reused `guard`, an N-wide fan-out of nested workflow()
+   *  calls at N >= runConcurrency would hold every slot on `guard` before any of them reached their
+   *  own agent() calls, which then could never acquire a slot: deadlock. Two independent pools of
+   *  the SAME width give nested workflow() the same throttling contract agent() already has,
+   *  without nested workflow() and agent() dispatch competing for the same slots. */
+  workflowGuard: RunGuard;
   /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the SAME `{usd, tokens}` limits `guard` was built
    *  from (`parseBudget(spec.budget, {source:'store'})`), kept alongside it — `RunGuard` exposes no
    *  public accessor for its own two totals (`budgetView()` stays the pre-v26, token-only view),
@@ -1183,6 +1200,9 @@ export class RunManager {
     // direct-construction test caller; both mean the v25 token-only shape.
     const budgetLimits = parseBudget(spec.budget, { source: 'store' });
     const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
+    // issue #163 B1: see RunEntry.workflowGuard's own doc for why this must be a SEPARATE RunGuard
+    // instance from `guard`, not a shared one.
+    const workflowGuard = new RunGuard({ concurrency: this._concurrency, budget: null });
     // v26 integration (DES-178, TASK-178, REQ-127, clarification 27): the pin computed just above
     // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
     // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
@@ -1198,6 +1218,7 @@ export class RunManager {
       name: spec.name,
       status: 'queued',
       guard,
+      workflowGuard,
       budgetLimits,
       abortController: new AbortController(),
       sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
@@ -1800,6 +1821,8 @@ export class RunManager {
     // direct-construction test caller; both mean the v25 token-only shape.
     const budgetLimits = parseBudget(spec.budget, { source: 'store' });
     const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
+    // issue #163 B1: see RunEntry.workflowGuard's own doc — same separate-pool reasoning on resume.
+    const workflowGuard = new RunGuard({ concurrency: this._concurrency, budget: null });
     // DES-068 (TASK-071): hydrate the guard's spent count from the persisted journal transcripts so
     // the budget cap is correctly enforced on resume. Fold-only (pure); never adds snapshot totals.
     // v26 (DES-183, TASK-183, ADR-047(b)): UNCONDITIONAL — the old `if (spec.budget !== null...)`
@@ -1834,6 +1857,7 @@ export class RunManager {
       status: view.status,
       legacySubstitution,
       guard,
+      workflowGuard,
       budgetLimits,
       abortController: new AbortController(),
       sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
@@ -2308,11 +2332,18 @@ export class RunManager {
     // suspended or stopped. Kill it when its generation is aborted.
     const killNested = () => { void nested.abort(`${runId}-nested`, 'stop'); };
     generation.addEventListener('abort', killNested, { once: true });
+    // issue #163 B1: throttle nested workflow() dispatch exactly like _handleAgentRequest already
+    // throttles agent() dispatch — queue at `workflowGuard`'s cap (same `runConcurrency` width as
+    // `guard`, a SEPARATE pool: see RunEntry.workflowGuard's own doc for why it must not be `guard`
+    // itself). Before this, a wide parallel() of nested workflow() calls forked every child OS
+    // process essentially simultaneously with no limit at all.
+    const releaseWorkflowSlot = await entry.workflowGuard.acquireSlot();
     let outcome: Awaited<ReturnType<SandboxHost['run']>>;
     try {
       outcome = await nested.run(`${runId}-nested`, registered.script, childArgs, null);
     } finally {
       generation.removeEventListener('abort', killNested);
+      releaseWorkflowSlot();
     }
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);
