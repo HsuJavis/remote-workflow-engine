@@ -1267,9 +1267,20 @@ sha256，連 admin 都讀不回來。單一帳號最多同時 2 把有效 secret
 把這些真實金鑰交給代理子行程——這是它需要真的把呼叫路由到對應供應商所必需的）。**被 spawn 出來、
 實際執行 agent 工具迴圈的 `claude` CLI 子行程，拿到的環境變數是一份明確的白名單**
 （`buildSubprocessEnv()`：`PATH`/`HOME`/`SHELL`/`LANG`/`LC_ALL`/`TMPDIR`/`TERM` 這幾個 CLI
-自己要能正常運作所需的變數 + 覆寫過的 `ANTHROPIC_BASE_URL`（指向本機代理）+ 一個**假的**
-`ANTHROPIC_API_KEY`（非空字串，但從來不是真的憑證）——真實金鑰從未出現在這份白名單裡，agent
-自己的 prompt/工具呼叫無法透過環境變數讀到它。同樣地，代理子行程自己產生的 `config.yaml`
+自己要能正常運作所需的變數，其餘按 provider 分流**（R2-D1 一併更正：下面這段跟 `anthropicBaseUrl`
+那一列同一個方向錯誤——之前這裡只講了 LiteLLM 分支，漏了 anthropic 分支）**：
+- **provider 不是 `anthropic`**（openrouter/ollama/… 經 LiteLLM）：`ANTHROPIC_BASE_URL` 覆寫成
+  指向本機 LiteLLM 代理，`ANTHROPIC_API_KEY` 是一個**假的**非空字串（從來不是真的憑證）——CLI 以
+  為自己在跟 Anthropic 講話，實際打的是本機代理，代理再用它自己行程裡的真實金鑰轉送給實際供應商。
+  真實金鑰從未出現在這份白名單裡，agent 自己的 prompt/工具呼叫無法透過環境變數讀到它。
+- **provider 是 `anthropic`**：`ANTHROPIC_BASE_URL` 覆寫成 `anthropicBaseUrl`（省略則是真正的
+  `https://api.anthropic.com`）——**LiteLLM 被完全繞過**；`anthropicAuth:"api-key"` 時
+  `ANTHROPIC_API_KEY` 是**真實金鑰**（解析自 secret store／環境變數，見 §1b `anthropicAuth`
+  列），`"subscription"` 時改傳真實的 `CLAUDE_CODE_OAUTH_TOKEN`、完全不設 `ANTHROPIC_API_KEY`。
+  這條路徑下真實憑證會進到 CLI 子行程的環境變數裡——這是 sdk 直連 Anthropic 本來就需要的憑證傳遞
+  方式，不是外洩；真實憑證依然不會被寫進任何 run workspace、sandbox 或 transcript。
+
+同樣地，LiteLLM 代理子行程自己產生的 `config.yaml`
 （`generateLiteLLMConfig()`）裡也從來不寫入原始金鑰值本身（由 LiteLLM 自己在啟動時從環境變數
 讀取），所以就算 agent 真的讀得到那個檔案（見下方 (d) 這條路徑本來就會被擋下），內容也不含金鑰。
 
