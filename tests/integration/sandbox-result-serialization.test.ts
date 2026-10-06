@@ -92,6 +92,26 @@ describe('g2 minor item 4 — a non-serializable agent()/workflow() call argumen
     expect(r.result).toEqual({ caught: true, code: 'RESULT_NOT_SERIALIZABLE', name: 'RESULT_NOT_SERIALIZABLE', isError: true });
   });
 
+  it('a non-serializable phase() title rejects THAT call too — the run still completes (not just agent()/workflow())', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    // `phase(title)` is typed `string` at compile time only — nothing stops a script handing it a
+    // circular object at runtime, and `phase()` is synchronous (void), not an awaited call.
+    const script = `
+      const o = {};
+      o.self = o;
+      try {
+        phase(o);
+        return { caught: false };
+      } catch (e) {
+        return { caught: true, code: e.code };
+      }
+    `;
+    const r = await host.run('run-circular-phase-title', script, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+    expect(r.result).toEqual({ caught: true, code: 'RESULT_NOT_SERIALIZABLE' });
+  });
+
   it('a BigInt inside `opts` passed to agent() is equally catchable (not just circular references)', async () => {
     const host = new SandboxHost({ workspaceRoot: WORK_DIR });
     const script = `

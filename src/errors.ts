@@ -318,6 +318,18 @@ export const ERROR_CATALOG = {
   // ABORTED with a leaked internal path/Node version in the message.
   RESULT_NOT_SERIALIZABLE: { see: 'workflow_authoring_guide', hint: 'an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values' },
   RESULT_TOO_LARGE: { see: 'workflow_authoring_guide', hint: "an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload" },
+  // F-1 (sandbox robustness sweep): a HOST-side (not vm-internal) wall-clock deadline on the whole
+  // run — covers a synchronous infinite loop (`while(true){}`, which blocks the sandboxed child's own
+  // event loop and so cannot be caught from inside it) just as much as a hung/looping sequence of
+  // awaited agent()/workflow() calls. Catalogued (not left to fold to INTERNAL_ERROR) so a nested
+  // workflow()'s own timeout surfaces to its parent script with this same code — see run-manager.ts's
+  // `toErrorCode(err.code)` at the nested-workflow() boundary for why an uncatalogued code would
+  // otherwise lose its identity there.
+  SCRIPT_TIMEOUT: { see: 'workflow_authoring_guide', hint: "the sandboxed script did not complete within the engine's run-duration deadline (maxRunDurationMs) and was terminated — reduce the work per run, or split it across multiple shorter runs/phases" },
+  // F-1: the sandbox child's own V8 heap limit (SANDBOX_CHILD_EXEC_ARGV's `--max-old-space-size`) was
+  // reached and the process was terminated — same catalog-membership rationale as SCRIPT_TIMEOUT
+  // above (closed-catalog, not INTERNAL_ERROR, at a nested workflow() boundary).
+  SCRIPT_OOM: { see: 'workflow_authoring_guide', hint: "the sandboxed script exhausted its memory limit and was terminated — avoid unbounded in-memory accumulation (e.g. append-only arrays/strings across many agent() calls); process data in smaller chunks or summarize incrementally" },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

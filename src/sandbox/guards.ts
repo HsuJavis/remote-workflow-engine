@@ -683,8 +683,19 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   const parallelFn = makeParallel(CtxError, reRealm, CtxPromise);
   const pipelineFn = makePipeline(CtxError, reRealm, CtxPromise);
   const workflowFn = makeWorkflow(api, CtxError, reRealm, CtxPromise);
+  // g2 minor item 4 follow-up (#157 B1 realm safety): `phase()` can now THROW (child-entry.ts
+  // rejects a non-serializable title synchronously instead of ending the run) where it never could
+  // before this fix. The delegate's thrown error is EMBEDDING-realm native (child-entry.ts's own
+  // `new Error(...)`, built in the same realm as this module) — forwarded to the script unsanitized,
+  // its `.constructor` chain would reach the embedding `Error`/`Function`, exactly the
+  // `<err>.constructor.constructor(...)` escape #157 B1 closed for every OTHER value crossing this
+  // boundary (`makeAgent`/`makeWorkflow` already re-realm their own delegate's throw the same way).
   const phaseFn = (title: string): void => {
-    api.phase?.(title);
+    try {
+      api.phase?.(title);
+    } catch (err) {
+      throw sanitizeThrownError(CtxError, err);
+    }
   };
   const logFn = (): void => {};
 

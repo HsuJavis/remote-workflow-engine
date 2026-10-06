@@ -34,7 +34,9 @@ Security containment here is THREE independent layers, not one — defeating any
 
 Treat anything a script can reach as untrusted until it leaves the forked child regardless — these layers are independent precisely so that a gap found in one is still caught by another.
 
-A script's own top-level `return` value (and an agent()/workflow() call's resolved value, which crosses the same boundary) must be JSON-serializable — no circular references, no BigInt — and under 10MB serialized; either violation is refused (`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a summary or a reference (an id, a CAS blob hash) instead of a large payload.
+A script's own top-level `return` value (and an agent()/workflow() call's resolved value, which crosses the same boundary) must be JSON-serializable — no circular references, no BigInt — and under 10MB serialized; either violation is refused (`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a summary or a reference (an id, a CAS blob hash) instead of a large payload. The SAME two codes reject an agent()/workflow() call whose OWN arguments aren't JSON-serializable — that failure is local to the one call your script made and is catchable with a normal try/catch, not run-terminating.
+
+Two more limits bound the sandbox itself, independent of anything your script does right or wrong: the run has a wall-clock deadline (`maxRunDurationMs`, a generous multi-hour default covering every agent()/workflow() round trip across every phase — not a single call, which `timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), which blocks the script's own event loop and so cannot be caught or reported from inside the script itself.
 
 ## Declaring the parameter contract
 
@@ -318,6 +320,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `ITEM_CAP_EXCEEDED` — parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which
 - `RESULT_NOT_SERIALIZABLE` — an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values
 - `RESULT_TOO_LARGE` — an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload
+- `SCRIPT_TIMEOUT` — the sandboxed script did not complete within the engine's run-duration deadline (maxRunDurationMs) and was terminated — reduce the work per run, or split it across multiple shorter runs/phases
+- `SCRIPT_OOM` — the sandboxed script exhausted its memory limit and was terminated — avoid unbounded in-memory accumulation (e.g. append-only arrays/strings across many agent() calls); process data in smaller chunks or summarize incrementally
 
 ## Provisioning skills and MCP servers: roles, config shapes, and the trust boundary
 

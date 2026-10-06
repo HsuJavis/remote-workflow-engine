@@ -139,7 +139,7 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   maxWorkflowDescendants: true, maxConcurrentRuns: true, seedRefAllowlist: true,
   continuationDbPath: true, casDir: true, maxBlobBytes: true, webhookDbPath: true,
   updateFlagPath: true, updateResultPath: true, selfUpdateDbPath: true, systemInfo: true,
-  auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true,
+  auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true, maxRunDurationMs: true,
   maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
   sandbox: true, modelProbe: true, publicBaseUrl: true,
@@ -373,6 +373,16 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (!casQuota.ok) throw new Error(`rwe.config.json: invalid casQuota — ${casQuota.message}. Refusing to start (ADR-028 fail-closed).`);
   const diskFloor = validateDiskFloorConfig(fileConfig.diskFloor);
   if (!diskFloor.ok) throw new Error(`rwe.config.json: invalid diskFloor — ${diskFloor.message}. Refusing to start (ADR-028 fail-closed).`);
+  // F-1 (sandbox robustness sweep): fail-closed validation for the sandboxed script's own wall-clock
+  // run deadline (host.ts SandboxHost.run()) — a positive integer, or absent (host.ts's own default
+  // applies). Kept LOCAL and minimal here rather than importing a shared assertPositiveInteger: a
+  // parallel docs-iteration branch added one (src/config-numeric.ts) but it is not merged into this
+  // branch yet — this inline check is a placeholder to migrate to that helper once it lands, not a
+  // second permanent implementation.
+  const maxRunDurationMs = fileConfig.maxRunDurationMs;
+  if (maxRunDurationMs !== undefined && (!Number.isInteger(maxRunDurationMs) || maxRunDurationMs <= 0)) {
+    throw new Error(`rwe.config.json: invalid maxRunDurationMs — must be a positive integer (got ${JSON.stringify(maxRunDurationMs)}). Refusing to start (ADR-028 fail-closed).`);
+  }
   const explicitWorkRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
   // D-V3M-5 (REQ-021): fail-closed if the configured workRoot is inside a Claude Code project — a
   // nested run workspace makes the SDK-gateway agent CLI load that project's CLAUDE.md/auto-memory
@@ -539,6 +549,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     maxTimeoutMs: fileConfig.maxTimeoutMs,
     maxAppendPromptBytes: fileConfig.maxAppendPromptBytes,
     maxEffort: fileConfig.maxEffort,
+    // F-1: validated above (ADR-028 fail-closed) — forwarded verbatim, same wiring convention as
+    // the three ceilings above.
+    maxRunDurationMs,
     // v22 (ARCH-071, ADR-014, TASK-107): same composeConfig wiring convention as the three
     // ceilings above — goes into the existing WorkflowCatalogOpts.ceilings object (no new plumbing).
     maxWorkflowVersions: fileConfig.maxWorkflowVersions,

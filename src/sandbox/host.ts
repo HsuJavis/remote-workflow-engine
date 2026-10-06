@@ -30,12 +30,41 @@ const SANDBOX_CHILD_ENV: NodeJS.ProcessEnv = {};
 // agent work; the sandbox child itself never spawns anything).
 const SANDBOX_SRC_DIR = realpathSync(dirname(dirname(CHILD_ENTRY)));
 
+// F-1 (sandbox robustness sweep): caps the sandbox child's own V8 heap. A memory-growth loop in a
+// script (e.g. an unbounded array/string accumulation across many agent() calls) now surfaces as a
+// coded SCRIPT_OOM (see `run()`'s `exit` handler below) instead of the OS eventually OOM-killing the
+// process with no diagnosis, or — worse — degrading the whole host under memory pressure. 512 MiB is
+// generous for a workflow script's own bookkeeping (it never holds model output itself: that streams
+// back over IPC into the run's own journal/store, not into the script's variables) while still
+// bounding the worst case. NOT currently configurable, by choice: making it config-driven would turn
+// `SANDBOX_CHILD_EXEC_ARGV` from a constant into a per-run-computed array, which breaks the "exact
+// array fork() receives" invariant `sandbox-host-env-scrub.test.ts` pins — revisit with a real
+// operator need, not speculatively.
+export const SANDBOX_CHILD_MAX_OLD_SPACE_MB = 512;
+
 export const SANDBOX_CHILD_EXEC_ARGV: readonly string[] = [
   '--experimental-transform-types',
   '--disable-warning=ExperimentalWarning',
   '--permission',
   `--allow-fs-read=${SANDBOX_SRC_DIR}/*`,
+  `--max-old-space-size=${SANDBOX_CHILD_MAX_OLD_SPACE_MB}`,
 ];
+
+// F-1: generous default for `SandboxHostConfig.maxRunDurationMs` — a run's script lifetime spans
+// EVERY agent()/workflow() round trip across every phase (bounded per-call by `maxTimeoutMs`,
+// default 600_000ms), not a single call, so the run-wide deadline must be much larger. 4 hours
+// comfortably covers a long multi-phase workflow while still catching a genuine infinite loop
+// (`while(true){}`, which blocks the child's own event loop and so can never be caught from inside
+// it) or an abandoned/hung run instead of holding its concurrency slot forever.
+export const DEFAULT_MAX_RUN_DURATION_MS = 4 * 60 * 60 * 1000;
+
+// F-1: the V8 fingerprint printed to stderr when a child is terminated for exceeding its own heap
+// limit (`--max-old-space-size`) — a FATAL ERROR that aborts the process (Node has no catchable JS
+// exception for this; it is not a normal uncaught exception). Matched against the RAW stderr tail
+// (never the sanitized one — the OOM branch below never surfaces ANY of the raw text to the caller,
+// sanitized or not, since it is V8's own internal crash dump: heap statistics, absolute source
+// paths, the Node version).
+const V8_OOM_FINGERPRINT_RE = /FATAL ERROR:.*heap|JavaScript heap out of memory/i;
 
 export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
@@ -120,6 +149,14 @@ export interface SandboxHostConfig {
    *  read would stamp the LATER phase, not the one the agent() call was actually issued under.
    *  Absent -> no phase snapshot travels with this call (dry-run seam / no phase tracking wired). */
   currentPhase?: () => { title: string; index: number } | undefined;
+  /** F-1 (sandbox robustness sweep): wall-clock deadline for ONE `run()` execution — covers the
+   *  WHOLE script lifetime, including every awaited agent()/workflow() round trip, not just CPU
+   *  time: a synchronous `while(true){}` blocks the child's own event loop, so only a HOST-side
+   *  timer (running in a separate OS process) can ever terminate it. Defaults to
+   *  `DEFAULT_MAX_RUN_DURATION_MS`. Suspend/resume are unaffected: `resume()` installs a brand-new
+   *  `SandboxHost`/`run()` call (run-manager.ts's own issue #53 note on `entry.sandbox` identity), so
+   *  each LIVE execution gets its own fresh deadline — time spent suspended never counts against it. */
+  maxRunDurationMs?: number;
 }
 
 const DEFAULT_AGENT_RESPONSE = 'stub-response';
@@ -152,9 +189,14 @@ export class SandboxHost {
     const wireBudget = this._config.budget !== undefined ? this._config.budget : budget === null ? null : { usd: null, tokens: budget };
     return new Promise((resolve) => {
       let settled = false;
+      // F-1: cleared inside `settle` itself (every settle path — done/error/exit/spawn-error, AND
+      // the deadline firing on itself below) so exactly one of "the run finished" / "the deadline
+      // fired" ever wins, and a run that finishes normally never leaves a live timer behind.
+      let deadlineTimer: NodeJS.Timeout | undefined;
       const settle = (outcome: RunOutcome) => {
         if (settled) return;
         settled = true;
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
         this._active.delete(runId);
         resolve(outcome);
       };
@@ -175,6 +217,26 @@ export class SandboxHost {
         env: SANDBOX_CHILD_ENV,
       });
       this._active.set(runId, { child, settle });
+
+      // F-1: the wall-clock deadline for this ONE execution. Started here (not after 'ready') so a
+      // child that never even boots (a corrupt install, a missing CHILD_ENTRY file) is also bounded,
+      // not just a child that boots and then hangs. Fires in the HOST process, never the child's own
+      // event loop — the only thing that can terminate a synchronous `while(true){}`, which blocks
+      // the child's event loop and so can never notice its own deadline from the inside.
+      const deadlineMs = this._config.maxRunDurationMs ?? DEFAULT_MAX_RUN_DURATION_MS;
+      deadlineTimer = setTimeout(() => {
+        settle({
+          error: {
+            code: 'SCRIPT_TIMEOUT',
+            message: `the script did not complete within its ${deadlineMs}ms run-duration deadline (maxRunDurationMs) and was terminated`,
+          },
+        });
+        child.kill('SIGKILL');
+      }, deadlineMs);
+      // Node-only API (no-op under some non-Node runtimes' timer shims) — don't hold this process's
+      // event loop open for a potentially multi-hour timer when every OTHER reason to stay alive
+      // (the HTTP listener, other in-flight runs) has already gone away.
+      deadlineTimer.unref?.();
 
       // Capture the child's stderr so an uncaught crash (an exception/rejection that exits the
       // process before it can send 'done'/'error') is not lost — its tail is surfaced in the
@@ -244,10 +306,21 @@ export class SandboxHost {
       });
 
       child.on('exit', (code, signal) => {
+        const rawTail = stderrTail.trim();
+        // F-1: a V8 heap-limit abort is NOT an ordinary crash — it is a FATAL ERROR that aborts the
+        // process outright (no catchable JS exception), so it always reaches this branch, never
+        // guards.ts's own classification. Checked against the RAW tail (sanitizeStderrTail never even
+        // runs for this branch): V8's own crash dump (heap statistics, absolute source paths, the
+        // Node version) must never cross the trust boundary, sanitized or not — the code alone is the
+        // caller-visible signal, with a clean, fixed message.
+        if (V8_OOM_FINGERPRINT_RE.test(rawTail)) {
+          settle({ error: { code: 'SCRIPT_OOM', message: 'the sandboxed script exhausted its memory limit and was terminated' } });
+          return;
+        }
         // A killed/crashed child that never sent done/error (e.g. aborted mid-script). Include the
         // exit code/signal and the tail of the child's own stderr so a real crash (uncaught error,
-        // OOM, determinism-guard throw) is diagnosable instead of opaque.
-        const detail = sanitizeStderrTail(stderrTail.trim());
+        // determinism-guard throw) is diagnosable instead of opaque.
+        const detail = sanitizeStderrTail(rawTail);
         settle({
           error: {
             code: 'ABORTED',

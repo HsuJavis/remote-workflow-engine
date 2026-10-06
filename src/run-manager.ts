@@ -173,6 +173,14 @@ export interface RunManagerDeps {
    *  unconditionally). `{live:true, workflows}` = live; `workflows` present+non-empty is the
    *  allowlist a requested name must be in. */
   serviceAccountStatus?: (principal: string) => { live: boolean; workflows?: string[] } | undefined;
+  /** F-1 (sandbox robustness sweep): forwarded verbatim onto every `SandboxHost` this manager
+   *  constructs (top-level — `_newSandbox` — and every nested `workflow()` frame's own host) as
+   *  `SandboxHostConfig.maxRunDurationMs`. Deliberately NOT part of `ceilings`/`Ceilings` above:
+   *  those bound the USER-override rung (a caller/author-settable per-call value); this is a
+   *  host-side ENGINE limit no script or caller can see or raise. Validated a positive integer at
+   *  construction (same convention as `maxWorkflowDepth` etc. via `_positiveInt`); absent ->
+   *  `DEFAULT_MAX_RUN_DURATION_MS` (host.ts's own default). */
+  maxRunDurationMs?: number;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -633,6 +641,10 @@ export class RunManager {
   private readonly _diskFloor: { assert(): void } | undefined;
   private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
   private readonly _serviceAccountStatus: ((principal: string) => { live: boolean; workflows?: string[] } | undefined) | undefined;
+  /** F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc. `undefined` (not defaulted here) ->
+   *  every `SandboxHost` constructed below applies ITS OWN default — one definition of the default
+   *  (host.ts's `DEFAULT_MAX_RUN_DURATION_MS`), never two that could drift. */
+  private readonly _maxRunDurationMs: number | undefined;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
   private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
   private readonly _runs = new Map<string, RunEntry>();
@@ -696,6 +708,14 @@ export class RunManager {
     this._diskFloor = deps.diskFloor;
     this._probeLookup = deps.probeLookup;
     this._serviceAccountStatus = deps.serviceAccountStatus;
+    // F-1: validated here (construction-time, config-load check — same convention as every
+    // `_positiveInt` field above) but NOT defaulted here — `undefined` is forwarded as-is to every
+    // `SandboxHost` constructed below, which applies ITS OWN default (host.ts's own single
+    // `DEFAULT_MAX_RUN_DURATION_MS`, never a second copy of the same default value in this file).
+    if (deps.maxRunDurationMs !== undefined && (!Number.isInteger(deps.maxRunDurationMs) || deps.maxRunDurationMs < 1)) {
+      throw new Error(`maxRunDurationMs must be a positive integer, got ${deps.maxRunDurationMs}`);
+    }
+    this._maxRunDurationMs = deps.maxRunDurationMs;
   }
 
   /** Service accounts spec send-back D1: the ONE admission check shared by start(), resume(), and
@@ -1988,6 +2008,9 @@ export class RunManager {
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
       onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
       currentPhase: () => this._currentPhaseFor(runId),
+      // F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc — `undefined` forwards to host.ts's own
+      // default, never a second copy of that default value here.
+      maxRunDurationMs: this._maxRunDurationMs,
     });
   }
 
@@ -2338,6 +2361,14 @@ export class RunManager {
       // v26 (DES-175, REQ-124): this frame's OWN phase() call lands on its sub-card, not the parent
       // timeline — zero warnings on a legal parent script, per DES-176's own boundary.
       onPhase: (title) => { node.phases!.push(title); },
+      // F-1: the SAME deadline the top-level host got (`_newSandbox`) — a decision, not an
+      // oversight: a nested workflow() that times out surfaces to the PARENT script as a catchable
+      // `SCRIPT_TIMEOUT` (same path as any other delegate failure, `makeWorkflow` in guards.ts),
+      // which is consistent with every other nested-frame limit in this file being inherited from
+      // the parent run rather than reset per frame (the shared budget above, the shared
+      // maxWorkflowDescendants cap). A parent could still exceed ITS OWN deadline waiting on a
+      // nested frame that is individually within bounds — no narrower, per-frame deadline exists.
+      maxRunDurationMs: this._maxRunDurationMs,
     });
     // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
     // above, which wins (see `SandboxHost.run`'s own doc).

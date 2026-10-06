@@ -862,7 +862,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'which crosses the same boundary) must be JSON-serializable — no circular references, no ' +
         "BigInt — and under 10MB serialized; either violation is refused "
         + '(`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a ' +
-        'summary or a reference (an id, a CAS blob hash) instead of a large payload.',
+        'summary or a reference (an id, a CAS blob hash) instead of a large payload. The SAME two ' +
+        "codes reject an agent()/workflow() call whose OWN arguments aren't JSON-serializable — that " +
+        "failure is local to the one call your script made and is catchable with a normal " +
+        'try/catch, not run-terminating.\n\n' +
+        'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
+        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, a generous multi-hour default " +
+        "covering every agent()/workflow() round trip across every phase — not a single call, which " +
+        "`timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either " +
+        'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
+        'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
+        "which blocks the script's own event loop and so cannot be caught or reported from inside " +
+        'the script itself.',
     ),
   );
 

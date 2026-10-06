@@ -396,3 +396,39 @@ describe('F-2: a non-stringifiable thrown value is still classified as a clean S
     expect(r.error!.message).not.toMatch(/guards\.ts/);
   });
 });
+
+// g2 minor item 4 follow-up (#157 B1 realm safety): `phase()` can now THROW (a non-serializable
+// title rejects that one call — child-entry.ts) where it never could before. `makeAgent`/
+// `makeWorkflow` already re-realm a delegate's thrown error via `sanitizeThrownError` before it
+// reaches the script; `phaseFn` must do the SAME — an embedding-realm Error reaching the script
+// unsanitized is exactly the `<err>.constructor.constructor(...)` escape #157 B1 closed everywhere
+// else a value crosses this boundary.
+describe('g2 item 4 follow-up: a phase() delegate throw is re-realmed, not an embedding-realm leak (#157 B1)', () => {
+  it('an error thrown by the phase() delegate is native to the SCRIPT\'s own realm, not the embedding one', async () => {
+    const api: SandboxApi = {
+      ...FAKE_API,
+      phase: () => {
+        throw Object.assign(new Error('a value sent to the parent is not JSON-serializable: boom'), { name: 'RESULT_NOT_SERIALIZABLE', code: 'RESULT_NOT_SERIALIZABLE' });
+      },
+    };
+    const r = await evaluateScript(
+      `
+      try {
+        phase('x');
+        return { caught: false };
+      } catch (e) {
+        return { caught: true, code: e.code, isError: e instanceof Error };
+      }
+      `,
+      api,
+    );
+    expect(r.kind).toBe('done');
+    const value = r.value as { caught: boolean; code?: string; isError?: boolean };
+    expect(value.caught).toBe(true);
+    expect(value.code).toBe('RESULT_NOT_SERIALIZABLE');
+    // `instanceof Error` only holds here if the thrown object is native to the SCRIPT's own vm
+    // context (its own global `Error`), not a value from a different realm forwarded unsanitized
+    // (same realm-correctness check IT-140's own "REALM-CORRECT since #157 B1" case uses).
+    expect(value.isError).toBe(true);
+  });
+});

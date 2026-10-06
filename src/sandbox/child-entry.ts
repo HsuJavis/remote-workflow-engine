@@ -224,7 +224,14 @@ async function main(msg: StartMsg): Promise<void> {
       return result;
     },
     phase(title: string): void {
-      send({ t: 'phase', runId: msg.runId, title });
+      // g2 minor item 4: `phase()` is synchronous (void), not awaited — a non-serializable `title`
+      // (typed `string` at compile time only; a script can hand it anything at runtime) rejects
+      // THIS call synchronously, same non-terminal handling as agent()/workflow() above, never the
+      // run-terminating send().
+      const sent = trySend({ t: 'phase', runId: msg.runId, title });
+      if (sent !== true) {
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
     },
   };
 
