@@ -167,6 +167,12 @@ export const ERROR_CATALOG = {
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
   PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
+  // issue #162 item C: an agent()'s `schema` option is not a valid JSON Schema (e.g. a string, or
+  // any shape Ajv itself rejects at compile time, such as `schema must be object or boolean`) — a
+  // refused, terminal, RECORDED dispatch (same pre-dispatch-guard shape as PARAM_OUT_OF_RANGE/
+  // PARAM_UNKNOWN just above/below in agent-executor.ts), never an uncaught engine-side crash that
+  // leaves the agent's transcript record stuck at `running` forever.
+  INVALID_SCHEMA: { see: 'workflow_authoring_guide', hint: "an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error" },
   // issue #89 item 1: rendered from LOCKED_KEYS itself — never re-typed — so this hint cannot
   // drift from the constant the validator actually enforces (it had: six names here, omitting
   // `bash`, against LOCKED_KEYS's real seven).

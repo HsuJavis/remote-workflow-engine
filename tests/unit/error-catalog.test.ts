@@ -100,4 +100,12 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
     expect(Object.keys(ERROR_CATALOG)).toContain('ITEM_CAP_EXCEEDED');
     expect(toErrorCode('ITEM_CAP_EXCEEDED')).toBe('ITEM_CAP_EXCEEDED');
   });
+
+  // issue #162 item C: a non-object schema crashed ajv.compile uncaught; agent-executor.ts now
+  // catches it and throws a catalogued INVALID_SCHEMA — pinned here at the unit level, same as the
+  // other two gap-closing cases above.
+  it('[#162 C] INVALID_SCHEMA is a real catalog member, see: workflow_authoring_guide', () => {
+    expect(Object.keys(ERROR_CATALOG)).toContain('INVALID_SCHEMA');
+    expect(ERROR_CATALOG.INVALID_SCHEMA.see).toBe('workflow_authoring_guide');
+  });
 });

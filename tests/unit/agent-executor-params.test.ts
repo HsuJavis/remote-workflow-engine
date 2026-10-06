@@ -171,4 +171,34 @@ describe('AgentExecutor + RunParams — required dispatch wiring (UT-100, DES-10
     // through workflow_status/run_agent_log rather than a bare unswallowable throw inside parallel().
     expect(appendSpy).toHaveBeenCalled();
   });
+
+  // issue #162 item C: a non-object/non-boolean `schema` (e.g. a bare string) makes `ajv.compile`
+  // throw SYNCHRONOUSLY ("schema must be object or boolean"). Before the fix that throw propagated
+  // uncaught out of `_runTracked` — AFTER run-manager.ts had already marked this agentId 'running'
+  // — leaving an orphan transcript record stuck at `running` forever (no terminal capture, no
+  // catalog code). Same "record then throw" shape as the effort/agentType guards above. Red reason:
+  // today `ajv.compile` throws a bare Ajv `Error` with no `.code` at all, uncaught, and
+  // `appendSpy`/`gw.invoke` assertions below fail because no capture ever runs.
+  it('a non-object schema (e.g. a string) crashes ajv.compile: record a terminal failure THEN throw INVALID_SCHEMA (never an uncaught crash / orphan running record)', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const appendSpy = vi.spyOn(store, 'appendTranscript');
+    const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
+    const executor = new AgentExecutor({ gateway: gw, store });
+    const runParams: RunParams = { provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' } };
+
+    await expect(
+      executor.run({
+        runId: 'r-6', agentId: 'a-6', prompt: 'hi',
+        opts: { schema: 'not-a-schema' as unknown as object },
+        workspace: '/tmp/ws', signal: new AbortController().signal,
+        runParams,
+      } as Parameters<typeof executor.run>[0]),
+    ).rejects.toMatchObject({ code: 'INVALID_SCHEMA' });
+
+    // The gateway must never have been dispatched for a call that fails pre-dispatch validation.
+    expect(gw.invoke).not.toHaveBeenCalled();
+    // A terminal-failure record lands in the journal (never an untyped/absent record, never an
+    // orphan stuck at 'running').
+    expect(appendSpy).toHaveBeenCalled();
+  });
 });

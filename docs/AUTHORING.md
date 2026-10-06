@@ -284,6 +284,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `AGENT_DECLARED_NOT_IN_SCRIPT` — params.agents declares a label no agent() call in the script uses
 - `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds
 - `PARAM_OUT_OF_RANGE` — a declared or overridden parameter value is outside its allowed range
+- `INVALID_SCHEMA` — an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error
 - `PARAM_LOCKED` — a caller override targets a key the author locked (prompt/allowedTools/bash/skills/mcp/workdir/cwd)
 - `PARAM_UNKNOWN` — a caller override names a parameter the contract does not declare
 - `UNKNOWN_AGENT_LABEL` — a caller override names an agent label the contract does not declare
