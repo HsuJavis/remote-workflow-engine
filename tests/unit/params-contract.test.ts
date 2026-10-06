@@ -1057,3 +1057,95 @@ describe('validateUserOverrides() — appendPrompt over-size message names the S
     }
   });
 });
+
+// issue #156 B1: admission has no hard floor on `timeoutMs` independent of the author's own `min`
+// — registration (validateOneAgentSpec) hardcodes "default must be an integer >= 1" but the
+// override door (validateOneAgentOverride) only enforces an author-declared min/max, so an agent
+// whose author left timeoutMs unbounded admits 0 / -1 / 1.5 as a stored "effective" timeoutMs. This
+// does not itself defeat the 600000 ceiling in production (gateway/client.ts's resolveTimeout maps
+// any t<=0 back to the gateway's own configured default) — it is an admission/observability
+// inconsistency: the stored snapshot lies about what the gateway will actually do.
+describe('validateUserOverrides() — timeoutMs has an engine-side integer>=1 floor even when the author declares no min (issue #156 B1)', () => {
+  const contract: ParamContract = { agents: { b: baseAgentSpec({ timeoutMs: { type: 'number', default: 5000 } }) }, args: {} };
+
+  it.each([0, -1, 1.5])('timeoutMs:%s is refused PARAM_OUT_OF_RANGE, not silently admitted', (bad) => {
+    const r = validateUserOverrides(contract, { agents: { b: { timeoutMs: bad } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+  });
+
+  it('timeoutMs:1 (the floor itself) is still accepted', () => {
+    const r = validateUserOverrides(contract, { agents: { b: { timeoutMs: 1 } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(true);
+  });
+
+  it('a non-number timeoutMs (e.g. "fast") still fails the generic type check, not the new floor check', () => {
+    const r = validateUserOverrides(contract, { agents: { b: { timeoutMs: 'fast' } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.detail['expectedType']).toBe('number');
+  });
+});
+
+// issue #156 B2 — INVESTIGATED, NOT A BUG, left unchanged: an agent that declares
+// `appendPrompt.default: ''` and receives no override resolves to appendPrompt:'' at dispatch, and
+// `composePrompt(script, '')` DOES frame it. The reporter's suggested fix ("only frame when
+// non-empty") is exactly what
+// tests/unit/params-resolve.test.ts's "golden 3: scriptPrompt + EMPTY-STRING appendPrompt → still
+// framed (empty is not absent)" already pins as INTENTIONAL (DES-225/UT-271, captured byte-for-byte
+// off the pre-cut function per Gate 5 constraint 1). Changing resolve.ts:183 to treat '' as absent
+// would turn that passing, deliberately-commented golden red — this is a prior, documented owner
+// decision, not an oversight, so it is NOT changed here (see return summary: classified
+// owner-decision, not fixed).
+
+// issue #156 DOC: a non-object `overrides.agents` value, or a non-object per-label override value,
+// used to be iterated with Object.entries/Object.keys as if it were a plain object — a string is
+// iterated character-by-character and an array by numeric index — producing a confusing
+// PARAM_UNKNOWN/UNKNOWN_AGENT_LABEL naming a literal `"0"` instead of a shape refusal.
+describe('validateUserOverrides() — a non-object override shape is refused with a shape error, never iterated char/index-wise (issue #156 DOC)', () => {
+  const contract: ParamContract = { agents: { a: baseAgentSpec() }, args: {} };
+
+  it('overrides.agents.a = "medium" (a string) is refused PARAM_CONTRACT_INVALID, not PARAM_UNKNOWN "0"', () => {
+    const r = validateUserOverrides(contract, { agents: { a: 'medium' } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+      expect(r.detail['param']).not.toBe('0');
+    }
+  });
+
+  it('overrides.agents = ["a"] (an array) is refused PARAM_CONTRACT_INVALID, not UNKNOWN_AGENT_LABEL "0"', () => {
+    const r = validateUserOverrides(contract, { agents: ['a'] }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('overrides.agents = "x" (a bare string) is refused PARAM_CONTRACT_INVALID', () => {
+    const r = validateUserOverrides(contract, { agents: 'x' }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('a legitimate object-shaped override for a declared agent is unaffected by the new shape guard', () => {
+    const r = validateUserOverrides(contract, { agents: { a: { effort: 'low' } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(true);
+  });
+});
+
+// issue #156 DOC: PARAM_LOCKED/PARAM_UNKNOWN's detail.tunable always listed all 4 TUNABLE_KEYS even
+// for an agent that never declared appendPrompt, advertising a knob the agent cannot actually take.
+describe('validateUserOverrides() — detail.tunable lists only the keys THIS agent actually declares (issue #156 DOC)', () => {
+  it('an agent with no declared appendPrompt gets a 3-key tunable list, not the full 4', () => {
+    const contract: ParamContract = { agents: { b: baseAgentSpec() }, args: {} }; // no appendPrompt
+    const r = validateUserOverrides(contract, { agents: { b: { prompt: 'x' } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.detail['tunable']).toEqual(['model', 'effort', 'timeoutMs']);
+  });
+
+  it('an agent that DOES declare appendPrompt still gets all 4 (regression pin)', () => {
+    const contract: ParamContract = { agents: { b: baseAgentSpec({ appendPrompt: { type: 'string', default: '' } }) }, args: {} };
+    const r = validateUserOverrides(contract, { agents: { b: { prompt: 'x' } } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.detail['tunable']).toEqual(['model', 'effort', 'timeoutMs', 'appendPrompt']);
+  });
+});
+

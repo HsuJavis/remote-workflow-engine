@@ -553,13 +553,33 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
 /** The rejection table over ONE agent's overrides — reused per label by `validateUserOverrides`.
  *  `spec` is already the EFFECTIVE (author ∩ ceiling) bound for this agent (via
  *  `effectiveAgentBounds`). */
+/** issue #156/#161 DOC: a non-object value (a string, array, or null) passed where this module
+ *  expects a plain `{key: value}` map — guarded BEFORE any `Object.entries`/`Object.keys` call over
+ *  it, because JS iterates a string character-by-character and an array by numeric index, producing
+ *  a confusing `"0"`-keyed refusal instead of a shape error. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 function validateOneAgentOverride(
   label: string,
   eff: AgentParamSpec,
-  raw: Record<string, unknown>,
+  raw: unknown,
   catalog: ModelCatalogSnapshot,
   warn: (w: ModelRefWarning) => void,
 ): { ok: true; value: Record<string, unknown> } | Err {
+  if (!isPlainObject(raw)) {
+    return invalid(
+      `agents.${label}`,
+      `agent override must be an object mapping tunable key to value, not ${Array.isArray(raw) ? 'an array' : typeof raw}`,
+    );
+  }
+  // issue #156 DOC: a locked/unknown-key refusal's `detail.tunable` must list only the keys THIS
+  // agent actually declared — advertising e.g. `appendPrompt` to an agent that never declared it
+  // tells the caller a knob exists that `PARAM_UNKNOWN` will immediately refuse.
+  const declaredTunable = (TUNABLE_KEYS as readonly string[]).filter(
+    (k) => (eff as unknown as Record<string, unknown>)[k] !== undefined,
+  );
   const value: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(raw)) {
     if ((LOCKED_KEYS as readonly string[]).includes(key)) {
@@ -567,7 +587,7 @@ function validateOneAgentOverride(
         ok: false,
         code: 'PARAM_LOCKED',
         message: `"${key}" is a locked parameter and cannot be overridden`,
-        detail: { param: key, agent: label, tunable: [...TUNABLE_KEYS] },
+        detail: { param: key, agent: label, tunable: declaredTunable },
       };
     }
     if (!(TUNABLE_KEYS as readonly string[]).includes(key)) {
@@ -575,7 +595,7 @@ function validateOneAgentOverride(
         ok: false,
         code: 'PARAM_UNKNOWN',
         message: `"${key}" is not a recognized override`,
-        detail: { param: key, agent: label, tunable: [...TUNABLE_KEYS] },
+        detail: { param: key, agent: label, tunable: declaredTunable },
       };
     }
 
@@ -586,6 +606,22 @@ function validateOneAgentOverride(
         code: 'PARAM_UNKNOWN',
         message: `agent "${label}" does not declare "${key}"`,
         detail: { param: key, agent: label },
+      };
+    }
+
+    // issue #156 B1: timeoutMs needs a hard engine-side floor (integer >= 1) independent of the
+    // author's own min — unlike REGISTRATION (validateOneAgentSpec above, "default must be an
+    // integer >= 1"), this OVERRIDE door only ever enforced an author-declared min/max, so an agent
+    // whose author left timeoutMs unbounded admitted 0 / -1 / 1.5 into the stored "effective"
+    // snapshot. Checked before the generic spec check (which has no opinion on integrality) and
+    // only when `val` is actually a number (a wrong-type value like "fast" still gets the generic
+    // PARAM_OUT_OF_RANGE "wrong type" message below, unchanged).
+    if (key === 'timeoutMs' && typeof val === 'number' && (!Number.isInteger(val) || val < 1)) {
+      return {
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: 'timeoutMs must be an integer >= 1',
+        detail: { param: 'timeoutMs', agent: label, supplied: val },
       };
     }
 
@@ -699,6 +735,15 @@ export function validateUserOverrides(
     };
   }
   const agentsIn = obj.agents ?? {};
+  // issue #156 DOC: `overrides.agents` itself must be a plain object — a string or array used to be
+  // iterated char/index-wise by the `Object.entries` loop below, producing a confusing numeric-
+  // looking label (`"0"`) instead of a shape refusal.
+  if (!isPlainObject(agentsIn)) {
+    return invalid(
+      'agents',
+      `overrides.agents must be an object mapping agent label to its override fields, not ${Array.isArray(agentsIn) ? 'an array' : typeof agentsIn}`,
+    );
+  }
   const known = Object.keys(c.agents);
   const resultAgents: Record<string, Record<string, unknown>> = {};
   const warnings: ModelRefWarning[] = [];
