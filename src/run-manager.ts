@@ -2340,6 +2340,13 @@ export class RunManager {
     const releaseWorkflowSlot = await entry.workflowGuard.acquireSlot();
     let outcome: Awaited<ReturnType<SandboxHost['run']>>;
     try {
+      // Re-check here, AFTER the (possibly long) queue wait above: the once-listener registered
+      // before that wait (`killNested`) may already have fired and been consumed — against a
+      // SandboxHost that had forked no child yet, a no-op (see `SandboxHost.abort()`) — while this
+      // frame sat queued. With no recheck, acquiring the slot post-abort would still fork a real
+      // child and run it to completion with no listener left to kill it, reintroducing issue #53's
+      // "stop() doesn't kill nested children" bug for exactly this queued-at-abort-time case.
+      if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
       outcome = await nested.run(`${runId}-nested`, registered.script, childArgs, null);
     } finally {
       generation.removeEventListener('abort', killNested);
