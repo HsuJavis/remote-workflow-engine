@@ -66,6 +66,13 @@ let spentSoFar: Spend = ZERO_SPEND;
 // parent has to buffer.
 const MAX_RESULT_BYTES = 10 * 1024 * 1024;
 
+// g2 minor (sandbox robustness sweep, item 4): `send()` is now the RUN-TERMINATING path only —
+// 'ready'/'phase' (small literals, never unserializable in practice) and the run's own final
+// 'done'/'error' (child-entry.ts's `main()` already pre-checks 'done' with JSON.stringify; 'error'
+// envelopes are small catalogued literals this process built itself). `trySend` below is the one
+// non-terminating path: an agent()/workflow() call REQUEST, whose opts/args are script-authored
+// values that can carry the same shape (a circular reference, a BigInt) — for THAT case the failure
+// must reject the one call, not end the run (see `trySend`'s own doc).
 function send(msg: unknown): void {
   try {
     process.send?.(msg);
@@ -79,22 +86,38 @@ function send(msg: unknown): void {
     // this child process, which Node's default handling can turn into a crash, printing that raw
     // stack to stderr; `host.ts`'s `stderrTail` then spliced it verbatim into the caller-visible
     // ABORTED message (a trust-boundary leak — see host.ts's `sanitizeStderrTail` for the second,
-    // defense-in-depth layer of this same fix). This generic catch covers EVERY outbound message
-    // (not just the script's own 'done' result) — an agent()/workflow() call's own opts/args are
-    // also script-authored values that could carry the same shape. Falls back to a SANITIZED,
-    // catalogued error carrying no stack/internal path; a second `process.send` failure (the
-    // sanitized object is a small plain literal and should never itself be unserializable) is
-    // swallowed — there is genuinely nothing more this process can do, and it still exits below.
+    // defense-in-depth layer of this same fix). Falls back to a SANITIZED, catalogued error carrying
+    // no stack/internal path; a second `process.send` failure (the sanitized object is a small plain
+    // literal and should never itself be unserializable) is swallowed — there is genuinely nothing
+    // more this process can do, and it still exits below.
     const runId = (msg as { runId?: unknown } | null)?.runId;
     try {
       process.send?.({
         t: 'error',
         runId,
-        error: { code: 'RESULT_NOT_SERIALIZABLE', message: `a value sent to the parent is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}` },
+        error: { code: 'RESULT_NOT_SERIALIZABLE', message: `a value sent to the parent is not JSON-serializable: ${safeMessage(e)}` },
       });
     } catch {
       /* already sanitized; nothing more to do */
     }
+  }
+}
+
+/** g2 minor item 4: a NON-terminal outbound message — today, only an agent()/workflow() call
+ *  REQUEST — whose payload fails Node's IPC 'json' serialization. Before this fix, `send()`'s single
+ *  generic catch treated this identically to a failure sending the run's own final result: it ended
+ *  the WHOLE RUN with `RESULT_NOT_SERIALIZABLE`, even though the actual defect is entirely local to
+ *  the script's own `agent()`/`workflow()` call (a circular or BigInt value the script itself built
+ *  and handed to one call) and is exactly the kind of recoverable, catalogued failure a script's own
+ *  `try/catch` is supposed to be able to handle (same precedent as a BUDGET_EXCEEDED refusal,
+ *  IT-140). Returns `true` on success, or the coded failure to reject that one call with — never
+ *  sends the run-terminating fallback and never touches `process.exit`. */
+function trySend(msg: unknown): true | { code: string; message: string } {
+  try {
+    process.send?.(msg);
+    return true;
+  } catch (e) {
+    return { code: 'RESULT_NOT_SERIALIZABLE', message: `the value passed to this call is not JSON-serializable: ${safeMessage(e)}` };
   }
 }
 
@@ -175,7 +198,15 @@ async function main(msg: StartMsg): Promise<void> {
     async agent(prompt: string, opts?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingAgent.set(callSeq, { resolve, reject }));
-      send({ t: 'agent', runId: msg.runId, callSeq, prompt, opts: opts ?? {} });
+      // g2 minor item 4: a non-serializable `opts` (circular reference, BigInt) rejects THIS call —
+      // the pending entry is removed (nothing will ever resolve/reject it over IPC) and the error is
+      // thrown synchronously, which an `async` function turns into a rejected `result` for the
+      // caller's own try/catch — never a run-terminating message.
+      const sent = trySend({ t: 'agent', runId: msg.runId, callSeq, prompt, opts: opts ?? {} });
+      if (sent !== true) {
+        pendingAgent.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
       return result;
     },
     args: msg.args,
@@ -183,7 +214,13 @@ async function main(msg: StartMsg): Promise<void> {
     async workflow(nameOrRef: unknown, wfArgs?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingWorkflow.set(callSeq, { resolve, reject }));
-      send({ t: 'workflow', runId: msg.runId, callSeq, ref: nameOrRef, args: wfArgs });
+      // g2 minor item 4: same non-terminal handling as agent() above — a non-serializable `wfArgs`
+      // rejects THIS workflow() call only.
+      const sent = trySend({ t: 'workflow', runId: msg.runId, callSeq, ref: nameOrRef, args: wfArgs });
+      if (sent !== true) {
+        pendingWorkflow.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
       return result;
     },
     phase(title: string): void {

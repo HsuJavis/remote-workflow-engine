@@ -43,3 +43,68 @@ describe('issue #162 A/B — sandbox child result serialization boundary', () =>
     expect(r.result).toEqual({ a: 1, b: 'x' });
   });
 });
+
+// g2 minor (sandbox robustness sweep, item 4): child-entry.ts's generic `send()` catch used to treat
+// ANY outbound message that fails to serialize as run-terminating — including an agent()/workflow()
+// REQUEST (not the run's own final 'done'/'error'), whose `opts`/`args` are themselves script-
+// authored values that can carry a circular reference or a BigInt. That is a bug IN THE SCRIPT the
+// script itself should be able to catch and recover from (exactly like a BUDGET_EXCEEDED refusal,
+// IT-140) — not a reason to end the whole run. Only the final 'done' result (covered by the suite
+// above, via child-entry.ts's own JSON.stringify pre-check) keeps the run-terminating behaviour.
+//
+// Mock policy: same as the suite above — a real forked child, real guards.ts VM evaluation. No
+// onAgentRequest/onWorkflowRequest handler is needed: serialization fails inside the CHILD before
+// the IPC message is ever sent, so the host-side handler is never reached.
+describe('g2 minor item 4 — a non-serializable agent()/workflow() call argument is catchable in the script', () => {
+  it('a circular `opts` passed to agent() rejects THAT call with RESULT_NOT_SERIALIZABLE — the run still completes', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const script = `
+      const o = {};
+      o.self = o;
+      try {
+        await agent('x', { circular: o });
+        return { caught: false };
+      } catch (e) {
+        return { caught: true, code: e.code, name: e.name, isError: e instanceof Error };
+      }
+    `;
+    const r = await host.run('run-circular-agent-opts', script, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+    expect(r.result).toEqual({ caught: true, code: 'RESULT_NOT_SERIALIZABLE', name: 'RESULT_NOT_SERIALIZABLE', isError: true });
+  });
+
+  it('a circular `args` passed to workflow() rejects THAT call with RESULT_NOT_SERIALIZABLE — the run still completes', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR, onWorkflowRequest: async () => 'unreachable' });
+    const script = `
+      const o = {};
+      o.self = o;
+      try {
+        await workflow('child', { circular: o });
+        return { caught: false };
+      } catch (e) {
+        return { caught: true, code: e.code, name: e.name, isError: e instanceof Error };
+      }
+    `;
+    const r = await host.run('run-circular-workflow-args', script, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+    expect(r.result).toEqual({ caught: true, code: 'RESULT_NOT_SERIALIZABLE', name: 'RESULT_NOT_SERIALIZABLE', isError: true });
+  });
+
+  it('a BigInt inside `opts` passed to agent() is equally catchable (not just circular references)', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const script = `
+      try {
+        await agent('x', { huge: 1n });
+        return { caught: false };
+      } catch (e) {
+        return { caught: true, code: e.code };
+      }
+    `;
+    const r = await host.run('run-bigint-agent-opts', script, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+    expect(r.result).toEqual({ caught: true, code: 'RESULT_NOT_SERIALIZABLE' });
+  });
+});
