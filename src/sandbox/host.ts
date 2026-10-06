@@ -243,8 +243,25 @@ export class SandboxHost {
       // ABORTED message below instead of an opaque "terminated before completion". (Previously the
       // pipe had no reader, so every sandbox-child crash reason was discarded.)
       let stderrTail = '';
+      // F-1 (real-check finding): a REAL V8 heap-limit abort prints `<-- Last few GCs -->`, THEN
+      // `<-- JS stacktrace -->`, THEN the `FATAL ERROR: ...` line, THEN 10-20 native frames each
+      // naming the engine's own install path (`N: 0x... node::Abort() [<long path>]`) — measured at
+      // ~2.5KB total. `stderrTail`'s 2000-char windowed trim (needed to bound what an ordinary crash
+      // surfaces in the ABORTED message) can push the FATAL ERROR line itself out of the window
+      // before `exit` fires, which would misclassify a real OOM as a generic ABORTED. Detected
+      // independently, as each chunk arrives, against a SEPARATE small untrimmed buffer (never fed
+      // into the caller-visible `stderrTail`/ABORTED path) — `sawOomFingerprint` is sticky (sets
+      // once, never clears) so a later chunk evicting the fingerprint from `oomCarry` can't un-detect
+      // it; `oomCarry` itself keeps only the last 200 chars of raw stream (prepended to each new
+      // chunk before testing) so a fingerprint split exactly across two `'data'` events is still
+      // matched, without accumulating the whole crash dump a second time.
+      let sawOomFingerprint = false;
+      let oomCarry = '';
       child.stderr?.on('data', (d: Buffer) => {
-        stderrTail = (stderrTail + d.toString()).slice(-2000);
+        const text = d.toString();
+        stderrTail = (stderrTail + text).slice(-2000);
+        if (!sawOomFingerprint && V8_OOM_FINGERPRINT_RE.test(oomCarry + text)) sawOomFingerprint = true;
+        oomCarry = (oomCarry + text).slice(-200);
       });
 
       child.on('message', (msg: any) => {
@@ -309,11 +326,14 @@ export class SandboxHost {
         const rawTail = stderrTail.trim();
         // F-1: a V8 heap-limit abort is NOT an ordinary crash — it is a FATAL ERROR that aborts the
         // process outright (no catchable JS exception), so it always reaches this branch, never
-        // guards.ts's own classification. Checked against the RAW tail (sanitizeStderrTail never even
-        // runs for this branch): V8's own crash dump (heap statistics, absolute source paths, the
-        // Node version) must never cross the trust boundary, sanitized or not — the code alone is the
-        // caller-visible signal, with a clean, fixed message.
-        if (V8_OOM_FINGERPRINT_RE.test(rawTail)) {
+        // guards.ts's own classification. Checked via the STICKY `sawOomFingerprint` set as each
+        // stderr chunk arrived (see its own doc above) — NEVER by re-testing the windowed, trimmed
+        // `rawTail` here, which a real crash's many native frames can push the fingerprint line out
+        // of before `exit` fires (measured in this change's own real-check: a real OOM's ~2.5KB dump
+        // overflows the 2000-char window). V8's own crash dump content (heap statistics, absolute
+        // source paths, the Node version) must never cross the trust boundary either way — the code
+        // alone is the caller-visible signal, with a clean, fixed message.
+        if (sawOomFingerprint) {
           settle({ error: { code: 'SCRIPT_OOM', message: 'the sandboxed script exhausted its memory limit and was terminated' } });
           return;
         }

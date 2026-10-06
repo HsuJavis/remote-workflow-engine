@@ -131,6 +131,31 @@ describe('F-1: a child terminated by its own V8 heap limit settles a coded SCRIP
     expect(message).not.toMatch(/heap limit|Allocation failed|node::Abort|\/home\//);
   });
 
+  // F-1 real-check finding: a REAL V8 OOM abort writes the FATAL ERROR line, THEN 10-20 native
+  // stack frames each naming the engine's own absolute install path — measured at ~2.5KB total,
+  // comfortably overflowing the 2000-char windowed `stderrTail` kept for the ORDINARY-crash ABORTED
+  // message. Reproduces that shape: the fingerprint line arrives first, split across TWO 'data'
+  // chunks (a realistic pipe-buffering boundary), followed by >2000 chars of native frames that
+  // would otherwise evict it from a naive trimmed-tail check.
+  it('detects the FATAL ERROR fingerprint even when later native-frame output overflows the 2000-char stderr tail window', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const runPromise = host.run('r-oom-overflow', 'return 1;', {}, null);
+    await Promise.resolve();
+    const child = createdChildren[0]!;
+    // Split the fingerprint line itself across a chunk boundary.
+    child.stderr.emit('data', Buffer.from('\n<--- Last few GCs --->\n\n<--- JS stacktrace --->\n\nFATAL ERROR: Reached heap li'));
+    child.stderr.emit('data', Buffer.from('mit Allocation failed - JavaScript heap out of memory\n'));
+    // >2000 chars of native frames AFTER the fingerprint — this is what evicts it from a naive
+    // trimmed-tail check (the pre-fix behavior this case pins against).
+    const frame = ' N: 0x1234567 v8::internal::SomeNativeFrame(args) [/home/rwe/.local/node/bin/node]\n';
+    child.stderr.emit('data', Buffer.from(frame.repeat(40))); // ~3200 chars, well over 2000
+    child.emit('exit', null, 'SIGABRT');
+    const outcome = await runPromise;
+    expect('error' in outcome).toBe(true);
+    if (!('error' in outcome)) throw new Error('unreachable');
+    expect(outcome.error).toMatchObject({ code: 'SCRIPT_OOM' });
+  });
+
   it('an ordinary (non-OOM) crash is unaffected — still ABORTED with the sanitized stderr tail', async () => {
     const host = new SandboxHost({ workspaceRoot: WORK_DIR });
     const runPromise = host.run('r-crash', 'return 1;', {}, null);
