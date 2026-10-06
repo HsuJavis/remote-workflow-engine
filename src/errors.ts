@@ -216,6 +216,9 @@ export const ERROR_CATALOG = {
   NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. a legacy or refused registration)' },
   INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
   INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
+  // issue #160 BUG-3: distinct from INVALID_CRON — this names the tz field, not the cron field,
+  // when the two were previously conflated (an invalid IANA zone surfaced as field:'cron').
+  INVALID_TZ: { see: null, hint: 'the `tz` value is not a valid IANA time zone name' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
   // (mcp-facade.ts:308/322) — see NOT_TRIGGER_OWNER above.
   TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
@@ -227,6 +230,10 @@ export const ERROR_CATALOG = {
   // Run lifecycle
   RUN_NOT_FOUND: { see: null, hint: 'no run is recorded under this runId' },
   RUN_NOT_TERMINAL: { see: null, hint: 'this operation requires the run to be in a terminal state' },
+  // issue #160 BUG-1: a stopped run IS terminal (run_status/run_list already report it that way),
+  // but run_stop records no script result — run_result answers this typed code instead of either
+  // forging a fake success or misreporting RUN_NOT_TERMINAL.
+  RUN_STOPPED: { see: null, hint: 'the run was stopped (run_stop) before it completed; it has no script return value' },
   RUN_ADMISSION_LIMIT: { see: null, hint: 'the configured maxConcurrentRuns is already reached' },
   ILLEGAL_TRANSITION: { see: null, hint: 'the requested run-status transition is not allowed from its current state' },
   AGENT_LOG_NOT_FOUND: { see: null, hint: 'no transcript is recorded for this agentId on this run' },

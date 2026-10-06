@@ -87,6 +87,19 @@ describe('an aborted agent record is finalized (#53 root cause B)', () => {
     expect(view.agents[0]!.state).toBe('failed');
     expect(view.agents[0]!.endedAt).toBeDefined();
     expect(view.agents[0]!.detail).toMatch(/aborted/i);
+    // issue #160 BUG-4: this call was aborted before ANY usage streamed onto its record (the fake
+    // gateway's first call never reports usage — it just waits on the abort signal), so
+    // `getLiveAttemptUsage` is undefined. The record must still carry `partial:true` — "the known
+    // spend is a lower bound, possibly 0" — matching the timeout/pi-gateway abort-branch contract
+    // (issue #152), never silently reading as an exact, priced, zero-cost call.
+    expect(view.agents[0]!.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(view.agents[0]!.partial).toBe(true);
+    // Zero tokens is EXACTLY priced at 0 (nothing was spent) regardless of whether the model is
+    // known — `unpriced` must stay false here, never flipped to true just because provider/model
+    // are still '' (unresolved) at abort time and priceCall(ZERO_TOKENS, null) would otherwise look
+    // like "an unknown-priced call happened". Line-621's own comment makes this the documented
+    // contract: "never dispatched, so genuinely not an unpriced call".
+    expect(view.agents[0]!.unpriced).toBe(false);
   }, 20000);
 });
 

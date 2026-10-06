@@ -434,7 +434,8 @@ export class SqliteRunStore implements RunStore {
   /** v24 (DES-152): filtered/paginated read behind `run_list` — `principal` is set by the FACADE
    *  from the caller's own id (never from args); a row with `principal IS NULL` is excluded by a
    *  `principal` filter (the cross-seam agreement with authz's null=ownerless rule). `limit`
-   *  defaults to 50, capped at 500. Uses `runs_name_status_created` (leading column `name`). */
+   *  defaults to 50, capped at 500; an explicit `0` returns `[]` (owner-acknowledged, issue #160).
+   *  Uses `runs_name_status_created` (leading column `name`). */
   async list(filter: RunListFilter = {}): Promise<RunSummary[]> {
     const clauses: string[] = [];
     const params: unknown[] = [];
@@ -442,7 +443,23 @@ export class SqliteRunStore implements RunStore {
     if (filter.status !== undefined) { clauses.push('r.status = ?'); params.push(filter.status); }
     if (filter.principal !== undefined) { clauses.push('r.principal = ?'); params.push(filter.principal); }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-    const limit = Math.min(filter.limit ?? 50, 500);
+    // issue #160 BUG-2: `filter.limit` used to be bound into `LIMIT ?` unmodified. A non-integer
+    // (e.g. 1.5) made better-sqlite3 throw a bare, uncoded 'datatype mismatch' Error against the
+    // INTEGER-affinity clause (escaping the call-tool error-wrapping machinery as a raw string); a
+    // negative value (e.g. -1) was worse — `Math.min(-1, 500)` is still `-1`, and SQLite's
+    // `LIMIT -1` means "no limit", silently bypassing the 500-row cap this function's own doc
+    // promises. `Math.trunc` first (never bind a float), then clamp to `[1, 500]` — defense in
+    // depth here for any in-process caller, in addition to the wire-level `integer`/`minimum`
+    // schema on `run_list.limit` in tool-specs.ts which refuses the bad value earlier, typed.
+    //
+    // issue #160 BUG-2 follow-up (review D1-item1): an explicit `limit:0` meaning "return []" is
+    // PRE-EXISTING, owner-acknowledged behavior (issue #160's own DOC section), not a defect — it
+    // must NOT be floored up to 1 by this clamp. Only `0` is special-cased; every other
+    // non-positive/non-integer value still clamps to the positive floor below (that's the real
+    // ceiling-bypass/raw-error fix, untouched).
+    const rawLimit = filter.limit ?? 50;
+    const truncatedLimit = Math.trunc(rawLimit);
+    const limit = truncatedLimit === 0 ? 0 : Math.max(1, Math.min(truncatedLimit, 500));
     const rows = this._db.prepare(`
       SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by, r.error,
              (SELECT MIN(t.ts) FROM transitions t

@@ -121,14 +121,40 @@ function refusalEnvelope(code: ErrorCode, message: string, detail?: Record<strin
   return { runId: '', status: 'failed', code, error: { code, message, ...(detail ? { detail } : {}) } };
 }
 
+/** issue #158 F1: for a property validated with `anyOf` (e.g. `budget`), ajv (even with
+ *  `allErrors:false`) emits one error per failed branch plus a summary `anyOf`/`oneOf` error, IN
+ *  BRANCH-DECLARATION ORDER — so `errors[0]` is always whichever branch the schema lists FIRST
+ *  (here, the trivial `{type:'null'}` branch of `budget`'s anyOf), never the branch the caller's
+ *  payload was actually closer to satisfying. Every budget refusal therefore read "/budget must be
+ *  null" regardless of what was actually wrong.
+ *
+ *  Picks the most specific real error instead: drop the `anyOf`/`oneOf` summary row, then prefer
+ *  the error with the DEEPEST `instancePath` (a violation one level into the object, e.g.
+ *  `/budget/tokens`, is more specific than one about the `/budget` property itself); a tie is
+ *  broken by dropping a `{type:'null'}` mismatch against a non-null value — matching a literal
+ *  `null`/primitive branch is never informative once the caller supplied an object. Falls back to
+ *  `errors[0]` when nothing survives these filters (a single-type schema's one error, unaffected). */
+function pickBestError(errors: import('ajv').ErrorObject[]): import('ajv').ErrorObject | undefined {
+  const real = errors.filter((e) => e.keyword !== 'anyOf' && e.keyword !== 'oneOf');
+  if (real.length === 0) return errors[0];
+  const maxDepth = Math.max(...real.map((e) => e.instancePath.length));
+  const deepest = real.filter((e) => e.instancePath.length === maxDepth);
+  const isNullTypeMismatch = (e: import('ajv').ErrorObject) => e.keyword === 'type' && (e.params as { type?: unknown })?.type === 'null';
+  return deepest.find((e) => !isNullTypeMismatch(e)) ?? deepest[0];
+}
+
 /** DES-140: schema validation is whatever `spec.inputSchema` actually declares — no implicit
  *  `additionalProperties:false`. A tool whose schema needs to be CLOSED (e.g. reject an unknown
  *  key outright) declares that itself; this function does not paper over a schema that doesn't. */
 function validateArgs(schema: Record<string, unknown>, args: unknown): string | null {
   const validate = ajv.compile(schema);
   if (validate(args)) return null;
-  const err = validate.errors?.[0];
-  return err ? `${err.instancePath || '(root)'} ${err.message}` : 'invalid arguments';
+  const err = pickBestError(validate.errors ?? []);
+  if (!err) return 'invalid arguments';
+  // issue #158 F1: ajv's own `additionalProperties` message never names the offending key — append
+  // it so "unknown key" refusals are actionable instead of a bare "must NOT have additional properties".
+  const extra = err.keyword === 'additionalProperties' ? ` (${(err.params as { additionalProperty?: string }).additionalProperty})` : '';
+  return `${err.instancePath || '(root)'} ${err.message}${extra}`;
 }
 
 /** Service accounts spec (owner decision 2026-10-03): `expiresAt` is ISO-8601 on the wire, epoch ms
