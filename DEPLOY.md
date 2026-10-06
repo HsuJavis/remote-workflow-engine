@@ -752,7 +752,7 @@ support reasoning'}`（例如 `openrouter/openai/gpt-4.1`），而且這種情�
 per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看該列自己的
 `capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。
 
-**issue #151 調查結論（2026-10-06，無程式缺陷）**：有 agent 回報 `openrouter/anthropic/*` 與
+**issue #151 調查結論（2026-10-06；anthropic/* 未找到程式缺陷，google/* 尚未查明）**：有 agent 回報 `openrouter/anthropic/*` 與
 `openrouter/google/*` 在 pi 下 `cacheRead`/`cacheWrite` 恆為 0。實測（`tests/acceptance/
 pi-harness-openrouter-cache-fake-server.test.ts`，錄製式 fake server，走真實的 PiGatewayClient ->
 pi 子行程 -> pi-ai 派送路徑）證實：請求端已經會自動對 `anthropic/*` 加上 Anthropic 的
@@ -762,7 +762,7 @@ model.id.startsWith('anthropic/')`，引擎沒加任何程式碼促成這件事�
 `cacheRead`/`cacheWrite`，進而影響計費（`ratesPerM.cacheRead`/`cacheWrite`）。最可能的解釋，且非本引擎
 可修：Claude Haiku 4.5 的 cache 寫入門檻是 **4096 tokens**（openrouter.ai/docs 的 prompt-caching 頁面，
 2026-10-06 查證；多數其他 Claude 模型只要 1024–2048），原回報 run 的最後一輪本身只有 2779 input
-tokens，低於門檻。該檔案結尾附完整的真機驗證食譜（多輪、夠大的 prompt、注意 `tool_use_id` 前綴
+tokens，低於門檻（複審估算該 workload 每輪約 1.5–2.5k tokens，同樣低於門檻）。**`google/*` 尚未查明**：原回報的 gemini run 總輸入 69077 tokens、cache 仍為 0，門檻解釋不適用；它走隱式快取、不需要 `cache_control`，但 OpenRouter 是否把 Gemini 的快取用量正規化成 `cached_tokens` 未經真機確認——在有 key 的環境實測前，請視為「可能沒有快取或沒有被計入」。該檔案結尾附完整的真機驗證食譜（多輪、夠大的 prompt、注意 `tool_use_id` 前綴
 `toolu_bdrk_` 代表走 Bedrock 路由，`google/*` 是隱式快取不需要 `cache_control`）——目前環境沒有真的
 OpenRouter key，無法在這裡完成真機驗證，留給下一個有 key 的人跑。
 
