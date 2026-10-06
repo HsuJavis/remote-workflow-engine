@@ -430,6 +430,13 @@ function checkEdges(
   for (const slot of expected.slots) {
     for (const id of idsForSlot(slot)) nodeToSlot.set(id, slot.index);
   }
+  // issue #155 B1 follow-up: before B1, E1 only ever emitted `{i, i+1}`, so rule (b)'s
+  // `|fromSlot-toSlot| !== 1` was an exact (if indirect) test for "not an expected edge". B1 made
+  // the expected edge SET non-linear (an anchor fanning out to several arms, several arms fanning in
+  // to one slot) — slot-index adjacency no longer means "expected" and non-adjacency no longer means
+  // "not expected". Membership in `expected.edges` (checked both directions, matching how arm (a)'s
+  // reachability and `<-->`'s symmetry are both already direction-agnostic here) is the real test.
+  const expectedEdgeKeys = new Set(expected.edges.flatMap((e) => [`${e.from}>${e.to}`, `${e.to}>${e.from}`]));
 
   // (a) reachability through non-agent intermediates.
   for (const ee of expected.edges) {
@@ -455,7 +462,7 @@ function checkEdges(
     const fromSlot = nodeToSlot.get(e.from);
     const toSlot = nodeToSlot.get(e.to);
     if (fromSlot === undefined || toSlot === undefined) continue;
-    if (Math.abs(fromSlot - toSlot) !== 1 && !e.label) {
+    if (!expectedEdgeKeys.has(`${fromSlot}>${toSlot}`) && !e.label) {
       const fromS = slotById.get(fromSlot);
       const toS = slotById.get(toSlot);
       return err('EDGE_MISMATCH', {

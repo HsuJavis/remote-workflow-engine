@@ -171,6 +171,66 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
       expect(result.ok).toBe(false);
       expect(result.rule).toBe('EDGE_MISMATCH');
     });
+
+    // issue #155 B1 follow-up: rule (b)'s "non-consecutive" test used to be `|fromSlot-toSlot|!==1`,
+    // an exact proxy for E1's old `{i,i+1}`-only edge set. B1 made the expected edge set non-linear
+    // (`{0,1},{0,2}`, or `{1,3},{2,3}` on the fan-in side) — a DIRECT agent→agent edge that the
+    // expected graph actually asks for (e.g. anchor-->arm) must NOT be penalized just because its
+    // slot indices aren't adjacent integers.
+    it('a direct anchor-->arm edge (no diamond, slots 0 and 2) needs no |label| — it IS an expected edge', () => {
+      const directSrc = [
+        'graph LR', 'subgraph "p1"', 'a(["a"])', 'end',
+        'subgraph "hot"', 'b(["b"])', 'end', 'subgraph "cold"', 'c(["c"])', 'end',
+        'a-->b', 'a-->c',
+      ].join('\n');
+      const result = checkMermaid(directSrc, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('both fan-in arms (slots 1 and 2, both to slot 3) need no |label| — neither is penalized over the other', () => {
+      const fanInExpected = {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+          { index: 3, title: 'done', dynamic: false, slots: [3] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt' as const, tools: { b: 'default' as const }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt' as const, tools: { c: 'default' as const }, altGroup: 1 },
+          { index: 3, lane: 3, labels: ['d'], kind: 'single' as const, tools: { d: 'default' as const } },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }, { from: 1, to: 3 }, { from: 2, to: 3 }],
+      };
+      const fanInSrc = [
+        'graph LR', 'subgraph "p1"', 'a(["a"])', 'end',
+        'subgraph "hot"', 'b(["b"])', 'end', 'subgraph "cold"', 'c(["c"])', 'end',
+        'subgraph "done"', 'd(["d"])', 'end',
+        'a-->b', 'a-->c', 'b-->d', 'c-->d',
+      ].join('\n');
+      const result = checkMermaid(fanInSrc, ['a', 'b', 'c', 'd'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected: fanInExpected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('a direct a-->c edge inside a plain linear 3-slot chain, skipping slot 1, still needs a |label| (regression guard)', () => {
+      const linearExpected = {
+        lanes: [0, 1, 2].map((i) => ({ index: i, title: ['one', 'two', 'three'][i]!, dynamic: false, slots: [i] })),
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } },
+          { index: 2, lane: 2, labels: ['c'], kind: 'single' as const, tools: { c: 'default' as const } },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 1, to: 2 }],
+      };
+      const linearSrc = [
+        'graph LR', 'subgraph "one"', 'a(["a"])', 'end', 'subgraph "two"', 'b(["b"])', 'end',
+        'subgraph "three"', 'c(["c"])', 'end', 'a-->b', 'b-->c', 'a-->c',
+      ].join('\n');
+      const result = checkMermaid(linearSrc, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected: linearExpected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('EDGE_MISMATCH');
+    });
   });
 
   // issue #155 B3/TOOLS-DOC: an agent() dispatched inside a loop/switch body got NO ExpectedSlot at
