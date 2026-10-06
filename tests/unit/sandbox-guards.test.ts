@@ -128,6 +128,26 @@ describe('Sandbox VM guards', () => {
     }
   });
 
+  // #157 B1 follow-up (found during review of the fix above, not in the original report): the V5
+  // matrix above walks `.constructor.constructor` on the TOP-LEVEL sandbox globals, but
+  // `guardedMath`'s `random` getter returns a THROWER FUNCTION of its own — a value reached one
+  // property hop past `Math` itself, built as a plain embedding-realm arrow function and therefore
+  // exactly as exploitable as `Math` was pre-fix: `Math.random.constructor.constructor(...)` still
+  // reached the embedding realm even after the top-level `Math` guard was fixed.
+  it('V5 follow-up: Math.random (the THROWER returned by the determinism guard, not Math itself) cannot be used for .constructor.constructor', async () => {
+    const script = `
+      try {
+        const v = Math.random.constructor.constructor('return process')();
+        return { escaped: (typeof v === 'object' && v !== null) || typeof v === 'function' };
+      } catch (e) {
+        return { escaped: false };
+      }
+    `;
+    const r = await evaluateScript(script, FAKE_API);
+    expect(r.kind).toBe('done');
+    expect((r.value as { escaped: boolean }).escaped).toBe(false);
+  });
+
   // Bare `Function` (no injected object involved) was always isolated — kept as the control case
   // the rewritten V5 test above now contrasts against, proving the fix targeted the real vector
   // without disturbing the one that was already safe.

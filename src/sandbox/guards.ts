@@ -241,13 +241,18 @@ function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): Date
 }
 
 function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof Math {
+  // #157 B1 follow-up: this thrower is a value reached one property hop PAST `Math` itself
+  // (`Math.random`, not `Math`) — the top-level `Math` guard above does not protect it. Built as a
+  // plain embedding-realm arrow function, it was exactly as exploitable as `Math` was pre-fix
+  // (`Math.random.constructor.constructor(...)` still reached the embedding realm). Its own
+  // `[[Prototype]]` is severed for the same reason every other wrapper function in this file is.
+  const randomThrower = () => {
+    throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+  };
+  Object.setPrototypeOf(randomThrower, null);
   return new Proxy(CtxMath, {
     get(target, prop, receiver) {
-      if (prop === 'random') {
-        return () => {
-          throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
-        };
-      }
+      if (prop === 'random') return randomThrower;
       return Reflect.get(target, prop, receiver);
     },
   });
