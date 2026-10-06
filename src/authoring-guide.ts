@@ -782,7 +782,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '\n\nThis is documented as HYGIENE, not a security boundary — `node:vm` is not a sandbox, and ' +
         'the real containment is the per-run child PROCESS, which holds no secrets/store/network ' +
         'handle, not these two guarded globals. `setTimeout`, `fetch`, `console`, `require`, ' +
-        '`process`, and `fs` are simply absent from the context, not merely shadowed.',
+        '`process`, and `fs` are simply absent from the context, not merely shadowed.\n\n' +
+        "A script's own top-level `return` value (and an agent()/workflow() call's resolved value, " +
+        'which crosses the same boundary) must be JSON-serializable — no circular references, no ' +
+        "BigInt — and under 10MB serialized; either violation is refused "
+        + '(`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a ' +
+        'summary or a reference (an id, a CAS blob hash) instead of a large payload.',
     ),
   );
 

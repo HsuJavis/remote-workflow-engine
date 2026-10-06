@@ -23,6 +23,8 @@ A workflow script runs inside a restricted VM context with exactly these globals
 
 This is documented as HYGIENE, not a security boundary — `node:vm` is not a sandbox, and the real containment is the per-run child PROCESS, which holds no secrets/store/network handle, not these two guarded globals. `setTimeout`, `fetch`, `console`, `require`, `process`, and `fs` are simply absent from the context, not merely shadowed.
 
+A script's own top-level `return` value (and an agent()/workflow() call's resolved value, which crosses the same boundary) must be JSON-serializable — no circular references, no BigInt — and under 10MB serialized; either violation is refused (`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a summary or a reference (an id, a CAS blob hash) instead of a large payload.
+
 ## Declaring the parameter contract
 
 **The script body is a bare async function body.** The statements you send as `script` ARE the body of an `async function` the engine wraps for you: `await` at the top level is fine, and a `return` returns the run result. Do not wrap it yourself — `export default async function () { … }`, a `function` wrapper of any kind, and any top-level `import` are refused `PARSE_ERROR` (which names the line and the construct). `export const meta = {…}` is the ONE exception, and it must be written exactly that way, as a literal object: dropping the `export` makes the whole declaration invisible to the engine, and every `agent()` label is then refused `AGENT_UNDECLARED`.
@@ -302,6 +304,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
 - `UNKNOWN_RUN_PLACEHOLDER` — a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run's id) are supported
 - `ITEM_CAP_EXCEEDED` — parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which
+- `RESULT_NOT_SERIALIZABLE` — an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values
+- `RESULT_TOO_LARGE` — an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload
 
 ## Provisioning skills and MCP servers: roles, config shapes, and the trust boundary
 

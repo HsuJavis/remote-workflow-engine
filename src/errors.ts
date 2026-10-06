@@ -299,6 +299,14 @@ export const ERROR_CATALOG = {
   // assignment changes.
   SCRIPT_ERROR: { see: null, hint: "the script itself threw an uncaught error (not an engine refusal); at a nested workflow() frame this is the CHILD workflow's own thrown error, not a fault in the engine" },
   ITEM_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which' },
+  // issue #162 A/B: an agent()/workflow() script's RETURN value that cannot cross the sandbox's
+  // child->parent IPC boundary — either because it is not JSON-serializable (a circular reference,
+  // a BigInt) or because it exceeds the engine's return-value size cap (child-entry.ts). Before
+  // this, the child's own uncaught serialization throw escaped as an unhandled rejection and could
+  // crash the child with a raw Node-internal stack trace, surfaced to the caller as an opaque
+  // ABORTED with a leaked internal path/Node version in the message.
+  RESULT_NOT_SERIALIZABLE: { see: 'workflow_authoring_guide', hint: 'an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values' },
+  RESULT_TOO_LARGE: { see: 'workflow_authoring_guide', hint: "an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload" },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;
