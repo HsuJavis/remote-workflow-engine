@@ -409,7 +409,14 @@ function checkEdges(
     const targets = new Set(idsForSlot(toSlot));
     const starts = idsForSlot(fromSlot);
     const reached = starts.some((startId) => pathThroughNonAgents(startId, targets, adj, nodes));
-    if (!reached) return err('EDGE_MISMATCH', { line: 1, expected: ee });
+    // issue #155 DOC: self-describing `expected` — labels, not bare slot indices (LANE_MISMATCH /
+    // TOOLS_MISMATCH are already self-describing; this one wasn't).
+    if (!reached) {
+      return err('EDGE_MISMATCH', {
+        line: 1,
+        expected: { from: { index: fromSlot.index, labels: fromSlot.labels }, to: { index: toSlot.index, labels: toSlot.labels } },
+      });
+    }
   }
 
   // (b) a direct agent→agent edge linking non-consecutive slots needs a `|label|`.
@@ -419,7 +426,12 @@ function checkEdges(
     const toSlot = nodeToSlot.get(e.to);
     if (fromSlot === undefined || toSlot === undefined) continue;
     if (Math.abs(fromSlot - toSlot) !== 1 && !e.label) {
-      return err('EDGE_MISMATCH', { line: e.line, expected: { from: fromSlot, to: toSlot } });
+      const fromS = slotById.get(fromSlot);
+      const toS = slotById.get(toSlot);
+      return err('EDGE_MISMATCH', {
+        line: e.line,
+        expected: { from: { index: fromSlot, labels: fromS?.labels ?? [] }, to: { index: toSlot, labels: toS?.labels ?? [] } },
+      });
     }
   }
 

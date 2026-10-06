@@ -73,7 +73,8 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     const result = checkMermaid(src, ['a', 'b'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
     expect(result.ok).toBe(false);
     expect(result.rule).toBe('EDGE_MISMATCH');
-    expect(result.expected).toEqual({ from: 0, to: 1 });
+    // issue #155 DOC: `expected` carries human-readable labels, not bare slot indices.
+    expect(result.expected).toEqual({ from: { index: 0, labels: ['a'] }, to: { index: 1, labels: ['b'] } });
   });
 
   it('a direct agent→agent edge skipping a slot needs a |label| (arm b)', () => {
@@ -94,6 +95,8 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     const result = checkMermaid(src, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
     expect(result.ok).toBe(false);
     expect(result.rule).toBe('EDGE_MISMATCH');
+    // issue #155 DOC: `expected` carries human-readable labels, not bare slot indices.
+    expect(result.expected).toEqual({ from: { index: 0, labels: ['a'] }, to: { index: 2, labels: ['c'] } });
     // …and the SAME diagram with the jump labelled is accepted — the label is what the rule asks for.
     const labelled = src.replace('a-->c', 'a-->|retry|c');
     expect((checkMermaid(labelled, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
