@@ -56,6 +56,37 @@ describe('issue #127: AgentExecutor/AgentTranscriptSink partial usage accounting
     expect(record?.costUSD).toBe(0);
   });
 
+  // issue #152: pi's timeout/abort path now ALWAYS reports a `tokens` object (even {0,0,0,0}) with
+  // `partial:true` — distinct from the "no tokens at all" case right below, which must still collapse
+  // to the pre-#127 ZERO_TOKENS/no-partial shape. A zero-VALUED but PRESENT tokens object must be
+  // priced/accounted (addUsage called, even with a zero delta) and keep `partial:true`, never
+  // silently treated the same as "never dispatched".
+  it('a failed GatewayResult with ZERO tokens but partial:true (pi timeout/abort lower bound) is still accounted and marked partial', async () => {
+    const Z: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const gw: GatewayClient = {
+      invoke: async () => ({
+        ok: false, provider: 'openrouter', transport: 'pi', reason: 'timeout', tokens: Z, partial: true,
+        detail: 'attempt 2/2 timed out after 8000ms — no response from model "glm-5.3-flash" (provider "openrouter")',
+      } as GatewayResult),
+    };
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: null, tokens: null } } as never);
+    let addUsageCalls = 0;
+    guard.addUsage = ((...args: Parameters<RunGuard['addUsage']>) => { addUsageCalls += 1; return RunGuard.prototype.addUsage.apply(guard, args); }) as RunGuard['addUsage'];
+    const executor = new AgentExecutor({ gateway: gw, guard });
+
+    executor.markQueued('a-zero-partial');
+    await executor.run(req('a-zero-partial'));
+
+    // Accounted (not skipped) even though the delta itself is zero — the #152 fix the "NO tokens"
+    // case below must stay distinct from.
+    expect(addUsageCalls).toBe(1);
+    const record = executor.getRecord('a-zero-partial');
+    expect(record?.state).toBe('failed');
+    expect(record?.tokens).toEqual(Z);
+    expect(record?.partial).toBe(true);
+    expect(record?.detail).toContain('attempt 2/2 timed out after 8000ms');
+  });
+
   it('a failed GatewayResult with NO tokens keeps the pre-#127 shape (ZERO_TOKENS, no addUsage call, no partial)', async () => {
     const gw: GatewayClient = { invoke: async () => ({ ok: false, provider: 'anthropic', reason: 'terminal', detail: 'refused before dispatch' }) };
     const guard = new RunGuard({ concurrency: 4, budget: { usd: null, tokens: null } } as never);

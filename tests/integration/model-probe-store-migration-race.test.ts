@@ -6,6 +6,11 @@
 // unguarded). A crash-restart overlap (two instances briefly alive on the same workRoot) is the
 // realistic trigger, not normal single-instance operation.
 //
+// issue #152: `logic_version` is a SECOND additive column, added the exact same check-then-ALTER way
+// right after `harness` in the constructor — this test also asserts it survives the identical
+// concurrent-boot race (never needed its own separate race test: both ALTERs run in the SAME
+// constructor call, so one real concurrent-process repro covers both).
+//
 // This needs REAL concurrent processes — better-sqlite3 is synchronous, so two `ModelProbeStore`
 // constructions inside one Node process can never interleave; there is no yield point between a
 // check and an ALTER for anything else to land in. `spawn` (not `execFileSync`, which would run
@@ -77,8 +82,8 @@ describe('ModelProbeStore additive harness-column migration — concurrent-boot 
       // The pre-existing row must have survived every concurrent boot, backfilled with the
       // documented legacy default — the race must not corrupt or drop data either.
       const check = new Database(dbPath);
-      const row = check.prepare('SELECT * FROM model_probes WHERE provider = ? AND model = ?').get('ollama', 'qwen2.5:7b') as { harness: string; detail: string };
-      expect(row).toMatchObject({ harness: 'sdk', detail: 'pre-harness-column row' });
+      const row = check.prepare('SELECT * FROM model_probes WHERE provider = ? AND model = ?').get('ollama', 'qwen2.5:7b') as { harness: string; detail: string; logic_version: number };
+      expect(row).toMatchObject({ harness: 'sdk', detail: 'pre-harness-column row', logic_version: 0 });
       check.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

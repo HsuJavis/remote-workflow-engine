@@ -58,6 +58,13 @@ export function buildHarnessAnnounce(harnessProviders?: readonly Provider[]): Ha
     providers: harnessProviders,
     unsupportedTools: PI_UNSUPPORTED_TOOLS,
     effort: 'mapped to pi\'s thinkingLevel; effortApplied is only ever true for a verified outbound request (OpenRouter\'s reasoning.effort — see DEPLOY.md); ollama has no reasoning dial.',
-    usage: 'summed over every assistant message_end (pi has no stable per-message id); partial:true on abort/timeout; pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
+    // issue #152: made explicit that partial:true on abort/timeout is unconditional (even a known
+    // figure of exactly 0 — pi's child->parent protocol only reports usage on a COMPLETE message_end/
+    // error event, so an attempt killed before its first one has nothing to report) and that this
+    // engine deliberately never estimates the missing figure (no streamed mid-turn usage exists on
+    // pi's wire to read instead, and an estimate would need a schema slot marking it "not exact"
+    // distinct from a real observed figure that this engine does not have — better to omit it than
+    // guess silently).
+    usage: 'summed over every assistant message_end (pi has no stable per-message id); partial:true on abort/timeout, ALWAYS — including a known figure of exactly 0 for an attempt killed before its first message_end, which is reported honestly as a lower bound of 0 rather than a silently exact free call; input tokens are never estimated to fill that gap; pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
   };
 }

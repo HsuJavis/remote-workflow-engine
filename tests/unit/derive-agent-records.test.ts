@@ -84,6 +84,33 @@ describe('deriveAgentRecords — four branches, one base() helper (UT-202, DES-1
     expect(record.unmapped).toEqual(['weird_subtype']);
   });
 
+  // issue #152: a failed usage event can now carry a ZERO-valued `tokens` object alongside
+  // `partial:true` (pi's timeout/abort lower bound, possibly nothing observed before the cutoff) —
+  // the restart-reconstruction path must fold this exactly like the live record does (DES-188 lock):
+  // `partial` keyed off its OWN presence on the event, never off whether `tokens` happens to be
+  // nonzero, so a derived record after a restart never silently drops the "this is a lower bound"
+  // flag just because the lower bound itself was 0.
+  it('a failed usage event with ZERO tokens but partial:true derives partial:true, not dropped', () => {
+    const transcripts = new Map([
+      ['a7', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a7', descriptor: { model: 'the-model', provider: 'openrouter' } } },
+        {
+          ts: 't1', kind: 'usage' as const,
+          data: {
+            reason: 'timeout', provider: 'openrouter', tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            partial: true, detail: 'attempt 1/1 timed out after 50ms — no response from model "the-model" (provider "openrouter")',
+          },
+        },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a7') as any;
+    expect(record.state).toBe('failed');
+    expect(record.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(record.partial).toBe(true);
+    expect(record.detail).toBe('attempt 1/1 timed out after 50ms — no response from model "the-model" (provider "openrouter")');
+  });
+
   it('a failed usage event with neither detail nor unmapped carries neither field (absent, never defaulted)', () => {
     const transcripts = new Map([
       ['a6', [

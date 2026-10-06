@@ -1399,12 +1399,18 @@ export const TOOL_SPECS = [
       'latencyMs {prose, tools}, detail, harness. Results are stored and appear on models_list ' +
       '(toolUseVerified/proseVerified/lastProbedAt/probeDetail/stabilitySource). Takes up to two probe ' +
       "timeouts per model; the engine also re-probes on its own every modelProbe.intervalMs (default weekly). " +
+      'CALLED WITH NO `model`: only refs already DECLARED by a currently registered workflow version are ' +
+      'probed — a model no workflow declares yet is silently skipped, never probed implicitly; pass ' +
+      '`model` to probe one explicitly, declared or not. ' +
       "PER-HARNESS (issue #138): harness records which gateway/transport ('claude-agent-sdk', 'direct-fetch' or " +
       "'pi') actually ran THIS probe — a result recorded under one harness is never shown as verified evidence " +
       "once the deployment is running a different one. After a gateway switch (e.g. sdk -> pi), every model's " +
       'toolUseVerified/proseVerified read null again (stabilitySource falls back to the rule tier) until it is ' +
       're-probed under the NEW harness — either automatically on the periodic prober\'s next tick, or immediately ' +
-      'via this tool.',
+      'via this tool. ' +
+      'PROBE-LOGIC VERSIONING (issue #152): a stored result whose internal logic version differs from the ' +
+      "engine's current one (bumped when the probe's own classification/dispatch rules change — e.g. a probe " +
+      "bug fix) is likewise treated as never probed and re-probed automatically on the next sweep.",
     inputSchema: {
       ...schema({
         model: {
