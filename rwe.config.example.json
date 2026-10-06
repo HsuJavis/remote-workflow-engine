@@ -1,8 +1,5 @@
 {
   "bind": "127.0.0.1",
-  "allowedHosts": [
-    "192.168.0.125"
-  ],
   "port": 8787,
   "workRoot": "/var/lib/remote-workflow-engine",
   "timeoutMs": 15000,
@@ -36,8 +33,7 @@
     "googleClientSecret": "<your Google OAuth 2.0 client secret>"
   },
   "principals": {
-    "alice@example.com": { "role": "admin" },
-    "*": { "role": "user" }
+    "alice@example.com": { "role": "admin" }
   },
   "mcpEgressAllowlist": [
     "https://api.example.com"

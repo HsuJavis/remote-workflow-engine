@@ -1,5 +1,19 @@
 # remote-workflow-engine — 需求總覽 + E2E 測試方式
 
+> **📜 歷史文件（2026-10-06 標記，內容未隨引擎演進更新）**：本檔停留在 v1-v6（REQ-001..036）當時的
+> API 與拓樸,下方所有 MCP 呼叫範例、工具名稱、工具總數都已經是舊的,照抄會打不通現在的引擎——
+> 現在的用法與權威工具清單以 `README.md`／`DEPLOY.md`／`src/tool-specs.ts` 為準。已知的落差(非
+> 窮舉):
+> - 呼叫介面已改名:`workflow_run`/`workflow_status`/`workflow_result` 現在是
+>   `run_start`/`run_status`/`run_result`(`tools/list` 回 22/27 個工具的年代也已過去——現在是
+>   `src/tool-specs.ts` 的 46 個)。
+> - 2026-09-26 起**別名機制(alias)全面移除**:REQ-004 描述的「`model:"sonnet"` 查 alias 表」已經
+>   不存在,模型一律是完整的 `<provider>/<model-id>` 字串。
+> - 2026-09-26 起 **Claude Code client plugin 已移除**(REQ-010 提到的 `remote-workflow-plugin`),
+>   改為直接用 MCP 工具與 `workflow_authoring_guide`。
+>
+> 保留本檔是為了留存 v1-v6 當時的需求範圍紀錄,不是現行操作手冊,也不會回頭逐列改寫。
+>
 > 依 slice 分組,涵蓋 REQ-001..026。每項:**做什麼** · **E2E 怎麼測**(對活引擎 `http://<host>:8787/mcp`)· **狀態**。
 > 狀態圖例:✅ 完成且真機驗證 · 🟡 完成但收尾/鏈結未補 · ⛔ 延後(使用者決定) · ⚙️ 環境/能力受限
 >
