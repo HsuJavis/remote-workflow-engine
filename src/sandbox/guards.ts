@@ -87,7 +87,7 @@ const MAX_ITEMS = 4096;
 // drift from the `sandbox` object literal `evaluateScript` actually constructs below. Exports only
 // — no new value import enters this file, which the sandbox CHILD also loads (see the checkMeta
 // note at the top: it does not resolve `.js`→`.ts` for value imports).
-export const SANDBOX_GLOBALS = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math'] as const;
+export const SANDBOX_GLOBALS = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math', 'Intl'] as const;
 
 /** One of the three calls `guardedDate`/`guardedMath` above refuse, plus the guide-facing reasoning
  *  DES-187 asks for: WHY it is refused (the resume-replay hazard both guards share) and INSTEAD
@@ -114,6 +114,14 @@ export const DETERMINISM_GUARDED: readonly DeterminismGuard[] = [
     call: 'new Date()', // det:allow — guard-table literal, not a call
     why: 'called with no arguments this reads the wall clock, the same hazard as Date.now().',
     instead: "pass an argument — new Date('2026-01-01') is allowed.",
+  },
+  {
+    // #157 B2: `new Intl.DateTimeFormat(...)` / `Intl.DateTimeFormat(...)` (no `new`) are both
+    // refused — construction itself is blocked, so no instance (and therefore no `.format()`/
+    // `.formatToParts()`/`.resolvedOptions()`) is ever reachable.
+    call: 'new Intl.DateTimeFormat()', // det:allow — guard-table literal, not a call
+    why: 'Intl.DateTimeFormat (and its format()/formatToParts()/resolvedOptions() methods) reads the wall clock the same way Date.now() does, the same replay-key hazard.',
+    instead: 'format a timestamp off run_status/run_result or args yourself, or pass a pre-formatted string in via args.',
   },
 ];
 
@@ -253,6 +261,29 @@ function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof M
   return new Proxy(CtxMath, {
     get(target, prop, receiver) {
       if (prop === 'random') return randomThrower;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
+
+/** #157 B2: `Intl.DateTimeFormat` (and its instance methods — `.format()`, `.formatToParts()`,
+ *  `.resolvedOptions()`) read the wall clock the same way `Date.now()`/`new Date()` do, defeating
+ *  the same resume-replay-key hazard — but `Intl` is a standard vm-context-default global (present
+ *  in any context regardless of what `sandbox` declares, same as `console`, issue #157 B3) that was
+ *  never added to `sandbox` nor shadowed, so it was reachable unguarded. Refuses CONSTRUCTING a
+ *  `DateTimeFormat` at all (a plain function, not an arrow — throws identically called with or
+ *  without `new`, so no instance, and therefore no instance method, is ever reachable) rather than
+ *  guarding individual methods; other `Intl` constructors (`NumberFormat`, `Collator`, …) carry no
+ *  wall-clock hazard and are left untouched, wrapping `CtxIntl` (this call's own vm context's native
+ *  `Intl`, not the embedding realm's) for the same reason `guardedMath` wraps `CtxMath`. */
+function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor): typeof Intl {
+  function dateTimeFormatThrower(): never {
+    throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Intl.DateTimeFormat is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+  }
+  Object.setPrototypeOf(dateTimeFormatThrower, null);
+  return new Proxy(CtxIntl, {
+    get(target, prop, receiver) {
+      if (prop === 'DateTimeFormat') return dateTimeFormatThrower;
       return Reflect.get(target, prop, receiver);
     },
   });
@@ -470,6 +501,7 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   // see vm.runInContext's own semantics note above `createGuardError`.
   const CtxDate = vm.runInContext('Date', context) as DateConstructor;
   const CtxMath = vm.runInContext('Math', context) as typeof Math;
+  const CtxIntl = vm.runInContext('Intl', context) as typeof Intl;
   const CtxError = vm.runInContext('Error', context) as ErrorConstructor;
   const CtxArray = vm.runInContext('Array', context) as ArrayConstructor;
   const CtxObject = vm.runInContext('Object', context) as ObjectConstructor;
@@ -498,6 +530,7 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     workflow: workflowFn,
     Date: guardedDate(CtxDate, CtxError),
     Math: guardedMath(CtxMath, CtxError),
+    Intl: guardedIntl(CtxIntl, CtxError),
   });
 
   let compiled: vm.Script;

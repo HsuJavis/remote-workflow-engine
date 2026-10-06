@@ -4,7 +4,7 @@ This engine has no bundled guidance skill — the tool schemas returned by `tool
 
 ## The sandbox API
 
-A workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`; `Date`/`Math` are GUARDED, see below):
+A workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`, `Intl`; `Date`/`Math` are GUARDED, see below):
 
 - `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string identifier (`/^[A-Za-z_][\w-]*$/`) matching a `meta.params.agents.<label>` declaration; `options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / `AGENT_OPTS_SHORTHAND` at registration, issue #154).
 - `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each returning `null` on its own thrown error rather than rejecting the whole call.
@@ -20,6 +20,7 @@ A workflow script runs inside a restricted VM context with exactly these globals
 - `Date.now()` — refused `DETERMINISM_GUARD`. resume replays agent() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call. Instead: read a timestamp off run_status/run_result, or pass one in via args.
 - `Math.random()` — refused `DETERMINISM_GUARD`. the same replay-key hazard as Date.now() — a random value baked into the key changes on every run. Instead: pass a seed in via args.
 - `new Date()` — refused `DETERMINISM_GUARD`. called with no arguments this reads the wall clock, the same hazard as Date.now(). Instead: pass an argument — new Date('2026-01-01') is allowed.
+- `new Intl.DateTimeFormat()` — refused `DETERMINISM_GUARD`. Intl.DateTimeFormat (and its format()/formatToParts()/resolvedOptions() methods) reads the wall clock the same way Date.now() does, the same replay-key hazard. Instead: format a timestamp off run_status/run_result or args yourself, or pass a pre-formatted string in via args.
 
 `setTimeout`, `fetch`, `require`, `process`, and `fs` are genuinely absent from this context (not merely shadowed) — standard `node:vm` behavior, unrelated to the two guards above. The actual security containment is two independent layers: every value this engine exposes into your script (including `Date`/`Math` above) is built natively in your script's own realm rather than the engine's, so there is no live reference back to engine internals to find; and separately, the per-run child PROCESS your script runs in is forked with an empty environment, so even a future gap in the first layer would not also be a secrets leak.
 
