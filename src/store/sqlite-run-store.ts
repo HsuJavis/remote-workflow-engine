@@ -434,7 +434,8 @@ export class SqliteRunStore implements RunStore {
   /** v24 (DES-152): filtered/paginated read behind `run_list` — `principal` is set by the FACADE
    *  from the caller's own id (never from args); a row with `principal IS NULL` is excluded by a
    *  `principal` filter (the cross-seam agreement with authz's null=ownerless rule). `limit`
-   *  defaults to 50, capped at 500. Uses `runs_name_status_created` (leading column `name`). */
+   *  defaults to 50, capped at 500; an explicit `0` returns `[]` (owner-acknowledged, issue #160).
+   *  Uses `runs_name_status_created` (leading column `name`). */
   async list(filter: RunListFilter = {}): Promise<RunSummary[]> {
     const clauses: string[] = [];
     const params: unknown[] = [];
@@ -450,8 +451,15 @@ export class SqliteRunStore implements RunStore {
     // promises. `Math.trunc` first (never bind a float), then clamp to `[1, 500]` — defense in
     // depth here for any in-process caller, in addition to the wire-level `integer`/`minimum`
     // schema on `run_list.limit` in tool-specs.ts which refuses the bad value earlier, typed.
+    //
+    // issue #160 BUG-2 follow-up (review D1-item1): an explicit `limit:0` meaning "return []" is
+    // PRE-EXISTING, owner-acknowledged behavior (issue #160's own DOC section), not a defect — it
+    // must NOT be floored up to 1 by this clamp. Only `0` is special-cased; every other
+    // non-positive/non-integer value still clamps to the positive floor below (that's the real
+    // ceiling-bypass/raw-error fix, untouched).
     const rawLimit = filter.limit ?? 50;
-    const limit = Math.max(1, Math.min(Math.trunc(rawLimit), 500));
+    const truncatedLimit = Math.trunc(rawLimit);
+    const limit = truncatedLimit === 0 ? 0 : Math.max(1, Math.min(truncatedLimit, 500));
     const rows = this._db.prepare(`
       SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by, r.error,
              (SELECT MIN(t.ts) FROM transitions t

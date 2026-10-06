@@ -877,13 +877,17 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_list', entity: 'run', key: null,
-    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that. `limit` must be a whole number >= 1 (max 500, larger values clamped); a non-integer or non-positive value is refused INVALID_ARGUMENT.",
+    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that. `limit` must be a whole number >= 0 (max 500, larger values clamped); `0` returns no rows (pre-existing, unchanged); a non-integer or negative value is refused INVALID_ARGUMENT.",
     // issue #160 BUG-2: `type:'number'` let a float (e.g. 1.5) straight through ajv, where the
     // store's own `Math.min(limit, 500)` bound it unmodified into a SQL `LIMIT ?`, and
-    // better-sqlite3 threw a raw, uncoded 'datatype mismatch' for it. `integer`+`minimum:1` refuses
+    // better-sqlite3 threw a raw, uncoded 'datatype mismatch' for it. `integer`+`minimum:0` refuses
     // it HERE, typed, before it ever reaches the store (the store also clamps defensively for any
     // non-wire caller — see sqlite-run-store.ts `list()`).
-    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', minimum: 1 } }),
+    // issue #160 BUG-2 follow-up (review D1-item1): `minimum` is `0`, not `1` — an explicit
+    // `limit:0` meaning "return []" is pre-existing, owner-acknowledged behavior (issue #160's own
+    // DOC section), a design choice the owner rules require be left unchanged. Only floats and
+    // negative values (the actual ceiling-bypass/raw-error defects) are refused.
+    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', minimum: 0 } }),
     outputSchema: OUT,
     errors: ['INVALID_ARGUMENT'] as ErrorCode[],
     seeAlso: [] as string[],

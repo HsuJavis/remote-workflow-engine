@@ -43,3 +43,25 @@ describe('SqliteRunStore.list({limit}) never reaches the raw SQL bind with a non
     expect(rows.length).toBeLessThan(10);
   });
 });
+
+// REPAIR (issue #160 BUG-2 follow-up, review D1-item1): commit 081bea5's own message documents
+// "limit:0 回 []" (an explicit limit of 0 returns an empty array) as PRE-EXISTING, owner-acknowledged
+// behavior — not a defect — and that commit's own text claims this was "left as-is". But the clamp
+// it actually shipped, `Math.max(1, Math.min(Math.trunc(limit), 500))`, floors EVERY non-positive
+// value (including an explicit 0) up to 1, so `list({limit: 0})` silently returns up to 1 row instead
+// of the documented `[]`. This is a behavior change to a design choice the owner rules require be
+// left untouched and merely flagged. The negative-limit clamp (the actual ceiling-bypass bug) must
+// still clamp to a positive floor — only an explicit `0` is special-cased to mean "no rows".
+describe('SqliteRunStore.list({limit: 0}) still returns [] — the pre-existing, owner-acknowledged "limit:0 means no rows" behavior must not be clamped away by the BUG-2 fix (issue #160 BUG-2 follow-up)', () => {
+  it('limit:0 returns an empty array, not 1 row', async () => {
+    await seedRuns(5);
+    const rows = await store.list({ limit: 0 });
+    expect(rows).toEqual([]);
+  });
+
+  it('limit:-1 (still a real bug: ceiling bypass) is clamped to a positive floor, NOT treated like 0', async () => {
+    await seedRuns(5);
+    const rows = await store.list({ limit: -1 });
+    expect(rows.length).toBeGreaterThan(0);
+  });
+});
