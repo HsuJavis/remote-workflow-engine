@@ -327,6 +327,26 @@ export async function runProbe(
 const LEGACY_HARNESS_DEFAULT: ProbeHarness = 'sdk';
 const KNOWN_HARNESSES: ReadonlySet<string> = new Set(['claude-agent-sdk', 'direct-fetch', 'pi', 'sdk', 'unknown']);
 
+/** Owner-approved improvement, issue #152: bump this whenever `classifyProbe`'s own classification
+ *  rule, or `runProbe`'s dispatch semantics (the prose/tools prompts, the model/caps/timeout wiring
+ *  that decides what gets asked and how the reply is judged), change in a way that could flip an
+ *  ALREADY-STORED probe's verdict. A stored row whose own recorded version differs from this constant
+ *  is treated as never probed — `ModelProbeStore.get`/`all` hide it (the SAME "filtered like a
+ *  mismatch" treatment issue #138 gives a cross-harness `harness` value) and `ModelProber.dueTargets`
+ *  therefore reports it due immediately, not after the normal `intervalMs` (default 7 days) ages it
+ *  out on its own. Before this existed, a probe-logic bug (e.g. the pi probe bug v0.37.4 fixed) left
+ *  WRONG verdicts sitting "fresh" until an operator manually re-ran `models_probe()`.
+ *  Starts at 1 deliberately: every row that exists before this column did necessarily predates ANY
+ *  version tracking at all, so the migration below backfills it BELOW this value — the exact "this
+ *  deploy refreshes them" the owner asked for, with no special-casing needed on top of the version
+ *  check itself. */
+export const PROBE_LOGIC_VERSION = 1;
+
+/** Below every real `PROBE_LOGIC_VERSION` on purpose — see that constant's own doc. Named separately
+ *  (never reusing a literal `0`) so a future reader can tell at a glance this is the documented
+ *  "predates versioning" floor, not an arbitrary starting version. */
+const PRE_VERSIONING_LOGIC_VERSION = 0;
+
 export class ModelProbeStore {
   private readonly _db: Database.Database;
   constructor(dbPath: string) {
@@ -338,6 +358,7 @@ export class ModelProbeStore {
       prose_ok INTEGER NOT NULL, tools_ok INTEGER NOT NULL, probed_at TEXT NOT NULL,
       prose_ms INTEGER NOT NULL, tools_ms INTEGER NOT NULL, detail TEXT NOT NULL,
       harness TEXT NOT NULL DEFAULT '${LEGACY_HARNESS_DEFAULT}',
+      logic_version INTEGER NOT NULL DEFAULT ${PRE_VERSIONING_LOGIC_VERSION},
       PRIMARY KEY (provider, model))`);
     // issue #138: a db that already existed before this column — an ADDITIVE migration (unlike the
     // `alias` hard-reset above): existing rows are PRESERVED, backfilled with the same documented
@@ -355,6 +376,16 @@ export class ModelProbeStore {
         // column is already there" cases (a genuine race, or this same check racing a PARALLEL
         // in-process no-op) with the identical "duplicate column name" message; anything else is a
         // real failure and must still surface, never silently swallowed.
+        if (!/duplicate column name/i.test((err as Error).message)) throw err;
+      }
+    }
+    // issue #152: the SAME additive-migration shape as `harness` just above, race-safety included —
+    // a db that already has `harness` but predates `logic_version` (every db from before this fix).
+    const cols3 = (this._db.prepare("PRAGMA table_info(model_probes)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!cols3.includes('logic_version')) {
+      try {
+        this._db.exec(`ALTER TABLE model_probes ADD COLUMN logic_version INTEGER NOT NULL DEFAULT ${PRE_VERSIONING_LOGIC_VERSION}`);
+      } catch (err) {
         if (!/duplicate column name/i.test((err as Error).message)) throw err;
       }
     }
@@ -381,22 +412,31 @@ export class ModelProbeStore {
     return row?.started_at;
   }
   put(r: ProbeResult): void {
-    this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    // issue #152: every write stamps the CURRENT `PROBE_LOGIC_VERSION` — `ProbeResult` itself carries
+    // no `logicVersion` field (it is a pure cache-invalidation fact about the CODE that produced this
+    // row, not an observation about the model, so it stays off the public shape `harness` is on).
+    this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
       r.provider, r.model, r.proseVerified ? 1 : 0, r.toolUseVerified ? 1 : 0, r.probedAt, r.latencyMs.prose, r.latencyMs.tools, r.detail,
-      r.harness ?? 'unknown',
+      r.harness ?? 'unknown', PROBE_LOGIC_VERSION,
     );
   }
+  /** issue #152: a row whose `logic_version` does not match the CURRENT `PROBE_LOGIC_VERSION` is
+   *  treated exactly like "never probed" — hidden here, at the one place every consumer (the
+   *  harness-filtered wrappers below, `dueTargets()`, `observed-stats.ts`) ultimately reads through,
+   *  so no caller needs its own version check. */
   get(provider: string, model: string): ProbeResult | undefined {
     const row = this._db.prepare('SELECT * FROM model_probes WHERE provider = ? AND model = ?').get(provider, model) as Row | undefined;
-    return row ? fromRow(row) : undefined;
+    return row && row.logic_version === PROBE_LOGIC_VERSION ? fromRow(row) : undefined;
   }
   all(): ProbeResult[] {
-    return (this._db.prepare('SELECT * FROM model_probes ORDER BY provider, model').all() as Row[]).map(fromRow);
+    return (this._db.prepare('SELECT * FROM model_probes ORDER BY provider, model').all() as Row[])
+      .filter((r) => r.logic_version === PROBE_LOGIC_VERSION)
+      .map(fromRow);
   }
   close(): void { this._db.close(); }
 }
 
-interface Row { provider: string; model: string; prose_ok: number; tools_ok: number; probed_at: string; prose_ms: number; tools_ms: number; detail: string; harness: string }
+interface Row { provider: string; model: string; prose_ok: number; tools_ok: number; probed_at: string; prose_ms: number; tools_ms: number; detail: string; harness: string; logic_version: number }
 function fromRow(r: Row): ProbeResult {
   return {
     provider: r.provider, model: r.model, proseVerified: r.prose_ok === 1, toolUseVerified: r.tools_ok === 1,

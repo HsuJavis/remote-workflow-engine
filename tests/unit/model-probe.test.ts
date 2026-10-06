@@ -29,6 +29,7 @@ import {
   toolProbeWarnings,
   probeEffectiveForHarness,
   harnessFilteredProbeLookup,
+  PROBE_LOGIC_VERSION,
   type ProbeResult,
 } from '../../src/models/model-probe.js';
 import { enrichModelEntry, type ModelEntry } from '../../src/models/model-catalog.js';
@@ -392,10 +393,17 @@ describe('ModelProbeStore (#73) — persisted so a restart keeps the last result
       legacy.close();
 
       const store = new ModelProbeStore(path);
-      // The pre-existing row survives (not dropped — this is an additive migration) and is
-      // backfilled with the documented default.
-      const row = store.get('ollama', 'qwen2.5:7b');
-      expect(row).toMatchObject({ detail: 'pre-harness-column row', harness: 'sdk' });
+      // The pre-existing row survives on disk (not dropped — this is an additive migration) and is
+      // backfilled with the documented default — verified with a raw query, not `store.get()`:
+      // issue #152 added a SECOND additive column (`logic_version`) that a row this old also
+      // predates, so `get()` now correctly treats it as never-probed (see the PROBE_LOGIC_VERSION
+      // describe block below) even though the harness backfill itself still happened underneath.
+      const raw = new Database(path, { readonly: true });
+      const rawRow = raw.prepare('SELECT * FROM model_probes WHERE provider = ? AND model = ?').get('ollama', 'qwen2.5:7b') as { detail: string; harness: string };
+      raw.close();
+      expect(rawRow).toMatchObject({ detail: 'pre-harness-column row', harness: 'sdk' });
+      // Hidden via the public API — predates `logic_version` too, so it counts as never probed.
+      expect(store.get('ollama', 'qwen2.5:7b')).toBeUndefined();
 
       // A fresh write still records its own real harness, unaffected by the default.
       store.put(RESULT);
@@ -406,6 +414,96 @@ describe('ModelProbeStore (#73) — persisted so a restart keeps the last result
       expect(reopened.get('ollama', 'qwen2.5:7b')!.harness).toBe('pi');
       reopened.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// Owner-approved improvement, issue #152: a probe row recorded by now-superseded classifyProbe/
+// runProbe logic must not stay "fresh" for intervalMs (default 7 days) just because its age alone
+// looks recent — PROBE_LOGIC_VERSION, stamped on every `put()`, is bumped whenever that logic changes;
+// a row whose own stored version differs is treated exactly like issue #138's cross-harness row:
+// hidden from get()/all() (never probed) and due immediately for the periodic prober.
+describe('ModelProbeStore PROBE_LOGIC_VERSION (issue #152) — a stale-logic-version row counts as never probed', () => {
+  it('a row written under an OLDER logic_version is hidden by get()/all(); a fresh put() under the current version is honoured', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-probe-logic-version-'));
+    try {
+      const path = join(dir, 'index.db');
+      const store = new ModelProbeStore(path);
+      store.put(RESULT); // stamps the CURRENT PROBE_LOGIC_VERSION
+      expect(store.get(RESULT.provider, RESULT.model)).toEqual(RESULT);
+      expect(store.all()).toHaveLength(1);
+
+      // Simulate a row written by a now-superseded classifyProbe/runProbe, before PROBE_LOGIC_VERSION
+      // was last bumped — forced directly in the db, the same technique the harness migration tests
+      // above use, since there is no public API to write a stale version on purpose.
+      const raw = new Database(path);
+      raw.prepare('UPDATE model_probes SET logic_version = ? WHERE provider = ? AND model = ?').run(PROBE_LOGIC_VERSION - 1, RESULT.provider, RESULT.model);
+      raw.close();
+
+      expect(store.get(RESULT.provider, RESULT.model)).toBeUndefined();
+      expect(store.all()).toEqual([]);
+      store.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('migrates a pre-existing db that predates the logic_version column by adding it with a stale default, preserving existing rows on disk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-probe-logic-version-migrate-'));
+    try {
+      const path = join(dir, 'index.db');
+      // A db from just before this column existed: harness column present, logic_version absent.
+      const legacy = new Database(path);
+      legacy.exec(`CREATE TABLE model_probes (
+        provider TEXT NOT NULL, model TEXT NOT NULL,
+        prose_ok INTEGER NOT NULL, tools_ok INTEGER NOT NULL, probed_at TEXT NOT NULL,
+        prose_ms INTEGER NOT NULL, tools_ms INTEGER NOT NULL, detail TEXT NOT NULL,
+        harness TEXT NOT NULL DEFAULT 'sdk',
+        PRIMARY KEY (provider, model))`);
+      legacy.prepare('INSERT INTO model_probes VALUES (?,?,?,?,?,?,?,?,?)').run(
+        'ollama', 'pre-version', 1, 1, '2026-01-01T00:00:00.000Z', 100, 200, 'pre-logic-version row', 'pi',
+      );
+      legacy.close();
+
+      const store = new ModelProbeStore(path); // must not throw; additive migration only
+      // Preserved on disk, backfilled with the documented stale default (below PROBE_LOGIC_VERSION).
+      const raw = new Database(path, { readonly: true });
+      const rawRow = raw.prepare('SELECT * FROM model_probes WHERE provider = ? AND model = ?').get('ollama', 'pre-version') as { detail: string; logic_version: number };
+      raw.close();
+      expect(rawRow.detail).toBe('pre-logic-version row');
+      expect(rawRow.logic_version).toBeLessThan(PROBE_LOGIC_VERSION);
+      // Hidden via the public API (never probed) and therefore due immediately for the prober — see
+      // the ModelProber.dueTargets() case below for the due-immediately half of this same guarantee.
+      expect(store.get('ollama', 'pre-version')).toBeUndefined();
+
+      // Idempotent: reopening an already-migrated db never re-throws "duplicate column name".
+      store.close();
+      const reopened = new ModelProbeStore(path);
+      expect(reopened.get('ollama', 'pre-version')).toBeUndefined();
+      // A fresh write for the SAME target now reads back normally, stamped with the current version.
+      reopened.put({ ...RESULT, provider: 'ollama', model: 'pre-version' });
+      expect(reopened.get('ollama', 'pre-version')!.detail).toBe(RESULT.detail);
+      reopened.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('ModelProber.dueTargets() treats a stale-logic-version row as due immediately, regardless of age', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-logic-version-due-'));
+    try {
+      const dbPath = join(workRoot, 'index.db');
+      const store = new ModelProbeStore(dbPath);
+      const clock = new FixedClock(new Date('2026-09-25T00:00:00.000Z'));
+      // Probed a mere second before "now" — nowhere near MODEL_PROBE_DEFAULTS.intervalMs (7 days) —
+      // so the ONLY thing that can make this due is the stale logic_version, not age.
+      store.put({ ...RESULT, provider: 'ollama', model: 'stale-logic', probedAt: '2026-09-24T23:59:59.000Z' });
+      const raw = new Database(dbPath);
+      raw.prepare('UPDATE model_probes SET logic_version = ? WHERE model = ?').run(PROBE_LOGIC_VERSION - 1, 'stale-logic');
+      raw.close();
+
+      const prober = new ModelProber({
+        gateway: recordingGateway('good').gw, store, workRoot, clock, config: MODEL_PROBE_DEFAULTS,
+        modelRefs: () => ['ollama/stale-logic'],
+      });
+      expect(prober.dueTargets().map((t) => `${t.provider}/${t.model}`)).toEqual(['ollama/stale-logic']);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });
 });
 
