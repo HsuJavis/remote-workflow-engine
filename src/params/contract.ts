@@ -333,6 +333,16 @@ function validateOneAgentSpec(
       if (err) return err;
     }
   }
+  // Issue #154 B3: every semantic check above validates `model.default` against the ENGINE's own
+  // concerns (catalog existence, format) — none of them check it against THIS SAME SPEC's own
+  // declared `enum`. A `default` outside the author's own `enum` registered fine, then the
+  // IDENTICAL value as a run-time override was refused `PARAM_OUT_OF_RANGE` — a self-contradictory
+  // contract. `checkValueAgainstSpec` is the SAME validator `args.*` defaults already go through
+  // (line ~472) for exactly this purpose; reused here, not re-typed.
+  if (typeof model.default === 'string') {
+    const ownBoundsErr = checkValueAgainstSpec(`agents.${label}.model.default`, model.default, model);
+    if (!ownBoundsErr.ok) return invalid(`agents.${label}.model`, ownBoundsErr.message);
+  }
 
   const effortErr = validateRequiredKeySpec(`agents.${label}.effort`, spec.effort);
   if (effortErr) return effortErr;
@@ -343,6 +353,12 @@ function validateOneAgentSpec(
   if (EFFORT_RANK[effort.default] > EFFORT_RANK[DEFAULT_CEILINGS.maxEffort]) {
     return invalid(`agents.${label}.effort`, `default exceeds the engine ceiling ${DEFAULT_CEILINGS.maxEffort}`);
   }
+  // Issue #154 B3: same asymmetry as model above — `isEffort`/the ceiling check never consult THIS
+  // SPEC's own `effort.enum` (e.g. an author narrowing the choices to `['medium','high']`).
+  {
+    const ownBoundsErr = checkValueAgainstSpec(`agents.${label}.effort.default`, effort.default, effort);
+    if (!ownBoundsErr.ok) return invalid(`agents.${label}.effort`, ownBoundsErr.message);
+  }
 
   const timeoutErr = validateRequiredKeySpec(`agents.${label}.timeoutMs`, spec.timeoutMs);
   if (timeoutErr) return timeoutErr;
@@ -352,6 +368,13 @@ function validateOneAgentSpec(
   }
   if (timeoutMs.default > DEFAULT_CEILINGS.maxTimeoutMs) {
     return invalid(`agents.${label}.timeoutMs`, `default exceeds the engine ceiling ${DEFAULT_CEILINGS.maxTimeoutMs}`);
+  }
+  // Issue #154 B3: same asymmetry again — only the ENGINE ceiling was ever checked; an author's own
+  // declared `min`/`max` on this same spec (e.g. `min: 70000`) never gated `.default` at
+  // registration, only a later override attempt (`PARAM_OUT_OF_RANGE`).
+  {
+    const ownBoundsErr = checkValueAgainstSpec(`agents.${label}.timeoutMs.default`, timeoutMs.default, timeoutMs);
+    if (!ownBoundsErr.ok) return invalid(`agents.${label}.timeoutMs`, ownBoundsErr.message);
   }
 
   if (spec.appendPrompt !== undefined) {
