@@ -31,6 +31,21 @@ export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: numb
  *  `BUDGET_EXCEEDED`, so a script now reads a closed-catalog code a `tools/list` reader can
  *  anticipate. `AgentCapError` is the one still surfacing as its class name (out of scope here,
  *  recorded so the next reader knows it is a leftover, not a design). */
+/** issue #162 A/B (defense in depth): `stderrTail` below is RAW text from the child's own stdio
+ *  pipe — if the child crashes for ANY reason (OOM, a real engine bug, a future change to
+ *  child-entry.ts that reintroduces an uncaught throw), Node's default uncaught-exception
+ *  reporting prints a stack trace through its own internal modules, which names absolute source
+ *  paths (this engine's own install path on the host it's running on) and the exact Node version —
+ *  implementation details that must never cross the trust boundary into a caller-visible ABORTED
+ *  message (a possibly-remote, possibly-untrusted caller). Scrubs unconditionally, whether or not
+ *  the crash was ever classified — the one place this content is surfaced to a caller. */
+export function sanitizeStderrTail(raw: string): string {
+  return raw
+    .replace(/node:internal\/[^\s:)]+/g, '<node internal>')
+    .replace(/(?:\/[\w.-]+)+\.(?:ts|js|mjs|cjs)(?=:\d+|\b)/g, '<path>')
+    .replace(/\bv\d+\.\d+\.\d+\b/g, '<node version>');
+}
+
 export function ipcErrorCode(err: unknown, fallback: string): string {
   if (err && typeof err === 'object') {
     const e = err as { code?: unknown; name?: unknown };
@@ -199,7 +214,7 @@ export class SandboxHost {
         // A killed/crashed child that never sent done/error (e.g. aborted mid-script). Include the
         // exit code/signal and the tail of the child's own stderr so a real crash (uncaught error,
         // OOM, determinism-guard throw) is diagnosable instead of opaque.
-        const detail = stderrTail.trim();
+        const detail = sanitizeStderrTail(stderrTail.trim());
         settle({
           error: {
             code: 'ABORTED',

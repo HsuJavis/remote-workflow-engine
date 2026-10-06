@@ -47,8 +47,41 @@ const pendingWorkflow = new Map<number, { resolve: (v: unknown) => void; reject:
 // real accounting as of that call) — never a hard-coded stub.
 let spentSoFar: Spend = ZERO_SPEND;
 
+// issue #162 A/B: the engine's documented return-value size cap (AUTHORING.md) — generous for an
+// ordinary summary/result object while bounding the IPC message Node has to serialize and the
+// parent has to buffer.
+const MAX_RESULT_BYTES = 10 * 1024 * 1024;
+
 function send(msg: unknown): void {
-  process.send?.(msg);
+  try {
+    process.send?.(msg);
+  } catch (e) {
+    // issue #162 A/B: `process.send()` throws SYNCHRONOUSLY when its argument is not
+    // JSON-serializable (a circular reference, a BigInt) — Node's own IPC 'json' serialization,
+    // with a raw stack trace through `node:internal/child_process/serialization` (file paths, line
+    // numbers, the running Node version: internal engine implementation details). Before this, that
+    // throw was never caught anywhere — every caller of `send()` is itself called from `main()`,
+    // which is invoked un-awaited (`void main(msg)` below) — so it became an UNHANDLED REJECTION in
+    // this child process, which Node's default handling can turn into a crash, printing that raw
+    // stack to stderr; `host.ts`'s `stderrTail` then spliced it verbatim into the caller-visible
+    // ABORTED message (a trust-boundary leak — see host.ts's `sanitizeStderrTail` for the second,
+    // defense-in-depth layer of this same fix). This generic catch covers EVERY outbound message
+    // (not just the script's own 'done' result) — an agent()/workflow() call's own opts/args are
+    // also script-authored values that could carry the same shape. Falls back to a SANITIZED,
+    // catalogued error carrying no stack/internal path; a second `process.send` failure (the
+    // sanitized object is a small plain literal and should never itself be unserializable) is
+    // swallowed — there is genuinely nothing more this process can do, and it still exits below.
+    const runId = (msg as { runId?: unknown } | null)?.runId;
+    try {
+      process.send?.({
+        t: 'error',
+        runId,
+        error: { code: 'RESULT_NOT_SERIALIZABLE', message: `a value sent to the parent is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}` },
+      });
+    } catch {
+      /* already sanitized; nothing more to do */
+    }
+  }
 }
 
 process.on('message', (msg: InMsg) => {
@@ -146,6 +179,24 @@ async function main(msg: StartMsg): Promise<void> {
 
   const result = await evaluateScript(msg.script, api);
   if (result.kind === 'done') {
+    // issue #162 A/B: an explicit pre-check (mirrors guards.ts's own MAX_SCRIPT_BYTES pattern) —
+    // computing `JSON.stringify` here ALSO catches a circular/BigInt return value with a controlled
+    // code+message for the single most common case (the script's own `return`), rather than relying
+    // only on `send()`'s generic catch above (which still covers every OTHER outbound message).
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(result.value) ?? 'null';
+    } catch (e) {
+      send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_NOT_SERIALIZABLE', message: `the returned value is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}` } });
+      process.exit(0);
+      return;
+    }
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    if (bytes > MAX_RESULT_BYTES) {
+      send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_TOO_LARGE', message: `the returned value is ${bytes} bytes, exceeding the ${MAX_RESULT_BYTES}-byte return-value cap` } });
+      process.exit(0);
+      return;
+    }
     send({ t: 'done', runId: msg.runId, result: result.value });
   } else {
     // v36 (DES-248): `refusalRef` hoisted to a SIBLING of `error` on the wire — `host.ts`'s

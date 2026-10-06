@@ -26,6 +26,8 @@ A workflow script runs inside a restricted VM context with exactly these globals
 
 The actual security containment is the per-run child PROCESS your script runs in, forked with an empty environment (no inherited secrets, store, or network handle) — `node:vm` is hygiene on top of that, closing specific known escapes (`.constructor.constructor`, a guard's own prototype chain, …) as they are found, not a boundary this engine claims is complete. Treat anything a script can reach as untrusted until it leaves the forked child.
 
+A script's own top-level `return` value (and an agent()/workflow() call's resolved value, which crosses the same boundary) must be JSON-serializable — no circular references, no BigInt — and under 10MB serialized; either violation is refused (`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a summary or a reference (an id, a CAS blob hash) instead of a large payload.
+
 ## Declaring the parameter contract
 
 **The script body is a bare async function body.** The statements you send as `script` ARE the body of an `async function` the engine wraps for you: `await` at the top level is fine, and a `return` returns the run result. Do not wrap it yourself — `export default async function () { … }`, a top-level `function`/`async function` STATEMENT, and any top-level `import` are refused `PARSE_ERROR` (which names the line and the construct). A `const` arrow function used as a thunk (for `parallel()`/`pipeline()`, or called back out by name) is fine — but an `agent()`/`phase()` call written inside ANY function (a `const`-bound arrow, a nested `function` declaration, …) that the script never demonstrably reaches is refused `SCRIPT_INVALID`, issue #154: the engine counts the call site as live and the run silently dispatches nothing. `export const meta = {…}` is the ONE exception to the no-wrapper rule, and it must be written exactly that way, as a literal object: dropping the `export` makes the whole declaration invisible to the engine, and every `agent()` label is then refused `AGENT_UNDECLARED`.
@@ -135,7 +137,7 @@ This deployment may instead be configured with `gateway:"pi"` in rwe.config.json
 
 ## Budget, concurrency, and how wide a fan-out really runs
 
-`parallel([a, b, c, ...])` dispatches every thunk, and this deployment runs up to **24** of them at a time (`runConcurrency`, operator-configurable). Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.
+`parallel([a, b, c, ...])` dispatches every thunk, and this deployment runs up to **24** of them at a time (`runConcurrency`, operator-configurable). Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated. This applies identically whether the fanned-out thunks call `agent()` or nested `workflow()` — a wide `parallel()` of nested `workflow()` calls is throttled by its own same-sized pool, never left to fork every child process at once (issue #163).
 
 `run_start`'s `budget` takes TWO independent limits — `{usd?, tokens?}` — either of which may be omitted or `null` for unbounded. Each is a **stop-dispatching signal, not a hard ceiling**, and this is the honest description of what the engine can enforce. Before each dispatch it asks one question per armed limit: has this run already spent it? If yes, the call is refused `BUDGET_EXCEEDED`; if no, it goes. What a call will cost cannot be known before it finishes, so calls already in flight when a limit runs out still complete — a run can therefore overshoot EITHER limit by up to one concurrency window (24 x one call's cost). Size a budget for the whole workflow, not per call.
 
@@ -287,6 +289,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `AGENT_DECLARED_NOT_IN_SCRIPT` — params.agents declares a label no agent() call in the script uses
 - `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds
 - `PARAM_OUT_OF_RANGE` — a declared or overridden parameter value is outside its allowed range
+- `INVALID_SCHEMA` — an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error
 - `PARAM_LOCKED` — a caller override targets a key the author locked (prompt/allowedTools/bash/skills/mcp/workdir/cwd)
 - `PARAM_UNKNOWN` — a caller override names a parameter the contract does not declare
 - `UNKNOWN_AGENT_LABEL` — a caller override names an agent label the contract does not declare
@@ -304,6 +307,9 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `INVALID_NAME` — the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\', not '.' or '..', at most 128 characters
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
 - `UNKNOWN_RUN_PLACEHOLDER` — a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run's id) are supported
+- `ITEM_CAP_EXCEEDED` — parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which
+- `RESULT_NOT_SERIALIZABLE` — an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values
+- `RESULT_TOO_LARGE` — an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload
 
 ## Provisioning skills and MCP servers: roles, config shapes, and the trust boundary
 

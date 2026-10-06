@@ -84,4 +84,28 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
     expect(ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint).toContain('kernel.apparmor_restrict_unprivileged_userns=0');
     expect(ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint).toContain('bwrap-userns-restrict');
   });
+
+  // issue #163 B2: SCRIPT_ERROR was thrown at two real sites (guards.ts's uncaught-throw fallback,
+  // and toErr()'s own fallback) for years, but was never a catalog key — so `toErrorCode` silently
+  // flattened it to INTERNAL_ERROR the instant it crossed `_handleWorkflowRequest`'s mapping. RED
+  // before the fix: ERROR_CATALOG has no SCRIPT_ERROR key, so toErrorCode('SCRIPT_ERROR') returns
+  // 'INTERNAL_ERROR', not 'SCRIPT_ERROR'.
+  it('[#163 B2] toErrorCode round-trips SCRIPT_ERROR as itself, never degrading to INTERNAL_ERROR', () => {
+    expect(Object.keys(ERROR_CATALOG)).toContain('SCRIPT_ERROR');
+    expect(toErrorCode('SCRIPT_ERROR')).toBe('SCRIPT_ERROR');
+  });
+
+  // issue #163 DOC: ITEM_CAP_EXCEEDED (guards.ts parallel()/pipeline()) has the exact same gap.
+  it('[#163 DOC] toErrorCode round-trips ITEM_CAP_EXCEEDED as itself, never degrading to INTERNAL_ERROR', () => {
+    expect(Object.keys(ERROR_CATALOG)).toContain('ITEM_CAP_EXCEEDED');
+    expect(toErrorCode('ITEM_CAP_EXCEEDED')).toBe('ITEM_CAP_EXCEEDED');
+  });
+
+  // issue #162 item C: a non-object schema crashed ajv.compile uncaught; agent-executor.ts now
+  // catches it and throws a catalogued INVALID_SCHEMA — pinned here at the unit level, same as the
+  // other two gap-closing cases above.
+  it('[#162 C] INVALID_SCHEMA is a real catalog member, see: workflow_authoring_guide', () => {
+    expect(Object.keys(ERROR_CATALOG)).toContain('INVALID_SCHEMA');
+    expect(ERROR_CATALOG.INVALID_SCHEMA.see).toBe('workflow_authoring_guide');
+  });
 });

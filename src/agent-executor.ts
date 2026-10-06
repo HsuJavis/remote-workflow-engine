@@ -1,5 +1,6 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
+import type { ValidateFunction } from 'ajv';
 import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps, Tokens } from './types.js';
 import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
@@ -876,7 +877,27 @@ export class AgentExecutor implements AgentSpawner {
 
     // D-V4: schema present → real JSON-schema validation with bounded retry-on-mismatch
     // (never a type-cast passthrough). No schema → single attempt, final text.
-    const validate = req.opts.schema ? ajv.compile(req.opts.schema as object) : undefined;
+    // issue #162 item C: `ajv.compile` throws SYNCHRONOUSLY for a non-object/non-boolean schema
+    // (e.g. a string) — Ajv's own `schema must be object or boolean`. Before this, that throw
+    // propagated out of `_runTracked` with no try/catch, AFTER `markQueued`/`markRunning` had
+    // already recorded this agent as 'running' and BEFORE any `_sink.capture(...)` terminal call —
+    // leaving an orphan transcript record stuck at `running` forever. Same pre-dispatch-guard shape
+    // as the `effort`/`agentType` guards immediately above: capture a terminal refusal, then throw.
+    let validate: ValidateFunction | undefined;
+    if (req.opts.schema) {
+      try {
+        validate = ajv.compile(req.opts.schema as object);
+      } catch (e) {
+        const detail = `INVALID_SCHEMA: agent()'s schema option is not a valid JSON Schema: ${e instanceof Error ? e.message : String(e)}`;
+        await this._sink.capture(
+          req.runId,
+          { agentId: req.agentId, label: req.opts.label },
+          { ok: false, provider: '', reason: 'terminal', detail },
+          this._clock.isoNow(),
+        );
+        throw codedError('INVALID_SCHEMA', detail);
+      }
+    }
     const attempts = validate ? SCHEMA_RETRY_ATTEMPTS : 1;
     // D-V4 hardening: the engine validates the agent's FINAL TEXT as JSON (no injected
     // StructuredOutput tool), so — especially for OpenAI models, which after a multi-turn tool loop

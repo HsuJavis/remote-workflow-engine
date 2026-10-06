@@ -823,7 +823,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'with an empty environment (no inherited secrets, store, or network handle) — `node:vm` is ' +
         'hygiene on top of that, closing specific known escapes (`.constructor.constructor`, a ' +
         'guard\'s own prototype chain, …) as they are found, not a boundary this engine claims is ' +
-        'complete. Treat anything a script can reach as untrusted until it leaves the forked child.',
+        'complete. Treat anything a script can reach as untrusted until it leaves the forked child.\n\n' +
+        "A script's own top-level `return` value (and an agent()/workflow() call's resolved value, " +
+        'which crosses the same boundary) must be JSON-serializable — no circular references, no ' +
+        "BigInt — and under 10MB serialized; either violation is refused "
+        + '(`RESULT_NOT_SERIALIZABLE` / `RESULT_TOO_LARGE`) rather than crashing the run. Return a ' +
+        'summary or a reference (an id, a CAS blob hash) instead of a large payload.',
     ),
   );
 
@@ -1148,7 +1153,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // interacting with fan-out width at all.
       `\`parallel([a, b, c, ...])\` dispatches every thunk, and this deployment runs up to ` +
         `**${ceilings.runConcurrency}** of them at a time (\`runConcurrency\`, operator-configurable). ` +
-        'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.\n\n' +
+        'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated. ' +
+        'This applies identically whether the fanned-out thunks call `agent()` or nested `workflow()` ' +
+        '— a wide `parallel()` of nested `workflow()` calls is throttled by its own same-sized pool, ' +
+        'never left to fork every child process at once (issue #163).\n\n' +
         "`run_start`'s `budget` takes TWO independent limits — `{usd?, tokens?}` — either of which " +
         'may be omitted or `null` for unbounded. Each is a **stop-dispatching signal, not a hard ' +
         'ceiling**, and this is the honest description of what the engine can enforce. Before each ' +

@@ -167,6 +167,12 @@ export const ERROR_CATALOG = {
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
   PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
+  // issue #162 item C: an agent()'s `schema` option is not a valid JSON Schema (e.g. a string, or
+  // any shape Ajv itself rejects at compile time, such as `schema must be object or boolean`) — a
+  // refused, terminal, RECORDED dispatch (same pre-dispatch-guard shape as PARAM_OUT_OF_RANGE/
+  // PARAM_UNKNOWN just above/below in agent-executor.ts), never an uncaught engine-side crash that
+  // leaves the agent's transcript record stuck at `running` forever.
+  INVALID_SCHEMA: { see: 'workflow_authoring_guide', hint: "an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error" },
   // issue #89 item 1: rendered from LOCKED_KEYS itself — never re-typed — so this hint cannot
   // drift from the constant the validator actually enforces (it had: six names here, omitting
   // `bash`, against LOCKED_KEYS's real seven).
@@ -285,6 +291,26 @@ export const ERROR_CATALOG = {
   // ACCOUNT_PENDING_APPROVAL ('none' role) semantics a human principal gets — a service account's
   // role is never 'none', so the two refusals must stay visibly distinct on the wire.
   SERVICE_ACCOUNT_DISABLED: { see: null, hint: 'this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one' },
+
+  // issue #163 (B2/DOC): two codes that were thrown for years (guards.ts's parallel()/pipeline()
+  // item-cap refusal, and toErr()'s own uncaught-throw fallback) but were never catalog members —
+  // at TOP level this was invisible (the top-level completion path never runs a thrown error
+  // through toErrorCode() at all), but the instant either code crosses a nested workflow() boundary
+  // (_handleWorkflowRequest's `toErrorCode(err.code)`), an unrecognized string folds to
+  // INTERNAL_ERROR and the child's real failure (its own business-logic throw, or its own item-cap
+  // refusal) is hidden behind an engine-fault code. Adding both here is a closed-catalog-membership
+  // fix only — no call site, no toErrorCode()/toErrEnvelope() logic, and no throw-site code
+  // assignment changes.
+  SCRIPT_ERROR: { see: null, hint: "the script itself threw an uncaught error (not an engine refusal); at a nested workflow() frame this is the CHILD workflow's own thrown error, not a fault in the engine" },
+  ITEM_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which' },
+  // issue #162 A/B: an agent()/workflow() script's RETURN value that cannot cross the sandbox's
+  // child->parent IPC boundary — either because it is not JSON-serializable (a circular reference,
+  // a BigInt) or because it exceeds the engine's return-value size cap (child-entry.ts). Before
+  // this, the child's own uncaught serialization throw escaped as an unhandled rejection and could
+  // crash the child with a raw Node-internal stack trace, surfaced to the caller as an opaque
+  // ABORTED with a leaked internal path/Node version in the message.
+  RESULT_NOT_SERIALIZABLE: { see: 'workflow_authoring_guide', hint: 'an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values' },
+  RESULT_TOO_LARGE: { see: 'workflow_authoring_guide', hint: "an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload" },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;
