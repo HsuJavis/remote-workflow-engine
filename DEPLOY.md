@@ -995,11 +995,19 @@ Read/Bash/Glob 就讀得到，且派工結束後也不會清掉；現在的私�
 這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
 usage}`——不要用這份文件推測，直接查 `system_info`。**issue #150 修正（2026-10-06）**：`effort` 現在是
 per-model、不是 per-provider 的事實——`run_agent_log.harness.effortApplied` 只在目標 model 的 catalog
-列真的宣告支援 reasoning 時才回報 `applied:true`，否則 `{applied:false, reason:'model does not
-support reasoning'}`（例如 `openrouter/openai/gpt-4.1`），而且這種情況下 pi 子行程**完全不會**送出
-`reasoning` 欄位（不是送一個會被忽略的值）。`models_list` 的 `effortAppliedOnTransport` 同步變成
-per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看該列自己的
-`capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。
+列真的**明確宣告**（`capabilities.reasoning.supported === true`）支援 reasoning 時才回報
+`applied:true`。catalog 明確宣告「不支援」時（例如 `openrouter/openai/gpt-4.1` 的
+`supported_parameters` 沒有 `reasoning`）回報 `{applied:false, reason:'model does not support
+reasoning'}`，且 pi 子行程**完全不會**送出 `reasoning` 欄位（不是送一個會被忽略的值）。`models_list` 的
+`effortAppliedOnTransport` 同步變成 per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看
+該列自己的 `capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。**issue #153 L3
+修正（2026-10-07）**：catalog 對這個 model **完全沒說**（`reasoning:'unknown'`，或這次呼叫根本沒拿到
+任何 pin）以前會回報 `applied:true`（維持 issue #150 之前「假設支援」的舊預設），跟同一列在
+`models_list.effortAppliedOnTransport` 的保守 `false` 自相矛盾——兩邊現在都用同一個嚴格判斷
+（`=== true`），這種「不知道」的情況改回報 `{applied:false, reason:'model reasoning support
+unknown'}`。**只有這個回報改了**：pi 子行程的實際送出行為不變——對一個 catalog 沒表態的 model，pi
+依然會嘗試把 `reasoning` 欄位送上線（賭這個 model 可能真的支援、只是 catalog 沒登記），不確定的只是
+「有沒有真的生效」這個聲稱，不是要不要嘗試。
 
 **issue #151 調查結論（2026-10-06；anthropic/* 未找到程式缺陷，google/* 尚未查明）**：有 agent 回報 `openrouter/anthropic/*` 與
 `openrouter/google/*` 在 pi 下 `cacheRead`/`cacheWrite` 恆為 0。實測（`tests/acceptance/

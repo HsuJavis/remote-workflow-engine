@@ -517,7 +517,13 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     const f1 = fakeChild();
     const gw1 = new PiGatewayClient({ spawnChild: (() => f1.child) as never, entryPath: '/fake/entry.ts', secretSource: { resolve: () => 'fake-key' } });
     let harness1: any;
-    const p1 = gw1.invoke(req({ opts: { model: 'openrouter/openai/gpt-4.1', effort: 'high' } as AgentOpts, onHarness: async (h, applied) => { harness1 = { h, applied }; } }));
+    // issue #153 L3: `applied:true` now requires a CONFIRMED catalog pin (`reasoning: true`), not
+    // merely the absence of an explicit `false` — this test asserts the true-path, so it pins one.
+    const p1 = gw1.invoke(req({
+      opts: { model: 'openrouter/openai/gpt-4.1', effort: 'high' } as AgentOpts,
+      caps: { reasoning: true, tools: true, source: 'upstream' },
+      onHarness: async (h, applied) => { harness1 = { h, applied }; },
+    }));
     await new Promise((r) => setTimeout(r, 10));
     f1.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
     f1.exit(0);
@@ -565,10 +571,16 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(sentConfig.model).toEqual({ provider: 'openrouter', model: 'openai/gpt-4.1', reasoningSupported: false });
   });
 
-  // A model the catalog said NOTHING about ('unknown', or no caps pinned at all) keeps the pre-#150
-  // behavior of assuming support — never a guessed false negative that would strip the dial from a
-  // genuinely reasoning-capable model whose catalog row lacks `supported_parameters` (issue #150).
-  it('keeps effortApplied:true when the catalog caps are "unknown" rather than an explicit false (issue #150)', async () => {
+  // issue #150: a model the catalog said NOTHING about ('unknown', or no caps pinned at all) keeps
+  // assuming support ON THE WIRE — the child's model registration still carries
+  // `reasoningSupported:true`, never a guessed false negative that would strip the dial from a
+  // genuinely reasoning-capable model whose catalog row lacks `supported_parameters`.
+  // issue #153 L3: but the REPORT of whether it landed must NOT claim `applied:true` for this same
+  // unconfirmed case — that disagreed with `models_list`'s own `effortAppliedOnTransport` for the
+  // identical row (model-catalog.ts's `capabilities.reasoning.supported === true`, strict), so a
+  // caller comparing the two fields during a call saw them contradict each other. Both now read
+  // 'unknown' the same conservative way: attempted on the wire, reported unverified.
+  it('attempts reasoning on the wire but reports effortApplied as unverified ("model reasoning support unknown") when the catalog caps are "unknown" (issue #153 L3)', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts', secretSource: { resolve: () => 'fake-key' } });
     let harness: any;
@@ -581,7 +593,28 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
     f.exit(0);
     await promise;
-    expect(harness.applied).toEqual({ applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: 'high' });
+    expect(harness.applied).toEqual({ applied: false, reason: 'model reasoning support unknown' });
+    expect(harness.h.effortApplied).toEqual({ reason: 'model reasoning support unknown' });
+    // The wire ATTEMPT is unaffected by this report-only fix — the child still registers
+    // `reasoningSupported:true` for an unconfirmed (not explicitly-false) model, so a genuinely
+    // reasoning-capable but undeclared model never silently loses its effort dial.
+    const sentConfig = JSON.parse(f.stdinWritten.join('').trim().split('\n')[0]!);
+    expect(sentConfig.model).toEqual({ provider: 'openrouter', model: 'some/model', reasoningSupported: true });
+  });
+
+  // No caps pinned at all (absent `caps`, never even 'unknown') must read exactly like 'unknown' —
+  // the same `req.caps ?? UNKNOWN_CAPS` fail-safe the sdk gateway's own `wireEffort()` call sites
+  // already use (client.ts, claude-agent-sdk-client.ts) — never a THIRD opinion for "no pin at all".
+  it('no caps pinned at all reports effortApplied the same way as an explicit "unknown" pin (issue #153 L3)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts', secretSource: { resolve: () => 'fake-key' } });
+    let harness: any;
+    const promise = gw.invoke(req({ opts: { model: 'openrouter/some/model', effort: 'high' } as AgentOpts, onHarness: async (h, applied) => { harness = { h, applied }; } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    expect(harness.applied).toEqual({ applied: false, reason: 'model reasoning support unknown' });
   });
 
   it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
