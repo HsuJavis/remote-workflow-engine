@@ -276,6 +276,34 @@ describe('PiGatewayClient — timeout path (rest of slice f)', () => {
       expect(result.detail).toBeDefined();
       expect(result.detail).toContain('attempt 1/1');
       expect(result.detail).toContain('timed out after 30ms');
+      // issue #153 L4: zero turns completed before the kill signal — the detail must say so
+      // accurately, never the old blanket "no response from model" that read the same whether zero
+      // or several turns had already completed.
+      expect(result.detail).toContain('before the first response');
+      expect(result.detail).not.toContain('completed turn');
+    }
+  });
+
+  // issue #153 L4: before this fix, a timeout AFTER one or more completed turns (a tool call and its
+  // result, say) still said "no response from model" — false, since the model clearly had responded
+  // at least once. The detail must name how many turns actually completed.
+  it('a timeout after completed turns names the turn count, never the blanket "no response from model" (issue #153 L4)', async () => {
+    const f = fakeChild();
+    const spawnChild = vi.fn(() => f.child as never);
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', timeoutMs: 30 });
+    const promise = gw.invoke(req());
+    f.sendLine({ t: 'message_end', seq: 1, text: 'turn one', usage: { input: 10, output: 3, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.sendLine({ t: 'message_end', seq: 2, text: 'turn two', usage: { input: 5, output: 2, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    await vi.waitFor(() => expect(f.child.kill).toHaveBeenCalled(), { timeout: 2000 });
+    f.exit(null);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('timeout');
+      expect(result.tokens).toEqual({ input: 15, output: 5, cacheRead: 0, cacheWrite: 0 });
+      expect(result.detail).toContain('after 2 completed turns');
+      expect(result.detail).not.toContain('no response from model');
+      expect(result.detail).not.toContain('before the first response');
     }
   });
 

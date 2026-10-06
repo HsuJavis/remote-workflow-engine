@@ -35,6 +35,12 @@ export function classifyTransport(cfg: McpServerConfig): TransportKind {
 
 export type McpProbeResult = { ok: true } | { ok: false; code: string; message: string };
 
+// issue #159 (DOC): exported so a caller that needs to report UNSUPPORTED_TRANSPORT WITHOUT ever
+// calling `probe()` (asset-sync.ts's push(), which must classify the transport BEFORE the egress
+// check — see that file's own comment) uses the exact same literal, never a second hand-typed copy
+// that could drift from the one `RealMcpProbe.probe()` itself returns below.
+export const UNSUPPORTED_TRANSPORT_MESSAGE = 'Not a server-runnable MCP transport (remote-http or npx-stdio only).';
+
 /** Injected port: `probe()` resolves ok/reject for a server-runnable transport. Never called for
  *  an already-`'unsupported'` config — the composition-root wiring gates on `classifyTransport`
  *  first (DES-020). */
@@ -67,7 +73,7 @@ export class RealMcpProbe implements McpProbe {
   async probe(cfg: McpServerConfig): Promise<McpProbeResult> {
     const kind = classifyTransport(cfg);
     if (kind === 'unsupported') {
-      return { ok: false, code: 'UNSUPPORTED_TRANSPORT', message: 'Not a server-runnable MCP transport (remote-http or npx-stdio only).' };
+      return { ok: false, code: 'UNSUPPORTED_TRANSPORT', message: UNSUPPORTED_TRANSPORT_MESSAGE };
     }
     if (kind === 'remote-http') return this._probeHttp(cfg.url!);
     return this._probeStdioConfig(cfg);

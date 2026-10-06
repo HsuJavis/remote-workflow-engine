@@ -908,6 +908,20 @@ gateway 設了 `RWE_SECRET_OPENROUTER_API_KEY` 都會生效。pi 下解析出來
   與營運者的 `sandbox.allowReadPaths` 無關——**不需要營運者動作**，列在這裡是為了讓看到 Bash 逾時
   又查不出原因的人知道這個歷史。
 
+**Bash 的讀取圍籠：跟 `gateway:"sdk"` 共用同一份 `buildBashConfinement()` 政策，不是另一套、也不是
+整個主機檔案系統都拒讀**。圍籠生效時（§1c(e) 量到 `confined`），pi 的 confined Bash 走的是 §1c(f)
+說的那份 `denyRead`：**引擎自己整個家目錄（`$HOME`）+ 整個 `workRoot`**，`allowRead` 再把這次派工
+自己的工作目錄、`sandbox.allowHostPaths`、以及家目錄內的工具鏈重新開放——跟 sdk gateway 一字不差，
+兩個 gateway 呼叫的是同一個函式（`src/gateway/bash-confinement.ts`）。**沒有列進 `denyRead` 的主機
+路徑（例如 `/etc/hostname`、`/usr`、系統層的 `/tmp`）依然可讀**，這不是漏洞、是刻意不做的設計
+（業主裁決：只鏡射 sdk 既有的政策，不另外發明一套「整個 Bash 都關進 workspace」的更嚴格圍籠）。
+`Bash` 從不丟 `PATH_ESCAPES_WORKSPACE`（那是 Read/Write/Edit/Glob/Grep/LS 這五個檔案工具專屬的 JS
+層檢查）——讀到圍籠外的東西失敗樣貌是 shell 層的一般錯誤（`cat`：`No such file or directory`；寫入
+是 `EROFS`），範圍是 `$HOME`+`workRoot`，不是「workspace 以外一律擋」，見本文件 §6 該代碼那一列。
+真機驗證：`tests/acceptance/pi-harness-bash-confinement-real.test.ts`（真 bwrap/socat + 本機 Ollama
+`qwen2.5:7b`）——自己的 workspace 可讀、另一個 run 的 workspace 回 ENOENT、`$HOME` 底下種的檔案讀不到，
+`node --version`／`git --version`（工具鏈）仍然正常執行。
+
 **已知的網路姿態落差（尚未解決，記在這裡供日後追蹤）**：pi 路徑的 Bash 網路政策是「全部允許」
 （透過一個永遠回答「允許」的 ask-callback 達成，因為 srt 的網路欄位是必填，留空等於全部拒絕）——
 對外部網域（`curl https://example.com` 這類）這次迭代已經用真實主機驗證過確實可行。但 srt 只要
@@ -981,11 +995,18 @@ Read/Bash/Glob 就讀得到，且派工結束後也不會清掉；現在的私�
 這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
 usage}`——不要用這份文件推測，直接查 `system_info`。**issue #150 修正（2026-10-06）**：`effort` 現在是
 per-model、不是 per-provider 的事實——`run_agent_log.harness.effortApplied` 只在目標 model 的 catalog
-列真的宣告支援 reasoning 時才回報 `applied:true`，否則 `{applied:false, reason:'model does not
-support reasoning'}`（例如 `openrouter/openai/gpt-4.1`），而且這種情況下 pi 子行程**完全不會**送出
-`reasoning` 欄位（不是送一個會被忽略的值）。`models_list` 的 `effortAppliedOnTransport` 同步變成
-per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看該列自己的
-`capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。
+列真的**明確宣告**（`capabilities.reasoning.supported === true`）支援 reasoning 時才回報
+`applied:true`。catalog 明確宣告「不支援」時（例如 `openrouter/openai/gpt-4.1` 的
+`supported_parameters` 沒有 `reasoning`）回報 `{applied:false, reason:'model does not support
+reasoning'}`，且 pi 子行程**完全不會**送出 `reasoning` 欄位（不是送一個會被忽略的值）。`models_list` 的
+`effortAppliedOnTransport` 同步變成 per-model、harness-aware：pi 下 openrouter 列是否算 applied 要看
+該列自己的 `capabilities.reasoning.supported`，ollama 兩種 gateway 下都沒有這個旋鈕。catalog 對這個
+model **完全沒說**（`reasoning:'unknown'`，或這次呼叫根本沒拿到任何 pin）時，`effortApplied` 也回報
+`{applied:false, reason:'model reasoning support unknown'}`——跟 `models_list.effortAppliedOnTransport`
+用的是同一個嚴格判斷（`capabilities.reasoning.supported === true`），兩邊永遠一致，不會一邊說
+applied 一邊說沒有。**這個回報跟實際送出行為是兩回事**：pi 子行程對一個 catalog 沒表態的 model
+依然會嘗試把 `reasoning` 欄位送上線（賭這個 model 可能真的支援、只是 catalog 沒登記）——不確定的只是
+「有沒有真的生效」這個聲稱，不是要不要嘗試。
 
 **issue #151 調查結論（2026-10-06；anthropic/* 未找到程式缺陷，google/* 尚未查明）**：有 agent 回報 `openrouter/anthropic/*` 與
 `openrouter/google/*` 在 pi 下 `cacheRead`/`cacheWrite` 恆為 0。實測（`tests/acceptance/
@@ -1038,7 +1059,7 @@ Bash 全部拒絕派工（引擎刻意不會去刪它不確定擁有權的主機
 | `SANDBOX_UNAVAILABLE` | srt 初始化失敗，或產生的呼叫不是真正的 bwrap 呼叫 | 確認主機有裝 `bwrap`/`socat`，且有一支可用的 ripgrep-capable 執行檔在路徑上（通常引擎會自動冒充，見上方「主機依賴」一節） |
 | `BASH_READONLY_UNENFORCEABLE` | `agent()` 宣告 `bash:'readonly'`，但這台部署的開機圍籠探測量到 unconfined，或這次呼叫沒有已知的 workspace root | 修好主機圍籠（見「安全模型」的 remediation），或這次呼叫不要宣告 `bash:'readonly'` |
 | `OPENROUTER_AUTH_MISSING` | 要送 openrouter/* model 時找不到任何 OpenRouter key | 設定 `RWE_SECRET_OPENROUTER_API_KEY`（優先）或裸 `OPENROUTER_API_KEY` |
-| `PATH_ESCAPES_WORKSPACE` | 檔案工具（Read/Write/Edit/Glob/Grep/LS/Bash）解析出的路徑跑到 run 自己的 workspace 外面（含 workspace 內放的符號連結指到外面） | 作者檢查 script/工具呼叫為何會引用 workspace 外的路徑；這是圍籠本身的設計，不是可以關掉的選項 |
+| `PATH_ESCAPES_WORKSPACE` | 檔案工具（Read/Write/Edit/Glob/Grep/LS，**不含** Bash）解析出的路徑跑到 run 自己的 workspace 外面（含 workspace 內放的符號連結指到外面） | 作者檢查 script/工具呼叫為何會引用 workspace 外的路徑；這是圍籠本身的設計，不是可以關掉的選項。`Bash` 不是走這條 JS 層檢查——它的圍籠是核心層沙箱（見下方「安全模型」一節），讀到 workspace 外面時失敗樣貌是一般 shell 層錯誤（例如 `No such file or directory`），不是這個代碼，範圍也不是「workspace 外一律擋」，而是 deny `$HOME` 與整個 workRoot（系統工具鏈與 operator 授權的 host 路徑仍可讀） |
 | `MCP_SERVER_CONFIG_INVALID` | 宣告的 MCP server 解析後的設定沒有可執行的 transport（既不是 `{type:'http',url}` 也不是 `{command}`） | 檢查當初 `workspace_push({kind:"mcp"})` 寫入的設定內容 |
 | `MODEL_REGISTRATION_FAILED` | pi 自己的 `ModelRuntime` 沒能註冊這次派工的 openrouter/ollama model 物件 | 通常是暫時性的供應端問題；重試，並對照 `models_list` 核對確切的 ref 字串 |
 

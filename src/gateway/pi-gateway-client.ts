@@ -664,10 +664,21 @@ export class PiGatewayClient implements GatewayClient {
     // (`Caps.reasoning === false`, e.g. openrouter/openai/gpt-4.1's `supported_parameters` omitting
     // 'reasoning') — undefined/'unknown' (no pin, or the catalog said nothing) keeps the pre-#150
     // default of assuming support, so a reasoning-capable model whose catalog row never declared
-    // `supported_parameters` never silently loses its effort dial. The SAME fact drives both the
-    // child's model registration (below) and `effortApplied` (further down) — one computation, never
-    // two opinions that could disagree.
+    // `supported_parameters` never silently loses its effort dial. This is the WIRE-ATTEMPT decision
+    // only (whether the child's model registration puts `reasoning:true` on pi-ai's model object at
+    // all) — `effortApplied`'s own REPORT of whether it landed is a separate, stricter question
+    // (`reasoningConfirmed` below), on purpose: attempting it for an undeclared model is a reasonable
+    // bet, CLAIMING it worked is not, until the catalog actually says so.
     const reasoningSupported = req.caps?.reasoning !== false;
+    // issue #153 L3: `effortApplied` must agree with `models_list`'s own `effortAppliedOnTransport`
+    // (model-catalog.ts's `e.capabilities?.reasoning?.supported === true`, and the sdk gateway's own
+    // `wireEffort()`/`UNKNOWN_CAPS` — both already treat undefined/'unknown' as NOT confirmed, never
+    // as `applied:true`) — strict `=== true`, not `!== false`. Before this fix, `reasoningSupported`
+    // above (deliberately permissive, for the wire attempt) was reused for this report too, so an
+    // UNKNOWN-reasoning model's `run_agent_log.harness.effortApplied` claimed `applied:true` while
+    // the SAME model's `models_list` row reported `effortAppliedOnTransport:false` — two opinions
+    // about one fact. `reasoningConfirmed` is that one fact, read the same strict way everywhere.
+    const reasoningConfirmed = req.caps?.reasoning === true;
     const model: PiChildConfig['model'] =
       parsed.provider === 'ollama'
         ? { provider: 'ollama', model: parsed.model, baseUrl: this._config.ollamaBaseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434' }
@@ -829,21 +840,24 @@ export class PiGatewayClient implements GatewayClient {
     // asked for none at all. Every consumer from here down (the harness record, childConfig) reads
     // this ONE resolved value, never `req.opts.effort` directly, so they can never disagree.
     const effort = effectiveEffort(req.opts.effort, parsed.provider, req.caps);
-    // issue #150: `applied:true` for openrouter now additionally requires `reasoningSupported` (the
-    // SAME fact `buildModelConfig()`'s `reasoning` flag just used, above) — before this fix, every
-    // openrouter call reported `applied:true` regardless of whether the catalog said the model could
-    // even take a reasoning directive, including openrouter/openai/gpt-4.1 (`supported_parameters`
-    // omits 'reasoning'). An explicit `reasoningSupported:false` means the child never put a
-    // `reasoning` field on the wire at all (pi-ai gates every reasoning branch on `model.reasoning`),
-    // so `applied:true` would be a claim this gateway cannot back up.
+    // issue #150: `applied:true` for openrouter now additionally requires `reasoningConfirmed` —
+    // before this fix, every openrouter call reported `applied:true` regardless of whether the
+    // catalog said the model could even take a reasoning directive, including
+    // openrouter/openai/gpt-4.1 (`supported_parameters` omits 'reasoning'). An explicit
+    // `reasoningSupported:false` means the child never put a `reasoning` field on the wire at all
+    // (pi-ai gates every reasoning branch on `model.reasoning`), so `applied:true` would be a claim
+    // this gateway cannot back up.
+    // issue #153 L3: a model the catalog said NOTHING about (`reasoning: 'unknown'`, or no pin at
+    // all) is reported the SAME way as an explicit `false` — `reasoningConfirmed` (strict `=== true`)
+    // — never `applied:true`, matching `models_list`'s `effortAppliedOnTransport` for this exact row.
     const effortApplied: { applied: true; param: string; restPath: string[]; value: unknown } | { applied: false; reason: string } | undefined =
       effort === undefined
         ? undefined
         : parsed.provider !== 'openrouter'
           ? { applied: false, reason: 'ollama has no reasoning dial' }
-          : reasoningSupported
+          : reasoningConfirmed
             ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: effort }
-            : { applied: false, reason: 'model does not support reasoning' };
+            : { applied: false, reason: req.caps?.reasoning === false ? 'model does not support reasoning' : 'model reasoning support unknown' };
 
     // Captured (not just dispatched) so the SECOND onHarness call below — once the child's `mcp_init`
     // event arrives with the real turn-1 tool list (issue #106 parity: `summarizeMcpInit`) — can
@@ -1033,12 +1047,19 @@ export class PiGatewayClient implements GatewayClient {
 
     let cumulative: Tokens = { ...ZERO_TOKENS };
     let settled: GatewayResult | undefined;
+    // issue #153 L4: the child's own `seq` (session-runner.ts: incremented once per ASSISTANT
+    // `message_end`, i.e. once per completed turn — including a tool-call turn, not just the final
+    // one) — tracked here so a timeout/abort's own detail can say how far the conversation actually
+    // got, instead of a blanket "no response from model" that is simply false once even one turn
+    // completed. The highest `seq` seen IS the completed-turn count; never recomputed from scratch.
+    let completedTurns = 0;
 
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line) => {
       let event: PiChildEvent;
       try { event = JSON.parse(line) as PiChildEvent; } catch { return; }
       if (event.t === 'message_end') {
+        completedTurns = event.seq;
         cumulative = {
           input: cumulative.input + event.usage.input,
           output: cumulative.output + event.usage.output,
@@ -1152,16 +1173,23 @@ export class PiGatewayClient implements GatewayClient {
     const attemptNum = mcpCtx?.attempt ?? 1;
     const totalAttempts = mcpCtx?.attempts ?? 1;
     const modelName = childConfig.model.model;
+    // issue #153 L4: before this fix, both branches below always said "no response from model" —
+    // false the instant even one turn (a tool call and its result, say) had already completed before
+    // the kill signal landed. `completedTurns` (the child's own per-turn `seq`, tracked above) makes
+    // this detail match what actually happened: nothing yet, or N turns in before it stopped.
+    const turnsClause = completedTurns > 0
+      ? `after ${completedTurns} completed turn${completedTurns === 1 ? '' : 's'} — no further response`
+      : 'before the first response';
     if (req.signal?.aborted) {
       return {
         ok: false, provider, reason: 'aborted', transport: 'pi', tokens: cumulative, partial: true,
-        detail: `attempt ${attemptNum}/${totalAttempts} aborted (run suspended or stopped) — no response from model "${modelName}" (provider "${provider}")`,
+        detail: `attempt ${attemptNum}/${totalAttempts} aborted (run suspended or stopped) ${turnsClause} from model "${modelName}" (provider "${provider}")`,
       };
     }
     if (timedOut) {
       return {
         ok: false, provider, reason: 'timeout', transport: 'pi', tokens: cumulative, partial: true,
-        detail: `attempt ${attemptNum}/${totalAttempts} timed out after ${timeoutMs}ms — no response from model "${modelName}" (provider "${provider}")`,
+        detail: `attempt ${attemptNum}/${totalAttempts} timed out after ${timeoutMs}ms, ${turnsClause} from model "${modelName}" (provider "${provider}")`,
       };
     }
     return {

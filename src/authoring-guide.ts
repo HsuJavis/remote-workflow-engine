@@ -416,7 +416,24 @@ const HOST_PATH_GRANTS_CONFINED =
   'special error your script can branch on.\n\n' +
   'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
   "something a script requests — the list applied to a given run appears in that run's own " +
-  '`agent.confinement` log line.';
+  '`agent.confinement` log line.\n\n' +
+  // issue #159 B8: this section used to describe WRITE confinement only, leaving `Bash`'s read
+  // policy for a reader to guess at (or wrongly assume from PATH_ESCAPES_WORKSPACE's own hint,
+  // which is a DIFFERENT, file-tool-only mechanism — see the error catalog entry for that code).
+  "`Bash`'s READS are deny-by-default too, but scoped differently than writes: the whole engine " +
+  'home directory and the whole `workRoot` (every run\'s workspace, not just other runs\' — this ' +
+  "one's own workspace, the HOME-RESIDENT toolchain (everything the engine's own `PATH` puts under " +
+  "`$HOME`, plus its node install prefix), and any operator-granted host path are re-opened on top " +
+  // A system path (e.g. `/usr/bin/git`) was never denied to begin with — it is outside both denied
+  // regions, so "re-opened" would overstate what happens to it; only the home-resident half of the
+  // toolchain goes through the deny-then-reopen mechanism at all (DEPLOY.md §1c(f) says this the
+  // same way: "家目錄內的工具鏈").
+  'of that denial — a system path like `/usr/bin/git` was never denied in the first place, so it ' +
+  'needs no re-opening. A read outside those paths fails as an ordinary ' +
+  'shell-level error (e.g. "No such file or directory"), never a special engine refusal — same as ' +
+  'the write case above, just the opposite default. A host path with no relationship to $HOME or ' +
+  'workRoot (e.g. `/etc/hostname`) is NOT denied by this — the policy only closes those two ' +
+  'specific regions, it is not a blanket "Bash cannot see anything outside the workspace" jail.';
 
 const HOST_PATH_GRANTS_UNCONFINED =
   'On this deployment, `Bash` is **not confined**: the boot-time probe found no working sandbox ' +
@@ -1590,7 +1607,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'SEE it before pushing: `system_info`\'s `policy.mcpEgressAllowlist` (owner decision ' +
         '2026-09-30) reports this deployment\'s effective list to any authenticated caller, and an ' +
         '`EGRESS_DENIED` refusal from `workspace_push({kind:\'mcp\'})` points back at that same ' +
-        'field.\n\n' +
+        'field. Two narrower checks run even BEFORE the allowlist, so a config that trips one of ' +
+        "them never sees `EGRESS_DENIED` at all, no matter the allowlist: an unknown `${run:...}` " +
+        "placeholder (`UNKNOWN_RUN_PLACEHOLDER` — see \"Per-run MCP state\" below) and a `url`-bearing " +
+        "config whose `type` IS set and is one the probe would itself call `'unsupported'` — " +
+        "`type:'sse'`, or `type:'stdio'` with a `command` other than `\"npx\"` (e.g. " +
+        "`{type:'stdio', command:'node'}`) — is `MCP_PROBE_FAILED`/`UNSUPPORTED_TRANSPORT`, the same " +
+        'code the probe itself would give, just returned before the probe (and the allowlist) are ' +
+        "ever reached. A real `{type:'stdio', command:'npx'}` config that happens to ALSO carry a " +
+        "`url` field is NOT caught by this — it is a supported transport — and reaches the allowlist " +
+        "and probe exactly as a `url`-less one would. A config with a `url` but NO `type` at all is " +
+        'also not covered by this: it still reaches the allowlist first, exactly as before.\n\n' +
         // issue #126: a stdio MCP server's own persisted state (not the engine's secrets/data
         // covered above — its OWN files) is shared host-wide unless the config opts into a
         // per-run private directory via ${run:dir}/${run:id}.

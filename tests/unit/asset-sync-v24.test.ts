@@ -87,6 +87,84 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
     }
   });
 
+  // issue #159 (DOC): an EXPLICITLY unsupported transport (`type:'sse'`) that also carries a `url`
+  // used to hit EGRESS_DENIED first whenever the (possibly empty) allowlist didn't match — the probe
+  // (the only place that would ever call `classifyTransport` and say UNSUPPORTED_TRANSPORT) was
+  // never even reached. The precise code must win, checked before the allowlist.
+  it('kind:"mcp" with an explicitly unsupported transport (type:"sse") refuses UNSUPPORTED_TRANSPORT BEFORE the egress check, even with an empty allowlist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn() };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: [],
+      });
+      const result = await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv', config: { type: 'sse', url: 'https://evil.example.com' } as never, pushedBy: 'bob' });
+      expect(result).toMatchObject({ error: 'MCP_PROBE_FAILED', detail: { code: 'UNSUPPORTED_TRANSPORT', transport: 'unsupported' } });
+      expect(probe.probe).not.toHaveBeenCalled();
+      expect(catalog.putAsset).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // issue #159 (DOC): an http-shaped config (`type:'http'`, a `url`) that ALSO carries an unknown
+  // `${run:...}` placeholder used to hit the SAME EGRESS_DENIED-before-the-more-specific-code
+  // masking as the sse case above — UNKNOWN_RUN_PLACEHOLDER must win, checked before the allowlist.
+  it('kind:"mcp" over http with an unknown ${run:...} placeholder refuses UNKNOWN_RUN_PLACEHOLDER BEFORE the egress check, even with an empty allowlist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn() };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: [],
+      });
+      const result = await svc.push({
+        scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv',
+        config: { type: 'http', url: 'https://evil.example.com', headers: { X: '${run:bogus}' } } as never,
+        pushedBy: 'bob',
+      });
+      expect(result).toMatchObject({ error: 'UNKNOWN_RUN_PLACEHOLDER' });
+      const detail = (result as { detail?: Record<string, unknown> }).detail;
+      expect(detail?.['message']).toEqual(expect.stringContaining('${run:bogus}'));
+      expect(probe.probe).not.toHaveBeenCalled();
+      expect(catalog.putAsset).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // issue #159 follow-up (audit A5 finding 2): the early UNSUPPORTED_TRANSPORT pre-check guarded
+  // on `typeof req.config.type === 'string' && req.config.type !== 'http'`, which ALSO matched
+  // `type:'stdio'` — a real `npx`-launched stdio config that happens to carry an (unrelated) `url`
+  // field (e.g. a server's homepage/docs URL, or metadata some callers attach) was wrongly refused
+  // UNSUPPORTED_TRANSPORT before `probe()` ever ran, even though `classifyTransport()` calls this
+  // exact shape `'npx-stdio'` — a SUPPORTED transport. Must reach the egress check (url present),
+  // then `probe()`, then be stored, exactly like a `type:'stdio'` config with no `url` at all.
+  it('kind:"mcp" stdio+npx with an (incidental) url field is NOT refused UNSUPPORTED_TRANSPORT — reaches probe and is stored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn().mockResolvedValue({ ok: true }) };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: ['https://x.example.com/'],
+      });
+      const config = { type: 'stdio', command: 'npx', args: ['-y', 'x'], url: 'https://x.example.com/mcp' };
+      const result = await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv', config: config as never, pushedBy: 'bob' });
+      expect(result).toMatchObject({ stored: 'srv' });
+      expect(probe.probe).toHaveBeenCalledWith(config);
+      expect(catalog.putAsset).toHaveBeenCalledWith(expect.objectContaining({ config }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('kind:"hook" is refused by the schema enum — HOOKS_UNSUPPORTED is retired, no path can produce it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
     try {
