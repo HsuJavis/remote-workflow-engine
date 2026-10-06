@@ -334,6 +334,19 @@ export interface AgentRecord {
    *  `markHarness` and re-read from the harness event by `deriveAgentRecords`, so both producers
    *  agree. Absent (never `[]`) when there are none. */
   warnings?: HarnessWarning[];
+  /** issue #162 (owner-approved): true iff this `agent()` call's structured-output schema never
+   *  conformed across every re-ask attempt (D-V4's bounded retry loop, agent-executor.ts
+   *  `_callAgent`) — the gateway call itself genuinely succeeded (so `state` still settles `'done'`,
+   *  never `'failed'`), but the script received `null` instead of the parsed object. Without this
+   *  flag the outcome was invisible to anything that filters `failed`/`refused` records only
+   *  (`summarizeAgentFailures`) even though nothing useful reached the script. Absent (never
+   *  `false`) on every other record, including a schema call that conformed on its last attempt. */
+  schemaExhausted?: true;
+  /** issue #162: how many schema re-asks this (schema-exhausted) call made before giving up — same
+   *  field name/semantics as `HarnessDescriptor.reaskCount` (`1` on the first re-ask, etc.), carried
+   *  here specifically so `summarizeAgentFailures` can report it on the record alone, without
+   *  reaching into the harness transcript event. Present only alongside `schemaExhausted:true`. */
+  reaskCount?: number;
   /** issue #127 (REQ-TBD): `true` iff `tokens`/`costUSD` are a LOWER BOUND rather than the provider's
    *  own finalized total — set on a call cut short by `run_suspend`/`run_stop` (`'aborted'`), a
    *  timeout, or a terminal failure that never reached an SDK `result` message, where the only figure
@@ -374,8 +387,14 @@ export interface WorkflowNodeView {
 export interface AgentFailureSummary {
   label?: string;
   agentId: string;
-  reason: 'timeout' | 'error' | 'aborted' | 'refused';
+  // issue #162 (owner-approved): 'schema-exhausted' is the ONE reason value whose record is still
+  // `state:'done'` (every other reason implies `failed`/`refused`) — the gateway call succeeded,
+  // only the structured-output schema never conformed across every re-ask attempt.
+  reason: 'timeout' | 'error' | 'aborted' | 'refused' | 'schema-exhausted';
   message: string;
+  /** issue #162: present only on a `reason:'schema-exhausted'` entry — mirrors
+   *  `AgentRecord.reaskCount`, the number of re-asks this call made before giving up. */
+  reaskCount?: number;
 }
 
 /** Issue #106: one `AgentRecord.warnings` entry rolled up onto `run_status.warnings`, naming the

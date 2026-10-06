@@ -544,6 +544,10 @@ function boundedMessage(s: string): string {
   return s.length <= MESSAGE_MAX_CHARS ? s : s.slice(0, MESSAGE_MAX_CHARS) + '…';
 }
 function failureReason(a: AgentRecord): AgentFailureSummary['reason'] {
+  // issue #162 (owner-approved): checked FIRST — a schema-exhausted record is `state:'done'`, never
+  // `'failed'`/`'refused'`, so it would otherwise never reach this function at all (see the
+  // `isAgentFailure` predicate below, the actual filter that lets a `done` record through).
+  if (a.schemaExhausted === true) return 'schema-exhausted';
   if (a.state === 'refused') return 'refused';
   if (a.failReason === 'timeout') return 'timeout';
   if (a.failReason === 'aborted') return 'aborted';
@@ -561,13 +565,28 @@ function summaryOfDetail(detail: string): string {
   return head.length > 0 ? head : 'agent failed; see run_agent_log for the CLI diagnostics';
 }
 function failureMessage(a: AgentRecord): string {
+  // issue #162: a schema-exhausted record is `state:'done'` with no `detail` (the gateway call
+  // succeeded; `detail` is only ever set on the `failed` branch of `capture()`) — its own fixed
+  // message, never `summaryOfDetail`/the generic "no failure detail recorded" fallback below (both
+  // of which imply a gateway error that never happened here).
+  if (a.schemaExhausted === true) {
+    return a.reaskCount !== undefined
+      ? `structured-output schema never conformed after ${a.reaskCount} re-ask(s); the script received null`
+      : 'structured-output schema never conformed; the script received null';
+  }
   if (a.state === 'refused') return a.reasonCode ?? 'refused (no reason recorded)';
   if (a.detail !== undefined) return boundedMessage(summaryOfDetail(a.detail));
   return 'no failure detail recorded';
 }
+// issue #162 (owner-approved): the ONE place `state:'done'` is let through — a schema-exhausted
+// call is the single `done` outcome that still counts as a caller-visible failure (the usual
+// `failed`/`refused` filter does not catch it, since the gateway call itself genuinely succeeded).
+function isAgentFailure(a: AgentRecord): boolean {
+  return a.state === 'failed' || a.state === 'refused' || a.schemaExhausted === true;
+}
 export function summarizeAgentFailures(agents: AgentRecord[]): { failedAgentCount?: number; agentFailures?: AgentFailureSummary[] } {
   if (agents.length === 0) return {};
-  const failed = agents.filter((a) => a.state === 'failed' || a.state === 'refused');
+  const failed = agents.filter(isAgentFailure);
   if (failed.length === 0) return { failedAgentCount: 0 };
   return {
     failedAgentCount: failed.length,
@@ -576,6 +595,7 @@ export function summarizeAgentFailures(agents: AgentRecord[]): { failedAgentCoun
       agentId: a.agentId,
       reason: failureReason(a),
       message: failureMessage(a),
+      ...(a.schemaExhausted === true && a.reaskCount !== undefined ? { reaskCount: a.reaskCount } : {}),
     })),
   };
 }

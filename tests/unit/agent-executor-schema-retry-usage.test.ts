@@ -106,6 +106,32 @@ describe('issue #141: schema re-ask attempts SUM onto one AgentRecord, never rep
     expect(record?.state).toBe('done'); // schema exhaustion is not a gateway failure — unchanged
     expect(record?.tokens).toEqual({ input: 60, output: 60, cacheRead: 0, cacheWrite: 0 });
     expect(record?.endedAt).toBeDefined();
+    // issue #162 (owner-approved): the exhausted outcome now ALSO stamps schemaExhausted/
+    // reaskCount, so summarizeAgentFailures (run-manager.ts) can surface it in agentFailures even
+    // though `state` stays 'done'. reaskCount:2 — the LAST attempt (0-indexed) is the one that ends
+    // the loop (SCHEMA_RETRY_ATTEMPTS=3, so attempts are 0/1/2).
+    expect(record?.schemaExhausted).toBe(true);
+    expect(record?.reaskCount).toBe(2);
+  });
+
+  // issue #162: the conforming case (every OTHER test in this file where `out.kind === 'object'`)
+  // must NEVER carry schemaExhausted, even on a call whose first attempt(s) failed validation and
+  // a LATER one conformed — otherwise a perfectly successful retried call would misreport as a
+  // failure in agentFailures.
+  it('conforms on a later attempt: schemaExhausted is absent, even though earlier attempts retried', async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(okResult({ input: 5, output: 5 }, '{"answer": "nope"}'))
+      .mockResolvedValueOnce(okResult({ input: 5, output: 5 }, '{"answer": 42}'));
+    const gw: GatewayClient = { invoke };
+    const executor = new AgentExecutor({ gateway: gw });
+
+    const out = await executor.run(req('a-2b', { schema: ANSWER_SCHEMA }));
+    expect(out.kind).toBe('object');
+
+    const record = executor.getRecord('a-2b');
+    expect(record?.schemaExhausted).toBeUndefined();
+    expect(record?.reaskCount).toBeUndefined();
   });
 
   // RED WAS NOT OBSERVED for this one (recorded honestly, same convention as this repo's IT-174):
@@ -169,6 +195,35 @@ describe('issue #141: schema re-ask attempts SUM onto one AgentRecord, never rep
     expect(derived.tokens).toEqual(live.tokens);
     expect(derived.costUSD).toEqual(live.costUSD);
     expect(derived.unpriced).toEqual(live.unpriced);
+  });
+
+  // issue #162: the SAME derived≡snapshot-less-restart lock as the test directly above, but for the
+  // EXHAUSTED outcome specifically — schemaExhausted/reaskCount must survive a restart that has no
+  // terminal snapshot and reconstructs purely from the persisted usage event (deriveAgentRecords).
+  it('fold after restart equals live for the EXHAUSTED outcome too: schemaExhausted/reaskCount both survive', async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(okResult({ input: 10, output: 10 }, '{"answer": "nope-1"}'))
+      .mockResolvedValueOnce(okResult({ input: 10, output: 10 }, '{"answer": "nope-2"}'))
+      .mockResolvedValueOnce(okResult({ input: 10, output: 10 }, '{"answer": "nope-3"}'));
+    const gw: GatewayClient = { invoke };
+    const store = new InMemoryRunStore(new FixedClock(new Date('2026-10-05T00:00:00Z')));
+    const runId = await store.createRun({ name: 'ut162-fold-exhausted', script: 'return 1;' } as any);
+    const executor = new AgentExecutor({ gateway: gw, store });
+
+    const out = await executor.run(req('a-6', { schema: ANSWER_SCHEMA }, new AbortController().signal, runId));
+    expect(out.kind).toBe('null');
+
+    const live = executor.getRecord('a-6')!;
+    expect(live.schemaExhausted).toBe(true);
+    expect(live.reaskCount).toBe(2);
+
+    const events = await store.getTranscript(runId, 'a-6');
+    const derived = deriveAgentRecords(new Map([['a-6', events]]), 'completed').find((r) => r.agentId === 'a-6')!;
+
+    expect(derived.state).toBe(live.state);
+    expect(derived.schemaExhausted).toBe(live.schemaExhausted);
+    expect(derived.reaskCount).toBe(live.reaskCount);
   });
 
   it('abort during a re-ask keeps the committed attempt-0 total AND the in-flight attempt-1 partial figure, charging the guard exactly once per attempt (#127 partial semantics)', async () => {

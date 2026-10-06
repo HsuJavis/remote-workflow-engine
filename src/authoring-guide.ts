@@ -1486,9 +1486,15 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`content[0].text`, never as a structured object: parse it again to reach the actual ' +
         "payload.\n\nA run's structured refusal marker (`refusalRef`, carried internally from the " +
         "sandbox to the run's own ledger) is engine-attested — it can only name a refusal this " +
-        'SAME run genuinely raised. `error.code` alone is **not** attested and never has been: a ' +
-        "script that catches an error and sets `e.name` before rethrowing it can forge any code, " +
-        'with no marker to back it.',
+        'SAME run genuinely raised. `error.code` alone is **not** attested and never has been: ' +
+        // issue #162 DOC (owner-approved): named only `e.name` before — a script forges a code
+        // exactly as easily through `e.code` or by throwing/returning a plain `{code: '...'}`
+        // object (no `Error` involved at all), and neither of those is any more attested than the
+        // `e.name` case this paragraph already called out.
+        "`e.name`, `e.code`, and a plain thrown/returned `{code: '...'}` object are every bit as " +
+        "forgeable as each other — a script fully controls what it throws or returns, so ANY of " +
+        'these carries exactly as much trust as the script that produced it, with no marker to ' +
+        'back it.',
     ),
   );
 

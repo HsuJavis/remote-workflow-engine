@@ -100,6 +100,11 @@ export function deriveAgentRecords(
         // DONE branch's when `invoke()`'s retry loop summed a prior failed attempt's own lower-bound
         // tokens into the final successful total (ClaudeAgentSdkGatewayClient.invoke).
         partial?: true;
+        // issue #162 (owner-approved): mirrors `AgentRecord.schemaExhausted`/`reaskCount` — set only
+        // on the done-branch usage event `capture()`'s schema-retry loop emits when its last attempt
+        // never conformed (agent-executor.ts `_callAgent`).
+        schemaExhausted?: true;
+        reaskCount?: number;
       };
       const startedAt = firstHarnessTs;
       const endedAt = usage.ts;
@@ -126,6 +131,10 @@ export function deriveAgentRecords(
           ...(data.transport !== undefined ? { transport: data.transport } : {}),
           ...(data.proxyModel !== undefined ? { proxyModel: data.proxyModel } : {}),
           ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
+          // issue #162: mirrors `capture()`'s own done-branch record fields — present only when
+          // the usage event carries them.
+          ...(data.schemaExhausted === true ? { schemaExhausted: true as const } : {}),
+          ...(data.reaskCount !== undefined ? { reaskCount: data.reaskCount } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
         }, harnessCommon));
@@ -584,7 +593,10 @@ export class InMemoryRunStore implements RunStore {
     // agentCount > 0` guard as SqliteRunStore's `_rowToSummary` — gated on agent presence alone,
     // NOT on `usage` — so the two stores can never disagree on this field for the same run.
     if (agents !== undefined && agents.length > 0) {
-      summary.failedAgentCount = agents.filter((a) => a.state === 'failed' || a.state === 'refused').length;
+      // issue #162 (owner-approved): a schema-exhausted agent is `state:'done'`, not `'failed'`/
+      // `'refused'` — counted here too so this row never disagrees with `run_status`'s own
+      // `summarizeAgentFailures` (run-manager.ts) for the SAME terminal run.
+      summary.failedAgentCount = agents.filter((a) => a.state === 'failed' || a.state === 'refused' || a.schemaExhausted === true).length;
     }
     return summary;
   }

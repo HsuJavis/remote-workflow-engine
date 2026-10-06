@@ -402,8 +402,12 @@ export class SqliteRunStore implements RunStore {
                + COALESCE(json_extract(s.json, '$.usage.tokens.cacheRead'), 0)
                + COALESCE(json_extract(s.json, '$.usage.tokens.cacheWrite'), 0) AS tokensTotal,
              json_array_length(s.json, '$.agents') AS agentCount,
+             -- issue #162 (owner-approved): a schema-exhausted agent is state 'done', not
+             -- 'failed'/'refused' -- counted here too so this row never disagrees with
+             -- run_status's own summarizeAgentFailures (run-manager.ts) for the SAME run.
              (SELECT COUNT(*) FROM json_each(s.json, '$.agents')
-                WHERE json_extract(value, '$.state') IN ('failed', 'refused')) AS failedAgentCount`;
+                WHERE json_extract(value, '$.state') IN ('failed', 'refused')
+                   OR json_extract(value, '$.schemaExhausted') = 1) AS failedAgentCount`;
 
   async listRuns(): Promise<RunSummary[]> {
     const rows = this._db.prepare(`

@@ -260,7 +260,7 @@ if (out === null) {
 
 Every tool result — including this guide's own — arrives as a JSON string inside `content[0].text`, never as a structured object: parse it again to reach the actual payload.
 
-A run's structured refusal marker (`refusalRef`, carried internally from the sandbox to the run's own ledger) is engine-attested — it can only name a refusal this SAME run genuinely raised. `error.code` alone is **not** attested and never has been: a script that catches an error and sets `e.name` before rethrowing it can forge any code, with no marker to back it.
+A run's structured refusal marker (`refusalRef`, carried internally from the sandbox to the run's own ledger) is engine-attested — it can only name a refusal this SAME run genuinely raised. `error.code` alone is **not** attested and never has been: `e.name`, `e.code`, and a plain thrown/returned `{code: '...'}` object are every bit as forgeable as each other — a script fully controls what it throws or returns, so ANY of these carries exactly as much trust as the script that produced it, with no marker to back it.
 
 ## Registration and versioning
 

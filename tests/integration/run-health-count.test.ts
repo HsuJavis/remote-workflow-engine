@@ -156,3 +156,49 @@ describe('failedAgentCount on the RESTORED path after a restart (DES-234)', () =
     expect(view.failedAgentCount).toBeUndefined();
   });
 });
+
+// issue #162 (owner-approved): a schema-exhausted agent() — the gateway call genuinely succeeds
+// every time, but its content never validates against the declared `schema` across every re-ask —
+// used to be entirely invisible here: `state:'done'`, not counted by EITHER run_status or run_list.
+// This drives the SAME real RunManager/SqliteRunStore/sandbox stack as the describe blocks above,
+// with a fake gateway (the legal-to-fake network boundary) that always returns well-formed JSON
+// that simply never matches the declared schema.
+const SCHEMA_SCRIPT =
+  "export const meta = { params: { agents: { parse: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+  "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
+  "phase('main');\n" +
+  "const r = await agent('parse', { schema: { type: 'object', properties: { answer: { type: 'number' } }, required: ['answer'] } });\n" +
+  "return { r };";
+
+describe('failedAgentCount/agentFailures count a schema-exhausted agent too (issue #162, real engine)', () => {
+  it('run_status.agentFailures names it reason:"schema-exhausted" with reaskCount, and run_list AGREES on the count', async () => {
+    const dir = tempDir();
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const gateway: GatewayClient = {
+      invoke: async () => ({ ok: true, provider: 'fake', model: 'fake-model', tokens: { input: 1, output: 1 }, content: '{"answer": "not-a-number"}' }),
+    };
+    const mgr = new RunManager({ store, clock, workRoot: dir, gateway } as never);
+    const name = 'it162-schema-exhausted';
+    await registerPublished(mgr.catalog, name, SCHEMA_SCRIPT);
+    const runId = await mgr.start({ origin: 'local', name });
+    await waitForStatus(mgr, runId, 'completed');
+
+    const statusView = await mgr.status(runId) as unknown as {
+      failedAgentCount?: number;
+      agentFailures?: Array<{ reason: string; reaskCount?: number; agentId: string; label?: string }>;
+    };
+    expect(statusView.failedAgentCount).toBe(1);
+    expect(statusView.agentFailures).toHaveLength(1);
+    expect(statusView.agentFailures?.[0]?.reason).toBe('schema-exhausted');
+    expect(statusView.agentFailures?.[0]?.reaskCount).toBe(2);
+    expect(statusView.agentFailures?.[0]?.label).toBe('parse');
+
+    const listRows = (await store.listRuns()) as Array<{ runId: string; failedAgentCount?: number }>;
+    const listRow = listRows.find((r) => r.runId === runId);
+    expect(listRow?.failedAgentCount).toBe(1);
+
+    const result = await mgr.result(runId);
+    expect(result.ok).toBe(true); // the SCRIPT completed normally — it just got `r: null`
+    if (result.ok) expect((result.value as { r: unknown }).r).toBeNull();
+  });
+});
