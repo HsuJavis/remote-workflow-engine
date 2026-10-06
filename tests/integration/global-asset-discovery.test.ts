@@ -166,6 +166,42 @@ describe('issue #109: workspace_list({scope:"global", kind}) — safe global-ass
     expect(r.text).not.toContain('"env"');
   });
 
+  // Issue #146: an author without an exact name already in hand could see {name, description} for
+  // a global skill but not its SKILL.md body — the instructions and any dependency it names (e.g.
+  // "requires MCP X") — before registering a workflow that declares it. Owner-approved lightweight
+  // fix: `includeBody:true`, opt-in, only valid with {scope:'global', kind:'skill'}.
+  it('[LOAD-BEARING, #146] includeBody:true returns the SKILL.md body (dependency readable before registering), default stays body-free', async () => {
+    const push = await call('workspace_push', {
+      scope: 'global', kind: 'skill', name: 'g146-lotcode-kit',
+      files: [{ path: 'SKILL.md', contentB64: Buffer.from('---\nname: g146-lotcode-kit\ndescription: Gets lot codes.\n---\n\nUse the bundled CLI for lot codes. For batch totals, this skill REQUIRES the MCP server tooltest-everything (declare mcp:[\'tooltest-everything\']).').toString('base64') }],
+    }, adminToken);
+    expect(codeOf(push.json), JSON.stringify(push.json)).toBeUndefined();
+
+    const withoutBody = await call('workspace_list', { scope: 'global', kind: 'skill' }, authorToken);
+    const rowsWithoutBody = withoutBody.json['result'] as Array<Record<string, unknown>>;
+    const rowWithoutBody = rowsWithoutBody.find((x) => x['name'] === 'g146-lotcode-kit');
+    expect(rowWithoutBody).toBeDefined();
+    expect(Object.hasOwn(rowWithoutBody!, 'body')).toBe(false);
+    expect(withoutBody.text).not.toContain('tooltest-everything');
+
+    const withBody = await call('workspace_list', { scope: 'global', kind: 'skill', includeBody: true }, authorToken);
+    expect(codeOf(withBody.json)).toBeUndefined();
+    const rowsWithBody = withBody.json['result'] as Array<Record<string, unknown>>;
+    const rowWithBody = rowsWithBody.find((x) => x['name'] === 'g146-lotcode-kit');
+    expect(rowWithBody).toBeDefined();
+    expect(rowWithBody?.['body']).toContain('REQUIRES the MCP server tooltest-everything');
+    expect(rowWithBody?.['bodyTruncated']).toBe(false);
+  });
+
+  it('[#146] includeBody:true is refused INVALID_ARGUMENT outside {scope:"global", kind:"skill"}', async () => {
+    const withMcp = await call('workspace_list', { scope: 'global', kind: 'mcp', includeBody: true }, authorToken);
+    expect(codeOf(withMcp.json)).toBe('INVALID_ARGUMENT');
+    const reg = await call('workflow_register', { name: 'g146-own-workflow', script: "export const meta = { phases: [] };\nreturn 'x';", mermaid: 'graph LR' }, authorToken);
+    expect(codeOf(reg.json), JSON.stringify(reg.json)).toBeUndefined();
+    const withWorkflow = await call('workspace_list', { workflow: 'g146-own-workflow', kind: 'skill', includeBody: true }, authorToken);
+    expect(codeOf(withWorkflow.json)).toBe('INVALID_ARGUMENT');
+  });
+
   it('role:"none" is refused ACCOUNT_PENDING_APPROVAL for a global list, same as every other tool', async () => {
     const r = await call('workspace_list', { scope: 'global', kind: 'skill' }, noneToken);
     expect(codeOf(r.json)).toBe('ACCOUNT_PENDING_APPROVAL');

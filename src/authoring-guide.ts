@@ -1499,7 +1499,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // exact name, so finding that name is the first step; this is where it's discoverable.
         "Don't know the exact name? `workspace_list({scope:'global', kind:'skill'|'mcp'})` lists " +
         "every global asset of that kind — name plus (skill) its SKILL.md description or (mcp) its " +
-        'transport type, nothing more.',
+        'transport type, nothing more. Add `includeBody:true` (skills only) to also read the FULL ' +
+        'SKILL.md text — its instructions and any dependency it names (e.g. "requires MCP X") — ' +
+        'BEFORE you declare/register against it (capped at 16 KiB, `bodyTruncated:true` past the ' +
+        "cap; refused `INVALID_ARGUMENT` outside `{scope:'global', kind:'skill'}`). That text is " +
+        'visible to every approved principal this way, same as the description already is — an ' +
+        "admin pushing a global skill must never put a secret in its SKILL.md.",
     ),
   );
 

@@ -1269,7 +1269,15 @@ export class McpFacade {
     return { runId: a.runId, status: stored.status, result: r };
   }
 
-  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind; scope?: AssetScope }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind; scope?: AssetScope; includeBody?: boolean }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+    // issue #146: `includeBody` only means something for the dedicated `{scope:'global', kind:
+    // 'skill'}` discovery door (it opts into that skill's own SKILL.md body) — refused for every
+    // other shape rather than silently ignored, same house style as the other malformed-request
+    // checks below (an argument that reads as accepted but does nothing is the defect, not a
+    // convenience).
+    if (a.includeBody !== undefined && !(a.scope === 'global' && a.kind === 'skill')) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list includeBody is only valid with scope:'global' and kind:'skill'" } };
+    }
     if (a.runId) {
       const stored = await this.store.getRun(a.runId);
       if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
@@ -1295,7 +1303,7 @@ export class McpFacade {
       if (!a.kind) {
         return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list scope:'global' requires kind:'skill'|'mcp'" } };
       }
-      const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind) : [];
+      const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind, { includeBody: a.includeBody === true }) : [];
       return { runId: '', status: 'completed', result: rows };
     }
     // issue #109 review send-back (LOW-4): `{kind}` (or nothing at all) with neither `workflow` nor

@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AssetSyncService, resolveMcp, type AssetCatalogRow } from '../../src/asset-sync.js';
+import { AssetSyncService, resolveMcp, type AssetCatalogRow, GLOBAL_SKILL_BODY_MAX_BYTES } from '../../src/asset-sync.js';
 import { FixedClock } from '../../src/clock.js';
 
 function fakeCatalogPort() {
@@ -236,6 +236,112 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
       await pushSkillWithBody(svc, 'block-desc-empty', '---\nname: block-desc-empty\ndescription: |-\n---\n\nbody\n');
       const [row] = await svc.listGlobal('skill');
       expect(row).toEqual({ kind: 'skill', name: 'block-desc-empty', description: null });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Issue #146: an author with no exact name in hand could discover a global skill's {name,
+// description} but not its SKILL.md BODY — the instructions, and any dependency it names (e.g.
+// "requires MCP X") — before registering a workflow that declares it. The owner-approved
+// lightweight fix: `listGlobal('skill', {includeBody:true})` also returns the body, bounded and
+// truncated (never the default response — that stays exactly as small as issue #109 left it).
+describe('AssetSyncService.listGlobal — opt-in SKILL.md body for discovery (issue #146)', () => {
+  function svcIn(dir: string) {
+    return new AssetSyncService({
+      workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+      clock: new FixedClock(new Date('2026-01-01T00:00:00Z')), catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+    });
+  }
+
+  it('default (no includeBody) never carries a body — issue #109\'s small-by-default shape is unchanged', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-default-'));
+    try {
+      const svc = svcIn(dir);
+      await svc.push({ scope: 'global', kind: 'skill', name: 'lotcode-kit', files: [{ path: 'SKILL.md', contentB64: Buffer.from('---\ndescription: Lot codes.\n---\n\nRequires MCP tooltest-everything for batch totals.').toString('base64') }], pushedBy: 'admin' });
+      const [row] = await svc.listGlobal('skill');
+      expect(row).toEqual({ kind: 'skill', name: 'lotcode-kit', description: 'Lot codes.' });
+      expect(Object.hasOwn(row as object, 'body')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('includeBody:true returns the full SKILL.md text (frontmatter + body) so a dependency like "requires MCP X" is readable before registering', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-body-'));
+    try {
+      const svc = svcIn(dir);
+      const md = '---\ndescription: Lot codes.\n---\n\nTo get lot codes use the bundled CLI. For batch totals, this skill REQUIRES the MCP server tooltest-everything.';
+      await svc.push({ scope: 'global', kind: 'skill', name: 'lotcode-kit', files: [{ path: 'SKILL.md', contentB64: Buffer.from(md).toString('base64') }], pushedBy: 'admin' });
+      const [row] = await svc.listGlobal('skill', { includeBody: true }) as Array<{ kind: 'skill'; name: string; description: string | null; body: string | null; bodyTruncated: boolean }>;
+      expect(row.body).toBe(md);
+      expect(row.bodyTruncated).toBe(false);
+      expect(row.description).toBe('Lot codes.');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a SKILL.md over the cap is truncated to the bound, with bodyTruncated:true', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-trunc-'));
+    try {
+      const svc = svcIn(dir);
+      const big = '---\ndescription: d.\n---\n\n' + 'x'.repeat(GLOBAL_SKILL_BODY_MAX_BYTES + 500);
+      await svc.push({ scope: 'global', kind: 'skill', name: 'huge-kit', files: [{ path: 'SKILL.md', contentB64: Buffer.from(big).toString('base64') }], pushedBy: 'admin' });
+      const [row] = await svc.listGlobal('skill', { includeBody: true }) as Array<{ body: string | null; bodyTruncated: boolean }>;
+      expect(row.bodyTruncated).toBe(true);
+      expect(Buffer.byteLength(row.body ?? '', 'utf-8')).toBeLessThanOrEqual(GLOBAL_SKILL_BODY_MAX_BYTES);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never returns a sibling file\'s content (only SKILL.md) — includeBody:true on a skill with a bin/ CLI file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-sibling-'));
+    try {
+      const svc = svcIn(dir);
+      await svc.push({
+        scope: 'global', kind: 'skill', name: 'tooled-kit', pushedBy: 'admin',
+        files: [
+          { path: 'SKILL.md', contentB64: Buffer.from('---\ndescription: d.\n---\n\nUse ./bin/tool.').toString('base64') },
+          { path: 'bin/tool', contentB64: Buffer.from('#!/bin/sh\necho SECRET-BINARY-CONTENT').toString('base64'), exec: true },
+          { path: 'notes.txt', contentB64: Buffer.from('SECRET-SIDE-NOTE').toString('base64') },
+        ],
+      });
+      const [row] = await svc.listGlobal('skill', { includeBody: true }) as Array<{ body: string | null }>;
+      expect(row.body).not.toContain('SECRET-BINARY-CONTENT');
+      expect(row.body).not.toContain('SECRET-SIDE-NOTE');
+      expect(row.body).toContain('Use ./bin/tool.');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('includeBody:true never leaks into the per-workflow list() merge of a global row', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-perworkflow-'));
+    try {
+      const svc = svcIn(dir);
+      await svc.push({ scope: 'global', kind: 'skill', name: 'merged-kit', files: [{ path: 'SKILL.md', contentB64: Buffer.from('---\ndescription: d.\n---\n\nSECRET-MERGE-BODY').toString('base64') }], pushedBy: 'admin' });
+      const result = await svc.list({ workflow: 'someones-workflow', kind: 'skill' });
+      expect(JSON.stringify(result)).not.toContain('SECRET-MERGE-BODY');
+      expect(Object.hasOwn(result[0] as object, 'body')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a missing SKILL.md with includeBody:true degrades to {body: null, bodyTruncated: false}, never throws', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-146-missing-'));
+    try {
+      const catalog = fakeCatalogPort();
+      catalog.listAssets = vi.fn((): AssetCatalogRow[] => [{ scope: 'global', builtin: true, kind: 'skill', name: 'ghost-kit', pushedBy: 'admin', pushedAt: '2026-01-01T00:00:00Z' }]);
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')), catalog, probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      const [row] = await svc.listGlobal('skill', { includeBody: true }) as Array<{ body: string | null; bodyTruncated: boolean }>;
+      expect(row).toEqual({ kind: 'skill', name: 'ghost-kit', description: null, body: null, bodyTruncated: false });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -282,9 +282,16 @@ export interface AssetCatalogRow {
 /** issue #109: the safe-to-disclose projection of a GLOBAL-scope row, returned by
  *  `AssetSyncService.listGlobal()` — NEVER `command`/`args`/`env`/`url`/headers/secret refs/file
  *  contents, only what a discovery listing needs: the exact name to opt in with, plus a skill's own
- *  advertised description or an MCP server's transport kind. */
+ *  advertised description or an MCP server's transport kind.
+ *
+ *  Issue #146: `body`/`bodyTruncated` are the ONE addition, present only when the caller opted in
+ *  (`listGlobal(kind, {includeBody:true})`) — the skill's own `SKILL.md` text, bounded by
+ *  `GLOBAL_SKILL_BODY_MAX_BYTES`, so an author can read a global skill's instructions and declared
+ *  dependencies (e.g. "requires MCP X") BEFORE registering a workflow that declares it. Still never
+ *  any OTHER file in the skill's tree (no bin/exec content, no sibling file) — `readGlobalSkillBody`
+ *  reads the exact same single path `readGlobalSkillDescription` already does. */
 export type GlobalAssetView =
-  | { kind: 'skill'; name: string; description: string | null }
+  | { kind: 'skill'; name: string; description: string | null; body?: string | null; bodyTruncated?: boolean }
   | { kind: 'mcp'; name: string; transport: string | null };
 
 /** Injected catalog port (DES-153) — a pure in-memory/db seam, no fs/tmp roots required to fake it. */
@@ -420,6 +427,34 @@ function readGlobalSkillDescription(globalRoot: string, name: string): string | 
     return value.length > 0 ? value.slice(0, GLOBAL_SKILL_DESCRIPTION_MAX_CHARS) : null;
   }
   return null;
+}
+
+// issue #146: how far a global skill's own SKILL.md BODY travels into an opt-in discovery read —
+// bounded the same way GLOBAL_SKILL_DESCRIPTION_MAX_CHARS bounds the frontmatter-only description,
+// just measured in BYTES (not chars) since the body is the whole file, not one scalar line, and a
+// byte bound is what keeps the truncation cheap and predictable regardless of encoding.
+export const GLOBAL_SKILL_BODY_MAX_BYTES = 16 * 1024;
+
+/** Issue #146: reads a global skill's ENTIRE `SKILL.md` text (frontmatter + body), for an
+ *  opt-in discovery read (`listGlobal(kind, {includeBody:true})`) — so an author can see a global
+ *  skill's own instructions and any dependency it names (e.g. "requires MCP X") before registering
+ *  a workflow that declares it. `null` when the file is missing/unreadable, never a listing
+ *  failure — same "degrades honestly" convention as `readGlobalSkillDescription`. Reads the EXACT
+ *  SAME single path that function does (`<globalRoot>/skill/<name>/SKILL.md`) — never any other
+ *  file in the skill's tree, so a sibling exec/bin file or data file can never reach this response.
+ *  Truncated at a BYTE boundary (`Buffer.subarray`, not a string `.slice`) so a multi-byte UTF-8
+ *  character straddling the cutoff cannot inflate the returned byte size past the bound; `truncated`
+ *  tells the caller the text was cut, since silently returning a shorter string would read as the
+ *  skill's whole content. */
+function readGlobalSkillBody(globalRoot: string, name: string): { body: string; truncated: boolean } | null {
+  let raw: Buffer;
+  try {
+    raw = readFileSync(join(globalRoot, 'skill', name, 'SKILL.md'));
+  } catch {
+    return null;
+  }
+  if (raw.byteLength <= GLOBAL_SKILL_BODY_MAX_BYTES) return { body: raw.toString('utf-8'), truncated: false };
+  return { body: raw.subarray(0, GLOBAL_SKILL_BODY_MAX_BYTES).toString('utf-8'), truncated: true };
 }
 
 /**
@@ -578,11 +613,18 @@ export class AssetSyncService {
    *  disclose — shared by `list()` (the per-workflow merge, below) and `listGlobal()` (the dedicated
    *  `scope:'global'` door), so a global row can never carry its full `config` (command/args/env/a
    *  credential-bearing `url`) out through ONE door while the other already projects it. A
-   *  WORKFLOW-scoped row never reaches this — only the caller's own asset, kept as-is by `list()`. */
-  private _projectGlobalRow(r: AssetCatalogRow): GlobalAssetView {
-    return r.kind === 'skill'
-      ? { kind: 'skill', name: r.name, description: readGlobalSkillDescription(this._globalRoot, r.name) }
-      : { kind: 'mcp', name: r.name, transport: typeof r.config?.type === 'string' ? r.config.type : null };
+   *  WORKFLOW-scoped row never reaches this — only the caller's own asset, kept as-is by `list()`.
+   *  Issue #146: `includeBody` is OFF by default (`opts` absent/`includeBody` falsy never adds the
+   *  `body`/`bodyTruncated` keys at all, not even `undefined` ones — issue #109's small-by-default
+   *  listing shape stays byte-identical) and `_projectGlobalRowForList` (the per-workflow merge)
+   *  never passes it — the body is reachable ONLY through the dedicated `listGlobal()` door, on
+   *  purpose, per the owner's lightweight #146 decision. */
+  private _projectGlobalRow(r: AssetCatalogRow, opts?: { includeBody?: boolean }): GlobalAssetView {
+    if (r.kind !== 'skill') return { kind: 'mcp', name: r.name, transport: typeof r.config?.type === 'string' ? r.config.type : null };
+    const description = readGlobalSkillDescription(this._globalRoot, r.name);
+    if (!opts?.includeBody) return { kind: 'skill', name: r.name, description };
+    const bodyResult = readGlobalSkillBody(this._globalRoot, r.name);
+    return { kind: 'skill', name: r.name, description, body: bodyResult?.body ?? null, bodyTruncated: bodyResult?.truncated ?? false };
   }
 
   /** issue #109 review send-back (F0): the per-workflow `list()` merge keeps the row's existing
@@ -617,10 +659,19 @@ export class AssetSyncService {
    *  at the tool layer, mcp-facade.ts/tool-specs.ts — this method itself is role-blind, matching
    *  `list()` above). Projects EVERY global row of the requested `kind` to the safe subset
    *  (`GlobalAssetView`, `_projectGlobalRow`) — never the stored `config` object itself, which for
-   *  `kind:'mcp'` may carry `command`/`args`/`env`/a credential-bearing `url`. */
-  async listGlobal(kind: AssetKind): Promise<GlobalAssetView[]> {
+   *  `kind:'mcp'` may carry `command`/`args`/`env`/a credential-bearing `url`.
+   *
+   *  Issue #146: `opts.includeBody` (default false/absent — the response stays exactly as small as
+   *  issue #109 left it) additionally returns each `kind:'skill'` row's own `SKILL.md` body, bounded
+   *  by `GLOBAL_SKILL_BODY_MAX_BYTES` — so an author can read a global skill's instructions and any
+   *  dependency it declares (e.g. "requires MCP X") before registering a workflow around it. Ignored
+   *  for `kind:'mcp'` (an mcp row has no body to disclose). SECURITY: an admin-pushed global skill's
+   *  `SKILL.md` becomes readable this way by every approved principal (role gating only requires
+   *  'user', same as the rest of this discovery door) — an admin must never put a secret in a global
+   *  skill's `SKILL.md`; the tool-facing description states this (mcp-facade.ts/tool-specs.ts). */
+  async listGlobal(kind: AssetKind, opts?: { includeBody?: boolean }): Promise<GlobalAssetView[]> {
     const rows = (await this._catalog.listAssets()).filter((r) => r.scope === 'global' && r.kind === kind);
-    return rows.map((r) => this._projectGlobalRow(r));
+    return rows.map((r) => this._projectGlobalRow(r, opts));
   }
 
   /** v24 Gate 7.5 (D-10, REQ-113): the WHOLE workflow's asset tree, for `workflow_deregister`.
