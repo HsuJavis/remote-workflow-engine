@@ -935,7 +935,7 @@ export class PiGatewayClient implements GatewayClient {
           req.onUsage!(addTokens(base, cum));
         },
       };
-      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout, { attempt: i + 1, baseDescriptor });
+      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout, { attempt: i + 1, attempts, baseDescriptor });
       settledThisAttempt = true;
       if (last.ok) {
         const total = addTokens(carried, normalizeTokens(last.tokens));
@@ -948,7 +948,13 @@ export class PiGatewayClient implements GatewayClient {
       if (!last.ok && last.retryable === false) break;
       if (req.signal?.aborted) break;
     }
-    if (!last.ok && carried.input + carried.output + carried.cacheRead + carried.cacheWrite > 0) {
+    // issue #152: `carriedPartial` alone (not just a non-zero sum) must still surface the merged
+    // tokens/partial — a timeout/abort attempt now ALWAYS reports `partial:true` even when its own
+    // known figure is 0 (see `_dispatchOnce`'s own doc below), so a call whose every attempt timed
+    // out with nothing streamed must still come back `partial:true` rather than silently matching
+    // the pre-#152 "never dispatched" shape (which has no `partial` at all). `carried` itself is
+    // still the right tokens figure either way (0 when every attempt really did stream nothing).
+    if (!last.ok && (carried.input + carried.output + carried.cacheRead + carried.cacheWrite > 0 || carriedPartial)) {
       return carriedPartial ? { ...last, tokens: carried, partial: true } : { ...last, tokens: carried };
     }
     return last;
@@ -959,7 +965,10 @@ export class PiGatewayClient implements GatewayClient {
     provider: string,
     req: { runId: string; agentId: string; signal?: AbortSignal; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; onUsage?: (cumulative: Tokens) => void; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void> },
     timeoutMs: number | undefined,
-    mcpCtx?: { attempt: number; baseDescriptor: HarnessDescriptor },
+    // issue #152: `attempts` (the total `attemptsFor` computed for this call, always passed by the
+    // one real call site in `_invokeWithWorkspace`'s loop) names "N/M" in the timeout/abort detail
+    // below — `attempt` alone could not say whether this was the LAST attempt or one of several.
+    mcpCtx?: { attempt: number; attempts: number; baseDescriptor: HarnessDescriptor },
   ): Promise<GatewayResult> {
     const spawnImpl = this._config.spawnChild ?? spawn;
     const entryPath = this._config.entryPath ?? ENTRY_PATH;
@@ -1101,11 +1110,42 @@ export class PiGatewayClient implements GatewayClient {
     if (childPid !== undefined) sweepSrtMuxSockets(childPid);
 
     if (settled) return settled;
+    // issue #152: BOTH branches below used to omit `detail` entirely and only set `partial:true` when
+    // `cumulative` already held a nonzero figure — a call aborted/timed out before its first
+    // `message_end` (the common case: the provider was still streaming when the kill signal landed)
+    // then reported tokens:{0,0,0,0} with NO partial flag and NO detail at all. Downstream, that is
+    // indistinguishable from "never dispatched" (run-manager.ts's `failureMessage` falls back to the
+    // opaque "no failure detail recorded", and the bare zero reads as an exact, priced free call
+    // rather than the unknown lower bound it is). Fixed by ALWAYS naming the attempt/bound in
+    // `detail` (SDK-gateway parity: `claude-agent-sdk-client.ts`'s own `namedDetail` names the model/
+    // provider on every timeout/terminal failure the same way) and ALWAYS setting `partial:true` on
+    // these two reasons regardless of the figure — "the known spend is a lower bound, possibly 0" is
+    // the one honest reading of "the provider almost certainly billed something we never observed".
+    //
+    // What is NOT done here, on purpose (owner-approved scope, issue #152 item 3): no input-token
+    // ESTIMATE stands in for the real figure. pi's child->parent protocol only ever reports usage on
+    // a COMPLETE `message_end`/`error` event (session-runner.ts only emits those two — there is no
+    // streamed, mid-turn usage event on the wire to capture instead), and the kill signal here fires
+    // with no grace window for a graceful partial-usage handoff (see `killDescendantsBestEffort`
+    // above) — the only honest number available before that event exists is the exact one already
+    // folded into `cumulative`. A client-side request-token estimate has no schema slot to mark it
+    // "estimated, never priced as exact" distinct from a real observed figure, and the issue's own
+    // instruction is to leave it out rather than guess silently — see `harness-info.ts`'s pi `usage`
+    // disclosure string for the same decision, stated for every reader of system_info/the guide.
+    const attemptNum = mcpCtx?.attempt ?? 1;
+    const totalAttempts = mcpCtx?.attempts ?? 1;
+    const modelName = childConfig.model.model;
     if (req.signal?.aborted) {
-      return { ok: false, provider, reason: 'aborted', transport: 'pi', tokens: cumulative, ...(cumulative.input > 0 || cumulative.output > 0 ? { partial: true as const } : {}) };
+      return {
+        ok: false, provider, reason: 'aborted', transport: 'pi', tokens: cumulative, partial: true,
+        detail: `attempt ${attemptNum}/${totalAttempts} aborted (run suspended or stopped) — no response from model "${modelName}" (provider "${provider}")`,
+      };
     }
     if (timedOut) {
-      return { ok: false, provider, reason: 'timeout', transport: 'pi', tokens: cumulative, ...(cumulative.input > 0 || cumulative.output > 0 ? { partial: true as const } : {}) };
+      return {
+        ok: false, provider, reason: 'timeout', transport: 'pi', tokens: cumulative, partial: true,
+        detail: `attempt ${attemptNum}/${totalAttempts} timed out after ${timeoutMs}ms — no response from model "${modelName}" (provider "${provider}")`,
+      };
     }
     return {
       ok: false, provider, reason: 'terminal', transport: 'pi', retryable: false,

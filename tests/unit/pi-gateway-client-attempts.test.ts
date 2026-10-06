@@ -255,4 +255,81 @@ describe('PiGatewayClient — timeout path (rest of slice f)', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('timeout');
   });
+
+  // issue #152: a timed-out attempt that never reached its first message_end used to report tokens
+  // all-zero with NO `partial` flag and NO `detail` at all — run-manager.ts's `failureMessage` then
+  // fell back to the opaque "no failure detail recorded", and the zero figure read as an exact,
+  // priced "this call was free" rather than the unknown lower bound it actually is.
+  it('a zero-usage timeout now carries a non-empty detail naming the attempt/timeout, and partial:true even though the figure is 0', async () => {
+    const f = fakeChild();
+    const spawnChild = vi.fn(() => f.child as never);
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', timeoutMs: 30 });
+    const promise = gw.invoke(req());
+    await vi.waitFor(() => expect(f.child.kill).toHaveBeenCalled(), { timeout: 2000 });
+    f.exit(null);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('timeout');
+      expect(result.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+      expect(result.partial).toBe(true);
+      expect(result.detail).toBeDefined();
+      expect(result.detail).toContain('attempt 1/1');
+      expect(result.detail).toContain('timed out after 30ms');
+    }
+  });
+
+  it('two timed-out attempts sum their usage (#127 parity) and the detail names the LAST attempt, "2/2"', async () => {
+    let n = 0;
+    const children: ReturnType<typeof fakeChild>[] = [];
+    const spawnChild = vi.fn(() => {
+      n += 1;
+      const f = fakeChild();
+      children.push(f);
+      if (n === 1) {
+        // This attempt streams some real usage before it, too, stalls past the timeout.
+        queueMicrotask(() => { f.sendLine({ t: 'message_end', seq: 1, text: 'partial', usage: { input: 10, output: 3, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' }); });
+      }
+      return f.child as never;
+    });
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', timeoutMs: 30, retries: 1 });
+    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', timeoutMs: 30 } as AgentOpts }));
+    await vi.waitFor(() => expect(children[0]?.child.kill).toHaveBeenCalled(), { timeout: 2000 });
+    children[0]!.exit(null);
+    await vi.waitFor(() => expect(children[1]?.child.kill).toHaveBeenCalled(), { timeout: 2000 });
+    children[1]!.exit(null);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('timeout');
+      // Summed across both attempts (#127 parity): the first attempt's own streamed 10/3 survives
+      // into the final failure even though IT timed out too, never dropped just because the call
+      // that ultimately gave up was a later attempt.
+      expect(result.tokens).toEqual({ input: 10, output: 3, cacheRead: 0, cacheWrite: 0 });
+      expect(result.partial).toBe(true);
+      expect(result.detail).toContain('attempt 2/2');
+    }
+  });
+
+  it('an externally aborted dispatch (run_suspend/run_stop) also gets a non-empty detail and partial:true at zero tokens', async () => {
+    const f = fakeChild();
+    const spawnChild = vi.fn(() => f.child as never);
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+    const ac = new AbortController();
+    const promise = gw.invoke(req({ signal: ac.signal }));
+    await new Promise((r) => setTimeout(r, 10));
+    ac.abort();
+    await vi.waitFor(() => expect(f.child.kill).toHaveBeenCalled(), { timeout: 2000 });
+    f.exit(null);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('aborted');
+      expect(result.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+      expect(result.partial).toBe(true);
+      expect(result.detail).toBeDefined();
+      expect(result.detail).toContain('attempt 1/1');
+      expect(result.detail).toContain('aborted');
+    }
+  });
 });
