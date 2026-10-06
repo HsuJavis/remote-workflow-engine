@@ -61,11 +61,22 @@ export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: numb
  *  implementation details that must never cross the trust boundary into a caller-visible ABORTED
  *  message (a possibly-remote, possibly-untrusted caller). Scrubs unconditionally, whether or not
  *  the crash was ever classified — the one place this content is surfaced to a caller. */
+// g2 minor (sandbox robustness sweep): the prior `\bv\d+\.\d+\.\d+\b` matched ANY vX.Y.Z-shaped
+// substring — including a legitimate script-authored message naming a dependency/semver version
+// (e.g. "dependency v1.2.3 failed"), mangling it into unreadable nonsense. Narrowed to the two
+// shapes that are actually NODE'S OWN version: the exact running `process.version` (the sandbox
+// child is forked from this same binary, so a leaked version string is always this literal), and/or
+// Node's own "Node.js vX.Y.Z" uncaught-exception trailer line format — never a bare "vX.Y.Z" with no
+// Node-identifying context.
+const NODE_VERSION_LITERAL_RE = new RegExp(process.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+const NODE_JS_VERSION_LINE_RE = /\bNode\.js v\d+\.\d+\.\d+\b/g;
+
 export function sanitizeStderrTail(raw: string): string {
   return raw
     .replace(/node:internal\/[^\s:)]+/g, '<node internal>')
     .replace(/(?:\/[\w.-]+)+\.(?:ts|js|mjs|cjs)(?=:\d+|\b)/g, '<path>')
-    .replace(/\bv\d+\.\d+\.\d+\b/g, '<node version>');
+    .replace(NODE_JS_VERSION_LINE_RE, 'Node.js <node version>')
+    .replace(NODE_VERSION_LITERAL_RE, '<node version>');
 }
 
 export function ipcErrorCode(err: unknown, fallback: string): string {

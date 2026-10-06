@@ -50,4 +50,22 @@ describe('sanitizeStderrTail (issue #162 A/B)', () => {
     const raw = 'TypeError: Converting circular structure to JSON';
     expect(sanitizeStderrTail(raw)).toBe(raw);
   });
+
+  // g2 minor (sandbox robustness sweep): the prior regex (`\bv\d+\.\d+\.\d+\b`) matched ANY
+  // vX.Y.Z-shaped substring, not just Node's own version — a legitimate script-authored message
+  // naming a dependency/semver version got mangled into unreadable nonsense. Narrowed to Node's own
+  // version string (`process.version`, exact — the child runs the same binary as the host) and/or
+  // the "Node.js vX.Y.Z" trailer format Node's own uncaught-exception printer uses (covered by the
+  // existing cases above), never a bare "vX.Y.Z" with no Node-identifying context around it.
+  it('does not mangle a script-authored semver-looking string with no Node.js prefix', () => {
+    const raw = 'Error: dependency v1.2.3 failed to install';
+    expect(sanitizeStderrTail(raw)).toBe(raw);
+  });
+
+  it('still redacts the exact running Node version wherever it appears, Node.js prefix or not', () => {
+    const raw = `some internal detail mentioning ${process.version} directly`;
+    const out = sanitizeStderrTail(raw);
+    expect(out).not.toContain(process.version);
+    expect(out).toContain('<node version>');
+  });
 });
