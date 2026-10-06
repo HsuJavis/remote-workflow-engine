@@ -72,6 +72,14 @@ interface TriggerClaimStore {
    *  `insertVersion`, not by this call. */
   claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
   release(id: string, workflow: string): void;
+  /** issue #160 (owner-approved 2026-10-07): `workflow_deregister` releases a trigger's CLAIM
+   *  (`release()`, above) but that alone leaves it `enabled:true` — reachable by any future claimant
+   *  the instant something re-registers the id, with no explicit re-enable step. `disable()` is the
+   *  deregister-only hygiene DES-150's own claim model was missing: idempotent (disabling an
+   *  already-disabled or unknown id is a no-op, never an error — mirrors `release`'s own contract),
+   *  called on every id `workflowDeregister` releases, right alongside `release()`. REQUIRED, not
+   *  optional, for the SAME fail-closed reason `claim`/`release` already are. */
+  disable(id: string): void;
   /** v24 (integrator; DES-156/REQ-103): the by-id snapshot `workflow_describe.triggers[]` serves,
    *  and the id set for one workflow. Optional so a unit-tier construction with no trigger stores
    *  still satisfies the port. */
@@ -83,6 +91,7 @@ const NEVER_CLAIMS: TriggerClaimStore = {
   ownerOf: () => undefined,
   claim: () => 'NOT_FOUND',
   release: () => { /* no-op */ },
+  disable: () => { /* no-op */ },
   get: () => null,
   claimedIdsFor: () => [],
 };
@@ -561,7 +570,10 @@ export class McpFacade {
         // claim binds to the workflow NAME, not a version, and the name row survives a version
         // delete (outcome 5 guarantees it), so a create-time-bound legacy claim is never orphaned by
         // deleting one version and must not be released just because one was.
-        for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
+        // issue #160 (owner-approved 2026-10-07): `disable()` alongside `release()` — a version
+        // delete that drops a trigger's only declaring version must not leave it `enabled:true` for
+        // the next claimant to inherit live.
+        for (const id of claimedTriggers) { const store = this._storeFor(id); store.release(id, a.name); store.disable(id); }
         if (!removed) {
           const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
           return { runId: '', status: 'failed', code: error.code, error };
@@ -593,7 +605,11 @@ export class McpFacade {
         ...(this.schedulerClaims.claimedIdsFor?.(a.name) ?? []),
         ...(this.webhookClaims.claimedIdsFor?.(a.name) ?? []),
       ])];
-      for (const id of releasedTriggers) this._storeFor(id).release(id, a.name);
+      // issue #160 (owner-approved 2026-10-07): `disable()` alongside `release()` — a whole-name
+      // deregister used to leave every released trigger `enabled:true`, live for whatever claims it
+      // next (a same-name re-registration, or any other workflow) the instant it is claimed, with
+      // no explicit re-enable step in between. Disabling it here closes that window.
+      for (const id of releasedTriggers) { const store = this._storeFor(id); store.release(id, a.name); store.disable(id); }
       // v24 Gate 7.5 (D-10, REQ-113): the catalog transaction deletes the workflow's `assets` ROWS;
       // the tree under `<assetRoot>/<name>/` is filesystem state no SQL statement can reach, and it
       // was surviving the delete — the next registrant of the freed name could declare a skill it

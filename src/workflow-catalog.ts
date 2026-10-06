@@ -464,6 +464,35 @@ export class WorkflowCatalog {
     return this.declaredTriggers(name).has(triggerId);
   }
 
+  /** issue #160 BUG-ish (owner-approved 2026-10-07): a trigger claimed through a version's
+   *  `triggers[]` is PINNED to that declaration, not to whatever channel happens to be released —
+   *  "bind a trigger to v3" must mean v3 fires, even while `release` points elsewhere (or nowhere).
+   *  Replaces the old release-channel-membership gate (`NOT_IN_RELEASE`): that check could only ever
+   *  ask "does the CURRENT release still list this id", which is a different (and, per the owner,
+   *  wrong) question from "which version did the author actually bind this id to".
+   *
+   *  Returns the HIGHEST-numbered version (by the same numeric-suffix ordering `_listVersions` uses,
+   *  never lexicographic — 'v10' > 'v2') among every row of `name` whose `triggers[]` lists
+   *  `triggerId`, or `null` when no version ever declared it (the pre-v24 create-time-binding door —
+   *  `declaresTrigger` is false for exactly the same rows, and the fire path falls back to the old
+   *  release-channel resolution for them). Re-declaring the same id in a later version moves the
+   *  binding forward (the latest declarer wins); omitting it from a later version leaves the binding
+   *  on the latest version that still lists it — the id is never implicitly un-bound by a newer
+   *  version that simply does not mention it (only `workflow_deregister`/`workflow_deregister
+   *  {version}` releases a claim, and now disables the trigger outright — see `release()`'s callers). */
+  boundVersionFor(name: string, triggerId: string): string | null {
+    const rows = this._db.prepare('SELECT version, triggers FROM workflow_versions WHERE name = ?').all(name) as Array<{ version: string; triggers: string | null }>;
+    let best: { version: string; n: number } | null = null;
+    for (const row of rows) {
+      if (!row.triggers) continue; // pre-v24 row — declared nothing
+      const declared = JSON.parse(row.triggers) as string[];
+      if (!declared.includes(triggerId)) continue;
+      const n = Number(row.version.replace(/^v/, '')) || 0;
+      if (best === null || n > best.n) best = { version: row.version, n };
+    }
+    return best?.version ?? null;
+  }
+
   /** v24 (ARCH-098, DES-153, TASK-143): upsert one asset row. `workflow: ''` = the global scope. */
   putAsset(row: { workflow: string; kind: string; name: string; pushedBy: string | null; pushedAt: string; config?: string | null }): void {
     this._db

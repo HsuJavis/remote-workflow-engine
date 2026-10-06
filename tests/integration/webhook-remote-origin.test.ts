@@ -27,6 +27,7 @@ function fakeCatalog() {
   return {
     async resolve() { return { script: '', version: 'v1' }; },
     declaresTrigger(): boolean { return false; },
+    boundVersionFor(): string | null { return null; },
   };
 }
 

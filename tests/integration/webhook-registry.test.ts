@@ -29,6 +29,9 @@ function fakeCatalog(known: Set<string>) {
     // version rows has never declared any trigger. The NOT_IN_RELEASE path is covered against the
     // REAL catalog in tests/integration/trigger-release-versioning.test.ts.
     declaresTrigger(): boolean { return false; },
+    // issue #160: the port's other new REQUIRED member — never consulted when `declaresTrigger` is
+    // false (this fake's own case), but still required so a fake is forced to say so explicitly.
+    boundVersionFor(): string | null { return null; },
   };
 }
 function fakeRunManager() {
@@ -135,8 +138,23 @@ describe('WebhookRegistry (v8 Defer B, REQ-057/058)', () => {
     const c = await reg.create({ workflow: 'deploy', enabled: false });
     if (!('webhookId' in c)) throw new Error('unreachable');
     const disabled = await reg.deliver(c.webhookId, { rawBody: '{}', parsedBody: {} });
-    expect(disabled).toMatchObject({ ok: false, httpStatus: 403 });
+    // issue #160 (owner-approved 2026-10-07): a CODED refusal, not a bare code-less 403.
+    expect(disabled).toMatchObject({ ok: false, httpStatus: 403, code: 'TRIGGER_DISABLED' });
     expect(rm.started.length).toBe(0);
+  });
+
+  it('issue #160: disable() is idempotent and makes an enabled webhook refuse delivery TRIGGER_DISABLED', async () => {
+    const { rm, reg } = mk();
+    const c = await reg.create({ workflow: 'deploy' });
+    if (!('webhookId' in c) || !('secret' in c)) throw new Error('unreachable');
+    reg.disable(c.webhookId);
+    reg.disable(c.webhookId); // idempotent — no throw, no error
+    const body = '{}';
+    const result = await reg.deliver(c.webhookId, { signature: sign(c.secret, body), timestamp: ANCHOR.toISOString(), deliveryId: 'd-disabled', rawBody: body, parsedBody: {} });
+    expect(result).toMatchObject({ ok: false, httpStatus: 403, code: 'TRIGGER_DISABLED' });
+    expect(rm.started.length).toBe(0);
+    // disabling an unknown id is also a no-op, never a throw.
+    expect(() => reg.disable('never-existed')).not.toThrow();
   });
 
   it('DURABLE: a webhook created on one instance verifies on a fresh instance (same db)', async () => {
@@ -296,10 +314,14 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
       // the live claim — the real-world sequence. (v24 Gate 7.5/D-1: `create()` no longer runs a
       // release-channel check of its own; this arm IS the site that check moved to.)
       let published = true;
-      const catalog = { async resolve() {
-        if (!published) throw Object.assign(new Error('no release'), { code: 'CHANNEL_UNPUBLISHED' });
-        return { script: '', version: 'v1' };
-      } };
+      const catalog = {
+        async resolve() {
+          if (!published) throw Object.assign(new Error('no release'), { code: 'CHANNEL_UNPUBLISHED' });
+          return { script: '', version: 'v1' };
+        },
+        declaresTrigger(): boolean { return false; },
+        boundVersionFor(): string | null { return null; },
+      };
       const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: catalog as never, dbPath: join(dir, 'wh.db') });
       const { webhookId, secret } = (await reg.create({ workflow: 'deploy', createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
       published = false;
@@ -311,44 +333,41 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     }
   });
 
-  it('a released version that no longer declares this id refuses NOT_IN_RELEASE — but a version declaring NO triggers still fires', async () => {
+  it('issue #160: a trigger claimed through a version fires the version it is BOUND to, never the release channel', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
-      let triggers: string[] | undefined = [];
-      // v24 Gate 8 (AF-2, TASK-161): `declaresTrigger` answers "did ANY version of this workflow
-      // ever declare this trigger id". `true` is what this case models and what its own title says
-      // — a release that "no longer declares" an id is one that once DID, i.e. the id arrived
-      // through the registration claim door. The third phase below flips it to model the OTHER
-      // door, which this fake previously could not express at all (it used `as never`, so the
-      // missing member was not even a compile error).
+      // v24 Gate 8 (AF-2, TASK-161) / issue #160 (owner-approved 2026-10-07): `declaresTrigger`
+      // answers "did ANY version of this workflow ever declare this trigger id" — `boundVersionFor`
+      // then says WHICH one (the highest numbered declarer). The old release-channel-membership
+      // gate (`NOT_IN_RELEASE`) is retired: a version-claimed trigger resolves its BOUND version
+      // directly, never `{channel:'release'}` — `resolved` below records every selector this fake
+      // catalog's `resolve()` was actually called with, which is the proof.
       let everDeclared = true;
+      let boundVersion: string | null = 'v2';
+      const resolved: string[] = [];
       const catalog = {
-        async resolve() { return { script: '', version: 'v1', ...(triggers !== undefined ? { triggers } : {}) }; },
+        async resolve(_name: string, sel: { channel?: string; version?: string }) {
+          resolved.push(sel.version ?? `channel:${sel.channel}`);
+          return { script: '', version: sel.version ?? 'v1' };
+        },
         declaresTrigger(): boolean { return everDeclared; },
+        boundVersionFor(): string | null { return boundVersion; },
       };
       const runManager = fakeRunManager();
       const reg = new WebhookRegistry({ clock: CLOCK, runManager, catalog, dbPath: join(dir, 'wh.db') });
       const { webhookId, secret } = (await reg.create({ workflow: 'deploy', createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
 
-      expect(await deliverTo(reg, webhookId, secret, 'd-notin'))
-        .toMatchObject({ ok: false, httpStatus: 409, code: 'NOT_IN_RELEASE' });
-      expect(runManager.started).toEqual([]); // nothing was dispatched
-
-      // A version that declares NO trigger list at all is the pre-v24 shape and must still fire.
-      triggers = undefined;
-      expect(await deliverTo(reg, webhookId, secret, 'd-pre-v24')).toMatchObject({ ok: true, httpStatus: 202 });
+      expect(await deliverTo(reg, webhookId, secret, 'd-bound')).toMatchObject({ ok: true, httpStatus: 202 });
+      expect(resolved).toEqual(['v2']); // the BOUND version, never the release channel
       expect(runManager.started).toHaveLength(1);
 
-      // v24 Gate 8 (AF-2, TASK-161): the OTHER door. The released version declares a NON-EMPTY
-      // trigger list that omits this id, but no version ever declared it either — it was bound at
-      // creation (`webhook_create({workflow})` — AF-5's door, closed on the tool surface by
-      // adjudication #8; this file drives the PORT directly, which still accepts it exactly as a
-      // pre-v24 row does). A list it was never in has
-      // no jurisdiction over it, so it fires. Before TASK-161 this case was indistinguishable from
-      // the first one, because an empty declaration was persisted as NULL.
-      triggers = ['some-other-trigger-id'];
+      // A trigger bound at CREATION (`webhook_create({workflow})`, now reachable only as a pre-v24
+      // legacy row) never entered any version's `triggers[]` — `declaresTrigger` is false, and the
+      // fire path keeps the pre-v24 behaviour: resolve the RELEASE channel, same as always.
       everDeclared = false;
+      boundVersion = null;
       expect(await deliverTo(reg, webhookId, secret, 'd-create-door')).toMatchObject({ ok: true, httpStatus: 202 });
+      expect(resolved).toEqual(['v2', 'channel:release']);
       expect(runManager.started).toHaveLength(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });

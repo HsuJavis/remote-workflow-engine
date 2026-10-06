@@ -1891,8 +1891,10 @@ npm run start
   在這台主機上執行（從別台機器連進來依定義就算遠端，做這件事沒有用）：
     1. workflow_register({ name, script, mermaid, triggers: [ ...原本那些觸發器 id... ] })
        → 產生新版本，registeredRemote 為本機
-       ※ triggers 必須把原本的 id 原樣列回去。漏掉的話該觸發器改由 NOT_IN_RELEASE 被擋，
-         症狀不同但一樣不會跑。
+       ※ triggers 必須把原本的 id 原樣列回去。觸發器綁的是「宣告過它的最高版本」，不是
+         `release` 頻道（issue #160）——漏掉這個 id，綁定不會自動跟著移到這個新的本機版本，
+         還是停在原本那個遠端註冊的舊版本上，於是繼續被同一個 CONFINEMENT_UNAVAILABLE 擋下來，
+         看起來像沒修好，其實是沒把 id 列回去。
     2. workflow_publish({ name, version: '<上一步回傳的版本>', channel: 'release' })
        → 下一次觸發解析到這個乾淨版本
   ```
@@ -1940,7 +1942,7 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
   的重放 → 同一個 403，不會變成 2xx；首次是暫時性失敗（503 併發上限／500）則**不佔用**
   deliveryId —— 重試會真的重跑一次，不是回放快取的失敗；併發重複送達（同一 deliveryId 還在
   處理中）得到 503，絕不是 2xx，確保被接受的 delivery 仍是精確一次。UNCLAIMED／
-  CLAIMED_WORKFLOW_MISSING／CHANNEL_UNPUBLISHED／NOT_IN_RELEASE 這四種 409 從未佔用
+  CLAIMED_WORKFLOW_MISSING／CHANNEL_UNPUBLISHED 這三種 409 從未佔用
   deliveryId（不變），照樣可在條件修好後重試觸發。**升級前寫入的舊列（legacy row）**：這個
   版本上線之前就已經記錄、資料表尚未存過結果三欄（`httpStatus`/`code`/`runId`）的 delivery，
   重放一律回 200 `{replayed:true}`，即使那次原本其實是被拒絕的——舊資料沒有 outcome 可比對，
@@ -2038,11 +2040,22 @@ sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
 
 **觸發器與資產的生命週期**：`schedule_create`／`webhook_create` 的 `workflow` 是選填——不帶就建立一個
 未認領的觸發器並回 id，再由 `workflow_register({triggers:[id]})` 綁定到那個版本；建立時不查目錄，
-檢查在觸發當下做：未認領／工作流程不存在／未發布／不在 release 版本裡，各自被拒絕並記在該列的
+檢查在觸發當下做：未認領／工作流程不存在／未發布，各自被拒絕並記在該列的
 `lastRefusalReason`／`refusalCount`（`schedule_list`／`webhook_list` 可看）。一個觸發器同時只能被一個
-工作流程認領（`TRIGGER_ALREADY_CLAIMED`）。`workflow_deregister` 會釋放它名下的每一個觸發器（版本宣告的
-與建立時就綁定的都算），回傳 `releasedTriggers[]`，觸發器本身不刪；同時刪掉 `<assetRoot>/<name>/` 整棵
-資產樹。`schedule_setEnabled`／`schedule_delete` 成功時回 `{}`，要確認結果請再呼叫 `schedule_list`。
+工作流程認領（`TRIGGER_ALREADY_CLAIMED`）。
+
+**一個經由 `triggers[]` 認領的觸發器，綁的是「版本」，不是「頻道」**：它固定跑宣告過它的**最高版號**那一版，
+跟 `release`／`beta` 當下指到哪一版無關——即使兩個頻道都還沒 publish 過也一樣會跑。在同一個名稱下再次
+`workflow_register({triggers:[id]})` 會把綁定**往前移到那個新版本**；之後的版本若省略這個 id（「省略不釋放」），
+綁定維持在上一個還有宣告它的版本上，不會自動跟著最新版走。只有建立時就綁 `workflow` 的舊式觸發器（v24 之前的
+口子，新呼叫已關閉）才會解析 `release` 頻道——那是它唯一認得的目標。
+
+`workflow_deregister` 會釋放它名下的每一個觸發器（版本宣告的與建立時就綁定的都算），回傳
+`releasedTriggers[]`，**並把每一個都停用**（`enabled:false`）——觸發器本身不刪，但不會悄悄留著給下一個
+認領它的工作流程直接生效：排程要再認領後額外呼叫一次 `schedule_setEnabled({id, enabled:true})` 才會
+重新開始觸發；webhook 沒有重新啟用的呼叫，被停用後對每一次送達都答覆 `403 {code:'TRIGGER_DISABLED'}`，
+要恢復只能刪掉重建（換一個新 id／secret）。同時刪掉 `<assetRoot>/<name>/` 整棵資產樹。
+`schedule_setEnabled`／`schedule_delete` 成功時回 `{}`，要確認結果請再呼叫 `schedule_list`。
 全域資產在 `workspace_list` 上標 `builtin:true`、`scope:"global"`，只有 `admin` 能推與刪。
 
 **目前已知、尚未修復的缺陷（操作時要知道的現況）**

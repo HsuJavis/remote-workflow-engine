@@ -50,7 +50,7 @@ beforeAll(async () => {
   const seed = new WebhookRegistry({
     clock: CLOCK,
     runManager: { async start() { throw new Error('unreachable: seeding never delivers'); } },
-    catalog: { async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger: () => false },
+    catalog: { async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger: () => false, boundVersionFor: () => null },
     dbPath: webhookDbPath,
   });
   const created = await seed.create({ workflow: 'confinement-wiring-check', createdRemote: true });

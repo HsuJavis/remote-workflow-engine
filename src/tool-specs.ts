@@ -887,7 +887,7 @@ export const TOOL_SPECS = [
     // `limit:0` meaning "return []" is pre-existing, owner-acknowledged behavior (issue #160's own
     // DOC section), a design choice the owner rules require be left unchanged. Only floats and
     // negative values (the actual ceiling-bypass/raw-error defects) are refused.
-    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'integer', minimum: 0 } }),
+    inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string', enum: [...RUN_STATUSES] }, limit: { type: 'integer', minimum: 0 } }),
     outputSchema: OUT,
     errors: ['INVALID_ARGUMENT'] as ErrorCode[],
     seeAlso: [] as string[],

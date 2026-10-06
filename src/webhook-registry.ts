@@ -36,7 +36,10 @@ interface RunManagerPort {
   // `principal` (a property `RunSpec` also declares) broke that fallback and surfaced the
   // `startedBy.type: string` vs `StartedBy.type`'s narrow union mismatch as a real compile error.
   // Importing the real type removes the reliance on the fallback entirely.
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: StartedBy; origin: 'local' | 'remote'; principal?: string }): Promise<string>;
+  // issue #160: `version` — RunSpec already declares it; a trigger pinned to a specific version
+  // (`WorkflowCatalog.boundVersionFor`) must hand it straight to `start()` rather than letting the
+  // admission resolver fall back to whatever `release` points at.
+  start(spec: { name?: string; version?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: StartedBy; origin: 'local' | 'remote'; principal?: string }): Promise<string>;
 }
 /** Structural seam — matches WorkflowCatalog's own resolve() signature without importing the class.
  *  Widened for H4's second site (07-review.md §4.2/§8.1, ARCH-072 note 1): `create()` needs the SAME
@@ -45,12 +48,17 @@ interface RunManagerPort {
  *  CHANNEL_UNPUBLISHED here, not accepted and left to fail at every subsequent delivery. `exists()`
  *  is dropped — `create()` was its only caller in this file. */
 interface CatalogPort {
-  resolve(name: string, sel: { channel?: string }): Promise<{ triggers?: string[] } | unknown>;
+  resolve(name: string, sel: { channel?: string; version?: string }): Promise<{ triggers?: string[] } | unknown>;
   /** v24 Gate 8 (AF-2, TASK-161): "has this workflow EVER declared this trigger id, in any version?"
    *  REQUIRED, not optional (ADR-028 fail-closed reasoning applied to a port): a fake that omits it
    *  must be a compile error, not a silent `undefined` that turns the membership check below into
    *  whatever `undefined` happens to mean that day. */
   declaresTrigger(name: string, triggerId: string): boolean;
+  /** issue #160 (owner-approved 2026-10-07): the version this id is PINNED to — see
+   *  `WorkflowCatalog.boundVersionFor`'s own docblock. REQUIRED for the same fail-closed reason as
+   *  `declaresTrigger` above: only called when `declaresTrigger` is true, but a fake satisfying this
+   *  port must say so explicitly, never by omission. */
+  boundVersionFor(name: string, triggerId: string): string | null;
 }
 
 export interface WebhookRegistryDeps {
@@ -369,6 +377,16 @@ export class WebhookRegistry {
     this._db.prepare('UPDATE webhooks SET workflow = NULL WHERE id = ? AND workflow = ?').run(id, workflow);
   }
 
+  /** issue #160 (owner-approved 2026-10-07): deregister-only hygiene alongside `release()` — see
+   *  `TriggerClaimStore.disable`'s own docblock (mcp-facade.ts). Idempotent, like `release`: an
+   *  already-disabled or unknown id is a no-op, never an error. Disable, not delete — the safer of
+   *  the two options the owner left to pick: the webhook's id/secret/URL stay valid (an external
+   *  sender's config is not broken), the row's refusal history survives, and `deliver()` now answers
+   *  a CLEAR CODED refusal (`TRIGGER_DISABLED`) rather than silently discarding every future POST. */
+  disable(id: string): void {
+    this._db.prepare('UPDATE webhooks SET enabled = 0 WHERE id = ?').run(id);
+  }
+
   /** DES-139/DES-149 step 2: the OWNER is the CREATING PRINCIPAL (`createdBy`), never the claiming
    *  workflow — claiming a trigger for a workflow does not transfer its ownership. Tri-state:
    *  `undefined` = no such webhook id in this store; `null` = exists with no recorded creator
@@ -392,8 +410,9 @@ export class WebhookRegistry {
    *  → HMAC signature (constant-time, over the RAW body) → ±300s timestamp window → one-shot
    *  deliveryId dedup CHECK (before the claim checks — a caller must not learn claim state without a
    *  valid signature; a record found here REPLAYS ITS ORIGINAL OUTCOME via `_replayFromRow`, not a
-   *  bare 200) → claim checks (UNCLAIMED/CLAIMED_WORKFLOW_MISSING/CHANNEL_UNPUBLISHED/NOT_IN_RELEASE
-   *  — none of these ever write a dedup row, so they stay retryable forever, same as before) → claim
+   *  bare 200) → claim checks (UNCLAIMED/CLAIMED_WORKFLOW_MISSING/CHANNEL_UNPUBLISHED — issue #160
+   *  retired NOT_IN_RELEASE, see the version-pin block below — none of these ever write a dedup row,
+   *  so they stay retryable forever, same as before) → claim
    *  the delivery id (INSERT, `httpStatus=0` sentinel — "admitted past policy, outcome pending"; a
    *  losing INSERT means a concurrent duplicate is already in flight or already finished, and this
    *  call replays THAT row instead of starting a second run) → start the claimed workflow with the
@@ -405,7 +424,10 @@ export class WebhookRegistry {
   async deliver(id: string, req: { signature?: string; timestamp?: string; deliveryId?: string; rawBody: string; parsedBody: unknown }): Promise<DeliverResult> {
     const row = this._db.prepare('SELECT * FROM webhooks WHERE id = ?').get(id) as WebhookRow | undefined;
     if (!row) return { ok: false, httpStatus: 404, reason: 'unknown webhook' };
-    if (row.enabled !== 1) return { ok: false, httpStatus: 403, reason: 'webhook disabled' };
+    // issue #160 (owner-approved 2026-10-07): a CODED refusal — a webhook `workflow_deregister`
+    // disabled previously answered a bare, code-less 403 ("webhook disabled"), indistinguishable
+    // from any other disabled-for-no-stated-reason row. `TRIGGER_DISABLED`'s hint names the cause.
+    if (row.enabled !== 1) return { ok: false, httpStatus: 403, reason: ERROR_CATALOG.TRIGGER_DISABLED.hint, code: 'TRIGGER_DISABLED' };
 
     const expected = createHmac('sha256', row.secret).update(req.rawBody).digest('hex');
     const provided = (req.signature ?? '').replace(/^sha256=/, '');
@@ -432,35 +454,26 @@ export class WebhookRegistry {
       return { ok: false, httpStatus: 409, reason: 'webhook is not claimed by any workflow', code: 'UNCLAIMED' };
     }
 
-    // v24 (integrator; DES-150): the OTHER three refusal reasons. `RefusalReason` is declared once
-    // in types.ts as a vocabulary SHARED by the scheduler and this registry, and this path only
-    // ever produced one of its four members — a webhook whose claimed workflow had been
-    // deregistered, unpublished, or dropped from the released version's `triggers[]` fired anyway
-    // (or failed at dispatch and was recorded as `lastError`, which the docblock says means
-    // something else entirely). Same order and same codes as the scheduler driver's gate.
-    let released: { triggers?: string[] };
+    // issue #160 (owner-approved 2026-10-07): a webhook CLAIMED through a version's `triggers[]`
+    // (`declaresTrigger` true) is PINNED to the HIGHEST version that still declares it
+    // (`boundVersionFor`) — it fires THAT version, never whatever `release` happens to point at.
+    // This REPLACES the old release-channel-membership gate (`NOT_IN_RELEASE`): that question
+    // ("does the CURRENT release still list this id") is simply the wrong one once a bound version
+    // is itself the fire target — resolving `{version: bound}` either succeeds (fires it) or throws
+    // because the version/workflow is gone (CLAIMED_WORKFLOW_MISSING below), and there is no third
+    // state left for NOT_IN_RELEASE to name. A trigger bound at CREATION (`webhook_create({workflow})`,
+    // now reachable only as a pre-v24 legacy row — `declaresTrigger` false) never entered any
+    // version's `triggers[]`, so it keeps the pre-v24 behaviour: resolve the RELEASE channel, same
+    // as always.
+    const boundVersion = this._catalog.declaresTrigger(row.workflow, id) ? this._catalog.boundVersionFor(row.workflow, id) : null;
+    const resolveSel = boundVersion !== null ? { version: boundVersion } : { channel: 'release' };
     try {
-      released = (await this._catalog.resolve(row.workflow, { channel: 'release' })) as { triggers?: string[] };
+      await this._catalog.resolve(row.workflow, resolveSel);
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       const reason: RefusalReason = code === 'CHANNEL_UNPUBLISHED' ? 'CHANNEL_UNPUBLISHED' : 'CLAIMED_WORKFLOW_MISSING';
       this._recordRefusal(id, reason);
       return { ok: false, httpStatus: 409, reason: `claimed workflow '${row.workflow}' cannot be fired: ${reason}`, code: reason };
-    }
-    // Membership, with BOTH guards (v24 Gate 8, AF-2 / TASK-161):
-    //   - `triggers !== undefined` still covers a genuine PRE-v24 version row, whose column did not
-    //     exist and therefore says nothing;
-    //   - `declaresTrigger` covers the create-time binding door (`webhook_create({workflow})`):
-    //     such a webhook never entered ANY version's `triggers[]`, so the released version's list
-    //     has no jurisdiction over it and refusing it would silently stop every webhook bound that
-    //     way. v24 adjudication #8 (H-2, issue #56) closed that door on the tool surface (AF-5
-    //     fixed), so this guard now protects PRE-v24 legacy rows — which still exist and still fire.
-    // The first guard used to carry both jobs by proxy, because an empty declaration was stored as
-    // NULL — which is the very conflation AF-2 is about, and why fixing the storage without fixing
-    // this line trades one silent failure for another.
-    if (released?.triggers !== undefined && !released.triggers.includes(id) && this._catalog.declaresTrigger(row.workflow, id)) {
-      this._recordRefusal(id, 'NOT_IN_RELEASE');
-      return { ok: false, httpStatus: 409, reason: `webhook ${id} is not in workflow '${row.workflow}'s released version`, code: 'NOT_IN_RELEASE' };
     }
 
     // Issue #88: claim the delivery id BEFORE calling `start()`, with `httpStatus=0` as the
@@ -497,7 +510,10 @@ export class WebhookRegistry {
       // readable by the person who created the trigger, exactly as a manual run_start already is
       // for its caller. `row.createdBy` is `null` for a legacy ownerless trigger (a migrated pre-v24
       // row) — `?? undefined` keeps that case exactly as it was (no principal, admin-only reads).
-      runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local', principal: row.createdBy ?? undefined });
+      // issue #160: `version: boundVersion ?? undefined` — a version-pinned trigger runs THAT
+      // version explicitly; a legacy create-time-bound one (`boundVersion === null`) omits it, same
+      // as before, so `start()` falls back to its own default (release).
+      runId = await this._runManager.start({ name: row.workflow, version: boundVersion ?? undefined, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local', principal: row.createdBy ?? undefined });
     } catch (err) {
       // Webhook B2 (dash-auth-spec.md §B2): `admissionErrorToOutcome` classifies EVERY
       // ERROR_CATALOG code `RunManager.start()` can throw — see its own docblock (run-manager.ts)

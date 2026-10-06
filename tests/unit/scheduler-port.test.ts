@@ -263,4 +263,23 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     const list = await port.list();
     expect(list.find((s) => s.id === id)?.enabled).toBe(false);
   });
+
+  // issue #160 (owner-approved 2026-10-07): `disable()` — the synchronous, bare-write TriggerClaimStore
+  // member `workflow_deregister` calls alongside `release()` (mcp-facade.ts). Unlike `setEnabled`, it
+  // never answers TRIGGER_NOT_FOUND — deregister's own release loop must never fail because of it.
+  it('disable() turns off an enabled schedule and is idempotent for an unknown id', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK,
+      catalog: makeFakeCatalog(),
+      runManager: makeFakeRunManager(),
+      dbPath: ':memory:',
+    });
+    const r = await port.create({ kind: 'resident', workflow: 'my-workflow', enabled: true });
+    const id = r.result!.id;
+    port.disable(id);
+    const list = await port.list();
+    expect(list.find((s) => s.id === id)?.enabled).toBe(false);
+    expect(() => port.disable('never-existed')).not.toThrow();
+    expect(() => port.disable(id)).not.toThrow(); // already disabled — still a no-op, not an error
+  });
 });
