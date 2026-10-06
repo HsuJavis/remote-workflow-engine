@@ -82,6 +82,7 @@ export type SetupKey =
   | 'suspendedRunId'  // a run already driven to `suspended`, consumed by run_resume's happy path
   | 'suspendTargetRunId' // a live run consumed by run_suspend's happy path
   | 'stopTargetRunId'    // a live run consumed by run_stop's happy path
+  | 'stoppedRunId'    // a run already driven to `stopped`, for run_result's RUN_STOPPED fixture (issue #160 BUG-1)
   | 'seededPath'      // a file seeded into terminalRunId's workspace, for workspace_pull/delete
   | 'scheduleId'      // a schedule minted by schedule_create, for schedule_setEnabled
   | 'deletableScheduleId' // a SECOND schedule, consumed by schedule_delete's happy path
@@ -752,13 +753,16 @@ export const TOOL_SPECS = [
     // total plus `unpricedCalls`/`unmappedMessages`; `meta.budgetEnforceable` names which limits can
     // actually bind given the models this run can reach, and which of those have no known price.
     // dash-auth-spec.md section C (2026-09-30): `meta.warnings` — see the description string.
-    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price). If any agent() call inside this run failed or timed out — it still resolved `null` to the script, which still completed normally — `meta.warnings` carries one `{code: 'AGENT_FAILED', message}` entry naming how many; call run_status for the per-agent `agentFailures` detail.",
+    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. On a run stopped via run_stop, `result.error.code` is `RUN_STOPPED` — it never completed, so there is no script return value. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price). If any agent() call inside this run failed or timed out — it still resolved `null` to the script, which still completed normally — `meta.warnings` carries one `{code: 'AGENT_FAILED', message}` entry naming how many; call run_status for the per-agent `agentFailures` detail.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     // Service accounts spec: WORKFLOW_NOT_ALLOWED joins its three NESTING_*/DESCENDANT_CAP_EXCEEDED
     // siblings for the same reason they are here — an uncaught nested workflow() refusal becomes
     // THIS run's own terminal `result.error`.
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
+    // issue #160 BUG-1: RUN_STOPPED joins RUN_NOT_TERMINAL — a stopped run is terminal (unlike a
+    // genuinely live one) but carries no script result, so it gets its own typed code rather than
+    // either RUN_NOT_TERMINAL (wrong: it IS terminal) or a silent RUN_FAILED.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'RUN_STOPPED', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     // Gate 6.5+7 round 2 (verifier): `adminCrossRead` was MISSING here while DES-151 states in so
     // many words that "`run_result` is added to the audited set" and `AuditAction` names it. Without
@@ -771,6 +775,7 @@ export const TOOL_SPECS = [
       errors: {
         RUN_NOT_FOUND: { runId: ABSENT_ID },
         RUN_NOT_TERMINAL: { runId: ref('liveRunId') },
+        RUN_STOPPED: { runId: ref('stoppedRunId') },
       },
     },
   },

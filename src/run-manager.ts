@@ -1612,10 +1612,24 @@ export class RunManager {
     if (entry) {
       if (entry.status === 'completed') return { ok: true, value: entry.result };
       if (entry.status === 'failed' && entry.resultError) return { ok: false, error: entry.resultError };
+      // issue #160 BUG-1: `stopped` is a TERMINAL status (line 184's `TERMINAL` array, and
+      // `withTerminalRun` below both already treat it as such) but a stopped run never has an
+      // `entry.result`/`entry.resultError` — `stop()` records no script outcome. Without this
+      // branch a stopped run fell through to the generic RUN_NOT_TERMINAL return below, even
+      // though run_status/run_list both already report it as terminal (`terminalAt` set).
+      if (entry.status === 'stopped') {
+        return { ok: false, error: { code: 'RUN_STOPPED', message: `Run ${runId} was stopped before it completed; it has no script return value` } };
+      }
     }
     const stored = await this._store.getResult(runId);
     if (stored) return { ok: true, value: stored.value };
     const view = await this._store.getRun(runId);
+    // issue #160 BUG-1 (persisted-store path, mirrors the in-memory branch above): a restart
+    // loses the in-process `_runs` entry, so a stopped run must be recognised here too, before
+    // the generic RUN_NOT_TERMINAL fallback.
+    if (view?.status === 'stopped') {
+      return { ok: false, error: { code: 'RUN_STOPPED', message: `Run ${runId} was stopped before it completed; it has no script return value` } };
+    }
     // v35 (DES-232, ARCH-142, TASK-236, REQ-205): GATED — `getError` is read only when the STORED
     // status is `failed`. Ungated, this would answer `{ok:false, error}` for a run `run_status`
     // reports `interrupted` (a crash between the column write and the transition, then REQ-060's

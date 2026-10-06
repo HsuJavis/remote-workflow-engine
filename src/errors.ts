@@ -221,6 +221,10 @@ export const ERROR_CATALOG = {
   // Run lifecycle
   RUN_NOT_FOUND: { see: null, hint: 'no run is recorded under this runId' },
   RUN_NOT_TERMINAL: { see: null, hint: 'this operation requires the run to be in a terminal state' },
+  // issue #160 BUG-1: a stopped run IS terminal (run_status/run_list already report it that way),
+  // but run_stop records no script result — run_result answers this typed code instead of either
+  // forging a fake success or misreporting RUN_NOT_TERMINAL.
+  RUN_STOPPED: { see: null, hint: 'the run was stopped (run_stop) before it completed; it has no script return value' },
   RUN_ADMISSION_LIMIT: { see: null, hint: 'the configured maxConcurrentRuns is already reached' },
   ILLEGAL_TRANSITION: { see: null, hint: 'the requested run-status transition is not allowed from its current state' },
   AGENT_LOG_NOT_FOUND: { see: null, hint: 'no transcript is recorded for this agentId on this run' },
