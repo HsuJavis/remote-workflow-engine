@@ -65,6 +65,30 @@ describe('#157 B2: Intl.DateTimeFormat is determinism-guarded, not reachable ung
     expect((r.value as { escaped: boolean }).escaped).toBe(false);
   });
 
+  // #157 B2 (blocker, re-opened by a Gate 8 v2 re-review): the pre-fix `guardedIntl` was a `get`-only
+  // Proxy around the real `CtxIntl` — `Object.getOwnPropertyDescriptor` has no trap defined on that
+  // Proxy, so Node's default behavior FORWARDS the call to the TARGET (the real, unguarded `CtxIntl`),
+  // handing the script the genuine `DateTimeFormat` constructor and defeating the guard entirely
+  // (not merely a realm leak — an actual wall-clock VALUE reaches the script, which is the resume-
+  // replay-key hazard the guard exists to prevent).
+  it('#157 B2: Object.getOwnPropertyDescriptor(Intl, "DateTimeFormat").value is the guarded thrower, not the real constructor', async () => {
+    const r = await evaluateScript(
+      `const D = Object.getOwnPropertyDescriptor(Intl, 'DateTimeFormat').value; return new D().format();`,
+      FAKE_API,
+    );
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('DETERMINISM_GUARD');
+  });
+
+  it('#157 B2: the descriptor\'s .value is THE SAME function Intl.DateTimeFormat itself resolves to (one guarded object, not a get-trap-only illusion)', async () => {
+    const r = await evaluateScript(
+      `return Object.getOwnPropertyDescriptor(Intl, 'DateTimeFormat').value === Intl.DateTimeFormat;`,
+      FAKE_API,
+    );
+    expect(r.kind).toBe('done');
+    expect(r.value).toBe(true);
+  });
+
   it('DETERMINISM_GUARDED now documents 4 guarded calls, including Intl.DateTimeFormat, each with why + instead', () => {
     expect(DETERMINISM_GUARDED.length).toBe(4);
     const intlEntry = DETERMINISM_GUARDED.find((g) => g.call.includes('Intl.DateTimeFormat'));

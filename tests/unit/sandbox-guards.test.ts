@@ -159,6 +159,151 @@ describe('Sandbox VM guards', () => {
     expect((r.value as { escaped: boolean }).escaped).toBe(false);
   });
 
+  // #157 B1 (CRITICAL, re-opened by a Gate 8 v2 re-review): the V5 matrix above only walks
+  // `.constructor.constructor` on the INJECTED VALUES themselves (agent/args/budget/…) — it never
+  // calls one of the function-valued ones and inspects what comes BACK. `agent()`/`parallel()`/
+  // `pipeline()`/`workflow()` are `async` arrow functions declared in THIS module (guards.ts), which
+  // executes in the embedding realm even though the function itself has its `[[Prototype]]` severed
+  // before being exposed — an `async` function's RETURN VALUE is a Promise built by the embedding
+  // realm's OWN native `Promise`, a brand-new object the severing loop never touches. That Promise's
+  // `.constructor` therefore still resolves to the embedding `Promise`, and `.constructor.constructor`
+  // to the embedding `Function` — reaching `process` exactly as the pre-fix top-level globals did.
+  describe('#157 B1 follow-up: a Promise RETURNED by agent()/parallel()/pipeline()/workflow() is still embedding-realm, not context-native', () => {
+    const CASES: Array<[string, string]> = [
+      ['parallel([])', "parallel([])"],
+      ['pipeline([], () => 1)', "pipeline([], () => 1)"],
+      ['agent(...)', "agent('x', {})"],
+      ['workflow(...) (one-level nesting, delegate throws NESTING_ERROR but the Promise itself is still returned synchronously)', "workflow('x', {})"],
+    ];
+    for (const [label, expr] of CASES) {
+      it(`${expr} — .constructor.constructor('return process') does not yield a live process (${label})`, async () => {
+        const script = `
+          try {
+            const p = ${expr};
+            p.catch(() => {}); // swallow the eventual NESTING_ERROR/empty-array settle — only the object's own realm is under test here
+            const proc = p.constructor.constructor('return process')();
+            return { escaped: (typeof proc === 'object' && proc !== null) || typeof proc === 'function' };
+          } catch (e) {
+            return { escaped: false };
+          }
+        `;
+        const r = await evaluateScript(script, FAKE_API);
+        expect(r.kind, `${expr} should not throw out of evaluateScript itself`).toBe('done');
+        expect((r.value as { escaped: boolean }).escaped, `${expr}'s returned Promise must not leak the embedding realm`).toBe(false);
+      });
+    }
+
+    it('a .then() chain off agent()\'s returned Promise is ALSO context-native (species construction does not re-leak)', async () => {
+      const script = `
+        try {
+          const p2 = agent('x', {}).then((v) => v);
+          const proc = p2.constructor.constructor('return process')();
+          return { escaped: (typeof proc === 'object' && proc !== null) || typeof proc === 'function' };
+        } catch (e) {
+          return { escaped: false };
+        }
+      `;
+      const r = await evaluateScript(script, FAKE_API);
+      expect(r.kind).toBe('done');
+      expect((r.value as { escaped: boolean }).escaped).toBe(false);
+    });
+
+    it('parallel([]) is not `instanceof` this TEST FILE\'s own (embedding-realm) Promise — proof it is genuinely context-native, not merely re-wrapped', async () => {
+      const script = `return typeof parallel([]).then;`;
+      const r = await evaluateScript(script, FAKE_API);
+      // A context-native Promise still exposes `.then` (same shape) — this just pins that the
+      // returned value is a real, usable promise-like object post-fix, not a broken stand-in.
+      expect(r.kind).toBe('done');
+      expect(r.value).toBe('function');
+    });
+  });
+
+  // #157 B1 follow-up (Date.now): `GuardedDate`'s `static override now()` is a method created by
+  // evaluating the `class` body — that evaluation happens in the EMBEDDING realm (guards.ts's own
+  // module scope), even though the class `extends` a context-native `Date`. Only the class's OWN
+  // `[[Prototype]]` link benefits from `extends` (-> context-native `CtxDate`); the `now` method
+  // itself is an ordinary embedding-realm function whose `[[Prototype]]` was never severed.
+  describe('#157 B1 follow-up: Date.now (the static override) does not leak the embedding realm via its own prototype chain', () => {
+    it('Date.now.constructor.constructor cannot reach process (accessing, not calling, the thrower)', async () => {
+      const script = `
+        try {
+          const proc = Date.now.constructor.constructor('return process')();
+          return { escaped: (typeof proc === 'object' && proc !== null) || typeof proc === 'function' };
+        } catch (e) {
+          return { escaped: false };
+        }
+      `;
+      const r = await evaluateScript(script, FAKE_API);
+      expect(r.kind).toBe('done');
+      expect((r.value as { escaped: boolean }).escaped).toBe(false);
+    });
+
+    it('Object.getOwnPropertyDescriptor(Date, "now").value.constructor.constructor cannot reach process (the descriptor route forwards to the same unsevered function)', async () => {
+      const script = `
+        try {
+          const fn = Object.getOwnPropertyDescriptor(Date, 'now').value;
+          const proc = fn.constructor.constructor('return process')();
+          return { escaped: (typeof proc === 'object' && proc !== null) || typeof proc === 'function' };
+        } catch (e) {
+          return { escaped: false };
+        }
+      `;
+      const r = await evaluateScript(script, FAKE_API);
+      expect(r.kind).toBe('done');
+      expect((r.value as { escaped: boolean }).escaped).toBe(false);
+    });
+  });
+
+  // #157 B1 follow-up (Intl.DateTimeFormat.prototype): `dateTimeFormatThrower` is declared with the
+  // `function` keyword (needed so `new Intl.DateTimeFormat()` still throws instead of "not a
+  // constructor") — every ordinary function declaration auto-creates an own `.prototype` object
+  // whose `[[Prototype]]` defaults to the realm that CREATED the function (the embedding realm
+  // here), independent of the function's OWN `[[Prototype]]` severance.
+  describe('#157 B1 follow-up: Intl.DateTimeFormat.prototype does not leak the embedding realm', () => {
+    it('Intl.DateTimeFormat.prototype.toString.constructor.constructor cannot reach process', async () => {
+      const script = `
+        try {
+          const proc = Intl.DateTimeFormat.prototype.toString.constructor.constructor('return process')();
+          return { escaped: (typeof proc === 'object' && proc !== null) || typeof proc === 'function' };
+        } catch (e) {
+          return { escaped: false };
+        }
+      `;
+      const r = await evaluateScript(script, FAKE_API);
+      expect(r.kind).toBe('done');
+      expect((r.value as { escaped: boolean }).escaped).toBe(false);
+    });
+
+    it('Object.getPrototypeOf(Intl.DateTimeFormat.prototype).constructor.constructor cannot reach process', async () => {
+      const script = `
+        try {
+          const proto = Object.getPrototypeOf(Intl.DateTimeFormat.prototype);
+          const proc = proto.constructor.constructor('return process')();
+          return { escaped: (typeof proc === 'object' && proc !== null) || typeof proc === 'function' };
+        } catch (e) {
+          return { escaped: false };
+        }
+      `;
+      const r = await evaluateScript(script, FAKE_API);
+      expect(r.kind).toBe('done');
+      expect((r.value as { escaped: boolean }).escaped).toBe(false);
+    });
+  });
+
+  // #157 B2 (same bug class, found while fixing the descriptor-bypass reported against Intl):
+  // `guardedMath` is a `get`-only Proxy wrapping the real `CtxMath` — `Object.getOwnPropertyDescriptor`
+  // has no trap defined, so Node's default behavior forwards it to the TARGET (the real `CtxMath`),
+  // returning the real, unguarded `random` function instead of the thrower.
+  it('#157 B2 (same bug class as Intl): Object.getOwnPropertyDescriptor(Math, "random").value is the guarded thrower, not the real RNG', async () => {
+    const script = `
+      const R = Object.getOwnPropertyDescriptor(Math, 'random').value;
+      return R();
+    `;
+    const r = await evaluateScript(script, FAKE_API);
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('DETERMINISM_GUARD');
+  });
+
   // Bare `Function` (no injected object involved) was always isolated — kept as the control case
   // the rewritten V5 test above now contrasts against, proving the fix targeted the real vector
   // without disturbing the one that was already safe.

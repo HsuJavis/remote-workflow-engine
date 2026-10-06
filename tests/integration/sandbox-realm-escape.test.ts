@@ -151,4 +151,35 @@ describe('#157 B1: .constructor.constructor cannot reach the real child process 
     const r = await freshHost().run('it157-sanity', 'return 1 + 1;', {}, null);
     expect(resultOf(r)).toBe(2);
   });
+
+  // #157 B1 (Gate 8 v2 re-review, through the REAL fork boundary): this file above only probes the
+  // literal injected VALUES (agent/args/budget/Math); a Promise RETURNED by calling one of the
+  // function-valued ones is a separate object the first round of hardening never re-realmed, and it
+  // reaches this same real child process's `process`/`fetch`.
+  it('parallel([]).constructor.constructor("return process")() does not yield a live process (returned-Promise vector, real fork)', async () => {
+    const script = `
+      try {
+        const p = parallel([]);
+        const proc = p.constructor.constructor('return process')();
+        return { escaped: typeof proc === 'object' && proc !== null && typeof proc.pid === 'number' };
+      } catch (e) {
+        return { escaped: false };
+      }
+    `;
+    const r = await freshHost().run('it157-parallel-promise-process', script, {}, null);
+    expect((resultOf(r) as { escaped: boolean }).escaped).toBe(false);
+  });
+
+  it('typeof process read off a Promise returned by parallel() is "undefined" through the real fork (not merely non-throwing)', async () => {
+    const script = `
+      const p = parallel([]);
+      try {
+        return { kind: typeof p.constructor.constructor('return typeof process')() };
+      } catch (e) {
+        return { kind: 'threw' };
+      }
+    `;
+    const r = await freshHost().run('it157-parallel-promise-typeof', script, {}, null);
+    expect((resultOf(r) as { kind: string }).kind).not.toBe('object');
+  });
 });

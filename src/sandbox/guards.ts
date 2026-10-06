@@ -245,6 +245,15 @@ function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): Date
       throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
     }
   }
+  // #157 B1 follow-up: `static override now` above is a METHOD — a value created by evaluating this
+  // `class` body, which happens in the EMBEDDING realm (this whole module's own scope) even though
+  // `GuardedDate` itself `extends CtxDate` (that `extends` link only re-realms the CLASS's own
+  // `[[Prototype]]`, not a property added by the subclass). `now`'s `[[Prototype]]` therefore
+  // defaulted to the embedding `Function.prototype`, unlike every other wrapper this file builds
+  // (which are plain functions this code explicitly severs below) — giving `Date.now.constructor.
+  // constructor(...)` (never actually CALLING `now`, just reading it as a value) a live path to the
+  // embedding `Function`. Accessed and severed here, once, right after the class exists.
+  Object.setPrototypeOf(GuardedDate.now, null);
   // #157 (DOC item): `Date()` called WITHOUT `new` reads the wall clock too — the same hazard as
   // `Date.now()` — but was refused only incidentally, by the ES class-invocation rule ("Class
   // constructor ... cannot be invoked without 'new'", a generic TypeError/SCRIPT_ERROR), since
@@ -258,45 +267,68 @@ function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): Date
   }) as unknown as DateConstructor;
 }
 
+/** #157 B2 (same bug class as `guardedIntl` below, fixed the same way): the pre-fix version of this
+ *  function wrapped `CtxMath` in a `get`-only Proxy. `Object.getOwnPropertyDescriptor(Math,'random')`
+ *  has no trap defined on a `get`-only Proxy, so Node's default behavior FORWARDS it to the
+ *  TARGET — the real, un-guarded `CtxMath` — handing a script the genuine `random` function instead
+ *  of the thrower. Mutating `CtxMath` itself (the context's OWN global `Math`, fetched via
+ *  `vm.runInContext('Math', context)`, not a copy) closes every access path at once (`get`,
+ *  `getOwnPropertyDescriptor`, `in`, `Object.keys`, …) because there is no longer a second,
+ *  un-guarded object anywhere for any of those paths to reach. */
 function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof Math {
   // #157 B1 follow-up: this thrower is a value reached one property hop PAST `Math` itself
   // (`Math.random`, not `Math`) — the top-level `Math` guard above does not protect it. Built as a
   // plain embedding-realm arrow function, it was exactly as exploitable as `Math` was pre-fix
   // (`Math.random.constructor.constructor(...)` still reached the embedding realm). Its own
   // `[[Prototype]]` is severed for the same reason every other wrapper function in this file is.
+  // (An arrow function has no own `.prototype` property, unlike `dateTimeFormatThrower` below, so no
+  // further severing is needed there.)
   const randomThrower = () => {
     throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
   };
   Object.setPrototypeOf(randomThrower, null);
-  return new Proxy(CtxMath, {
-    get(target, prop, receiver) {
-      if (prop === 'random') return randomThrower;
-      return Reflect.get(target, prop, receiver);
-    },
-  });
+  Object.defineProperty(CtxMath, 'random', { value: randomThrower, writable: true, enumerable: true, configurable: true });
+  return CtxMath;
 }
 
-/** #157 B2: `Intl.DateTimeFormat` (and its instance methods — `.format()`, `.formatToParts()`,
- *  `.resolvedOptions()`) read the wall clock the same way `Date.now()`/`new Date()` do, defeating
- *  the same resume-replay-key hazard — but `Intl` is a standard vm-context-default global (present
- *  in any context regardless of what `sandbox` declares, same as `console`, issue #157 B3) that was
- *  never added to `sandbox` nor shadowed, so it was reachable unguarded. Refuses CONSTRUCTING a
- *  `DateTimeFormat` at all (a plain function, not an arrow — throws identically called with or
- *  without `new`, so no instance, and therefore no instance method, is ever reachable) rather than
- *  guarding individual methods; other `Intl` constructors (`NumberFormat`, `Collator`, …) carry no
- *  wall-clock hazard and are left untouched, wrapping `CtxIntl` (this call's own vm context's native
- *  `Intl`, not the embedding realm's) for the same reason `guardedMath` wraps `CtxMath`. */
+/** #157 B2 (blocker, fixed here): `Intl.DateTimeFormat` (and its instance methods — `.format()`,
+ *  `.formatToParts()`, `.resolvedOptions()`) read the wall clock the same way `Date.now()`/
+ *  `new Date()` do, defeating the same resume-replay-key hazard — but `Intl` is a standard
+ *  vm-context-default global (present in any context regardless of what `sandbox` declares, same as
+ *  `console`, issue #157 B3) that was never added to `sandbox` nor shadowed, so it was reachable
+ *  unguarded. Refuses CONSTRUCTING a `DateTimeFormat` at all (a plain function, not an arrow — throws
+ *  identically called with or without `new`, so no instance, and therefore no instance method, is
+ *  ever reachable) rather than guarding individual methods; other `Intl` constructors
+ *  (`NumberFormat`, `Collator`, …) carry no wall-clock hazard and are left untouched.
+ *
+ *  Pre-fix this wrapped `CtxIntl` in a `get`-only Proxy — `Object.getOwnPropertyDescriptor(Intl,
+ *  'DateTimeFormat')` has no trap defined on a `get`-only Proxy, so Node's default behavior FORWARDS
+ *  it to the TARGET (the real, un-guarded `CtxIntl`), handing a script the genuine constructor
+ *  (`new D().format()` then reads the real wall clock — not a realm leak, an actual guard bypass).
+ *  Mutating `CtxIntl` itself (this call's own vm context's native `Intl`, fetched via
+ *  `vm.runInContext('Intl', context)`, not a copy) closes every access path at once, the same fix
+ *  `guardedMath` applies to `Math.random` above, for the identical reason.
+ *
+ *  `dateTimeFormatThrower` is declared with the `function` keyword, not an arrow — an arrow function
+ *  cannot be invoked with `new` at all (`TypeError: ... is not a constructor`, which would reach the
+ *  script BEFORE the thrower's own body runs, surfacing as `SCRIPT_ERROR` instead of
+ *  `DETERMINISM_GUARD` for `new Intl.DateTimeFormat()`, a regression this fix must not introduce).
+ *  That means it auto-gets an own `.prototype` object (every ordinary function declaration does),
+ *  whose `[[Prototype]]` defaults to the realm that CREATED it — the embedding realm here — giving
+ *  `Intl.DateTimeFormat.prototype.toString.constructor` (and `Object.getPrototypeOf(Intl.
+ *  DateTimeFormat.prototype).constructor`) a live path back to the embedding `Function`, the #157 B1
+ *  vector, through a property the function's own severed `[[Prototype]]` does not reach (that only
+ *  cuts `dateTimeFormatThrower.__proto__`, a completely different slot from `dateTimeFormatThrower.
+ *  prototype`). Reassigning `.prototype` to a null-proto object closes it: the thrower always throws
+ *  before `new` can ever materialize an instance off that object, so nothing depends on its shape. */
 function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor): typeof Intl {
   function dateTimeFormatThrower(): never {
     throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Intl.DateTimeFormat is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
   }
   Object.setPrototypeOf(dateTimeFormatThrower, null);
-  return new Proxy(CtxIntl, {
-    get(target, prop, receiver) {
-      if (prop === 'DateTimeFormat') return dateTimeFormatThrower;
-      return Reflect.get(target, prop, receiver);
-    },
-  });
+  dateTimeFormatThrower.prototype = Object.create(null) as object;
+  Object.defineProperty(CtxIntl, 'DateTimeFormat', { value: dateTimeFormatThrower, writable: true, enumerable: true, configurable: true });
+  return CtxIntl;
 }
 
 // v25 (DES-167, REQ-120, issue #61): codes the ENGINE raises when it REFUSED to dispatch a call at
@@ -336,88 +368,119 @@ function refusalCode(err: unknown): string | null {
 type Thunk = () => Promise<unknown>;
 type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
 
-// #157 B1: `CtxError`/`reRealm` are per-evaluateScript-call (that call's own vm context's native
-// Error/Array/Object) — see `createGuardError`/`makeReRealm`'s own docs for why. The returned
-// wrapper functions have their OWN `[[Prototype]]` severed (`Object.setPrototypeOf(fn, null)`,
-// applied once by `evaluateScript` where these are assembled) so `<fn>.constructor` cannot reach the
-// embedding realm either; `reRealm` on the RETURNED ARRAY closes the same hole for the container
-// `Promise.all` builds (an embedding-realm array), which the function's own nulled prototype alone
-// does not reach.
-function makeParallel(CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
-  return async (thunks: Thunk[]): Promise<Array<unknown | null>> => {
-    if (!Array.isArray(thunks)) {
-      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', 'parallel() requires an array of thunks');
-    }
-    if (thunks.length > MAX_ITEMS) {
-      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', `parallel() exceeds the ${MAX_ITEMS}-item cap (${thunks.length})`);
-    }
-    const result = await Promise.all(
-      thunks.map(async (thunk) => {
-        try {
-          return await thunk();
-        } catch (err) {
-          // An engine REFUSAL is not the author's thunk failing — propagate it with its code so the
-          // caller (and the run's terminal error) says why. Everything else keeps the documented
-          // null-for-a-throwing-thunk contract. `err` here is already sanitized (agent()/workflow()
-          // sanitize their own rejections before the thunk's own `await` can see them), so re-
-          // throwing it here carries that same safety forward unchanged.
-          if (refusalCode(err) !== null) throw err;
-          return null;
-        }
-      }),
-    );
-    return reRealm(result) as Array<unknown | null>;
-  };
+/** #157 B1 follow-up: `agent()`/`parallel()`/`pipeline()`/`workflow()` are all `async` functions
+ *  declared in THIS module — the embedding realm — so the Promise each one RETURNS when called is
+ *  built by the embedding realm's own native `Promise`, a brand-new object each call creates fresh;
+ *  severing the wrapper FUNCTION's own `[[Prototype]]` (done once, below, for all of them) does
+ *  nothing to that separate, later-created return value. `<call>().constructor.constructor(...)`
+ *  therefore still reached the embedding `Function` even after every other #157 B1 hardening.
+ *  Wraps the embedding-realm promise in a BRAND NEW instance of `CtxPromise` (this call's own vm
+ *  context's native `Promise`, fetched the same way `CtxDate`/`CtxMath`/… are) — the executor runs
+ *  synchronously (settling `settle`/`fail` only once the real work resolves/rejects), so the object a
+ *  script sees is context-native from the instant it is created, and stays so through `.then()`
+ *  chains (`Promise.prototype.then`'s species construction resolves against `CtxPromise`, never the
+ *  embedding one, because the promise IT is called on already is `CtxPromise`-native). */
+function toCtxPromise<T>(CtxPromise: PromiseConstructor, hostPromise: Promise<T>): Promise<T> {
+  return new CtxPromise((resolve, reject) => {
+    hostPromise.then(resolve as (value: unknown) => void, reject);
+  }) as Promise<T>;
 }
 
-function makePipeline(CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
-  return async (items: unknown[], ...stages: Stage[]): Promise<Array<unknown | null>> => {
-    if (!Array.isArray(items)) {
-      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', 'pipeline() requires an array of items');
-    }
-    if (items.length > MAX_ITEMS) {
-      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', `pipeline() exceeds the ${MAX_ITEMS}-item cap (${items.length})`);
-    }
-    const result = await Promise.all(
-      items.map(async (item, index) => {
-        let prev: unknown = item;
-        for (const stage of stages) {
-          try {
-            prev = await stage(prev, item, index);
-          } catch (err) {
-            if (refusalCode(err) !== null) throw err; // same rule as parallel() above
-            return null;
-          }
+// #157 B1: `CtxError`/`reRealm`/`CtxPromise` are per-evaluateScript-call (that call's own vm
+// context's native Error/Array/Object/Promise) — see `createGuardError`/`makeReRealm`/
+// `toCtxPromise`'s own docs for why. The returned wrapper functions have their OWN `[[Prototype]]`
+// severed (`Object.setPrototypeOf(fn, null)`, applied once by `evaluateScript` where these are
+// assembled) so `<fn>.constructor` cannot reach the embedding realm either; `reRealm` on the
+// RETURNED ARRAY closes the same hole for the container `Promise.all` builds (an embedding-realm
+// array), which the function's own nulled prototype alone does not reach; `toCtxPromise` closes it
+// for the Promise object itself (see that function's own doc).
+function makeParallel(CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
+  return (thunks: Thunk[]): Promise<Array<unknown | null>> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        if (!Array.isArray(thunks)) {
+          throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', 'parallel() requires an array of thunks');
         }
-        return prev;
-      }),
+        if (thunks.length > MAX_ITEMS) {
+          throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', `parallel() exceeds the ${MAX_ITEMS}-item cap (${thunks.length})`);
+        }
+        const result = await Promise.all(
+          thunks.map(async (thunk) => {
+            try {
+              return await thunk();
+            } catch (err) {
+              // An engine REFUSAL is not the author's thunk failing — propagate it with its code so the
+              // caller (and the run's terminal error) says why. Everything else keeps the documented
+              // null-for-a-throwing-thunk contract. `err` here is already sanitized (agent()/workflow()
+              // sanitize their own rejections before the thunk's own `await` can see them), so re-
+              // throwing it here carries that same safety forward unchanged.
+              if (refusalCode(err) !== null) throw err;
+              return null;
+            }
+          }),
+        );
+        return reRealm(result) as Array<unknown | null>;
+      })(),
     );
-    return reRealm(result) as Array<unknown | null>;
-  };
 }
 
-function makeWorkflow(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
+function makePipeline(CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
+  return (items: unknown[], ...stages: Stage[]): Promise<Array<unknown | null>> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        if (!Array.isArray(items)) {
+          throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', 'pipeline() requires an array of items');
+        }
+        if (items.length > MAX_ITEMS) {
+          throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', `pipeline() exceeds the ${MAX_ITEMS}-item cap (${items.length})`);
+        }
+        const result = await Promise.all(
+          items.map(async (item, index) => {
+            let prev: unknown = item;
+            for (const stage of stages) {
+              try {
+                prev = await stage(prev, item, index);
+              } catch (err) {
+                if (refusalCode(err) !== null) throw err; // same rule as parallel() above
+                return null;
+              }
+            }
+            return prev;
+          }),
+        );
+        return reRealm(result) as Array<unknown | null>;
+      })(),
+    );
+}
+
+function makeWorkflow(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
   const delegate = api.workflow;
-  return async (nameOrRef: unknown, args?: unknown): Promise<unknown> => {
-    if (!delegate) {
-      throw createGuardError(CtxError, 'NESTING_ERROR', 'workflow() nesting is limited to one level');
-    }
-    try {
-      const raw = await delegate(nameOrRef, args);
-      return reRealm(raw);
-    } catch (err) {
-      // C-2: a delegate failure is not itself a nesting violation (the true one-level limit is the
-      // !delegate branch above → NESTING_ERROR). Preserve the delegate error's own code (child-entry
-      // sets it as .name on the rejection) so a caller can branch on CatalogNotFoundError etc. Inline
-      // (no import) — this module is loaded by the sandbox child, which doesn't resolve .js→.ts value imports.
-      const e = err as { code?: unknown; name?: unknown } | null;
-      const code =
-        (e && typeof e.code === 'string' && e.code) ? e.code :
-        (e && typeof e.name === 'string' && e.name && e.name !== 'Error') ? e.name :
-        'WORKFLOW_ERROR';
-      throw createGuardError(CtxError, code, err instanceof Error ? err.message : String(err));
-    }
-  };
+  return (nameOrRef: unknown, args?: unknown): Promise<unknown> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        if (!delegate) {
+          throw createGuardError(CtxError, 'NESTING_ERROR', 'workflow() nesting is limited to one level');
+        }
+        try {
+          const raw = await delegate(nameOrRef, args);
+          return reRealm(raw);
+        } catch (err) {
+          // C-2: a delegate failure is not itself a nesting violation (the true one-level limit is the
+          // !delegate branch above → NESTING_ERROR). Preserve the delegate error's own code (child-entry
+          // sets it as .name on the rejection) so a caller can branch on CatalogNotFoundError etc. Inline
+          // (no import) — this module is loaded by the sandbox child, which doesn't resolve .js→.ts value imports.
+          const e = err as { code?: unknown; name?: unknown } | null;
+          const code =
+            (e && typeof e.code === 'string' && e.code) ? e.code :
+            (e && typeof e.name === 'string' && e.name && e.name !== 'Error') ? e.name :
+            'WORKFLOW_ERROR';
+          throw createGuardError(CtxError, code, err instanceof Error ? err.message : String(err));
+        }
+      })(),
+    );
 }
 
 // `export const meta = {...}` (compat-spec §1) must be a pure object literal — variables, calls,
@@ -442,15 +505,19 @@ function checkMetaLiteral(script: string): { cleaned: string; error?: { code: st
  *  directly — the exact vector `agent.constructor.constructor(...)` exploited). Resolves with
  *  `reRealm`'d data; rejects with a `sanitizeThrownError`'d one. The wrapper itself has its OWN
  *  `[[Prototype]]` severed by `evaluateScript` below, where it is assigned onto `sandbox`. */
-function makeAgent(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
-  return async (prompt: string, opts?: unknown): Promise<unknown> => {
-    try {
-      const raw = await api.agent(prompt, opts);
-      return reRealm(raw);
-    } catch (err) {
-      throw sanitizeThrownError(CtxError, err);
-    }
-  };
+function makeAgent(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
+  return (prompt: string, opts?: unknown): Promise<unknown> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        try {
+          const raw = await api.agent(prompt, opts);
+          return reRealm(raw);
+        } catch (err) {
+          throw sanitizeThrownError(CtxError, err);
+        }
+      })(),
+    );
 }
 
 /** #157 B1: rebuilds the script-visible `budget` object natively in `CtxObject`'s realm. `spent`/
@@ -523,12 +590,13 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   const CtxError = vm.runInContext('Error', context) as ErrorConstructor;
   const CtxArray = vm.runInContext('Array', context) as ArrayConstructor;
   const CtxObject = vm.runInContext('Object', context) as ObjectConstructor;
+  const CtxPromise = vm.runInContext('Promise', context) as PromiseConstructor;
   const reRealm = makeReRealm(CtxArray, CtxObject);
 
-  const agentFn = makeAgent(api, CtxError, reRealm);
-  const parallelFn = makeParallel(CtxError, reRealm);
-  const pipelineFn = makePipeline(CtxError, reRealm);
-  const workflowFn = makeWorkflow(api, CtxError, reRealm);
+  const agentFn = makeAgent(api, CtxError, reRealm, CtxPromise);
+  const parallelFn = makeParallel(CtxError, reRealm, CtxPromise);
+  const pipelineFn = makePipeline(CtxError, reRealm, CtxPromise);
+  const workflowFn = makeWorkflow(api, CtxError, reRealm, CtxPromise);
   const phaseFn = (title: string): void => {
     api.phase?.(title);
   };
