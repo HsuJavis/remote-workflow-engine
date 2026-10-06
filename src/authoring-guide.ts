@@ -1355,8 +1355,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '  return;\n' +
         '}\n' +
         '```\n\n' +
-        '`timeoutMs` bounds ONE attempt, never the whole call: this deployment retries a failed ' +
-        'attempt, and the deployed retry count multiplies the single-attempt bound into the actual ' +
+        '`timeoutMs` bounds ONE attempt, never the whole call: this deployment MAY retry a failed ' +
+        'attempt — how many times is deployment-configured (it can be zero); ' +
+        "`workflow_describe`'s `timeoutMs.attempts` for that agent is authoritative, not an " +
+        'assumption. The deployed retry count multiplies the single-attempt bound into the actual ' +
         "worst-case wait — `workflow_describe` reports the multiplied figure as that agent's " +
         '`timeoutMs.worstCaseMs`, next to the single-attempt `timeoutMs.default`. An `agent()` call ' +
         'with no timeoutMs set — neither on the call itself (`timeoutMs`) nor as this deployment\'s ' +

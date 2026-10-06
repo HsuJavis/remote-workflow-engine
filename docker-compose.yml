@@ -65,9 +65,13 @@ services:
       ANTHROPIC_API_KEY:
       OPENROUTER_API_KEY:
       OLLAMA_BASE_URL:
+      CLAUDE_CODE_OAUTH_TOKEN:
       RWE_SECRET_ANTHROPIC_API_KEY:
       RWE_SECRET_OPENROUTER_API_KEY:
       RWE_SECRET_GITHUB_TOKEN:
+      RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN:
+      RWE_SECRET_GITHUB_WEBHOOK_SECRET:
+      RWE_SECRET_GOOGLE_CLIENT_SECRET:
     command: sh -c "npm ci && npm run start"
     restart: on-failure
 
@@ -97,9 +101,13 @@ services:
       ANTHROPIC_API_KEY:
       OPENROUTER_API_KEY:
       OLLAMA_BASE_URL:
+      CLAUDE_CODE_OAUTH_TOKEN:
       RWE_SECRET_ANTHROPIC_API_KEY:
       RWE_SECRET_OPENROUTER_API_KEY:
       RWE_SECRET_GITHUB_TOKEN:
+      RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN:
+      RWE_SECRET_GITHUB_WEBHOOK_SECRET:
+      RWE_SECRET_GOOGLE_CLIENT_SECRET:
     command: >
       sh -c "apt-get update &&
              apt-get install -y --no-install-recommends python3.11 python3.11-venv &&

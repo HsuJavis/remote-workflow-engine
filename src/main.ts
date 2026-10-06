@@ -43,7 +43,7 @@ import { PiGatewayClient } from './gateway/pi-gateway-client.js';
 import { probePiPath } from './gateway/pi-confinement-probe.js';
 import type { Provider } from './providers.js';
 import { assertUpdatePathsOutsideWorkRoot } from './self-update.js';
-import { normalizeSeedRefAllowlist } from './seedref-egress.js';
+import { normalizeSeedRefAllowlist, assertHttpsAllowlist } from './seedref-egress.js';
 import { assertPositiveInteger } from './config-numeric.js';
 import { isEffort } from './params/contract.js';
 
@@ -443,14 +443,19 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // of them were reachable from `--check-config`, which never constructs either. One shared rule
   // (assertPositiveInteger, config-numeric.ts) — the SAME function RunManager._positiveInt now
   // delegates to — reached from a second call site, never reimplemented.
-  assertPositiveInteger(fileConfig.agentSlots, 'agentSlots');
-  assertPositiveInteger(fileConfig.runConcurrency, 'runConcurrency');
-  assertPositiveInteger(fileConfig.maxWorkflowDepth, 'maxWorkflowDepth');
-  assertPositiveInteger(fileConfig.maxWorkflowDescendants, 'maxWorkflowDescendants');
-  assertPositiveInteger(fileConfig.maxConcurrentRuns, 'maxConcurrentRuns');
-  assertPositiveInteger(fileConfig.maxTimeoutMs, 'maxTimeoutMs');
-  assertPositiveInteger(fileConfig.maxAppendPromptBytes, 'maxAppendPromptBytes');
-  assertPositiveInteger(fileConfig.maxWorkflowVersions, 'maxWorkflowVersions');
+  // V3-M2 (repair-round defect, 2026-10-06): pass `{ prefix: 'rwe.config.json: ' }` so these
+  // refusals are framed like every other composeConfig() refusal below (gateway, maxEffort,
+  // mcpEgressAllowlist). RunManager._positiveInt's own call site keeps no prefix — its wording
+  // stays exactly as it was.
+  const CONFIG_PREFIX = { prefix: 'rwe.config.json: ' };
+  assertPositiveInteger(fileConfig.agentSlots, 'agentSlots', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.runConcurrency, 'runConcurrency', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxWorkflowDepth, 'maxWorkflowDepth', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxWorkflowDescendants, 'maxWorkflowDescendants', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxConcurrentRuns, 'maxConcurrentRuns', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxTimeoutMs, 'maxTimeoutMs', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxAppendPromptBytes, 'maxAppendPromptBytes', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.maxWorkflowVersions, 'maxWorkflowVersions', CONFIG_PREFIX);
   // Issue audit B21 (owner decision 2026-10-06): an unknown `maxEffort` value used to silently
   // remove EVERY effort level from `resolveHarnessParams`'s ceiling filter (EFFORT_RANK[bad value]
   // is `undefined`, so `EFFORT_RANK[e] <= undefined` is false for every `e`) — the engine still
@@ -469,21 +474,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // first time an author's `asset_push({kind:'mcp'})` mysteriously gets EGRESS_DENIED. A non-array
   // value gets its own clear refusal (mirrors `normalizeSeedRefAllowlist`'s own shape check) rather
   // than iterating a string's characters or throwing a raw "is not iterable" on a number.
+  // V3-M1 (repair-round defect, 2026-10-06): this used to be a second hand-written copy of
+  // `normalizeSeedRefAllowlist`'s own parse+https rule. Both now call the one shared
+  // `assertHttpsAllowlist` (seedref-egress.ts) — `{ frame: true }` keeps this call site's existing
+  // "rwe.config.json: … Refusing to start (ADR-028 fail-closed)." wording.
   if (fileConfig.mcpEgressAllowlist != null) {
-    if (!Array.isArray(fileConfig.mcpEgressAllowlist)) {
-      throw new Error(`rwe.config.json: mcpEgressAllowlist must be an array, got ${typeof fileConfig.mcpEgressAllowlist}. Refusing to start (ADR-028 fail-closed).`);
-    }
-    for (const entry of fileConfig.mcpEgressAllowlist) {
-      let parsed: URL;
-      try {
-        parsed = new URL(entry);
-      } catch {
-        throw new Error(`rwe.config.json: mcpEgressAllowlist entry "${entry}" is not a valid URL. Refusing to start (ADR-028 fail-closed).`);
-      }
-      if (parsed.protocol !== 'https:') {
-        throw new Error(`rwe.config.json: mcpEgressAllowlist entry "${entry}" must use https:, got ${parsed.protocol}. Refusing to start (ADR-028 fail-closed).`);
-      }
-    }
+    assertHttpsAllowlist(fileConfig.mcpEgressAllowlist, 'mcpEgressAllowlist', { frame: true });
   }
 
   // v37 (ARCH-177, DES-254/255, TASK-252, REQ-218) / v37 Gate-8 send-back (finding A3, ARCH-175

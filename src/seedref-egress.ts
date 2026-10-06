@@ -55,28 +55,53 @@ export function isEgressAllowed(repoUrl: string, allowlist: readonly string[]): 
 }
 
 /**
- * Config-load validator: rejects any non-https or unparseable entry with a codedError naming
- * the entry. Normalizes each valid https entry to origin+pathname with enforced trailing /.
+ * V3-M1 (repair-round defect, 2026-10-06): the ONE https-allowlist rule shared by
+ * `normalizeSeedRefAllowlist` below (seedRefAllowlist) and composeConfig()'s mcpEgressAllowlist
+ * check (src/main.ts) — before this, both hand-wrote the identical "must be an array" / "must be a
+ * valid URL" / "must use https:" parse+scheme rule, which is exactly the drift risk a shared
+ * validator (A9: "one shared validator, no duplicated rules") removes. `keyName` is interpolated
+ * into every message so a caller's errors always name the right config key. `makeError` lets
+ * `normalizeSeedRefAllowlist` keep throwing its existing `codedError('SEEDREF_ALLOWLIST_INVALID', …)`
+ * (no code/behaviour change there); `{ frame: true }` lets composeConfig's mcpEgressAllowlist call
+ * site keep the "rwe.config.json: … Refusing to start (ADR-028 fail-closed)." framing every other
+ * composeConfig refusal uses (gateway, maxEffort, legacyOwner) — a framing seedRefAllowlist's own
+ * pre-existing plain wording never had and still doesn't.
  */
-export function normalizeSeedRefAllowlist(raw: unknown): string[] {
+export function assertHttpsAllowlist(
+  raw: unknown,
+  keyName: string,
+  opts: { frame?: boolean; makeError?: (message: string) => Error } = {},
+): string[] {
+  const makeError = opts.makeError ?? ((m: string) => new Error(m));
+  const wrap = (msg: string) => (opts.frame ? `rwe.config.json: ${msg}. Refusing to start (ADR-028 fail-closed).` : msg);
   if (!Array.isArray(raw)) {
-    throw codedError('SEEDREF_ALLOWLIST_INVALID', `seedRefAllowlist must be an array, got ${typeof raw}`);
+    throw makeError(wrap(`${keyName} must be an array, got ${typeof raw}`));
   }
   return raw.map((entry) => {
     if (typeof entry !== 'string') {
-      throw codedError('SEEDREF_ALLOWLIST_INVALID', `seedRefAllowlist entry must be a string, got ${typeof entry}: ${String(entry)}`);
+      throw makeError(wrap(`${keyName} entry must be a string, got ${typeof entry}: ${String(entry)}`));
     }
     let url: URL;
     try {
       url = new URL(entry);
     } catch {
-      throw codedError('SEEDREF_ALLOWLIST_INVALID', `seedRefAllowlist entry is not a valid URL: ${entry}`);
+      throw makeError(wrap(`${keyName} entry is not a valid URL: ${entry}`));
     }
     if (url.protocol !== 'https:') {
-      throw codedError('SEEDREF_ALLOWLIST_INVALID', `seedRefAllowlist entry must use https:, got ${url.protocol} in: ${entry}`);
+      throw makeError(wrap(`${keyName} entry must use https:, got ${url.protocol} in: ${entry}`));
     }
     // Normalize: origin + pathname + trailing /
     const base = url.origin + url.pathname;
     return base.endsWith('/') ? base : base + '/';
+  });
+}
+
+/**
+ * Config-load validator: rejects any non-https or unparseable entry with a codedError naming
+ * the entry. Normalizes each valid https entry to origin+pathname with enforced trailing /.
+ */
+export function normalizeSeedRefAllowlist(raw: unknown): string[] {
+  return assertHttpsAllowlist(raw, 'seedRefAllowlist', {
+    makeError: (m) => codedError('SEEDREF_ALLOWLIST_INVALID', m),
   });
 }

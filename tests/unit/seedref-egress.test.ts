@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isEgressAllowed,
   normalizeSeedRefAllowlist,
+  assertHttpsAllowlist,
 } from '../../src/seedref-egress.js';
 
 const ALLOWLIST = ['https://github.com/HsuJavis/'];
@@ -136,5 +137,48 @@ describe('normalizeSeedRefAllowlist (DES-079 config-load validator)', () => {
     expect(result).toHaveLength(2);
     expect(result[0]).toBe('https://forge.internal/projects/');
     expect(result[1]).toBe('https://github.com/HsuJavis/');
+  });
+
+  it('still throws a codedError with .code SEEDREF_ALLOWLIST_INVALID (no regression from sharing assertHttpsAllowlist, V3-M1)', () => {
+    try {
+      normalizeSeedRefAllowlist('nope');
+      throw new Error('expected normalizeSeedRefAllowlist to throw');
+    } catch (e) {
+      expect((e as { code?: string }).code).toBe('SEEDREF_ALLOWLIST_INVALID');
+    }
+  });
+});
+
+// V3-M1: one shared https-allowlist validator for seedRefAllowlist (normalizeSeedRefAllowlist,
+// above) and mcpEgressAllowlist (main.ts composeConfig) — same rule, no duplicated hand-written
+// parse+scheme-check, and the error always names the KEY it was called with.
+describe('assertHttpsAllowlist (V3-M1 shared validator — names the right key)', () => {
+  it('names mcpEgressAllowlist, not seedRefAllowlist, when called for mcpEgressAllowlist', () => {
+    expect(() => assertHttpsAllowlist('not-an-array', 'mcpEgressAllowlist')).toThrow(/mcpEgressAllowlist must be an array/);
+    expect(() => assertHttpsAllowlist(['http://mcp.example/'], 'mcpEgressAllowlist')).toThrow(/mcpEgressAllowlist entry must use https/);
+  });
+
+  it('names seedRefAllowlist, not mcpEgressAllowlist, when called for seedRefAllowlist', () => {
+    expect(() => assertHttpsAllowlist('not-an-array', 'seedRefAllowlist')).toThrow(/seedRefAllowlist must be an array/);
+    expect(() => assertHttpsAllowlist(['http://seeds.example/'], 'seedRefAllowlist')).toThrow(/seedRefAllowlist entry must use https/);
+  });
+
+  it('with { frame: true }, wraps the message with the rwe.config.json / ADR-028 fail-closed framing composeConfig uses', () => {
+    expect(() => assertHttpsAllowlist(['http://mcp.example/'], 'mcpEgressAllowlist', { frame: true })).toThrow(
+      /^rwe\.config\.json: mcpEgressAllowlist entry must use https.*Refusing to start \(ADR-028 fail-closed\)\.$/s,
+    );
+  });
+
+  it('without frame (the default), carries no rwe.config.json/ADR-028 framing (matches normalizeSeedRefAllowlist\'s existing plain wording)', () => {
+    try {
+      assertHttpsAllowlist(['http://seeds.example/'], 'seedRefAllowlist');
+      throw new Error('expected assertHttpsAllowlist to throw');
+    } catch (e) {
+      expect(String((e as Error).message)).not.toMatch(/rwe\.config\.json|Refusing to start/);
+    }
+  });
+
+  it('returns the normalized array for valid https entries, regardless of key name', () => {
+    expect(assertHttpsAllowlist(['https://mcp.example'], 'mcpEgressAllowlist')).toEqual(['https://mcp.example/']);
   });
 });

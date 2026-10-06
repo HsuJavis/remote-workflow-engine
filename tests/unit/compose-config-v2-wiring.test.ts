@@ -715,6 +715,24 @@ describe('composeConfig() shares every boot-refusal rule with a real boot (A9, o
       composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: 5 } as any, FAKE_DEPS),
     ).rejects.toThrow(/mcpEgressAllowlist must be an array/);
   });
+
+  // V3-M1/V3-M2 (repair-round defects, 2026-10-06): these lock the ACTUAL composeConfig() wiring,
+  // not just the standalone validator functions — this codebase's documented wiring-bug class is
+  // "a config block is forwarded/validated correctly in isolation but the composeConfig() call site
+  // itself never passes the option through" (compose-config-v2-wiring bug class). A regression that
+  // reverted `main.ts`'s CONFIG_PREFIX argument, or its `{ frame: true }` argument, would still pass
+  // every other test above (they only check the key name appears) but must fail these.
+  it('V3-M2: a positive-integer refusal through composeConfig() is framed like every other refusal (rwe.config.json: … Refusing to start (ADR-028 fail-closed).), and a STRING value is quoted', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', agentSlots: '8' } as any, FAKE_DEPS),
+    ).rejects.toThrow(/^rwe\.config\.json: agentSlots must be a positive integer, got "8"\. Refusing to start \(ADR-028 fail-closed\)\.$/);
+  });
+
+  it('V3-M1: the mcpEgressAllowlist refusal through composeConfig() still carries the rwe.config.json/ADR-028 framing after the assertHttpsAllowlist refactor', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', mcpEgressAllowlist: ['http://mcp.example/'] } as any, FAKE_DEPS),
+    ).rejects.toThrow(/^rwe\.config\.json: mcpEgressAllowlist entry must use https.*Refusing to start \(ADR-028 fail-closed\)\.$/s);
+  });
 });
 
 // Repair round defect NULL-WAS-DEFAULT (2026-10-06): before this round, an explicit JSON `null`
