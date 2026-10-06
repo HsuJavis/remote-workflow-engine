@@ -66,6 +66,20 @@ if [ ! -f "$RWE_CONFIG_PATH" ]; then
     export RWE_WORK_ROOT="${RWE_WORK_ROOT:-$HOME/.local/share/remote-workflow-engine}"
     echo "首次部署且未指定 RWE_WORK_ROOT：改用非 root 可寫的預設路徑 $RWE_WORK_ROOT（如需自訂，設定環境變數 RWE_WORK_ROOT 或編輯 $RWE_CONFIG_PATH 的 workRoot 後重跑）。"
   fi
+  # 只把 export 出去的 RWE_WORK_ROOT 環境變數寫回剛建立的設定檔本身，否則它只對這一次
+  # `deploy.sh` 啟動的行程有效：第二次 `./deploy.sh`（沒重新設 RWE_WORK_ROOT）、純粹的
+  # `npm start`、systemd unit、以及自我更新的 `--check-config`，全都只看設定檔，會落回範例檔
+  # 原本的系統路徑 (/var/lib/remote-workflow-engine)，資料看起來像憑空消失（A5）。用 node（已在
+  # 步驟 1 裝好）原地改寫，不依賴 jq。
+  node -e '
+    const fs = require("fs");
+    const path = process.argv[1];
+    const workRoot = process.argv[2];
+    const cfg = JSON.parse(fs.readFileSync(path, "utf8"));
+    cfg.workRoot = workRoot;
+    fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n");
+  ' "$RWE_CONFIG_PATH" "$RWE_WORK_ROOT"
+  echo "已把 workRoot=$RWE_WORK_ROOT 寫回 $RWE_CONFIG_PATH（往後不帶 RWE_WORK_ROOT 重跑也會用同一個路徑）。"
 else
   echo "$RWE_CONFIG_PATH 已存在，保留不覆蓋。"
 fi

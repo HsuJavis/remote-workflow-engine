@@ -6,16 +6,25 @@ After=network.target
 Type=simple
 User=rwe
 WorkingDirectory=/opt/remote-workflow-engine
-# Same entrypoint documented in README.md/DEPLOY.md (tsx-executed src/main.ts, Node 22.6+ native
-# type-stripping) -- this repo has no build step producing a compiled dist/main.js (see
-# package.json's own "scripts"), so this intentionally runs the exact command already relied on
-# for local/manual startup instead of inventing a separate compiled entrypoint.
-ExecStart=/usr/bin/npm run start
+# DEPLOY.md "常見的坑" #1: ExecStart must NOT be `npm` -- under a minimal systemd environment PATH,
+# `/usr/bin/npm` can be a dead symlink (node installed via a version manager), which fails as
+# `status=203/EXEC`. Run node directly against tsx instead (same entrypoint as manual startup;
+# this repo has no build step producing a compiled dist/main.js, see package.json's "scripts").
+# Adjust both lines below if this host's node lives somewhere other than PATH already covers.
+#
+# audit A11: gateway:"sdk" (the engine's own default) spawns `litellm` AT BOOT regardless of
+# provider -- a missing `litellm` on PATH fails this unit with `spawn litellm ENOENT`. Either put a
+# litellm venv's bin/ first on PATH (as below; same convention as deploy/rwe.user.service), or set
+# `gateway:"direct-fetch"` + `useLiteLLMProxy:false` (or `gateway:"pi"`) in rwe.config.json, which
+# need no litellm at all -- see README.md "前置需求" / DEPLOY.md §1a/§1b2.
+Environment=PATH=/home/rwe/.rwe-litellm-venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=node /opt/remote-workflow-engine/node_modules/tsx/dist/cli.mjs src/main.ts
 # Self-healing seam (DES-022): a crashed server process is restarted automatically.
 Restart=on-failure
 RestartSec=2
 # Optional; holds RWE_CONFIG_PATH / RWE_BIND / RWE_PORT / provider API keys. Absent by default
-# ("-" prefix means systemd does not fail if the file doesn't exist).
+# ("-" prefix means systemd does not fail if the file doesn't exist). This is the system-mode
+# (root, /opt) install's own env file -- distinct from the user-mode unit's ~/.config/rwe.env.
 EnvironmentFile=-/opt/remote-workflow-engine/rwe.env
 
 [Install]
