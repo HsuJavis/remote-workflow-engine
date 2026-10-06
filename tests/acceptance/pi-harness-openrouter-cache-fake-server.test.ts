@@ -111,6 +111,26 @@ function findsCacheControl(body: Record<string, unknown>): boolean {
   return inMessages || inTools;
 }
 
+// issue #153 L6: `findsCacheControl` above answers "is cache_control present SOMEWHERE in this
+// body" — on turn 2+ the resent system message still carries its own turn-1 breakpoint, so that
+// body-wide check passes even if the LAST conversation message (the one `applyAnthropicCacheControl`
+// is actually supposed to give a FRESH breakpoint, per `addCacheControlToLastConversationMessage` —
+// pi-ai's own openai-completions.js — and the one that matters for a turn-3+ cache HIT) carries
+// none at all. This mirrors that exact selection rule (last message with role user/assistant/tool)
+// so the turn-2 assertion below is pinned to the real guarantee, not a body-wide proxy for it.
+function lastConversationMessageHasCacheControl(body: Record<string, unknown>): boolean {
+  const messages = (body['messages'] as Array<{ role: string; content?: unknown }> | undefined) ?? [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') {
+      const content = m.content;
+      if (typeof content !== 'object' || content === null || !Array.isArray(content)) return false;
+      return content.some((part) => typeof part === 'object' && part !== null && 'cache_control' in part);
+    }
+  }
+  return false;
+}
+
 describe('pi harness v1 — issue #151, OpenRouter prompt-caching request shape + usage mapping (characterization: no defect found)', () => {
   let ws: string;
 
@@ -145,8 +165,11 @@ describe('pi harness v1 — issue #151, OpenRouter prompt-caching request shape 
 
       // Turn 2 (replays the full transcript, including the tool result): the LAST conversation
       // message carries a FRESH breakpoint too — this is the one that actually matters for a cache
-      // HIT on turn 3+ of a real multi-turn loop.
+      // HIT on turn 3+ of a real multi-turn loop. issue #153 L6: pinned to THAT specific message,
+      // not merely "cache_control appears somewhere in the body" (which the resent system message's
+      // carried-over turn-1 breakpoint would satisfy on its own, masking a missing fresh one here).
       expect(findsCacheControl(fake.requests[1]!.body)).toBe(true);
+      expect(lastConversationMessageHasCacheControl(fake.requests[1]!.body)).toBe(true);
     } finally {
       await new Promise((r) => fake.server.close(() => r(undefined)));
     }
