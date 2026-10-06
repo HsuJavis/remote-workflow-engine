@@ -347,9 +347,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > `grep -nE '\bagent\s*\(|\bphase\s*\(|\bworkflow\s*\(|\bparallel\s*\(|Date\.now\(\)|Math\.random\(\)|new Date\(\)'`，
 > 撞到的詞改寫掉（例如把「agent (mode A)」改成「agent role (mode A)」或拿掉那個空格）再貼。
 >
-> ### 4) 實際跑起來（直接 `run_start`——client plugin `remote-workflow-plugin` 已於 2026-09-26 移除，
-> 現在只有 MCP 工具這一條路，沒有 plugin 可選）
-> `run_start` 的 input schema 沒有 `agentPrefix` 這個鍵（見 `src/tool-specs.ts`）；新腳本不需要、
+> ### 4) 實際跑起來（直接 `run_start`；plugin 已於 2026-09-26 移除）
+> client plugin `remote-workflow-plugin` 已於 2026-09-26 移除，現在只有 MCP 工具這一條路，沒有
+> plugin 可選。`run_start` 的 input schema 沒有 `agentPrefix` 這個鍵（見 `src/tool-specs.ts`）；新腳本不需要、
 > 也不該宣告 `meta.params.args.agentPrefix`。跑法就是一般的 `workflow_register` → `workflow_publish`
 > → `run_start({name, version 或省略吃 release, args, budget, seed/seedManifest})`：
 > ```json
@@ -689,7 +689,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 **；`auth.enabled:true` 時它跟其他 `/api/*` 路由一樣要登入／bearer（見下方「Dashboard 登入」一節的
 門檻說明），不要把這句話當成任何時候都成立的例外。
 
-### `--check-config` 涵蓋範圍（A9，2026-10-06 業主裁決——commit 0da395c 已落地，取代下方舊文字）
+### `--check-config` 涵蓋範圍（A9，2026-10-06 業主裁決，0da395c 已落地）
 
 `npm run check-config`（`tsx src/main.ts --check-config`）跑的是 `composeConfig()`——這**同一個**
 函式也是真實開機的翻譯路徑（`deps.listen:false` 只跳過實際監聽 port／啟動 LiteLLM 子行程，驗證邏輯
@@ -2330,9 +2330,10 @@ bug，是共用 `/tmp` 的撞名。v0.28.2 用「每個 worker 一份私有 `TMP
 `rwe-update.sh` 的 gate 擋下，服務留在舊版本，沒有半啟動或部分套用——這正是設計要的行為，不是
 需要恐慌的事，只是需要修好 gate 本身才能讓自我更新真的往前走。下次在新主機第一次以服務帳號跑
 `npm test` 之前，先確認 checkout 的 tag ≥ v0.28.2。**另一個獨立的下限（2026-10-06）**：若這台部署
-要吃本次修的 `auth.legacyOwner` 與 `gateway`／各項上限的開機期拒絕（見 §1b「`--check-config` 涵蓋
-範圍（A9）」），checkout 的 tag 必須含 commit 0da395c 之後的版本——舊版引擎對同一份設定檔的開機期
-驗證比這裡少，行為不會一致；不要只看 v0.28.2 這個跟自我更新 gate 本身有關的下限就當作涵蓋了這個。
+要吃本次修的 `gateway`／各項上限的開機期拒絕（見 §1b「`--check-config` 涵蓋範圍（A9）」），checkout
+的 tag 必須含 commit 0da395c 之後的版本；要吃 `auth.legacyOwner` 的非空字串型別檢查，則要含本輪
+修補（ed3295f）之後的版本——舊版引擎對同一份設定檔的開機期驗證比這裡少，行為不會一致；不要只看
+v0.28.2 這個跟自我更新 gate 本身有關的下限就當作涵蓋了這些。
 
 **b. 搬遷前後都要找殘留的舊行程**——換帳號不會自動殺掉操作員帳號底下還在跑的舊 engine／LiteLLM
 子行程（例如搬遷途中重跑過 `deploy.sh` 測試、或之前手動啟動過一次忘記關）。這些舊行程的環境變數
