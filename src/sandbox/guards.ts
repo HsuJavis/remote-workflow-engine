@@ -117,46 +117,135 @@ export const DETERMINISM_GUARDED: readonly DeterminismGuard[] = [
   },
 ];
 
-/** Errors raised by the guard functions themselves — carry the guard's error code through the VM boundary. */
-class GuardError extends Error {
-  constructor(public readonly code: string, message: string) {
-    super(message);
-    this.name = code;
-  }
+// #157 B1 (CRITICAL, fixed here): `GuardError` used to be ONE module-level class, built with the
+// EMBEDDING realm's own `Error` — an embedding-realm class is itself exactly the kind of object this
+// fix removes from the sandbox (its `.constructor` chain reaches the embedding realm's `Function`).
+// It is now built FRESH per `evaluateScript()` call by `createGuardError` below, extending THAT
+// call's own vm context's native `Error` (fetched via `vm.runInContext`) — so every GuardError
+// instance a script can catch is native to its own context, same as anything the script constructs
+// itself. `instanceof` can no longer identify "one of our own typed refusals" across that per-call
+// class boundary (a different context ⇒ a different `Error` constructor each time), so `GUARD_MARK`
+// — a realm-agnostic symbol VALUE, not a class — marks a created GuardError instead; `evaluateScript`
+// below reads it by reference.
+//
+// Known, accepted residual: a script that CATCHES a genuine guard/refusal error can read this symbol
+// off it via `Object.getOwnPropertySymbols` and reuse it to mark an object of its own, controlling
+// which `code`/`message` its OWN run's terminal failure reports. This is no different in kind from
+// the pre-existing `ENGINE_REFUSAL_CODES` allowlist below (a script can already forge
+// `BUDGET_EXCEEDED`/`PARAM_UNKNOWN` the same way, via a plain `.code`/`.name` field) — it grants no
+// access to anything outside the script's own run outcome, and specifically does NOT let a script
+// forge a `refusalRef` (that stays keyed off object IDENTITY in the `refusalRefs` WeakMap below,
+// never off a readable field — see `markEngineRefusal`'s own doc).
+const GUARD_MARK = Symbol('rwe-sandbox-guard-error');
+
+/** Builds a GuardError NATIVE to `CtxError`'s own realm (that evaluateScript call's vm context),
+ *  carrying `code` on both `.name` and `.code` (matching the pre-#157 GuardError's own shape) plus
+ *  the `GUARD_MARK` tag `evaluateScript`'s outer catch reads instead of `instanceof`. */
+function createGuardError(CtxError: ErrorConstructor, code: string, message: string): Error {
+  const e = new CtxError(message);
+  e.name = code;
+  (e as Error & { code?: string }).code = code;
+  Object.defineProperty(e, GUARD_MARK, { value: true, enumerable: false, configurable: false });
+  return e;
 }
 
-// V5 (Gate 8 v2 review, adversarial finding, LOW — accepted architectural limitation, documented
-// here as its resolution): these `Date`/`Math` overrides are DETERMINISM HYGIENE for replay/resume
-// caching, NOT a security boundary. A `node:vm` context is not a sandbox (Node's own docs say so):
-// a script can reach the context realm's UN-guarded intrinsics via a Function-constructor escape,
-// e.g. `Function('return Date')().now()`, defeating THESE guards. That is acceptable because the
-// worst outcome is the script's own run becomes non-replayable — a self-inflicted correctness issue,
-// not a privilege escalation. The real containment is the PROCESS boundary (ARCH-003): SandboxHost
-// forks a per-run child holding no secrets/store/network handle, cwd jailed to the run workspace, so
-// the SAME escape cannot reach `process`/`require`/`fs`/host env — those are simply absent from the
-// context, not merely shadowed (proven by sandbox-guards.test.ts's realm-escape + no-fs/require cases).
-function guardedDate(): typeof Date {
-  class GuardedDate extends Date {
+/** #157 B1: sanitizes an EMBEDDING-realm error (an `agent()`/`workflow()` host rejection) into one
+ *  native to `CtxError`'s realm before it becomes reachable to the script's own `catch` — otherwise
+ *  the original host error's prototype chain is the exact escape vector this issue is about.
+ *  Deliberately NOT `GUARD_MARK`ed (agent() errors were never `instanceof GuardError` pre-fix either
+ *  — only `refusalCode()`'s small allowlist or the generic SCRIPT_ERROR path classified them; this
+ *  preserves that exact classification, changing only which realm the thrown object belongs to).
+ *  `.name`/`.code`/`.message` are copied verbatim (so `refusalCode()` and a script's own `e.code`
+ *  checks keep working identically), and the `refusalRefs` WeakMap entry (if any — DES-248) is
+ *  re-keyed onto the new object, since that is the object identity that now propagates further. */
+function sanitizeThrownError(CtxError: ErrorConstructor, err: unknown): Error {
+  const e = err as { name?: unknown; code?: unknown; message?: unknown } | null;
+  const name = typeof e?.name === 'string' ? e.name : 'Error';
+  const message = err instanceof Error ? err.message : typeof e?.message === 'string' ? e.message : String(err);
+  const sanitized = new CtxError(message);
+  sanitized.name = name;
+  if (typeof e?.code === 'string') (sanitized as Error & { code?: string }).code = e.code;
+  const ref = refusalRefs.get(err as object);
+  if (ref !== undefined) refusalRefs.set(sanitized, ref);
+  return sanitized;
+}
+
+/** #157 B1: rebuilds `value` using `CtxArray`/`CtxObject` (that evaluateScript call's OWN vm
+ *  context's native Array/Object) instead of whatever realm it was created in — the same hazard as
+ *  an injected function/object: an embedding-realm array/object's `.constructor` chain reaches the
+ *  embedding realm's `Function`. Primitives (including `undefined` — preserved exactly, NOT coerced
+ *  to `null`, unlike a JSON round-trip, which matters for `parallel()`/`pipeline()`'s documented
+ *  null-for-a-throwing-thunk contract: a thunk that legitimately RESOLVES to `undefined` must stay
+ *  distinguishable from one that threw) pass through untouched — primitives carry no realm. Cycle-
+ *  safe via `seen`. Functions are left as-is (workflow data is JSON-shaped in practice — the actual
+ *  IPC transport to this child is already JSON-serializing by default, so nothing JSON can't
+ *  represent survives to this point anyway); this only re-realms what DOES cross, never invents
+ *  capability that wasn't already reachable. */
+function makeReRealm(CtxArray: ArrayConstructor, CtxObject: ObjectConstructor): (value: unknown) => unknown {
+  function go(value: unknown, seen: WeakMap<object, unknown>): unknown {
+    if (value === null || typeof value !== 'object') return value;
+    const cached = seen.get(value);
+    if (cached !== undefined) return cached;
+    if (Array.isArray(value)) {
+      const arr = new CtxArray(value.length) as unknown[];
+      seen.set(value, arr);
+      value.forEach((item, i) => {
+        arr[i] = go(item, seen);
+      });
+      return arr;
+    }
+    const out = new CtxObject() as Record<string, unknown>;
+    seen.set(value, out);
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      out[key] = go((value as Record<string, unknown>)[key], seen);
+    }
+    return out;
+  }
+  return (value: unknown) => go(value, new WeakMap());
+}
+
+// V5 (Gate 8 v2 review, adversarial finding) — HISTORY, corrected by #157 B1: this comment used to
+// claim the Function-constructor realm escape could reach only "realm INTRINSICS, never the absent
+// host capabilities" and that process/require/fs were "simply absent from the context, not merely
+// shadowed". That was FALSE as implemented: `<injected-object>.constructor.constructor(...)` reached
+// the embedding realm (the sandbox CHILD process's own top-level scope — ARCH-003's process
+// boundary, still a real OS process with its own `process`/`fetch`, and — since `host.ts`'s
+// `fork()` call passed no `env:` override — the FULL parent env, including provider API keys per
+// `main.ts`), because `guardedDate`/`guardedMath` and every other `sandbox` property below were
+// objects CREATED in that embedding scope, not the vm context's own realm. `vm.createContext` does
+// not re-realm an externally-created object's prototype chain, so `.constructor` on any of them
+// resolved to the embedding `Function` regardless. The actual fix (this file, #157 B1): `Date`/
+// `Math` (and `agent`/`parallel`/`pipeline`/`phase`/`workflow`/`args`/`budget` below) are now either
+// built FROM the context's own fetched intrinsics (`CtxDate`/`CtxMath`/`CtxError`/`CtxArray`/
+// `CtxObject`, via `vm.runInContext`) or have their own `[[Prototype]]` severed (`Object.
+// setPrototypeOf(fn, null)`) before being exposed, so `<injected>.constructor.constructor` behaves
+// exactly like the always-safe control case (`Function('return process')()`, which throws
+// ReferenceError — proven by `tests/integration/sandbox-realm-escape.test.ts`'s control case).
+// `host.ts`'s `fork()` still inherits the parent env as a SEPARATE defense-in-depth concern (not yet
+// scrubbed — tracked as residual risk in this fix's report, since this file cannot change host.ts's
+// caller contract unilaterally within this issue's scope).
+function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): DateConstructor {
+  class GuardedDate extends CtxDate {
     constructor(...args: unknown[]) {
       if (args.length === 0) {
-        throw new GuardError('DETERMINISM_GUARD', 'new Date() without arguments is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+        throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'new Date() without arguments is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
       }
       // @ts-expect-error — variadic forwarding to whichever Date overload matches at runtime
       super(...args);
     }
     static override now(): number {
-      throw new GuardError('DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+      throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
     }
   }
-  return GuardedDate as unknown as typeof Date;
+  return GuardedDate as unknown as DateConstructor;
 }
 
-function guardedMath(): typeof Math {
-  return new Proxy(Math, {
+function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof Math {
+  return new Proxy(CtxMath, {
     get(target, prop, receiver) {
       if (prop === 'random') {
         return () => {
-          throw new GuardError('DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+          throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
         };
       }
       return Reflect.get(target, prop, receiver);
@@ -201,39 +290,49 @@ function refusalCode(err: unknown): string | null {
 type Thunk = () => Promise<unknown>;
 type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
 
-function makeParallel() {
+// #157 B1: `CtxError`/`reRealm` are per-evaluateScript-call (that call's own vm context's native
+// Error/Array/Object) — see `createGuardError`/`makeReRealm`'s own docs for why. The returned
+// wrapper functions have their OWN `[[Prototype]]` severed (`Object.setPrototypeOf(fn, null)`,
+// applied once by `evaluateScript` where these are assembled) so `<fn>.constructor` cannot reach the
+// embedding realm either; `reRealm` on the RETURNED ARRAY closes the same hole for the container
+// `Promise.all` builds (an embedding-realm array), which the function's own nulled prototype alone
+// does not reach.
+function makeParallel(CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
   return async (thunks: Thunk[]): Promise<Array<unknown | null>> => {
     if (!Array.isArray(thunks)) {
-      throw new GuardError('ITEM_CAP_EXCEEDED', 'parallel() requires an array of thunks');
+      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', 'parallel() requires an array of thunks');
     }
     if (thunks.length > MAX_ITEMS) {
-      throw new GuardError('ITEM_CAP_EXCEEDED', `parallel() exceeds the ${MAX_ITEMS}-item cap (${thunks.length})`);
+      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', `parallel() exceeds the ${MAX_ITEMS}-item cap (${thunks.length})`);
     }
-    return Promise.all(
+    const result = await Promise.all(
       thunks.map(async (thunk) => {
         try {
           return await thunk();
         } catch (err) {
           // An engine REFUSAL is not the author's thunk failing — propagate it with its code so the
           // caller (and the run's terminal error) says why. Everything else keeps the documented
-          // null-for-a-throwing-thunk contract.
+          // null-for-a-throwing-thunk contract. `err` here is already sanitized (agent()/workflow()
+          // sanitize their own rejections before the thunk's own `await` can see them), so re-
+          // throwing it here carries that same safety forward unchanged.
           if (refusalCode(err) !== null) throw err;
           return null;
         }
       }),
     );
+    return reRealm(result) as Array<unknown | null>;
   };
 }
 
-function makePipeline() {
+function makePipeline(CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
   return async (items: unknown[], ...stages: Stage[]): Promise<Array<unknown | null>> => {
     if (!Array.isArray(items)) {
-      throw new GuardError('ITEM_CAP_EXCEEDED', 'pipeline() requires an array of items');
+      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', 'pipeline() requires an array of items');
     }
     if (items.length > MAX_ITEMS) {
-      throw new GuardError('ITEM_CAP_EXCEEDED', `pipeline() exceeds the ${MAX_ITEMS}-item cap (${items.length})`);
+      throw createGuardError(CtxError, 'ITEM_CAP_EXCEEDED', `pipeline() exceeds the ${MAX_ITEMS}-item cap (${items.length})`);
     }
-    return Promise.all(
+    const result = await Promise.all(
       items.map(async (item, index) => {
         let prev: unknown = item;
         for (const stage of stages) {
@@ -247,17 +346,19 @@ function makePipeline() {
         return prev;
       }),
     );
+    return reRealm(result) as Array<unknown | null>;
   };
 }
 
-function makeWorkflow(api: SandboxApi) {
+function makeWorkflow(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
   const delegate = api.workflow;
   return async (nameOrRef: unknown, args?: unknown): Promise<unknown> => {
     if (!delegate) {
-      throw new GuardError('NESTING_ERROR', 'workflow() nesting is limited to one level');
+      throw createGuardError(CtxError, 'NESTING_ERROR', 'workflow() nesting is limited to one level');
     }
     try {
-      return await delegate(nameOrRef, args);
+      const raw = await delegate(nameOrRef, args);
+      return reRealm(raw);
     } catch (err) {
       // C-2: a delegate failure is not itself a nesting violation (the true one-level limit is the
       // !delegate branch above → NESTING_ERROR). Preserve the delegate error's own code (child-entry
@@ -268,7 +369,7 @@ function makeWorkflow(api: SandboxApi) {
         (e && typeof e.code === 'string' && e.code) ? e.code :
         (e && typeof e.name === 'string' && e.name && e.name !== 'Error') ? e.name :
         'WORKFLOW_ERROR';
-      throw new GuardError(code, err instanceof Error ? err.message : String(err));
+      throw createGuardError(CtxError, code, err instanceof Error ? err.message : String(err));
     }
   };
 }
@@ -291,10 +392,59 @@ function checkMetaLiteral(script: string): { cleaned: string; error?: { code: st
   return { cleaned: script.replace(meta.span, '') };
 }
 
+/** #157 B1: replaces the pre-fix `api.agent.bind(api)` (an embedding-realm function exposed
+ *  directly — the exact vector `agent.constructor.constructor(...)` exploited). Resolves with
+ *  `reRealm`'d data; rejects with a `sanitizeThrownError`'d one. The wrapper itself has its OWN
+ *  `[[Prototype]]` severed by `evaluateScript` below, where it is assigned onto `sandbox`. */
+function makeAgent(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown) {
+  return async (prompt: string, opts?: unknown): Promise<unknown> => {
+    try {
+      const raw = await api.agent(prompt, opts);
+      return reRealm(raw);
+    } catch (err) {
+      throw sanitizeThrownError(CtxError, err);
+    }
+  };
+}
+
+/** #157 B1: rebuilds the script-visible `budget` object natively in `CtxObject`'s realm. `spent`/
+ *  `remaining`/`tokens` stay LIVE closures over the real `api.budget` (so mid-script accounting
+ *  updates are still observed exactly as before — this is NOT a one-time snapshot), each with its
+ *  own `[[Prototype]]` severed; `limits`/`total` are copied through `reRealm`. `SandboxApi.budget`
+ *  only guarantees `Budget`'s three fields (`total`/`spent`/`remaining`) — `limits`/`tokens` are the
+ *  real `SandboxBudget` superset child-entry.ts actually passes, read here defensively since this
+ *  function also runs against the narrower `Budget`-only fakes several unit tests construct. */
+function makeBudget(budget: Budget, CtxObject: ObjectConstructor, reRealm: (value: unknown) => unknown): Budget {
+  const wide = budget as Partial<{ limits: unknown; tokens: () => unknown }>;
+  const out = new CtxObject() as Record<string, unknown>;
+  out.total = budget.total;
+  const spentFn = () => budget.spent();
+  Object.setPrototypeOf(spentFn, null);
+  out.spent = spentFn;
+  const remainingFn = () => budget.remaining();
+  Object.setPrototypeOf(remainingFn, null);
+  out.remaining = remainingFn;
+  if ('limits' in budget) out.limits = reRealm(wide.limits);
+  if (typeof wide.tokens === 'function') {
+    const tokensFn = () => reRealm(wide.tokens!());
+    Object.setPrototypeOf(tokensFn, null);
+    out.tokens = tokensFn;
+  }
+  return out as unknown as Budget;
+}
+
 /**
  * Evaluate a workflow script string in a restricted VM context.
  * Guards: Date.now(), Math.random(), new Date() (no args) throw inside the script. det:allow — a doc comment naming the blocked APIs, not a call
  * TS syntax, >512KB scripts, and >4096-item parallel()/pipeline() calls are rejected.
+ *
+ * #157 B1: every value exposed into the sandbox is now either NATIVE to this call's own vm context
+ * (fetched via `vm.runInContext` and used to build `Date`/`Math`/errors/re-realmed data) or has its
+ * own `[[Prototype]]` severed (`agent`/`parallel`/`pipeline`/`phase`/`log`/`workflow` themselves) —
+ * see the `createGuardError`/`sanitizeThrownError`/`makeReRealm` docs above and the corrected V5
+ * comment on `guardedDate` for the full reasoning. Before this fix, `<injected>.constructor.
+ * constructor(...)` reached the embedding (sandbox child process) realm's `Function`, `process`,
+ * and `fetch` — see `tests/integration/sandbox-realm-escape.test.ts` for the real-fork-boundary repro.
  */
 export async function evaluateScript(script: string, api: SandboxApi): Promise<ScriptResult> {
   if (Buffer.byteLength(script, 'utf8') > MAX_SCRIPT_BYTES) {
@@ -307,19 +457,43 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   }
   const body = meta.cleaned;
 
-  const sandbox: Record<string, unknown> = {
-    agent: api.agent.bind(api),
-    parallel: makeParallel(),
-    pipeline: makePipeline(),
-    phase: (title: string) => { api.phase?.(title); },
-    log: () => {},
-    args: api.args,
-    budget: api.budget,
-    workflow: makeWorkflow(api),
-    Date: guardedDate(),
-    Math: guardedMath(),
-  };
+  const sandbox: Record<string, unknown> = {};
   const context = vm.createContext(sandbox);
+
+  // Fetch THIS call's own vm context's native intrinsics — building Date/Math/errors/data from
+  // these (rather than the embedding realm's own Date/Math/Error/Array/Object) is the whole fix;
+  // see vm.runInContext's own semantics note above `createGuardError`.
+  const CtxDate = vm.runInContext('Date', context) as DateConstructor;
+  const CtxMath = vm.runInContext('Math', context) as typeof Math;
+  const CtxError = vm.runInContext('Error', context) as ErrorConstructor;
+  const CtxArray = vm.runInContext('Array', context) as ArrayConstructor;
+  const CtxObject = vm.runInContext('Object', context) as ObjectConstructor;
+  const reRealm = makeReRealm(CtxArray, CtxObject);
+
+  const agentFn = makeAgent(api, CtxError, reRealm);
+  const parallelFn = makeParallel(CtxError, reRealm);
+  const pipelineFn = makePipeline(CtxError, reRealm);
+  const workflowFn = makeWorkflow(api, CtxError, reRealm);
+  const phaseFn = (title: string): void => {
+    api.phase?.(title);
+  };
+  const logFn = (): void => {};
+  for (const fn of [agentFn, parallelFn, pipelineFn, workflowFn, phaseFn, logFn]) {
+    Object.setPrototypeOf(fn, null);
+  }
+
+  Object.assign(sandbox, {
+    agent: agentFn,
+    parallel: parallelFn,
+    pipeline: pipelineFn,
+    phase: phaseFn,
+    log: logFn,
+    args: reRealm(api.args),
+    budget: makeBudget(api.budget, CtxObject, reRealm),
+    workflow: workflowFn,
+    Date: guardedDate(CtxDate, CtxError),
+    Math: guardedMath(CtxMath, CtxError),
+  });
 
   let compiled: vm.Script;
   try {
@@ -337,8 +511,13 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     // `e.refusalRef = 99` on the caught error changes nothing here.
     const refusalRef = refusalRefs.get(err as object);
     const refField = refusalRef !== undefined ? { refusalRef } : {};
-    if (err instanceof GuardError) {
-      return { kind: 'error', error: { code: err.code, message: err.message, ...refField } };
+    // #157 B1: replaces `err instanceof GuardError` (no longer meaningful — GuardError is built
+    // per-call, native to THIS call's own context, so `instanceof` against anything embedding-side
+    // would always be false). `GUARD_MARK` is the realm-agnostic replacement; see its own doc.
+    const isGuardError = err !== null && typeof err === 'object' && (err as Record<symbol, unknown>)[GUARD_MARK] === true;
+    if (isGuardError) {
+      const e = err as { code?: unknown };
+      return { kind: 'error', error: { code: typeof e.code === 'string' ? e.code : 'SCRIPT_ERROR', message: err instanceof Error ? err.message : String(err), ...refField } };
     }
     // v25 (DES-167, REQ-120): an uncaught engine REFUSAL keeps its own code instead of flattening to
     // SCRIPT_ERROR (which run-manager's toErrorCode would then map to INTERNAL_ERROR). This is what

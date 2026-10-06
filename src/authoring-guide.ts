@@ -1155,16 +1155,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '}\n' +
         '```\n\n' +
         // v25 (DES-169, REQ-120, issue #63): the example above rethrew every time until v25, because
-        // the code rode on `name` and nothing set `code`. The realm caveat is stated rather than
-        // fixed — see the DES entry: it is a property of `node:vm`, not of errors, and holds for
-        // `args` too, so "fix it for errors" would teach a half-truth.
-        'Branch on `e.code` — not on `e instanceof Error`. Your script runs in a `node:vm` context ' +
-        'whose intrinsics are a different realm from the engine that raises these errors, so ' +
-        '`instanceof` is **false** for anything the engine hands you: engine errors, and `args` and ' +
-        'its contents alike (`args instanceof Object` is false; `Array.isArray(args.xs)` is true — ' +
-        'realm-safe checks work). Errors you construct yourself inside the script are ordinary and ' +
-        'unaffected. Every engine refusal carries the same `e.code`/`e.name` catalog code as ' +
-        '`run_result.error.code`, plus a human `e.message`.\n\n' +
+        // the code rode on `name` and nothing set `code`. The realm caveat BELOW was stated rather
+        // than fixed back then — see the DES entry; that has since changed (#157 B1 — the realm
+        // mismatch itself was the same hazard a sandbox-escape vector exploited, so fixing the
+        // SECURITY hole fixed this caveat as a side effect).
+        '`e.code` is still the recommended handle — a plain own property, simplest to branch on, and ' +
+        'unaffected by anything below. `e instanceof Error` and `args instanceof Object` now also ' +
+        'work correctly (fixed by #157 B1): every value the engine hands your script — errors, ' +
+        '`args`, agent()/workflow() results — is built natively in your script\'s own realm, not the ' +
+        'engine\'s, so standard checks (`instanceof`, `Array.isArray`) behave exactly as they would ' +
+        'for a value you constructed yourself. Every engine refusal carries the same `e.code`/`e.name` ' +
+        'catalog code as `run_result.error.code`, plus a human `e.message`.\n\n' +
         // issue #127: an agent() call cut short by run_suspend/run_stop, a timeout, or a terminal
         // provider error still charges whatever it spent — the pre-#127 engine silently dropped it,
         // so cost/budget under-counted real provider spend and a budget could be exceeded without

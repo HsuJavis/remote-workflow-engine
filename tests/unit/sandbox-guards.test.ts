@@ -1,6 +1,6 @@
 // UT-005: Sandbox VM guards — determinism, TS rejection, nesting, size caps (DES-005)
 import { describe, it, expect } from 'vitest';
-import { evaluateScript } from '../../src/sandbox/guards.js';
+import { evaluateScript, SANDBOX_GLOBALS } from '../../src/sandbox/guards.js';
 import type { SandboxApi } from '../../src/sandbox/guards.js';
 import type { Budget } from '../../src/types.js';
 
@@ -90,11 +90,48 @@ describe('Sandbox VM guards', () => {
     }
   });
 
-  // V5 (accepted-limitation resolution): the vm determinism guards ARE escapable via a
-  // Function-constructor realm escape — but that escape reaches only realm INTRINSICS, never the
-  // absent host capabilities. This pins the actual risk profile: the SECURITY boundary holds under
-  // the exact vector that defeats the (self-only) determinism guards.
-  it('V5: a Function-constructor realm escape cannot reach process/require/fs (security boundary holds)', async () => {
+  // V5, REWRITTEN for issue #157 B1: the ORIGINAL version of this test only probed the bare
+  // `Function` global (`Function('return process')()`), which was ALWAYS isolated — that vector
+  // defeats the Date/Math determinism guards (a `node:vm` context is not a sandbox against ITS OWN
+  // realm) but never reached a host capability, because `Function` as a bare identifier resolves to
+  // the vm context's OWN native Function, not the embedding realm's. That gave false assurance: the
+  // REAL vector #157 B1 reported was `<injected-object>.constructor.constructor(...)` — walking the
+  // prototype chain of one of THIS file's own injected sandbox globals (agent/args/budget/Date/
+  // Math/…), each of which, pre-fix, was an object CREATED in the embedding realm and handed into
+  // the context as a property, so its `.constructor` resolved to the EMBEDDING Function regardless
+  // of the bare-`Function` isolation above. This case now walks that vector on every one of
+  // `SANDBOX_GLOBALS`, matching the exact reported exploit — not just its control case. See
+  // `tests/integration/sandbox-realm-escape.test.ts` for the same vector proven through the REAL
+  // forked child process (where the escaped realm would actually hold inherited secrets).
+  it('V5: .constructor.constructor on every injected sandbox global cannot reach process/require/fs (security boundary holds)', async () => {
+    for (const name of SANDBOX_GLOBALS) {
+      for (const cap of ['process', 'require', 'fs', 'global', 'globalThis.process']) {
+        const script = `
+          try {
+            const v = (${name}).constructor.constructor('return ${cap}')();
+            // A LIVE capability, not merely "the reference didn't throw" — e.g. ${name}.constructor.
+            // constructor('return globalThis.process')() legitimately resolves without throwing
+            // (the generated function's OWN globalThis exists — it's the vm context's) and correctly
+            // yields undefined, since 'process' is not a property of THAT globalThis; that is the
+            // safe outcome, not an escape, so only a genuinely live object/function counts here.
+            const live = (typeof v === 'object' && v !== null) || typeof v === 'function';
+            return { escaped: live };
+          } catch (e) {
+            return { escaped: false };
+          }
+        `;
+        const r = await evaluateScript(script, FAKE_API);
+        expect(r.kind, `${name}.constructor.constructor('return ${cap}') should not throw out of evaluateScript`).toBe('done');
+        const dump = r.value as { escaped: boolean };
+        expect(dump.escaped, `${name}.constructor.constructor('return ${cap}') must not escape`).toBe(false);
+      }
+    }
+  });
+
+  // Bare `Function` (no injected object involved) was always isolated — kept as the control case
+  // the rewritten V5 test above now contrasts against, proving the fix targeted the real vector
+  // without disturbing the one that was already safe.
+  it('control: a bare Function-constructor realm escape (no injected object) still cannot reach process/require/fs', async () => {
     for (const cap of ['process', 'require', 'fs', 'global', 'globalThis.process']) {
       const r = await evaluateScript(`return typeof (Function('return ${cap}')());`, FAKE_API);
       // Not reachable: the escape yields undefined (capability simply absent from the context),

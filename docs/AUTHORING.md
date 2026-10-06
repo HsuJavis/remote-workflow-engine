@@ -156,7 +156,7 @@ try {
 }
 ```
 
-Branch on `e.code` — not on `e instanceof Error`. Your script runs in a `node:vm` context whose intrinsics are a different realm from the engine that raises these errors, so `instanceof` is **false** for anything the engine hands you: engine errors, and `args` and its contents alike (`args instanceof Object` is false; `Array.isArray(args.xs)` is true — realm-safe checks work). Errors you construct yourself inside the script are ordinary and unaffected. Every engine refusal carries the same `e.code`/`e.name` catalog code as `run_result.error.code`, plus a human `e.message`.
+`e.code` is still the recommended handle — a plain own property, simplest to branch on, and unaffected by anything below. `e instanceof Error` and `args instanceof Object` now also work correctly (fixed by #157 B1): every value the engine hands your script — errors, `args`, agent()/workflow() results — is built natively in your script's own realm, not the engine's, so standard checks (`instanceof`, `Array.isArray`) behave exactly as they would for a value you constructed yourself. Every engine refusal carries the same `e.code`/`e.name` catalog code as `run_result.error.code`, plus a human `e.message`.
 
 A `running` agent's `tokens`/`costUSD` on `run_status` show only COMMITTED usage — every already-settled attempt so far (e.g. an earlier schema re-ask that failed validation and is retrying) — never the CURRENTLY in-flight attempt's own live total; for a plain single-attempt call that means no `tokens` field at all until the agent itself goes terminal. Polling `run_status` mid-call will not show a live-updating count; read run_agent_log for the transcript as it streams instead.
 
