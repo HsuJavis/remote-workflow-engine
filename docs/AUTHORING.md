@@ -90,7 +90,7 @@ File tools take workspace-relative paths: `out/result.txt` resolves inside the r
 
 Whether `Bash` is confined to the run workspace depends on THIS deployment's measured posture, checked once at boot. This generated page is built before any host boots, so it cannot state which one applies to the deployment serving it — it describes both:
 
-**Confined:** `Bash` may write inside the run workspace and nowhere else. A write outside it arrives as an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a script that shells out to a global cache sees a failed command, not a special error your script can branch on.
+**Confined:** `Bash` may write inside the run workspace and nowhere else. A write outside it arrives as an ordinary `EROFS` (read-only filesystem) inside the agent's own tool result, not as an engine refusal — a script that shells out to a global cache sees a failed command, not a special error your script can branch on.
 
 A shared host path is possible but is an **operator grant** in `rwe.config.json`, never something a script requests — the list applied to a given run appears in that run's own `agent.confinement` log line.
 

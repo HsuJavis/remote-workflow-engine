@@ -509,7 +509,8 @@ describe('buildAuthoringGuide — v36: the untimed-call caveat and the refusalRe
 
 // v37 (DES-258, ARCH-107, TASK-256, REQ-117, REQ-218): a new "host path grants" paragraph a cold
 // author cannot infer from the tool schema alone — what Bash may touch, what an escape looks like
-// from inside the sandbox (an ordinary EACCES, never a typed engine refusal), and where a shared
+// from inside the sandbox (an ordinary EROFS — the deny is enforced as a read-only mount, never a
+// permission-bit EACCES — and never a typed engine refusal), and where a shared
 // host path comes from (an operator grant, visible per-run in agent.confinement). Deliberately
 // titled "host path grants", never "sandbox" — authoring-guide.ts already owns that word for the
 // node:vm script sandbox (SANDBOX_GLOBALS section above), and the same collision ARCH-175 avoided
@@ -522,11 +523,13 @@ describe('buildAuthoringGuide — v37: the host-path-grants paragraph (DES-258, 
     expect(text).toMatch(/host path grants/i);
   });
 
-  it('states Bash may write inside the run workspace and nowhere else, and an escape arrives as an ordinary EACCES in the tool result, never a typed engine refusal', () => {
+  it('states Bash may write inside the run workspace and nowhere else, and an escape arrives as an ordinary EROFS in the tool result, never a typed engine refusal', () => {
+    // issue #159 (DOC): the deny is enforced as a read-only bind mount (bwrap/srt), which surfaces
+    // at the syscall level as EROFS, not a permission-bit EACCES — corrected from the prior wording.
     const section = text.slice(text.search(/host path grants/i));
     expect(section).toMatch(/\bBash\b/);
     expect(section).toMatch(/run workspace/i);
-    expect(section).toMatch(/EACCES/);
+    expect(section).toMatch(/EROFS/);
     expect(section).not.toMatch(/typed engine (refusal|error)/i);
   });
 
@@ -537,9 +540,9 @@ describe('buildAuthoringGuide — v37: the host-path-grants paragraph (DES-258, 
     expect(section).toMatch(/agent\.confinement/);
   });
 
-  it('adds NO GUIDE_EXAMPLES entry for this section — an EACCES happens inside a tool result the workflow script never sees', () => {
+  it('adds NO GUIDE_EXAMPLES entry for this section — an EROFS happens inside a tool result the workflow script never sees', () => {
     const titles = GUIDE_EXAMPLES.map((ex: { title: string }) => ex.title.toLowerCase());
-    expect(titles.some((t: string) => t.includes('host path') || t.includes('sandbox') || t.includes('eacces'))).toBe(false);
+    expect(titles.some((t: string) => t.includes('host path') || t.includes('sandbox') || t.includes('erofs') || t.includes('eacces'))).toBe(false);
   });
 });
 
