@@ -601,7 +601,23 @@ function altSpans(script: string): AltSpan[] {
  *  output (AGENT_UNDECLARED, AGENT_BEFORE_PHASE, the diagram contract, label checks). */
 function nonCodeOracle(script: string): ReturnType<typeof nonCodeSpans> | null {
   const meta = checkMeta(script);
-  if (meta.span) return nonCodeSpans(script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')));
+  if (meta.span) {
+    const result = nonCodeSpans(script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')));
+    if (!result.ok) return result;
+    // v35 follow-up (issue #140): the blanked copy above only lets the oracle find non-code spans
+    // OUTSIDE the meta block (blanking is what keeps the `export` keyword from tripping the
+    // classic-script parse) — it does not, by itself, mark the meta block's own text as non-code.
+    // `scanAgentCalls`/`parseWorkflowSkeleton` still run AGENT_CALL_RE/CALL_RE against the
+    // ORIGINAL, unblanked script, so a literal "agent (" inside e.g. `meta.description` (whichever
+    // quote style — the blanking is character-preserving, so `script.indexOf(meta.span)` is the
+    // same first occurrence `.replace()` above already matched) was never excluded and read as a
+    // real call. `meta` is a validated object-literal region (checkMeta's own string-aware brace
+    // scan) that can never legitimately contain a top-level `agent(` call, so the whole span is
+    // unconditionally non-code, independent of whether `pureLiteral` holds.
+    const metaStart = script.indexOf(meta.span);
+    const metaSpan: [number, number] = [metaStart, metaStart + meta.span.length];
+    return { ok: true, spans: [...result.spans, metaSpan] };
+  }
   if (meta.found) return null;
   const result = nonCodeSpans(script);
   return result.ok ? result : null;
