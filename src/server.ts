@@ -878,7 +878,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const modelBook = new ModelBook(buildModelCatalog, { clock });
   // v15 (DES-098, DES-099, TASK-089): boot backfill + registration-time model-ref existence check.
   const catalog = new WorkflowCatalog(workRoot, clock, {
-    backfillOwner: config?.auth?.enabled ? true : undefined,
+    // Issue audit A1 (owner decision 2026-10-06): the hard-coded BOOT_BACKFILL_EMAIL is gone —
+    // `auth.legacyOwner` is the operator-configured backfill target, only meaningful while auth is
+    // enabled (ownership is unenforced with auth off, so neither backfilling nor hinting about it
+    // means anything there).
+    backfillOwner: config?.auth?.enabled ? config?.auth?.legacyOwner : undefined,
+    authEnabled: config?.auth?.enabled,
     // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry.
     // issue #103(a): `WorkflowCatalog` doesn't take an `mcpLookup` opt at all any more — the v24
     // catalog-backed MCP/skill asset check now lives entirely in `mcp-facade.ts`'s

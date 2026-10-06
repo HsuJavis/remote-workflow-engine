@@ -132,6 +132,16 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     expect(((cfg as Record<string, unknown>)['auth'] as Record<string, unknown>)['serviceAccountTokenTtlMs']).toBe(1800_000);
   });
 
+  // Issue audit A1 (owner decision 2026-10-06): `auth.legacyOwner` replaces the old hard-coded
+  // BOOT_BACKFILL_EMAIL — same "a NEW field on an already-forwarded block can still get lost" class
+  // as serviceAccountTokenTtlMs above (`auth` is forwarded wholesale by `resolveAuthSecrets`'s
+  // `{...auth}` spread), so this passes without a composeConfig.ts change — explicit regression lock.
+  it('auth.legacyOwner is forwarded from FileConfig into the returned ServerConfig (A1)', async () => {
+    const auth = { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'test-id', googleClientSecret: 'test-secret', legacyOwner: 'ops@example.com' };
+    const cfg = await composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect(((cfg as Record<string, unknown>)['auth'] as Record<string, unknown>)['legacyOwner']).toBe('ops@example.com');
+  });
+
   // 2026-09-28 (owner: no plaintext secrets in config): auth.googleClientSecret / googleClientId may
   // be a `${secret:NAME}` handle, resolved at config load from the SAME RWE_SECRET_<NAME> env store
   // the engine already uses. A missing name refuses boot — the literal handle must never reach Google.

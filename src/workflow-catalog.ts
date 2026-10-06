@@ -88,9 +88,6 @@ export const RULE_CODE = {
   EDGE_MISMATCH: 'EDGE_MISMATCH',
 } as const satisfies Record<Rule, ErrorCode>;
 
-// DES-098: hardcoded operator email for boot backfill of NULL-owner rows
-const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
-
 // v22 (DES-110): the total, pure resolution truth table — explicit `version` wins over any
 // `channel` (REQ-097 "regardless of any channel"); a NULL channel pointer is CHANNEL_UNPUBLISHED,
 // NEVER a fallback to the newest row (ADR-009). One caller (resolve()) — kept in this module rather
@@ -226,8 +223,16 @@ function isActor(x: unknown): x is Actor {
 }
 
 export interface WorkflowCatalogOpts {
-  /** When set and auth is enabled, backfill NULL-owner rows to this email at construction time. */
-  backfillOwner?: boolean;
+  /** Issue audit A1 (owner decision 2026-10-06): when set (the caller's own `auth.legacyOwner`,
+   *  passed only while auth is enabled), backfill NULL-owner rows to this principal id at
+   *  construction time — idempotent, same mechanics as the old hard-coded
+   *  `BOOT_BACKFILL_EMAIL`('hsuhungjung@gmail.com'), just operator-configured. Absent -> no
+   *  backfill; see `authEnabled` for the "ownerless workflows" hint that fires instead. */
+  backfillOwner?: string;
+  /** Issue audit A1: whether auth is enabled for this boot — used ONLY to decide whether the
+   *  "N ownerless workflow(s)" hint is worth logging when `backfillOwner` is absent (auth off ->
+   *  ownership is unenforced, so the hint would be noise every single boot). */
+  authEnabled?: boolean;
   /** 2026-09-26 (alias mechanism removed, owner decision 6): a live, already-resolved catalog
    *  snapshot fetcher for `model.default`/`enum` existence checks at registration (`checkModelRef`,
    *  `providers.ts`) — called fresh on every `validateRegistration()` (never memoized at
@@ -292,13 +297,25 @@ export class WorkflowCatalog {
     if (hasLegacy && !existingCols.includes('params')) {
       this._db.exec('ALTER TABLE workflows ADD COLUMN params TEXT');
     }
-    // DES-098: idempotent boot backfill — NULL-owner rows → operator email; once/boot, self-limiting
+    // Issue audit A1 (owner decision 2026-10-06): idempotent boot backfill — NULL-owner rows →
+    // `auth.legacyOwner`; once/boot, self-limiting. Absent (auth off, or auth on but no
+    // `auth.legacyOwner` configured) -> no backfill; when auth IS enabled, log a hint instead so an
+    // operator who hits NOT_WORKFLOW_OWNER on an old workflow knows what to set, rather than
+    // discovering a silent email transfer the way the old hard-coded constant produced one.
     if (opts?.backfillOwner) {
       const n = this._db
         .prepare("UPDATE workflows SET owner = ? WHERE owner IS NULL")
-        .run(BOOT_BACKFILL_EMAIL).changes;
+        .run(opts.backfillOwner).changes;
       if (n > 0) {
-        console.log(`auth.migrate: ${n} workflows backfilled to owner=${BOOT_BACKFILL_EMAIL}`);
+        console.log(`auth.migrate: ${n} workflows backfilled to owner=${opts.backfillOwner}`);
+      }
+    } else if (opts?.authEnabled) {
+      const ownerless = (this._db.prepare('SELECT COUNT(*) as c FROM workflows WHERE owner IS NULL').get() as { c: number }).c;
+      if (ownerless > 0) {
+        console.log(
+          `auth.migrate: ${ownerless} workflow(s) have no owner; set auth.legacyOwner in rwe.config.json to a ` +
+            'principal id to backfill them (none will be backfilled until then — see DEPLOY.md).',
+        );
       }
     }
 

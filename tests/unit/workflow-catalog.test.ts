@@ -1,10 +1,11 @@
 // UT-011: WorkflowCatalog — registry, workspace rooting, path escape rejection (DES-011)
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { CatalogNotFoundError, WorkspaceEscapeError } from '../../src/errors.js';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 
 // A fixed literal name here (`join(tmpdir(), 'rwe-test-catalog')`) would already be owned by
 // whichever uid last ran this suite in this tmp root — mkdtemp guarantees a fresh directory this
@@ -90,5 +91,63 @@ describe('WorkflowCatalog', () => {
     const resolved = cat.resolveInWorkspace('run-abc', 'output/result.json');
     expect(resolved).toMatch(/run-abc/);
     expect(resolved).toMatch(/result\.json$/);
+  });
+});
+
+// Issue audit A1 (owner decision 2026-10-06): `auth.legacyOwner` replaces the old hard-coded
+// BOOT_BACKFILL_EMAIL ('hsuhungjung@gmail.com' in workflow-catalog.ts). Seeds a NULL-owner row
+// directly on disk (same v22-schema pattern tests/integration/workflow-ownership.test.ts's own
+// IT-080 case already uses) so each case can construct a FRESH WorkflowCatalog instance against it.
+describe('boot owner backfill — auth.legacyOwner (A1)', () => {
+  function seedNullOwnerRow(workRoot: string, name: string): void {
+    const db = new Database(join(workRoot, 'catalog.db'));
+    db.exec('CREATE TABLE IF NOT EXISTS workflows (name TEXT PRIMARY KEY, createdAt TEXT NOT NULL, owner TEXT, release_version TEXT, beta_version TEXT)');
+    db.exec('CREATE TABLE IF NOT EXISTS workflow_versions (name TEXT NOT NULL, version TEXT NOT NULL, script TEXT NOT NULL, defaults TEXT, params TEXT, createdAt TEXT NOT NULL, PRIMARY KEY (name, version))');
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)').run(name, now, 'v1');
+    db.prepare("INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, 'v1', ?, ?)").run(name, "export const meta = { phases: [] };\nreturn 1;", now);
+    db.close();
+  }
+
+  it('absent (auth off): NULL-owner rows stay NULL, no hint logged', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-legacyowner-off-'));
+    seedNullOwnerRow(workRoot, 'wf-a1-authoff');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const cat = new WorkflowCatalog(workRoot);
+      const detail = await cat.resolveDetail('wf-a1-authoff', { version: 'v1' });
+      expect(detail.owner).toBeNull();
+      expect(logSpy.mock.calls.some((c) => String(c[0]).includes('auth.migrate'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('absent (auth on, no legacyOwner): NULL-owner rows stay NULL; ONE boot line names the count and hints at auth.legacyOwner', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-legacyowner-hint-'));
+    seedNullOwnerRow(workRoot, 'wf-a1-hint');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const cat = new WorkflowCatalog(workRoot, undefined, { authEnabled: true });
+      const detail = await cat.resolveDetail('wf-a1-hint', { version: 'v1' });
+      expect(detail.owner).toBeNull();
+      const printed = logSpy.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+      expect(printed).toMatch(/1 workflow\(s\) have no owner/);
+      expect(printed.toLowerCase()).toContain('auth.legacyowner');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('present: NULL-owner rows are backfilled to it, idempotently (re-construction is a no-op)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-legacyowner-present-'));
+    seedNullOwnerRow(workRoot, 'wf-a1-present');
+    const cat1 = new WorkflowCatalog(workRoot, undefined, { backfillOwner: 'ops@example.com', authEnabled: true });
+    expect((await cat1.resolveDetail('wf-a1-present', { version: 'v1' })).owner).toBe('ops@example.com');
+
+    // A second boot against the same on-disk DB: the row already has an owner, so it must not be
+    // touched again (and a DIFFERENT legacyOwner proves re-backfill would have been visible).
+    const cat2 = new WorkflowCatalog(workRoot, undefined, { backfillOwner: 'someone-else@example.com', authEnabled: true });
+    expect((await cat2.resolveDetail('wf-a1-present', { version: 'v1' })).owner).toBe('ops@example.com');
   });
 });
