@@ -18,8 +18,8 @@ interface ExpectedLane {
   title: string | null;
   dynamic: boolean;
   slots: number[];
-  // issue #155 B3/TOOLS-DOC — mirrors skeleton-graph.ts's ExpectedLane in lockstep (UT-115's
-  // four-file allowlist comment above, same convention).
+  // issue #155 B3/TOOLS-DOC — mirrors the canonical TASK-185 home's ExpectedLane in lockstep (see
+  // this file's own header comment above for why that's a structural copy, not an import).
   dynamicLabels?: Array<{ label: string; tools?: string[] }>;
 }
 interface ExpectedSlot {
@@ -28,7 +28,7 @@ interface ExpectedSlot {
   labels: string[];
   kind: 'single' | 'parallel' | 'alt';
   tools: Record<string, string[] | 'default'>;
-  // issue #155 B1 — mirrors skeleton-graph.ts's ExpectedSlot in lockstep.
+  // issue #155 B1 — mirrors the canonical TASK-185 home's ExpectedSlot in lockstep.
   altGroup?: number;
 }
 interface ExpectedGraph {
@@ -471,6 +471,31 @@ function checkEdges(
     const ids = new Set(idsForSlot(slot));
     for (const e of edges) {
       if (ids.has(e.from) && ids.has(e.to)) return err('EDGE_MISMATCH', { line: e.line, expected: slot });
+    }
+  }
+
+  // (c2) issue #155 B1: no edge between two DIFFERENT slots that are arms of the SAME alt group —
+  // rule (c) above only catches two labels packed into ONE slot (same lane); a split alt group's
+  // arms are two different slots in two different lanes, so they need their own check.
+  const altGroupSlots = new Map<number, ExpectedSlot[]>();
+  for (const slot of expected.slots) {
+    if (slot.altGroup === undefined) continue;
+    const arr = altGroupSlots.get(slot.altGroup) ?? [];
+    arr.push(slot);
+    altGroupSlots.set(slot.altGroup, arr);
+  }
+  for (const armSlots of altGroupSlots.values()) {
+    if (armSlots.length < 2) continue;
+    const armIds = armSlots.map((s) => ({ slot: s, ids: new Set(idsForSlot(s)) }));
+    for (const e of edges) {
+      const from = armIds.find((a) => a.ids.has(e.from));
+      const to = armIds.find((a) => a.ids.has(e.to));
+      if (from && to && from.slot.index !== to.slot.index) {
+        return err('EDGE_MISMATCH', {
+          line: e.line,
+          expected: { from: { index: from.slot.index, labels: from.slot.labels }, to: { index: to.slot.index, labels: to.slot.labels } },
+        });
+      }
     }
   }
 

@@ -92,6 +92,21 @@ if (cond) {
 }
 `;
 
+// issue #155 B1: each if/else arm opens its OWN phase() (a lane boundary) before dispatching its
+// agent — unlike `ifElseScript` above, where both arms share lane 0 and merge into one slot.
+const ifElseSeparatePhasesScript = `
+export const meta = { name: 'ifelsephases', params: { agents: { a: {}, b: {}, c: {} } } };
+phase('p1');
+await agent('a', { prompt: 'p' });
+if (cond) {
+  phase('hot');
+  await agent('b', { prompt: 'p' });
+} else {
+  phase('cold');
+  await agent('c', { prompt: 'p' });
+}
+`;
+
 const nestedWorkflowScript = `
 export const meta = { name: 'nested', params: { agents: { a: {} } } };
 phase('outer');
@@ -217,7 +232,7 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
       ok: true,
       graph: {
         lanes: [{ index: 0, title: 'branch', dynamic: false, slots: [0] }],
-        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' } }],
+        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' }, altGroup: 1 }],
         edges: [],
       },
     },
@@ -229,8 +244,31 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
       ok: true,
       graph: {
         lanes: [{ index: 0, title: 'branch', dynamic: false, slots: [0] }],
-        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' } }],
+        slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'alt', tools: { a: 'default', b: 'default' }, altGroup: 1 }],
         edges: [],
+      },
+    },
+  },
+  {
+    // issue #155 B1: the anchor slot (0, 'a') must edge to EACH arm's slot (1 'hot'/b, 2 'cold'/c)
+    // — never arm-to-arm (1→2), which the pre-fix deriveExpectedGraph wrongly demanded because the
+    // intervening phase() wiped the still-open alt group's memory.
+    name: 'if/else, each arm opens its own phase() — anchor fans out to both arms, never arm-to-arm',
+    script: ifElseSeparatePhasesScript,
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [
+          { index: 0, title: 'p1', dynamic: false, slots: [0] },
+          { index: 1, title: 'hot', dynamic: false, slots: [1] },
+          { index: 2, title: 'cold', dynamic: false, slots: [2] },
+        ],
+        slots: [
+          { index: 0, lane: 0, labels: ['a'], kind: 'single', tools: { a: 'default' } },
+          { index: 1, lane: 1, labels: ['b'], kind: 'alt', tools: { b: 'default' }, altGroup: 1 },
+          { index: 2, lane: 2, labels: ['c'], kind: 'alt', tools: { c: 'default' }, altGroup: 1 },
+        ],
+        edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }],
       },
     },
   },

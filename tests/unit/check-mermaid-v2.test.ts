@@ -134,6 +134,45 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     expect((checkMermaid(src, ['writer', 'critic'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
   });
 
+  // issue #155 B1: if/else arms that each open their own phase() land in different lanes, so they
+  // are two DIFFERENT slots sharing `altGroup` — rule (c) must refuse a direct edge between them the
+  // same way it already refuses one between two labels of the SAME (same-lane) alt slot.
+  describe('no direct edge between two arms of a split alt group (B1)', () => {
+    // a non-agent diamond `d` between the anchor and both arms, as the authoring guide's own
+    // "ternary/if→diamond with a labelled edge per arm" pattern does — a DIRECT a-->b/a-->c would
+    // separately trip rule (b)'s non-consecutive-agent-edge-needs-a-label check.
+    const src = (extra: string) =>
+      [
+        'graph LR', 'subgraph "p1"', 'a(["a"])', 'd{"branch"}', 'end',
+        'subgraph "hot"', 'b(["b"])', 'end', 'subgraph "cold"', 'c(["c"])', 'end',
+        'a-->d', 'd-->|hot|b', 'd-->|cold|c', extra,
+      ].filter(Boolean).join('\n');
+    const expected = {
+      lanes: [
+        { index: 0, title: 'p1', dynamic: false, slots: [0] },
+        { index: 1, title: 'hot', dynamic: false, slots: [1] },
+        { index: 2, title: 'cold', dynamic: false, slots: [2] },
+      ],
+      slots: [
+        { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+        { index: 1, lane: 1, labels: ['b'], kind: 'alt' as const, tools: { b: 'default' as const }, altGroup: 1 },
+        { index: 2, lane: 2, labels: ['c'], kind: 'alt' as const, tools: { c: 'default' as const }, altGroup: 1 },
+      ],
+      edges: [{ from: 0, to: 1 }, { from: 0, to: 2 }],
+    };
+
+    it('the anchor fanning out to both arms, with no arm-to-arm edge, registers ok', () => {
+      const result = checkMermaid(src(''), ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(true);
+    });
+
+    it('adding a direct b-->c (arm-to-arm) edge is refused EDGE_MISMATCH, even though both slots have a single label', () => {
+      const result = checkMermaid(src('b-->c'), ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('EDGE_MISMATCH');
+    });
+  });
+
   // issue #155 B3/TOOLS-DOC: an agent() dispatched inside a loop/switch body got NO ExpectedSlot at
   // all, so neither checkLanes nor checkTools ever looked at it — its diagram placement (and, when
   // it carries a literal allowedTools, its `tools:` text) was unconstrained.

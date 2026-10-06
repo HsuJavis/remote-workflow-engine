@@ -122,6 +122,27 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
   let openGroupKey: string | undefined;
   let lastSlotIndex: number | undefined;
 
+  // issue #155 B1: an `alt` group whose arms land in DIFFERENT lanes (each arm opens its own
+  // phase()) cannot be represented as one slot — `ExpectedSlot.lane` is a single scalar. Each arm
+  // gets its OWN slot (tagged `altGroup`), but the group's EDGES still need to fan out from the one
+  // anchor slot that preceded the whole branch to EVERY arm, and from EVERY arm to whatever slot
+  // follows the branch — never arm-to-arm. `altGroupTotal` (a prepass over every call, regardless of
+  // lane) is how we know an arm is the group's LAST one, so the group can "close" and hand off its
+  // accumulated arm list to whichever slot gets created next.
+  const altGroupTotal = new Map<string, number>();
+  for (const c of safeCalls) {
+    if (c.group?.kind === 'alt') {
+      const k = `alt:${c.group.id}`;
+      altGroupTotal.set(k, (altGroupTotal.get(k) ?? 0) + 1);
+    }
+  }
+  const altGroupSeen = new Map<string, number>();
+  const altGroupAnchor = new Map<string, number | undefined>();
+  const altGroupArms = new Map<string, number[]>();
+  // Set once a split alt group has seen its LAST arm — consumed (and cleared) by the NEXT slot this
+  // loop creates, which gets edges from every one of that group's arms instead of just `lastSlotIndex`.
+  let pendingAltArms: number[] | undefined;
+
   for (const node of safeNodes) {
     if (!node || typeof node !== 'object') continue;
 
@@ -183,27 +204,56 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, 
 
     const label = call.label;
     const groupKey = group !== undefined ? `${group.kind}:${group.id}` : undefined;
-    if (groupKey !== undefined && groupKey === openGroupKey && lastSlotIndex !== undefined) {
-      // S2/S3: another member of the group already open at the top of the stack — extend it.
+    if (groupKey !== undefined && groupKey === openGroupKey && lastSlotIndex !== undefined && slots[lastSlotIndex]!.lane === currentLaneIndex) {
+      // S2/S3: another member of the group already open, in the SAME lane (no intervening phase())
+      // — extend that one slot, exactly as before this fix.
       const slot = slots[lastSlotIndex]!;
       slot.labels.push(label);
       slot.tools[label] = toolsFor(call.allowedTools);
+      if (group!.kind === 'alt') altGroupSeen.set(groupKey, (altGroupSeen.get(groupKey) ?? 0) + 1);
       continue;
     }
 
-    // S1/S2/S3: a fresh slot — a plain sequential call (S1) or the FIRST member of a new
-    // parallel/alt group (S2/S3).
+    // S1/S2/S3: a fresh slot — a plain sequential call (S1), the FIRST member of a new
+    // parallel/alt group (S2/S3), or (B1) a LATER arm of an alt group whose previous arm sits in a
+    // DIFFERENT lane (an intervening phase() means it can't be merged into that arm's slot).
     const slotIndex = slots.length;
+    const isAltArm = group !== undefined && group.kind === 'alt';
+    const altKey = isAltArm ? `alt:${group!.id}` : undefined;
+    const isAltContinuation = altKey !== undefined && altGroupArms.has(altKey);
     slots.push({
       index: slotIndex,
       lane: currentLaneIndex,
       labels: [label],
       kind: group !== undefined ? group.kind : 'single',
       tools: { [label]: toolsFor(call.allowedTools) },
+      ...(altKey !== undefined ? { altGroup: group!.id } : {}),
     });
     lanes[currentLaneIndex]!.slots.push(slotIndex);
-    // E1: one edge between consecutive slots, across lane boundaries too.
-    if (lastSlotIndex !== undefined) edges.push({ from: lastSlotIndex, to: slotIndex });
+
+    if (altKey !== undefined) {
+      // B1: fan OUT from the one anchor slot that preceded the branch to every arm — never
+      // arm-to-arm — and track the arm so the slot that eventually follows the branch can fan IN
+      // from every one of them.
+      if (isAltContinuation) {
+        const anchor = altGroupAnchor.get(altKey);
+        if (anchor !== undefined) edges.push({ from: anchor, to: slotIndex });
+        altGroupArms.get(altKey)!.push(slotIndex);
+      } else {
+        altGroupAnchor.set(altKey, lastSlotIndex);
+        altGroupArms.set(altKey, [slotIndex]);
+        if (lastSlotIndex !== undefined) edges.push({ from: lastSlotIndex, to: slotIndex });
+      }
+      altGroupSeen.set(altKey, (altGroupSeen.get(altKey) ?? 0) + 1);
+      pendingAltArms = altGroupSeen.get(altKey) === altGroupTotal.get(altKey) ? altGroupArms.get(altKey) : undefined;
+    } else if (pendingAltArms !== undefined) {
+      // This slot is whatever follows a NOW-COMPLETE split alt group — fan IN from every arm.
+      for (const armSlot of pendingAltArms) edges.push({ from: armSlot, to: slotIndex });
+      pendingAltArms = undefined;
+    } else {
+      // E1 (unchanged): one edge between consecutive slots, across lane boundaries too.
+      if (lastSlotIndex !== undefined) edges.push({ from: lastSlotIndex, to: slotIndex });
+    }
     lastSlotIndex = slotIndex;
     openGroupKey = groupKey;
   }
