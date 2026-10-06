@@ -232,7 +232,7 @@ function makeReRealm(CtxArray: ArrayConstructor, CtxObject: ObjectConstructor): 
 // `host.ts`'s `fork()` still inherits the parent env as a SEPARATE defense-in-depth concern (not yet
 // scrubbed — tracked as residual risk in this fix's report, since this file cannot change host.ts's
 // caller contract unilaterally within this issue's scope).
-function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): DateConstructor {
+function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor, wrap: Wrap): DateConstructor {
   class GuardedDate extends CtxDate {
     constructor(...args: unknown[]) {
       if (args.length === 0) {
@@ -241,19 +241,22 @@ function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): Date
       // @ts-expect-error — variadic forwarding to whichever Date overload matches at runtime
       super(...args);
     }
-    static override now(): number {
-      throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
-    }
   }
-  // #157 B1 follow-up: `static override now` above is a METHOD — a value created by evaluating this
-  // `class` body, which happens in the EMBEDDING realm (this whole module's own scope) even though
-  // `GuardedDate` itself `extends CtxDate` (that `extends` link only re-realms the CLASS's own
-  // `[[Prototype]]`, not a property added by the subclass). `now`'s `[[Prototype]]` therefore
-  // defaulted to the embedding `Function.prototype`, unlike every other wrapper this file builds
-  // (which are plain functions this code explicitly severs below) — giving `Date.now.constructor.
-  // constructor(...)` (never actually CALLING `now`, just reading it as a value) a live path to the
-  // embedding `Function`. Accessed and severed here, once, right after the class exists.
-  Object.setPrototypeOf(GuardedDate.now, null);
+  // #157 B1 follow-up, #157 (final blocker) rebuild: a `static override now` METHOD is a value
+  // created by evaluating this `class` body, which happens in the EMBEDDING realm (this whole
+  // module's own scope) even though `GuardedDate` itself `extends CtxDate` (that `extends` link only
+  // re-realms the CLASS's own `[[Prototype]]`, not a property added by the subclass). Declaring it as
+  // a class method would give `Date.now.constructor.constructor(...)` (never actually CALLING `now`,
+  // just reading it as a value) a live path to the embedding `Function` — so it is never declared in
+  // the class body at all; `wrap()` builds it fresh, NATIVE to the vm context (see `wrap`'s own doc),
+  // and it is assigned here instead.
+  Object.defineProperty(GuardedDate, 'now', {
+    value: wrap(() => {
+      throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
+    }),
+    writable: true,
+    configurable: true,
+  });
   // #157 (DOC item): `Date()` called WITHOUT `new` reads the wall clock too — the same hazard as
   // `Date.now()` — but was refused only incidentally, by the ES class-invocation rule ("Class
   // constructor ... cannot be invoked without 'new'", a generic TypeError/SCRIPT_ERROR), since
@@ -275,18 +278,16 @@ function guardedDate(CtxDate: DateConstructor, CtxError: ErrorConstructor): Date
  *  `vm.runInContext('Math', context)`, not a copy) closes every access path at once (`get`,
  *  `getOwnPropertyDescriptor`, `in`, `Object.keys`, …) because there is no longer a second,
  *  un-guarded object anywhere for any of those paths to reach. */
-function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof Math {
+function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor, wrap: Wrap): typeof Math {
   // #157 B1 follow-up: this thrower is a value reached one property hop PAST `Math` itself
-  // (`Math.random`, not `Math`) — the top-level `Math` guard above does not protect it. Built as a
-  // plain embedding-realm arrow function, it was exactly as exploitable as `Math` was pre-fix
-  // (`Math.random.constructor.constructor(...)` still reached the embedding realm). Its own
-  // `[[Prototype]]` is severed for the same reason every other wrapper function in this file is.
-  // (An arrow function has no own `.prototype` property, unlike `dateTimeFormatThrower` below, so no
-  // further severing is needed there.)
-  const randomThrower = () => {
+  // (`Math.random`, not `Math`) — the top-level `Math` guard above does not protect it. #157 (final
+  // blocker): built via `wrap()` — NATIVE to the vm context — rather than an embedding-realm arrow
+  // function with its own `[[Prototype]]` merely severed to null (the pre-existing defense, which
+  // only closes `.constructor` access on THIS value; `wrap` additionally means its own realm was
+  // never the embedding one in the first place — see `wrap`'s own doc for why that matters).
+  const randomThrower = wrap(() => {
     throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
-  };
-  Object.setPrototypeOf(randomThrower, null);
+  });
   Object.defineProperty(CtxMath, 'random', { value: randomThrower, writable: true, enumerable: true, configurable: true });
   return CtxMath;
 }
@@ -321,12 +322,15 @@ function guardedMath(CtxMath: typeof Math, CtxError: ErrorConstructor): typeof M
  *  cuts `dateTimeFormatThrower.__proto__`, a completely different slot from `dateTimeFormatThrower.
  *  prototype`). Reassigning `.prototype` to a null-proto object closes it: the thrower always throws
  *  before `new` can ever materialize an instance off that object, so nothing depends on its shape. */
-function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor): typeof Intl {
-  function dateTimeFormatThrower(): never {
+function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor, wrap: Wrap): typeof Intl {
+  // #157 (final blocker): built via `wrap()` instead of a `function` declaration with its own
+  // `.prototype` manually reassigned to a null-proto object (the pre-existing defense against the
+  // vector this doc block used to describe in detail — `wrap`'s own, context-native function already
+  // has a context-native `.prototype` nobody ever reaches, since `impl.apply(...)` always throws
+  // before `new` can materialize an instance off it, exactly as before).
+  const dateTimeFormatThrower = wrap(() => {
     throw createGuardError(CtxError, 'DETERMINISM_GUARD', 'Intl.DateTimeFormat is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
-  }
-  Object.setPrototypeOf(dateTimeFormatThrower, null);
-  dateTimeFormatThrower.prototype = Object.create(null) as object;
+  });
   Object.defineProperty(CtxIntl, 'DateTimeFormat', { value: dateTimeFormatThrower, writable: true, enumerable: true, configurable: true });
   return CtxIntl;
 }
@@ -367,6 +371,35 @@ function refusalCode(err: unknown): string | null {
 
 type Thunk = () => Promise<unknown>;
 type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
+
+// #157 (final blocker, Gate 8 v3 re-review): a factory, built ONCE per `evaluateScript` call via
+// `vm.runInContext` (so the factory ITSELF, and therefore every function it returns, is a value whose
+// `[[Prototype]]` chain was NEVER the embedding realm's `Function.prototype` in the first place — not
+// merely severed to null after the fact, this file's pre-existing defense for `agent`/`parallel`/…
+// and the `Math.random`/`Intl.DateTimeFormat`/`Date.now` throwers). `Object.setPrototypeOf(fn, null)`
+// closes `<fn>.constructor` specifically; it does nothing for some OTHER property a future change
+// might add without remembering to sever it (a method on a returned object, a getter, …) — building
+// the wrapper function natively in the context realm means that future addition's "no explicit
+// hardening yet" default is already safe (context Function, inert under this file's `codeGeneration:
+// {strings:false}` context option), not merely unverified. `impl` itself stays an ordinary embedding-
+// realm closure (closing over `api`/`CtxError`/etc.) — only the OUTER function identity the script
+// touches is context-native; calling it forwards synchronously via `.apply`, so sync throws, async
+// rejections, and `new`-construction (the thrower case) all behave exactly as if `impl` were called
+// directly.
+// Generic over `T` (rather than a fixed `(...args: unknown[]) => unknown`) purely so TS accepts
+// wrapping this file's actual, specifically-typed closures (`(prompt: string, opts?: unknown) =>
+// …`, `(thunks: Thunk[]) => …`, …) without a variance complaint — the runtime behavior underneath
+// (a generic `...callArgs` forwarder, built once via `vm.runInContext`) is identical regardless of
+// `T`; the cast below asserts that shape back onto the specific type callers pass in.
+type Wrap = <T extends (...args: never[]) => unknown>(impl: T) => T;
+
+function makeWrap(context: vm.Context): Wrap {
+  const factory = vm.runInContext(
+    '(function (impl) { return function (...callArgs) { return impl.apply(undefined, callArgs); }; })',
+    context,
+  ) as (impl: (...args: never[]) => unknown) => (...args: never[]) => unknown;
+  return (<T extends (...args: never[]) => unknown>(impl: T): T => factory(impl) as T) as Wrap;
+}
 
 /** #157 B1 follow-up: `agent()`/`parallel()`/`pipeline()`/`workflow()` are all `async` functions
  *  declared in THIS module — the embedding realm — so the Promise each one RETURNS when called is
@@ -527,16 +560,12 @@ function makeAgent(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value:
  *  only guarantees `Budget`'s three fields (`total`/`spent`/`remaining`) — `limits`/`tokens` are the
  *  real `SandboxBudget` superset child-entry.ts actually passes, read here defensively since this
  *  function also runs against the narrower `Budget`-only fakes several unit tests construct. */
-function makeBudget(budget: Budget, CtxObject: ObjectConstructor, reRealm: (value: unknown) => unknown): Budget {
+function makeBudget(budget: Budget, CtxObject: ObjectConstructor, reRealm: (value: unknown) => unknown, wrap: Wrap): Budget {
   const wide = budget as Partial<{ limits: unknown; tokens: () => unknown }>;
   const out = new CtxObject() as Record<string, unknown>;
   out.total = budget.total;
-  const spentFn = () => budget.spent();
-  Object.setPrototypeOf(spentFn, null);
-  out.spent = spentFn;
-  const remainingFn = () => budget.remaining();
-  Object.setPrototypeOf(remainingFn, null);
-  out.remaining = remainingFn;
+  out.spent = wrap(() => budget.spent());
+  out.remaining = wrap(() => budget.remaining());
   if ('limits' in budget) {
     out.limits = reRealm(wide.limits);
     // #157 (DOC item): SandboxApi.budget's own doc comment promises "Read-only budget view" — the
@@ -547,9 +576,7 @@ function makeBudget(budget: Budget, CtxObject: ObjectConstructor, reRealm: (valu
     if (out.limits !== null && typeof out.limits === 'object') Object.freeze(out.limits);
   }
   if (typeof wide.tokens === 'function') {
-    const tokensFn = () => reRealm(wide.tokens!());
-    Object.setPrototypeOf(tokensFn, null);
-    out.tokens = tokensFn;
+    out.tokens = wrap(() => reRealm(wide.tokens!()));
   }
   return Object.freeze(out) as unknown as Budget;
 }
@@ -559,13 +586,35 @@ function makeBudget(budget: Budget, CtxObject: ObjectConstructor, reRealm: (valu
  * Guards: Date.now(), Math.random(), new Date() (no args) throw inside the script. det:allow — a doc comment naming the blocked APIs, not a call
  * TS syntax, >512KB scripts, and >4096-item parallel()/pipeline() calls are rejected.
  *
- * #157 B1: every value exposed into the sandbox is now either NATIVE to this call's own vm context
- * (fetched via `vm.runInContext` and used to build `Date`/`Math`/errors/re-realmed data) or has its
- * own `[[Prototype]]` severed (`agent`/`parallel`/`pipeline`/`phase`/`log`/`workflow` themselves) —
- * see the `createGuardError`/`sanitizeThrownError`/`makeReRealm` docs above and the corrected V5
- * comment on `guardedDate` for the full reasoning. Before this fix, `<injected>.constructor.
- * constructor(...)` reached the embedding (sandbox child process) realm's `Function`, `process`,
- * and `fetch` — see `tests/integration/sandbox-realm-escape.test.ts` for the real-fork-boundary repro.
+ * #157 B1 / #157 (final blocker, Gate 8 v3): every value exposed into the sandbox is NATIVE to this
+ * call's own vm context — either fetched directly via `vm.runInContext` (`Date`/`Math`/`Intl`/`Error`/
+ * `Array`/`Object`/`Promise`, used to build re-realmed data and errors), or built BY a context-native
+ * factory (`wrap`, see its own doc) rather than merely having its `[[Prototype]]` severed after the
+ * fact. The vm context's own GLOBAL OBJECT gets the same treatment: `sandbox` starts `[[Prototype]]`-
+ * less (`Object.create(null)`) and is reparented to the context's OWN `Object.prototype` once the
+ * context exists, so `globalThis`/the script's top-level `this` resolve `.constructor` inside the
+ * context realm too — the one surface every per-property fix above left open, since `vm.createContext`
+ * never re-realms the global object it's handed. The context is additionally created with
+ * `codeGeneration: { strings: false }`, so even the context's own (otherwise harmless) `Function`/
+ * `eval` cannot generate code from a string; the script body itself is compiled as a STRICT-mode
+ * function and invoked with no receiver (`this === undefined` on a bare call, by spec, in strict
+ * mode — never coerced to the global object the way a sloppy function's would be), closing the bare
+ * `this.constructor...` vector without relying on the global reparenting alone. `Error.
+ * prepareStackTrace` is locked to always-`undefined` (non-writable, non-configurable) so a script
+ * cannot install a custom stack formatter and walk `CallSite.getFunction()`/`getThis()` for a live
+ * function handle — the same class of escape classic `vm`-sandbox libraries were broken by.
+ *
+ * Before this fix, `<injected>.constructor.constructor(...)` reached the embedding (sandbox child
+ * process) realm's `Function`, `process`, and `fetch`; after B1 closed every injected PROPERTY, the
+ * script's own top-level `this`/`globalThis` still did — see
+ * `tests/integration/sandbox-realm-escape.test.ts` for the real-fork-boundary repro of both rounds.
+ *
+ * This is layer 1 of three independent defenses (issue #157's own triage: "layer 1 alone is NOT
+ * enough") — layer 2 (`host.ts`'s `SANDBOX_CHILD_ENV`) ensures the forked child carries no secrets
+ * even if this layer is ever defeated by a future escape nobody has found yet; layer 3 (`host.ts`'s
+ * `SANDBOX_CHILD_EXEC_ARGV`, Node's `--permission` model) ensures that even a live `process` handle
+ * cannot read arbitrary files or spawn a shell. Treat this layer as hygiene, not a boundary — `node:vm`
+ * itself documents that it does not provide one.
  */
 export async function evaluateScript(script: string, api: SandboxApi): Promise<ScriptResult> {
   if (Buffer.byteLength(script, 'utf8') > MAX_SCRIPT_BYTES) {
@@ -578,8 +627,12 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   }
   const body = meta.cleaned;
 
-  const sandbox: Record<string, unknown> = {};
-  const context = vm.createContext(sandbox);
+  // #157 (final blocker): `sandbox` starts with NO prototype at all (not the embedding realm's
+  // `Object.prototype`, which a bare `{}` literal would carry) — reparented below, once the context's
+  // own native `Object` is reachable, to that context's `Object.prototype`. `codeGeneration.strings:
+  // false` is layer 1's other context-wide setting — see this function's own doc above.
+  const sandbox: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
 
   // Fetch THIS call's own vm context's native intrinsics — building Date/Math/errors/data from
   // these (rather than the embedding realm's own Date/Math/Error/Array/Object) is the whole fix;
@@ -592,6 +645,19 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   const CtxObject = vm.runInContext('Object', context) as ObjectConstructor;
   const CtxPromise = vm.runInContext('Promise', context) as PromiseConstructor;
   const reRealm = makeReRealm(CtxArray, CtxObject);
+  const wrap = makeWrap(context);
+
+  // #157 (final blocker): reparent the global object itself — see this function's own doc for why
+  // the per-property fixes above never reached `this`/`globalThis`.
+  Object.setPrototypeOf(sandbox, CtxObject.prototype);
+
+  // #157 (final blocker): `Error.prepareStackTrace` is the classic `vm`-sandbox escape (a script sets
+  // a custom stack formatter, then reads `CallSite.getFunction()`/`getThis()` off any error's `.stack`
+  // for a live function/receiver reference from the current call stack — which can include embedding-
+  // realm frames). Locked to always-`undefined`, non-writable/non-configurable, on THIS call's own
+  // native `Error` — `Error.captureStackTrace`/`.stackTraceLimit` are left alone (no hazard by
+  // themselves; default stack formatting carries no function references, only strings).
+  Object.defineProperty(CtxError, 'prepareStackTrace', { value: undefined, writable: false, configurable: false, enumerable: false });
 
   const agentFn = makeAgent(api, CtxError, reRealm, CtxPromise);
   const parallelFn = makeParallel(CtxError, reRealm, CtxPromise);
@@ -601,27 +667,29 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     api.phase?.(title);
   };
   const logFn = (): void => {};
-  for (const fn of [agentFn, parallelFn, pipelineFn, workflowFn, phaseFn, logFn]) {
-    Object.setPrototypeOf(fn, null);
-  }
 
   Object.assign(sandbox, {
-    agent: agentFn,
-    parallel: parallelFn,
-    pipeline: pipelineFn,
-    phase: phaseFn,
-    log: logFn,
+    agent: wrap(agentFn),
+    parallel: wrap(parallelFn),
+    pipeline: wrap(pipelineFn),
+    phase: wrap(phaseFn),
+    log: wrap(logFn),
     args: reRealm(api.args),
-    budget: makeBudget(api.budget, CtxObject, reRealm),
-    workflow: workflowFn,
-    Date: guardedDate(CtxDate, CtxError),
-    Math: guardedMath(CtxMath, CtxError),
-    Intl: guardedIntl(CtxIntl, CtxError),
+    budget: makeBudget(api.budget, CtxObject, reRealm, wrap),
+    workflow: wrap(workflowFn),
+    Date: guardedDate(CtxDate, CtxError, wrap),
+    Math: guardedMath(CtxMath, CtxError, wrap),
+    Intl: guardedIntl(CtxIntl, CtxError, wrap),
   });
 
   let compiled: vm.Script;
   try {
-    compiled = new vm.Script(`(async () => {\n${body}\n})`, { filename: 'workflow-script.js' });
+    // #157 (final blocker): a STRICT-mode function body — a bare call (`runScript()` below, no
+    // receiver) gives `this === undefined` inside, by spec, in strict mode (a sloppy function would
+    // coerce it to the global object — the bare `this.constructor...` vector). Strict mode also
+    // incidentally closes `arguments.callee`/`arguments.caller` (poisoned accessors that throw on
+    // mere access in strict code) and direct `eval`'s inherited `this`, for the same reason.
+    compiled = new vm.Script(`(async function () {\n'use strict';\n${body}\n})`, { filename: 'workflow-script.js' });
   } catch (err) {
     return { kind: 'error', error: { code: 'PARSE_ERROR', message: err instanceof Error ? err.message : String(err) } };
   }

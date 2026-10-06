@@ -319,4 +319,48 @@ describe('Sandbox VM guards', () => {
       }
     }
   });
+
+  // #157 (final blocker, Gate 8 v3): a generic sweep instead of one test per named vector — walks
+  // every value this module injects into the sandbox (plus the two throwers reached one property hop
+  // past an injected object — `Math.random`/`Intl.DateTimeFormat`/`Date.now` — and a `parallel()`
+  // Promise) and asserts its `.constructor` chain, up to a few hops, never equals THIS test file's own
+  // `Function`/`Object`/`Promise` — which, because this is an in-process unit test (no fork boundary),
+  // is the exact same object identity as guards.ts's own "embedding realm" `Function`/`Object`/
+  // `Promise`. Catches any future exposed value this file's author forgets to re-realm, without
+  // needing a new named test per vector.
+  it('sweep: no injected value\'s constructor chain (several hops) ever reaches this (embedding-realm) Function/Object/Promise', async () => {
+    const script = `
+      return {
+        agent, parallel, pipeline, phase, log, workflow,
+        budget, Math, Date, Intl, globalThis,
+        mathRandom: Math.random,
+        dateNow: Date.now,
+        intlDTF: Intl.DateTimeFormat,
+        err: new Error('probe'),
+        parallelPromise: parallel([]),
+      };
+    `;
+    const r = await evaluateScript(script, FAKE_API);
+    expect(r.kind).toBe('done');
+    const bundle = r.value as Record<string, unknown>;
+
+    const HOST_REALM_OBJECTS = new Set<unknown>([Function, Object, Promise, Array, Error]);
+
+    function walk(label: string, value: unknown, hopsLeft: number): void {
+      if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return;
+      if (typeof value === 'function') {
+        expect(HOST_REALM_OBJECTS.has(value), `${label} must not itself be a host-realm intrinsic`).toBe(false);
+      }
+      if (hopsLeft <= 0) return;
+      const ctor = (value as { constructor?: unknown }).constructor;
+      if (ctor !== undefined) {
+        expect(HOST_REALM_OBJECTS.has(ctor), `${label}.constructor must not reach a host-realm intrinsic`).toBe(false);
+        walk(`${label}.constructor`, ctor, hopsLeft - 1);
+      }
+    }
+
+    for (const [key, value] of Object.entries(bundle)) {
+      walk(key, value, 4);
+    }
+  });
 });

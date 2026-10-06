@@ -8,6 +8,16 @@
 // RED before the fix: `budget.limits.usd = 1; return budget.limits.usd;` returns `1` (the mutation
 // stuck) instead of the original limit.
 //
+// #157 (final blocker): the script body now runs as a STRICT-mode function (see guards.ts's own
+// `evaluateScript` doc) — an assignment to a non-writable property of a frozen object, which sloppy
+// mode silently swallowed (the original shape of this test: the mutation attempt is a no-op, so the
+// SUBSEQUENT `return` sees the real value), now THROWS a TypeError instead, before that `return` ever
+// runs. Both are valid "did not stick" outcomes for the contract this test defends (mutating the
+// read-only budget view has no effect on what the engine's own accounting uses) — strict mode is
+// simply a stronger one (the script is told immediately, not left to silently believe a mutation that
+// never happened). Each case below accepts either shape rather than asserting the no-longer-reachable
+// sloppy-mode one specifically.
+//
 // Mock policy (unit): pure evaluateScript calls, no I/O.
 import { describe, it, expect } from 'vitest';
 import { evaluateScript } from '../../src/sandbox/guards.js';
@@ -28,26 +38,36 @@ function fakeApi(): SandboxApi {
 }
 
 describe('#157 (DOC item): the script-visible budget object is actually read-only, matching its own doc comment', () => {
-  it('mutating budget.limits.usd does not stick — a later read sees the ORIGINAL value', async () => {
+  it('mutating budget.limits.usd does not stick — either a later read sees the ORIGINAL value, or strict mode rejects the write outright', async () => {
     const r = await evaluateScript('budget.limits.usd = 1; return budget.limits.usd;', fakeApi());
-    expect(r.kind).toBe('done');
-    expect(r.value).toBe(500);
+    if (r.kind === 'done') {
+      expect(r.value).toBe(500);
+    } else {
+      expect(r.error!.code).toBe('SCRIPT_ERROR');
+      expect(r.error!.message).toMatch(/read only|not extensible|Cannot assign/i);
+    }
   });
 
   it('replacing budget.limits wholesale does not stick either', async () => {
     const r = await evaluateScript("budget.limits = { usd: 1, tokens: 1 }; return budget.limits.usd;", fakeApi());
-    expect(r.kind).toBe('done');
-    expect(r.value).toBe(500);
+    if (r.kind === 'done') {
+      expect(r.value).toBe(500);
+    } else {
+      expect(r.error!.code).toBe('SCRIPT_ERROR');
+      expect(r.error!.message).toMatch(/read only|not extensible|Cannot assign/i);
+    }
   });
 
   it('replacing budget.spent with a fake accessor does not stick — the real live method survives', async () => {
     const r = await evaluateScript("budget.spent = () => 0; return typeof budget.spent();", fakeApi());
-    expect(r.kind).toBe('done');
-    // Either the assignment silently fails (frozen object) and the real spent() still runs (returns
-    // 'number'), or strict-mode code throws on the assignment — both are acceptable "did not stick"
-    // outcomes; what must NOT happen is the fake taking over silently in a way this test cannot see,
-    // which it can't by construction (frozen objects do not reach a successful reassignment at all).
-    expect(r.value).toBe('number');
+    if (r.kind === 'done') {
+      // The assignment silently failed (sloppy-mode shape) and the real spent() still ran.
+      expect(r.value).toBe('number');
+    } else {
+      // Strict mode rejected the assignment outright — the fake never had a chance to take over.
+      expect(r.error!.code).toBe('SCRIPT_ERROR');
+      expect(r.error!.message).toMatch(/read only|not extensible|Cannot assign/i);
+    }
   });
 
   it('a normal, non-mutating read of budget.limits.usd still works (the freeze does not break reads)', async () => {

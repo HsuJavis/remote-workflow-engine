@@ -144,7 +144,13 @@ describe('#157 B1: .constructor.constructor cannot reach the real child process 
     const r = await freshHost().run('it157-control', script, {}, null);
     const dump = resultOf(r) as { escaped: boolean; errorName?: string };
     expect(dump.escaped).toBe(false);
-    expect(dump.errorName).toBe('ReferenceError');
+    // #157 (final blocker): this used to be ReferenceError (the context-native Function successfully
+    // generated the code and ran it, but `process` is simply absent from the context) — the context
+    // is now created with `codeGeneration: { strings: false } }`, which denies calling `Function` with
+    // a string body AT ALL, earlier in the pipeline than `process` ever gets referenced. The control
+    // case's own point (no injected object needed to stay isolated) still holds; the specific error
+    // class is a stronger-by-construction side effect of that unrelated, additional hardening.
+    expect(dump.errorName).toBe('EvalError');
   });
 
   it('a normal script (no escape attempt) still runs and returns its value — the fix does not break ordinary scripts', async () => {
@@ -181,5 +187,202 @@ describe('#157 B1: .constructor.constructor cannot reach the real child process 
     `;
     const r = await freshHost().run('it157-parallel-promise-typeof', script, {}, null);
     expect((resultOf(r) as { kind: string }).kind).not.toBe('object');
+  });
+});
+
+// Issue #157 — final blocker (Gate 8 v3 re-review): every value injected directly into `sandbox`
+// (agent/args/budget/parallel/Math, the file above) was re-realmed, but the vm context's own GLOBAL
+// OBJECT — `const sandbox = {}` in guards.ts, created in the EMBEDDING realm before being handed to
+// `vm.createContext()` — kept the embedding realm's own `Object.prototype` on its `[[Prototype]]`
+// slot. `vm.createContext()` does not rewrite an externally-created object's existing prototype link,
+// so the script's own top-level `this` (and `globalThis`, the same object) resolved `.constructor` to
+// the embedding (sandbox child process) `Object`, whose own `.constructor` is the embedding `Function`
+// — closing every injected PROPERTY's own escape route left the GLOBAL OBJECT ITSELF open. Fixed by
+// (1) compiling the script body as a strict-mode function (bare-call `this` is `undefined`, not
+// coerced to the global object) and (2) reparenting `sandbox`'s own `[[Prototype]]` to the context's
+// OWN native `Object.prototype` (fetched via `vm.runInContext`) so even `globalThis.constructor` now
+// resolves inside the context realm, where `codeGeneration: { strings: false }` additionally blocks
+// calling the (context-native, otherwise harmless) `Function`/`eval` with a string body at all.
+//
+// RED before the fix: every case in this block resolves with a live host-process/Function handle
+// instead of throwing/being blocked.
+describe('#157 (final blocker): the script\'s own top-level `this`/`globalThis` no longer reaches the embedding realm', () => {
+  it('bare `this.constructor.constructor("return process")()` does not yield a live process object', async () => {
+    const script = `
+      try {
+        const F = this.constructor.constructor;
+        const p = F('return process')();
+        return { escaped: true, hasPid: typeof p === 'object' && p !== null && typeof p.pid === 'number' };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-bare-this', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean };
+    expect(dump.escaped).toBe(false);
+  });
+
+  it('eval("this.constructor.constructor(\'return process\')()") does not yield a live process object', async () => {
+    const script = `
+      try {
+        const p = eval("this.constructor.constructor('return process')()");
+        return { escaped: true };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-eval-string', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean; errorName?: string };
+    expect(dump.escaped).toBe(false);
+    // codeGeneration:{strings:false} on the context must be WHY this throws, not an incidental
+    // ReferenceError on `process` inside a context-native eval — EvalError is the specific signal.
+    expect(dump.errorName).toBe('EvalError');
+  });
+
+  it('globalThis.constructor.constructor("return process")() does not yield a live process object', async () => {
+    const script = `
+      try {
+        const F = globalThis.constructor.constructor;
+        const p = F('return process')();
+        return { escaped: true };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-globalthis-ctor', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean };
+    expect(dump.escaped).toBe(false);
+  });
+
+  it('globalThis.constructor.constructor is a FUNCTION (the context\'s own, harmless Function) but calling it with a string body throws', async () => {
+    // Distinguishes "globalThis's prototype chain is now context-native" (expected, harmless) from
+    // "globalThis's prototype chain still reaches the host" (the bug) — the context's own Function
+    // exists and is reachable, it is just inert against string code generation.
+    const script = `
+      const F = globalThis.constructor.constructor;
+      return { isFunction: typeof F === 'function' };
+    `;
+    const r = await freshHost().run('it157-globalthis-ctor-identity', script, {}, null);
+    expect((resultOf(r) as { isFunction: boolean }).isFunction).toBe(true);
+  });
+
+  for (const name of ['phase', 'workflow', 'Date', 'Intl']) {
+    it(`${name}.constructor.constructor("return process")() does not yield a live process object`, async () => {
+      const script = `
+        try {
+          const proc = ${name}.constructor.constructor('return process')();
+          return { escaped: true };
+        } catch (e) {
+          return { escaped: false, errorName: e.name };
+        }
+      `;
+      const r = await freshHost().run(`it157-${name}-process`, script, {}, null);
+      const dump = resultOf(r) as { escaped: boolean };
+      expect(dump.escaped).toBe(false);
+    });
+  }
+
+  it('import() of a core module is refused, not silently granted', async () => {
+    const script = `
+      try {
+        const m = await import('node:fs');
+        return { escaped: true, hasModule: !!m };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-dynamic-import', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean };
+    expect(dump.escaped).toBe(false);
+  });
+
+  it('Error.prepareStackTrace cannot be reassigned by script (the classic CallSite/getFunction() stack-walking escape)', async () => {
+    const script = `
+      try {
+        Error.prepareStackTrace = () => 'hacked';
+        return { blocked: false };
+      } catch (e) {
+        return { blocked: true, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-prepare-stack-trace', script, {}, null);
+    const dump = resultOf(r) as { blocked: boolean; errorName?: string };
+    expect(dump.blocked).toBe(true);
+    expect(dump.errorName).toBe('TypeError');
+  });
+
+  it('Error.captureStackTrace still works normally (not removed) but exposes no live function handle', async () => {
+    const script = `
+      try {
+        const o = {};
+        Error.captureStackTrace(o);
+        return { ok: typeof o.stack === 'string', leaked: typeof o.stack === 'object' };
+      } catch (e) {
+        return { ok: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-capture-stack-trace', script, {}, null);
+    const dump = resultOf(r) as { ok: boolean; leaked?: boolean };
+    expect(dump.ok).toBe(true);
+    expect(dump.leaked).toBe(false);
+  });
+
+  it('arguments.callee.caller throws (strict mode) instead of handing back a live caller function', async () => {
+    const script = `
+      function probe() {
+        return arguments.callee.caller;
+      }
+      try {
+        const c = probe();
+        return { escaped: true, type: typeof c };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-arguments-callee', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean; errorName?: string };
+    expect(dump.escaped).toBe(false);
+    expect(dump.errorName).toBe('TypeError');
+  });
+
+  it('a Proxy trap wrapped around an injected object (agent) gains no new capability', async () => {
+    const script = `
+      try {
+        const p = new Proxy(agent, {
+          get(target, prop) {
+            return Reflect.get(target, prop);
+          },
+        });
+        const F = p.constructor.constructor;
+        const proc = F('return process')();
+        return { escaped: true };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-proxy-trap', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean };
+    expect(dump.escaped).toBe(false);
+  });
+
+  it('Symbol.for(...).constructor.constructor("return process")() does not yield a live process object', async () => {
+    const script = `
+      try {
+        const s = Symbol.for('rwe-157-probe');
+        const F = s.constructor.constructor;
+        const proc = F('return process')();
+        return { escaped: true };
+      } catch (e) {
+        return { escaped: false, errorName: e.name };
+      }
+    `;
+    const r = await freshHost().run('it157-symbol-for', script, {}, null);
+    const dump = resultOf(r) as { escaped: boolean };
+    expect(dump.escaped).toBe(false);
+  });
+
+  it('a normal script (no escape attempt) still runs to completion after the global-object fix', async () => {
+    const r = await freshHost().run('it157-final-sanity', 'return 1 + 1;', {}, null);
+    expect(resultOf(r)).toBe(2);
   });
 });

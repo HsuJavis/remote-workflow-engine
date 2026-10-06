@@ -6,7 +6,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import type { Tokens } from '../types.js';
 
 const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.ts');
@@ -14,6 +14,28 @@ const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.t
 // #157 B1 layer 2: the sandbox child's own env — empty, not the parent's. See the `fork()` call
 // site's own doc for why this is both the strictest posture and sufficient for this child's needs.
 const SANDBOX_CHILD_ENV: NodeJS.ProcessEnv = {};
+
+// #157 layer 3 (OS/Node-level containment, defense in depth under layers 1+2): even if a future
+// regression reopens the in-realm escape (layer 1) AND somehow the child carried secrets anyway
+// (layer 2), Node's permission model (stable since Node 22.19) still denies the child fs/child-
+// process/worker/addon access outright. `--allow-fs-read` is scoped to exactly the engine's OWN
+// source directory (`src/`, resolved to its REAL path — a production install may be reached through
+// a symlink swapped atomically by self-update, and the permission model matches the literal path the
+// loader resolves to, not the symlink it was entered through) — the only reads child-entry.ts/
+// guards.ts's own module graph needs (confirmed empirically: no `node_modules` read ever occurs —
+// every import across that module graph is either a relative `.ts` file or a `node:` builtin).
+// Deliberately NOT granted: --allow-fs-write, --allow-child-process, --allow-worker, --allow-addons,
+// --allow-wasi — the sandbox child has no legitimate need for any of them (agent()/workflow() calls
+// round-trip over IPC to this trusted host, which dispatches its OWN, separately-confined child for
+// agent work; the sandbox child itself never spawns anything).
+const SANDBOX_SRC_DIR = realpathSync(dirname(dirname(CHILD_ENTRY)));
+
+export const SANDBOX_CHILD_EXEC_ARGV: readonly string[] = [
+  '--experimental-transform-types',
+  '--disable-warning=ExperimentalWarning',
+  '--permission',
+  `--allow-fs-read=${SANDBOX_SRC_DIR}/*`,
+];
 
 export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
@@ -129,7 +151,7 @@ export class SandboxHost {
       mkdirSync(this._config.workspaceRoot, { recursive: true });
       const child = fork(CHILD_ENTRY, [], {
         cwd: this._config.workspaceRoot,
-        execArgv: ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
+        execArgv: [...SANDBOX_CHILD_EXEC_ARGV],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         // #157 B1 layer 2 (defense in depth): `fork()` defaults to inheriting the FULL parent env —
         // this engine process's own (provider API keys, per main.ts's documented "read straight from

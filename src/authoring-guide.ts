@@ -823,11 +823,41 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // exposes that the first pass missed, each re-opening the same escape. `node:vm` itself
         // documents that it is not a security boundary (any value or function this engine builds and
         // hands in is a NEW surface to re-check, every time); this guide should not promise otherwise.
-        '\n\nThe actual security containment is the per-run child PROCESS your script runs in, forked ' +
-        'with an empty environment (no inherited secrets, store, or network handle) — `node:vm` is ' +
-        'hygiene on top of that, closing specific known escapes (`.constructor.constructor`, a ' +
-        'guard\'s own prototype chain, …) as they are found, not a boundary this engine claims is ' +
-        'complete. Treat anything a script can reach as untrusted until it leaves the forked child.\n\n' +
+        //
+        // #157 (final blocker, Gate 8 v3 re-review): the script's own top-level `this`/`globalThis`
+        // turned out to be the one surface the per-property fixes above never reached (`vm.createContext`
+        // never re-realms the global object it is handed). This paragraph now names all THREE
+        // independent layers this engine actually runs, in the order a defeat of one falls back to the
+        // next — see guards.ts's `evaluateScript` and host.ts's `SandboxHost.run` for the real code.
+        '\n\nSecurity containment here is THREE independent layers, not one — defeating any single one ' +
+        'still leaves your script stopped by the next:\n\n' +
+        '1. **In-realm hardening** (`node:vm`, hygiene, not a boundary by itself): every value exposed ' +
+        'into your script — `agent`/`parallel`/`pipeline`/`phase`/`log`/`workflow`, the `Math.random`/' +
+        '`Intl.DateTimeFormat`/`Date.now` guards, the budget accessors — is built NATIVE to your ' +
+        "script's own vm context (not merely given its `[[Prototype]]` severed after the fact), and so " +
+        "is the context's global object itself (`globalThis`/top-level `this`), reparented to the " +
+        "context's own `Object.prototype` instead of keeping the engine's. The context additionally " +
+        'disables code generation from strings (`codeGeneration: { strings: false }`), so even the ' +
+        "context's own (otherwise harmless) `Function`/`eval` cannot build new code from a string, and " +
+        'your script body is compiled strict-mode and invoked with no receiver, so a bare top-level ' +
+        '`this` is `undefined`, not the global object — closing `this.constructor...`, `eval(...)`, ' +
+        '`globalThis.constructor...`, and (as a side effect of strict mode) `arguments.callee`/`.caller` ' +
+        'and `Error.prepareStackTrace` reassignment (a classic `vm`-sandbox stack-walking escape, ' +
+        'locked to always-`undefined` on this call\'s own `Error`) all at once. `node:vm` itself still ' +
+        'documents that it does not provide a complete boundary, so this layer is treated as hygiene, ' +
+        'not as the reason the next two layers are "just in case".\n\n' +
+        '2. **Empty child environment**: your script runs in a real, separate OS process (layer 3 ' +
+        "below), forked with NO inherited environment at all — no provider API keys, no " +
+        '`RWE_SECRET_*`, nothing from the engine\'s own process.env. Even if layer 1 were ever defeated ' +
+        'by an escape nobody has found yet, the process it reaches carries no secrets to begin with.\n\n' +
+        "3. **OS-level containment of that same process**: it is launched under Node's own permission " +
+        'model (`--permission`), with filesystem READ permitted only for the engine\'s own source ' +
+        'directory (nothing else — not your workspace, not the rest of the host) and NO permission at ' +
+        'all to write files, spawn a child process, start a worker thread, or load a native addon. So ' +
+        'even a live `process` handle reached through a future layer-1 regression cannot read an ' +
+        'arbitrary host file or run a shell command — both fail closed with `ERR_ACCESS_DENIED`.\n\n' +
+        'Treat anything a script can reach as untrusted until it leaves the forked child regardless — ' +
+        'these layers are independent precisely so that a gap found in one is still caught by another.\n\n' +
         "A script's own top-level `return` value (and an agent()/workflow() call's resolved value, " +
         'which crosses the same boundary) must be JSON-serializable — no circular references, no ' +
         "BigInt — and under 10MB serialized; either violation is refused "

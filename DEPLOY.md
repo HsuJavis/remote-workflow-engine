@@ -407,8 +407,13 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 
 ## 1a. 前置條件
-- **Node.js 22.6 以上**（沙箱子行程 `src/sandbox/child-entry.ts` 與啟動用的 `tsx` 都依賴 Node 22
-  原生 `--experimental-transform-types` type-stripping）。
+- **Node.js 22.19 以上**（issue #157 最終修復起的新下限——沙箱子行程 `src/sandbox/child-entry.ts`
+  與啟動用的 `tsx` 依賴 Node 22 原生 `--experimental-transform-types` type-stripping,本來 22.6 就夠;
+  但 `src/sandbox/host.ts` 的 `SandboxHost.run()` 現在一律用 `--permission` 啟動沙箱子行程（見下方
+  「沙箱子行程的三層防護」）,這個旗標要到 22.19 才穩定——舊版 Node 上 `--permission` 仍是實驗旗標甚至
+  不存在,子行程會直接啟動失敗,每次 `run_start` 都會以 `ABORTED` 收場）。`src` 目錄本身（含
+  `node_modules`,實際未被讀取但原規劃保留）在啟動時用 `realpathSync` 解析過一次,所以用 symlink
+  做自我更新/原子切版的部署（見「自我更新」一節）沒有額外限制——子行程看到的一律是當時指到的真實路徑。
 - npm（隨 Node 附帶）。
 - **`bubblewrap`（`bwrap`）與 `socat`**：真正的 Claude CLI sandbox 硬性需要這兩個執行檔，缺一個
   Bash 圍籠就直接量成 `unconfined`（見 §1c(e)，遠端送出的 run 會被拒絕）——`sudo apt install
@@ -1276,6 +1281,35 @@ server-memory` 就是現成例子：預設把資料寫進自己 npx package 目�
 才看到語焉不詳的啟動失敗。本身不留狀態的 server（每個請求/回應處理完就沒事了，多數 server 是這種
 形狀）兩個占位符都不需要；拿不準的話，優先選不留狀態的 server，真的要留狀態就把它指到
 `${run:dir}`。
+
+**(i) 工作流程腳本沙箱（`src/sandbox/`）的三層防護（issue #157 最終修復）**：上面 (a)-(h) 全部是
+`gateway:"sdk"` 路徑**被 dispatch 的 agent** 受的限制；這裡講的是完全不同的另一個信任邊界——**workflow
+腳本本身**（`workflow_register` 的 `script` 欄位，`agent()`/`parallel()`/`workflow()` 呼叫之外的那段
+使用者/呼叫端撰寫的 JS）跑在哪裡。每次 `run_start`/`run_resume`/巢狀 `workflow()` 都會由
+`SandboxHost.run()`（`src/sandbox/host.ts`）`fork()` 出一個全新、獨立的 OS 子行程執行該腳本，三層
+防護彼此獨立，攻破其中一層仍會被下一層擋下：
+
+1. **腳本本身跑在 `node:vm` context 裡**（`src/sandbox/guards.ts` 的 `evaluateScript`）：所有注入
+   腳本的物件/函式都是在這個 context 的 realm 裡原生建出來的（不是在引擎主行程建好再單純砍掉
+   `[[Prototype]]`），連 context 的 global 物件本身（`globalThis`/頂層 `this`）都被重新接上 context
+   自己的 `Object.prototype`；context 另外關掉「從字串產生程式碼」（`codeGeneration:{strings:false}`）
+   ，腳本本身以 strict mode 編譯、以空接收者呼叫（頂層 `this === undefined`）。這層仍只是「衛生習慣」
+   ，`node:vm` 官方文件本身就明講它不是一個完整的安全邊界——下面兩層才是真正兜底的。
+2. **子行程啟動時環境變數是空的**：`fork()` 明確傳 `env:{}`，不繼承引擎自己的 `process.env`（供應商
+   金鑰、`RWE_SECRET_*` 全部不在裡面）——就算第 1 層未來被繞過，拿到的那個 `process` 本身也不帶任何
+   機密。
+3. **子行程本身在 Node 的 permission model（`--permission`）下啟動**：只開
+   `--allow-fs-read=<引擎原始碼 src/ 目錄的 realpath>/*`（子行程自己載入程式碼唯一需要讀的範圍，
+   `node_modules` 經驗證完全不需要），不給 `--allow-fs-write`/`--allow-child-process`/
+   `--allow-worker`/`--allow-addons`/`--allow-wasi` 任何一個——所以就算第 1 層被繞過、子行程真的拿到
+   一個 `process`，`fs.readFileSync`/`child_process.execSync` 這類操作仍會在 Node 自己的 permission
+   層被擋下（`ERR_ACCESS_DENIED`），讀不到任意主機檔案，也起不了任意指令。**這一層需要 Node.js
+   22.19 以上**（見 §1a 前置條件——比引擎其餘部分的 22.6 下限更高，舊版 Node 上 `--permission` 不穩定
+   甚至不存在，子行程會直接啟動失敗）。
+
+三層獨立疊加對子行程啟動時間的影響：量測約 +6%（中位數 fork→完成一個空白腳本，約 135ms→144ms），
+可忽略不計。三層防護互不依賴：安全稽核/滲透測試應三層分開驗證，不能以「第 1 層守住了」代表另外
+兩層也守住——這正是三層防護存在的理由。
 
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 
