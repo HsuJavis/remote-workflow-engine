@@ -470,13 +470,21 @@ function makeBudget(budget: Budget, CtxObject: ObjectConstructor, reRealm: (valu
   const remainingFn = () => budget.remaining();
   Object.setPrototypeOf(remainingFn, null);
   out.remaining = remainingFn;
-  if ('limits' in budget) out.limits = reRealm(wide.limits);
+  if ('limits' in budget) {
+    out.limits = reRealm(wide.limits);
+    // #157 (DOC item): SandboxApi.budget's own doc comment promises "Read-only budget view" — the
+    // pre-fix object was a plain mutable object, so `budget.limits.usd = 1` stuck within the
+    // script's own subsequent reads (a contract-integrity bug, not a budget-bypass: the engine's
+    // real enforcement never reads this object). `limits` is the one nested object in this shape
+    // that needs its OWN freeze — `out` itself is frozen below, which does not reach inside it.
+    if (out.limits !== null && typeof out.limits === 'object') Object.freeze(out.limits);
+  }
   if (typeof wide.tokens === 'function') {
     const tokensFn = () => reRealm(wide.tokens!());
     Object.setPrototypeOf(tokensFn, null);
     out.tokens = tokensFn;
   }
-  return out as unknown as Budget;
+  return Object.freeze(out) as unknown as Budget;
 }
 
 /**
