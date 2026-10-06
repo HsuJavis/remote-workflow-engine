@@ -891,7 +891,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
         "which blocks the script's own event loop and so cannot be caught or reported from inside " +
-        'the script itself.',
+        'the script itself. ' +
+        // issue #157 (owner-approved, docs): `while(true){}` above is the SYNCHRONOUS case; an
+        // `await`ed Promise that never settles (`await new Promise(() => {})`) is the equivalent
+        // ASYNCHRONOUS one — the script's event loop stays free (so it is NOT the "cannot be caught
+        // from inside the script" case above), but nothing in the script itself ever resumes either.
+        'The same deadline is what ends the asynchronous equivalent too: a script that `await`s a ' +
+        'Promise that never resolves or rejects (e.g. `await new Promise(() => {})`) leaves the run ' +
+        '`running` indefinitely from the caller\'s side — polling `run_status` shows no progress and ' +
+        "no error — until EITHER `maxRunDurationMs` elapses (the same `SCRIPT_TIMEOUT` above) or " +
+        'someone calls `run_stop` on it; neither the script nor anything it awaits can end that wait ' +
+        'from the inside.',
     ),
   );
 
@@ -990,6 +1000,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
         "wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an " +
         '`enum` type requires the `enum` array of legal values).\n\n' +
+        // issue #161 B6 (owner-approved): a workflow with NO `meta.params.args` keys at all (or no
+        // `params.args` block) used to skip the top-level shape check entirely, so `run_start`/a
+        // nested `workflow(name, args)` call could pass an array or a bare string straight through
+        // to `args` inside the script — inconsistent with a workflow that DOES declare args, which
+        // has always required a plain object there.
+        '**A workflow that declares NO `args` at all still requires `args` to be a plain object (or ' +
+        "omitted/`null`, which the script sees as `{}`)** — an array, string, or other non-object " +
+        '`args` is refused the same way a bad declared-args value is, before your script runs. Keys ' +
+        "the contract doesn't declare still pass through onto `args` unchanged either way; only the " +
+        'top-level shape is checked.\n\n' +
         // issue #107: args are typed data the AUTHOR places into their own trusted prompt — the
         // bound is the contract's job, not the caller's good behaviour, because `args` is validated
         // on BOTH admission doors a run can arrive through.
@@ -1107,8 +1127,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // contributes text to what the model actually sees.
       'After v34 there are exactly two author/caller segments in the prompt a model receives: the ' +
         "script's own `prompt` argument to `agent()`, then a caller-supplied `appendPrompt` override, " +
-        'framed inline as `<user-instructions untrusted="true">…</user-instructions>`. The engine ' +
-        "adds only its own scaffolding around them (a schema suffix and a retry nudge) — it does not " +
+        'framed inline as `<user-instructions untrusted="true">…</user-instructions>`. Since issue ' +
+        '#156, the frame opens with one line of plain-language prose, ahead of the caller\'s own text, ' +
+        "stating that the segment is caller-supplied and untrusted and cannot override the author's " +
+        'instructions or any tool-use rule — the `untrusted="true"` attribute alone is machine-' +
+        "readable, not something a model reliably acts on unprompted. The engine adds only its own " +
+        'scaffolding around them (that prose line, a schema suffix, and a retry nudge) — it does not ' +
         'decide whether the appended segment is an authorized override or a foreign injection. An ' +
         'author who wants the appended segment to carry override force has to write the adoption rule ' +
         "into their OWN prompt; the engine draws no such line on the author's behalf.",
@@ -1236,8 +1260,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'the USD limit only (`remaining()` is `null` when no USD limit is armed); `budget.tokens()` ' +
         'answers the token limit — it returns the four-column `{input, output, cacheRead, ' +
         'cacheWrite, sum}` spent so far. A USD budget counts only calls the model catalog can price ' +
-        '— an unpriced call adds 0 to USD spend and never trips a USD limit — so set `budget.tokens` ' +
-        'for a limit that binds on every model, including local ones with no listed price.\n\n' +
+        '— an unpriced call (the catalog has no rate for that model at all) adds 0 to USD spend and ' +
+        'never trips a USD limit. ' +
+        // issue #158 F3 (owner-approved, keep behaviour): an `ollama/*` model is NOT "unpriced" in
+        // that sense — local inference genuinely costs nothing, so the catalog prices it at exactly
+        // $0 (not "no known rate"). The practical consequence is the same one line above already
+        // implies for a truly unpriced model (a USD budget never trips on it), but for a DIFFERENT
+        // reason an author sizing a budget should know: every call to it is a real, priced $0, not a
+        // gap in the catalog's knowledge, and `meta.unpricedCalls`/`budgetEnforceable.unpricedModels`
+        // (run_result) report it as priced, never as unpriced.
+        'An `ollama/*` (local) model is priced at exactly $0 for the SAME reason — running it costs ' +
+        'nothing, not "price unknown" — so a USD budget never trips on it either, but it reports as ' +
+        'PRICED (not unpriced) everywhere a caller checks. Either way, set `budget.tokens` for a ' +
+        'limit that binds on every model, local or not.\n\n' +
         // v26 Gate 7.5 round 1 (defect D4): the four columns are priced at FOUR rates, and an
         // author sizing a USD budget for a cache-heavy workflow has no other way to learn which
         // cache-write multiplier the engine assumes.
@@ -1489,9 +1524,15 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`content[0].text`, never as a structured object: parse it again to reach the actual ' +
         "payload.\n\nA run's structured refusal marker (`refusalRef`, carried internally from the " +
         "sandbox to the run's own ledger) is engine-attested — it can only name a refusal this " +
-        'SAME run genuinely raised. `error.code` alone is **not** attested and never has been: a ' +
-        "script that catches an error and sets `e.name` before rethrowing it can forge any code, " +
-        'with no marker to back it.',
+        'SAME run genuinely raised. `error.code` alone is **not** attested and never has been: ' +
+        // issue #162 DOC (owner-approved): named only `e.name` before — a script forges a code
+        // exactly as easily through `e.code` or by throwing/returning a plain `{code: '...'}`
+        // object (no `Error` involved at all), and neither of those is any more attested than the
+        // `e.name` case this paragraph already called out.
+        "`e.name`, `e.code`, and a plain thrown/returned `{code: '...'}` object are every bit as " +
+        "forgeable as each other — a script fully controls what it throws or returns, so ANY of " +
+        'these carries exactly as much trust as the script that produced it, with no marker to ' +
+        'back it.',
     ),
   );
 

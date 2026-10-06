@@ -288,9 +288,33 @@ describe('validateUserOverrides() — the per-agent rejection table (v24, DES-14
     }
   });
 
-  it('[LOW-1] a non-record `args` against a contract declaring NO args at all is harmless (ok:true — nothing to check it against)', () => {
+  // issue #161 B6 (owner-approved): a contract declaring NO args at all used to skip the top-level
+  // shape check entirely, so run_start({args: [1]}) or run_start({args: "hello"}) sailed through and
+  // the script received an array/string where it expected (at most) a plain object — inconsistent
+  // with a contract that DOES declare args, which has always refused a non-record `args` with this
+  // same coded error. Undeclared KEYS inside an object still pass through unchanged (#107/#161 B1 —
+  // kept as-is); only the top-level shape (object vs array/string/number) is now enforced either way.
+  it('[B6] a non-record `args` against a contract declaring NO args at all is refused PARAM_OUT_OF_RANGE, same as a declared contract', () => {
     const noArgsContract: ParamContract = { agents: {}, args: {} };
-    expect(validateDeclaredArgs(noArgsContract, 'just-a-string')).toEqual({ ok: true });
+    for (const bad of ['just-a-string', 42, ['a', 'b'], true, [1]]) {
+      const r = validateDeclaredArgs(noArgsContract, bad);
+      expect(r.ok, `args=${JSON.stringify(bad)}`).toBe(false);
+      if (!r.ok) {
+        expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+        expect(r.detail['param']).toBe('args');
+      }
+    }
+  });
+
+  it('[B6] a plain-object `args` with only undeclared keys against a NO-args contract still passes through unchanged', () => {
+    const noArgsContract: ParamContract = { agents: {}, args: {} };
+    expect(validateDeclaredArgs(noArgsContract, { zzz: { deep: [1, { x: 'y' }] } })).toEqual({ ok: true });
+  });
+
+  it('[B6] undefined/null `args` against a NO-args contract still passes (materialized to {} as before)', () => {
+    const noArgsContract: ParamContract = { agents: {}, args: {} };
+    expect(validateDeclaredArgs(noArgsContract, undefined)).toEqual({ ok: true });
+    expect(validateDeclaredArgs(noArgsContract, null)).toEqual({ ok: true });
   });
 
   it('[LOW-1] undefined/null `args` against a declared contract still passes (materialized to {} as before)', () => {

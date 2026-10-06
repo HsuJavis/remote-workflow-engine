@@ -387,7 +387,12 @@ export class AgentTranscriptSink {
     req: { agentId: string; label?: string },
     result: GatewayResult,
     ts: string,
-    callOpts: { final?: boolean } = {},
+    // issue #162 (owner-approved): `schemaExhausted`/`reaskCount` are set ONLY by the schema-retry
+    // loop's own final, nonconforming attempt (`_callAgent` below) — never by a caller outside this
+    // file. Both ride onto the terminal `done` record AND the usage event's `data` (mirroring every
+    // other field this function already keeps in sync between the two), so `deriveAgentRecords`
+    // reconstructs the identical record after a restart with no snapshot to fall back on.
+    callOpts: { final?: boolean; schemaExhausted?: true; reaskCount?: number } = {},
   ): Promise<void> {
     const final = callOpts.final !== false;
     const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
@@ -503,6 +508,10 @@ export class AgentTranscriptSink {
         // The success itself is never in question; only the combined FIGURE is an estimate for the
         // part some attempt contributed.
         ...(totalPartial ? { partial: true as const } : {}),
+        // issue #162 (owner-approved): the schema-exhausted outcome rides the record exactly like
+        // `partial` above — set only by `_callAgent`'s own final, nonconforming attempt.
+        ...(callOpts.schemaExhausted ? { schemaExhausted: true as const } : {}),
+        ...(callOpts.reaskCount !== undefined ? { reaskCount: callOpts.reaskCount } : {}),
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
       // present — only ClaudeAgentSdkGatewayClient produces these today) BEFORE the terminal usage
@@ -538,6 +547,11 @@ export class AgentTranscriptSink {
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
           ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
           ...(totalUnmapped.length > 0 ? { unmapped: totalUnmapped } : {}),
+          // issue #162: mirrors the record's own fields above — the ONE usage event this agentId
+          // ever emits must carry them for `deriveAgentRecords` to reconstruct a schema-exhausted
+          // record identically after a restart with no snapshot.
+          ...(callOpts.schemaExhausted ? { schemaExhausted: true as const } : {}),
+          ...(callOpts.reaskCount !== undefined ? { reaskCount: callOpts.reaskCount } : {}),
         },
       });
     } else {
@@ -949,12 +963,23 @@ export class AgentExecutor implements AgentSpawner {
       const conforms = parsed !== undefined && validate(parsed);
       const isLastAttempt = attempt === attempts - 1;
       // issue #141: `final` is the attempt that ENDS the loop — conforms, or the retry budget is
-      // exhausted (schema-exhausted outcome, unchanged: still resolves `null`, record still `done`).
+      // exhausted (schema-exhausted outcome: still resolves `null`, record still `done`).
       // Every earlier nonconforming attempt accumulates onto the SAME record instead of replacing it
       // (`capture()`'s own doc) and stays `running`, never observably `done`.
+      // issue #162 (owner-approved): the exhausted outcome — nonconforming AND out of attempts — now
+      // also stamps `schemaExhausted`/`reaskCount` onto that same terminal record, so a caller
+      // filtering `run_status`/`run_result` for failures sees this one instead of a silent `done`
+      // that quietly resolved `null`. `reaskCount` mirrors `HarnessDescriptor.reaskCount`'s own
+      // convention (`attempt` itself, only when > 0 — absent, never `0`, on a first-attempt outcome,
+      // which `schemaExhausted` can never be: SCHEMA_RETRY_ATTEMPTS is always > 1).
+      const schemaExhausted = !conforms && isLastAttempt;
       await this._sink.capture(
         req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow(),
-        { final: conforms || isLastAttempt },
+        {
+          final: conforms || isLastAttempt,
+          ...(schemaExhausted ? { schemaExhausted: true as const } : {}),
+          ...(schemaExhausted && attempt > 0 ? { reaskCount: attempt } : {}),
+        },
       );
       if (conforms) return { kind: 'object', value: parsed as object };
       if (isLastAttempt) return { kind: 'null' };
