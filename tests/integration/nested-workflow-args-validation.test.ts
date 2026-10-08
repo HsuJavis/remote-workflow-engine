@@ -125,6 +125,39 @@ describe('issue #107: nested workflow() applies the CHILD contract\'s args valid
     expect(await completedValue(mgr, runId)).toBe('hi');
   });
 
+  // Issue #161 B2 (2026-10-07 reverify — the exact repro, run end-to-end through a REAL forked
+  // sandbox child on both hops: parent script -> host -> nested child): `workflow(name, {n:
+  // undefined})` must leave `n` as an explicit `undefined` in the CHILD's own `args` — the
+  // declared default must NOT silently apply, and the key must not simply vanish. Before the fix,
+  // Node's IPC 'json' serialization alone dropped the `n` key on the parent-child->host hop
+  // (`JSON.stringify({n: undefined}) === '{}'`), so the host saw `args: {}` — indistinguishable
+  // from the caller never having mentioned `n` at all — and `materializeArgDefaults`'s OLD
+  // `=== undefined` check would have filled the default even if the key HAD survived.
+  it('issue #161 B2: an explicit `undefined` for a declared args key WINS — the default is NOT applied, the key is NOT silently dropped', async () => {
+    await registerPublished(
+      catalog,
+      'c161-explicit-undefined',
+      `export const meta = { params: { args: { n: { type: 'number', default: 3 } } } };\n` +
+        `return { receivedN: args.n === undefined ? 'UNDEFINED' : args.n, hasOwnN: Object.hasOwn(args, 'n') };`,
+    );
+    const runId = await startScript(mgr, `return await workflow('c161-explicit-undefined', { n: undefined });`);
+    expect(await completedValue(mgr, runId)).toEqual({ receivedN: 'UNDEFINED', hasOwnN: true });
+  });
+
+  // Companion case: a key the caller genuinely never mentions is UNAFFECTED by the #161 B2 fix —
+  // still filled from its declared default, same as the existing 'a declared default is
+  // materialized' case above, just phrased as a direct contrast with the explicit-undefined case.
+  it("issue #161 B2 companion: a key the caller TRULY never mentions is still filled from its default (unaffected by the fix)", async () => {
+    await registerPublished(
+      catalog,
+      'c161-truly-absent',
+      `export const meta = { params: { args: { n: { type: 'number', default: 3 } } } };\n` +
+        `return { receivedN: args.n, hasOwnN: Object.hasOwn(args, 'n') };`,
+    );
+    const runId = await startScript(mgr, `return await workflow('c161-truly-absent', {});`);
+    expect(await completedValue(mgr, runId)).toEqual({ receivedN: 3, hasOwnN: true });
+  });
+
   it('valid args still pass through to the child unchanged', async () => {
     await registerPublished(catalog, 'c107-valid', `export const meta = { params: { args: { x: { type: 'number' } } } };\nreturn args.x * 2;`);
     const runId = await startScript(mgr, `return await workflow('c107-valid', { x: 21 });`);

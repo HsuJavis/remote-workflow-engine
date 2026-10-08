@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync, realpathSync } from 'node:fs';
 import type { Tokens } from '../types.js';
+// Issue #161 B2: marks an explicit own-key `undefined` in `args` so it survives THIS 'start'
+// message's own IPC 'json' serialization into the child (the same hop child-entry.ts's own
+// ipc-sentinel.ts note describes for the reverse direction) — undone by child-entry.ts's `main()`
+// before `args` is exposed to the script.
+import { encodeExplicitUndefined } from './ipc-sentinel.js';
 
 const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.ts');
 
@@ -271,7 +276,11 @@ export class SandboxHost {
             // calls agent() (a nested `workflow()` reading `budget.spent()`/`tokens()` cold) would
             // otherwise never receive ANY accounting, since today the only other carrier is the
             // per-call `agentResult` piggyback below.
-            child.send({ t: 'start', runId, script, args, budget: wireBudget, spent: this._config.onBudgetSnapshot?.() });
+            // Issue #161 B2: re-encode immediately before THIS send — `args` may already carry a
+            // true own-key `undefined` (e.g. decoded on the host side from a nested workflow()
+            // request), which this 'start' message's own JSON serialization would otherwise drop
+            // silently, same as any other hop on this channel.
+            child.send({ t: 'start', runId, script, args: encodeExplicitUndefined(args), budget: wireBudget, spent: this._config.onBudgetSnapshot?.() });
             break;
           case 'agent': {
             const handler = this._config.onAgentRequest ?? (() => DEFAULT_AGENT_RESPONSE);

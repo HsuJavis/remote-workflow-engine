@@ -38,6 +38,7 @@ import { SystemClock } from './clock.js';
 import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost } from './sandbox/host.js';
+import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
 import { redact, hasSecretMarker } from './secret-resolver.js';
@@ -2217,12 +2218,19 @@ export class RunManager {
   private async _handleWorkflowRequest(
     runId: string,
     ref: unknown,
-    args: unknown,
+    rawArgs: unknown,
     parentPathKey: string,
     parentCallSeq: number,
     depth: number,
     ancestors: Set<string>,
   ): Promise<unknown> {
+    // Issue #161 B2: `rawArgs` has already crossed the sandbox child's IPC 'json' serialization —
+    // an own key the script set to explicit `undefined` arrives here as the ipc-sentinel.ts
+    // marker, not as a true `undefined` (JSON drops the key outright otherwise). Decode BEFORE
+    // `materializeRunArgs` ever sees it, so `Object.hasOwn`-based default-fill (contract.ts) can
+    // tell "explicit undefined" apart from "key never mentioned" for THIS args object exactly as
+    // it already does for a top-level run_start submission (which crosses no such hop).
+    const args = decodeExplicitUndefined(rawArgs);
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     // issue #53: the execution generation this frame belongs to. suspend()/stop() abort it and

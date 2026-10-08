@@ -265,6 +265,19 @@ describe('validateUserOverrides() — the per-agent rejection table (v24, DES-14
     expect(r.ok).toBe(true);
   });
 
+  // issue #161 B2 (2026-10-07 reverify): an own key present with the literal value `undefined`
+  // (as opposed to the key being genuinely absent) must NOT be type-checked against the declared
+  // spec — `undefined` is not a value the caller is asserting as the arg's content, it is the
+  // caller's explicit "no value" signal (the guide: "an explicit caller-supplied value always
+  // wins, including an explicit `undefined`"). Before this, `key in obj` was `true` and
+  // `checkValueAgainstSpec('args.retries', undefined, spec)` failed the `typeof` check exactly
+  // like any other wrong-shaped value, turning an explicit `undefined` into a hard refusal instead
+  // of the no-op the guide promises.
+  it('an own key present with explicit `undefined` is treated as absent, not type-checked (declared retries:number, no default)', () => {
+    const r = validateDeclaredArgs(CONTRACT, { retries: undefined });
+    expect(r.ok).toBe(true);
+  });
+
   // Review send-back LOW-1 (issue #107 follow-up): a non-record `args` against a contract that
   // DOES declare args used to throw an uncoded `TypeError` ("Cannot use 'in' operator to search for
   // '<key>' in <value>") from the bare `key in obj` below — the same crash on both doors (run_start
@@ -741,8 +754,23 @@ describe('materializeArgDefaults (DES-235, v35, REQ-206)', () => {
     expect(materializeArgDefaults({ url: 'https://caller' }, SPECS)).toEqual({ url: 'https://caller', n: 5 });
   });
 
-  it('a caller-supplied `undefined` for a declared key is treated as absent and filled', () => {
-    expect(materializeArgDefaults({ url: undefined }, SPECS)).toEqual({ url: 'https://x', n: 5 });
+  // issue #161 B2 (2026-10-07 reverify — reverses this case's old expectation): an explicit own
+  // key valued `undefined` is NOT the same as the key being absent — `{url: undefined} === {}` was
+  // true by `result[key] === undefined`'s own logic (it cannot tell "caller wrote `undefined`"
+  // from "caller never mentioned this key" — both read identically in JS), but the guide's own
+  // documented contract ("an explicit caller-supplied value always wins, including an explicit
+  // `undefined`") requires the opposite: the explicit `undefined` must WIN over the default, not
+  // be silently overwritten by it. `Object.hasOwn` (not `=== undefined`) is the one test that can
+  // tell the two cases apart.
+  it('a caller-supplied `undefined` for a declared key WINS (stays undefined, default NOT applied) — distinct from the key being absent', () => {
+    const result = materializeArgDefaults({ url: undefined }, SPECS);
+    expect(Object.hasOwn(result, 'url')).toBe(true);
+    expect(result['url']).toBeUndefined();
+    expect(result['n']).toBe(5); // 'n' is genuinely absent — still filled
+  });
+
+  it('a TRULY absent declared key (never mentioned) is still filled from its default', () => {
+    expect(materializeArgDefaults({}, SPECS)).toEqual({ url: 'https://x', n: 5 });
   });
 
   it('an unknown caller key passes through untouched', () => {

@@ -548,7 +548,12 @@ export function materializeArgDefaults(
   if (specs) {
     for (const [key, spec] of Object.entries(specs)) {
       if (spec.default === undefined) continue;
-      if (result[key] === undefined) result[key] = spec.default;
+      // issue #161 B2: `result[key] === undefined` cannot tell "the caller wrote `key: undefined`
+      // explicitly" from "the caller never mentioned `key` at all" — both read identically. Only
+      // `Object.hasOwn` distinguishes them; an explicit own key (even one valued `undefined`) must
+      // win over the default, per the guide's documented contract ("an explicit caller-supplied
+      // value always wins, including an explicit `undefined`").
+      if (!Object.hasOwn(result, key)) result[key] = spec.default;
     }
   }
   return result;
@@ -867,7 +872,14 @@ export function validateDeclaredArgs(c: ParamContract, args: unknown): { ok: tru
   }
   const obj = (args ?? {}) as Record<string, unknown>;
   for (const [key, spec] of Object.entries(c.args)) {
-    if (!(key in obj)) continue;
+    // issue #161 B2: an own key present with the literal value `undefined` is the caller's
+    // explicit "no value" signal, not a value to type-check — `key in obj` alone cannot tell it
+    // apart from a genuinely-supplied value, and `materializeArgDefaults` (the door this runs
+    // after, both at run_start and a nested workflow() call) deliberately leaves such a key
+    // AT `undefined` rather than filling its default (same issue, same "explicit wins" contract).
+    // Checking it against `expectedType` here would turn the caller's explicit `undefined` into a
+    // hard PARAM_OUT_OF_RANGE refusal instead of the no-op the guide promises.
+    if (!(key in obj) || obj[key] === undefined) continue;
     const result = checkValueAgainstSpec(`args.${key}`, obj[key], spec);
     if (!result.ok) return result;
   }
