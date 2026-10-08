@@ -29,7 +29,7 @@ import { deriveExpectedGraph } from './skeleton-graph.js';
 // segment with — reused, not re-typed, so the two checks can never drift on what "reserved" means.
 import { RESERVED_PREFIX, isValidBareName } from './path-verdict.js';
 import { isPathContained } from './path-containment.js';
-import { scanAgentCalls } from './scan-agent-calls.js';
+import { scanAgentCalls, type AgentCallViolationCode } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
 import type { Clock } from './clock.js';
 import { createEventSink, type EventSink } from './event-log.js';
@@ -1304,6 +1304,20 @@ export class WorkflowCatalog {
    *      model vanishing from a provider's live listing tomorrow must not retroactively refuse a
    *      row that passed yesterday. Only the STATIC shape/bound checks (declared type/enum/min/max,
    *      locked-key, anthropic static price table) still run.
+   *    - `SCRIPT_UNSCANNABLE` (2026-10-08 integration fix) — a row written before the
+   *      `nonCodeSpans` oracle existed is EXPLICITLY grandfathered, same precedent as the Mermaid
+   *      row above: it stays runnable, with only a read-time marker on `workflow_describe`/the dag
+   *      route (tests/integration/scan-unscannable-markers.test.ts, item 6/Gate 8). A genuinely
+   *      unparseable script also fails `validateScriptEntry`'s OWN `PARSE_ERROR` check below — that
+   *      check still runs and still refuses every OTHER `PARSE_ERROR` cause (e.g. an illegal
+   *      top-level function wrapper), just not this one, which is why `scan.unscannable` is read
+   *      BEFORE `validateScriptEntry` runs rather than skipping `PARSE_ERROR` wholesale.
+   *    - `AGENT_OPT_RETIRED` / `PARAM_UNKNOWN` for the `agentType` retirement (2026-10-08
+   *      integration fix; REQ-203/DES-224/226) — a PRE-v34 pinned row carrying `agentType` is the
+   *      ONLY way dispatch's own `agent-executor.ts` runtime guard is ever reached; that refusal is
+   *      DELIBERATELY at dispatch, with a structured per-agent detail, never a blanket admission
+   *      NOT_RUNNABLE (tests/integration/resume-legacy-params.test.ts IT-176,
+   *      tests/integration/refusal-marker-real-child.test.ts IT-298).
    *
    *  Memoized per (name,version) in `_stalenessCache` — see that field's own doc. */
   async validateStoredVersion(name: string, version: string): Promise<{ ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> }> {
@@ -1327,7 +1341,11 @@ export class WorkflowCatalog {
   /** The four re-run checks (name validity, then the SAME three PINNED to the relative order
    *  `validateRegistration` uses for them: `validateScriptEntry` → `scanAgentCalls` →
    *  `parseMetaParams`), stopping at the first failure — same "first error wins, the rest never
-   *  run" convention every other registration-time check in this file already follows. */
+   *  run" convention every other registration-time check in this file already follows.
+   *  `scanAgentCalls` is actually CALLED once before `validateScriptEntry` now (2026-10-08
+   *  integration fix) — only to peek at `scan.unscannable` for the grandfather short-circuit this
+   *  method's own class-level doc describes; its OWN violations are still consulted in the pinned
+   *  relative order, after `validateScriptEntry`. */
   private _computeStoredVersionValidity(name: string, script: string): { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> } {
     // Issue #154 B4 PARTIAL: checked FIRST, same ordering rationale as `validateRegistration`'s own
     // RESERVED_PREFIX/INVALID_NAME pair at the top of that method — a row whose name predates this
@@ -1340,6 +1358,20 @@ export class WorkflowCatalog {
         detail: { violation: 'INVALID_NAME' },
       };
     }
+    // 2026-10-08 integration (rv) fix: `scanAgentCalls` runs FIRST now (ahead of its pinned
+    // position below `validateScriptEntry`) ONLY to read `scan.unscannable` — a row written before
+    // the `nonCodeSpans` oracle existed (the SAME condition `scanAgentCalls` itself reports as the
+    // `SCRIPT_UNSCANNABLE` violation below) stays RUNNABLE by design: only a read-time marker fires
+    // (`workflow_describe.toolSurfaceUnscannable`, the dag route's
+    // `PREDICTED_OVERLAY_UNAVAILABLE`), never an admission refusal
+    // (tests/integration/scan-unscannable-markers.test.ts, item 6/Gate 8). Genuinely unparseable
+    // JS fails `validateScriptEntry` too (as `PARSE_ERROR`, a DIFFERENT code than `scanAgentCalls`'s
+    // own `SCRIPT_UNSCANNABLE`) — checking `scan.unscannable` before that gate, instead of trying
+    // to special-case `PARSE_ERROR` there, keeps `validateScriptEntry`'s OTHER `PARSE_ERROR` cases
+    // (e.g. an illegal top-level function wrapper — a real, intentional, pre-#154 registration
+    // rule with no such grandfather) refusing NOT_RUNNABLE exactly as before.
+    const scan = scanAgentCalls(script);
+    if (scan.unscannable) return { ok: true };
     const scriptCheck = validateScriptEntry(script);
     if (!scriptCheck.ok) {
       const first = scriptCheck.errors[0]!;
@@ -1350,9 +1382,20 @@ export class WorkflowCatalog {
         detail: { violation: first.code, ...first.detail },
       };
     }
-    const scan = scanAgentCalls(script);
-    if (scan.violations.length > 0) {
-      const v = scan.violations[0]!;
+    // 2026-10-08 integration (rv) fix: `AGENT_OPT_RETIRED` / `PARAM_UNKNOWN` (the `agentType`
+    // retirement, REQ-203/DES-224/226) are likewise EXCLUDED from this re-check — a PRE-v34 pinned
+    // row carrying `agentType` is the ONLY way dispatch's own `agent-executor.ts` runtime guard is
+    // ever reached; REQ-203's whole point is that THIS refusal happens at DISPATCH, with a
+    // structured per-agent detail, not as a blanket admission NOT_RUNNABLE
+    // (tests/integration/resume-legacy-params.test.ts IT-176,
+    // tests/integration/refusal-marker-real-child.test.ts IT-298). Every OTHER violation code (the
+    // actual #154 NEW-HIGH targets: AGENT_LABEL_*, AGENT_OPTS_SPREAD/SHORTHAND/VALUE_NOT_LITERAL/
+    // NOT_LITERAL, PARAM_IN_SCRIPT) still refuses NOT_RUNNABLE here unchanged — none of those has
+    // any other handling anywhere in the engine.
+    const GRANDFATHERED_SCAN_CODES = new Set<AgentCallViolationCode>(['AGENT_OPT_RETIRED', 'PARAM_UNKNOWN']);
+    const staleViolation = scan.violations.find((v) => !GRANDFATHERED_SCAN_CODES.has(v.code));
+    if (staleViolation !== undefined) {
+      const v = staleViolation;
       return {
         ok: false,
         code: 'NOT_RUNNABLE',
