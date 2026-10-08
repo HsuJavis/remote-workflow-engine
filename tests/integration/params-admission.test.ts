@@ -671,9 +671,31 @@ describe('P6-2: the EFFECTIVE post-merge appendPrompt (an author-declared defaul
     };
     // release_version must be set: an unpublished seed answers CHANNEL_UNPUBLISHED, never reaching
     // the admission rung this case is about.
+    //
+    // 2026-10-08 integration (rv) fix: the script carries its own `export const meta` declaring
+    // `${LABEL}` (NOT the forgery — that lives only in the seeded `params` COLUMN below, which is
+    // what `run-manager.ts`'s per-label frame check actually reads; the script's own meta value is
+    // irrelevant to this case). A bare top-level script with no meta at all used to be fine here —
+    // `run_start`'s admission never re-derived params from the SCRIPT text, only from the stored
+    // `params` column — but `catalog.validateStoredVersion()` (#154 B1-B4) now re-runs
+    // `parseMetaParams` against the stored SCRIPT at every admission, and a script with no meta
+    // declaring an agent() call it makes fails that re-check `AGENT_UNDECLARED`, masking the
+    // PARAM_OUT_OF_RANGE this case exists to pin behind an unrelated NOT_RUNNABLE. A real
+    // `workflow_register` always keeps script-meta and the stored `params` column in agreement by
+    // construction (`register()` derives the column FROM the script's own meta) — this seed is
+    // only decoupling them because the FORGERY must live in the column, not the script; giving the
+    // script a plain, honest meta for the same label keeps the row internally consistent (the one
+    // shape `register()` could actually have produced, forgery aside) without weakening what this
+    // case tests.
+    const seededScript =
+      `export const meta = { params: { agents: { ${LABEL}: { ` +
+      `model: { type: 'string', default: '${DEFAULT_MODEL_REF}' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+      `return await agent('${LABEL}', {});`;
     db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)').run(name, now, 'v1');
     db.prepare('INSERT INTO workflow_versions (name, version, script, params, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run(name, 'v1', `return await agent('${LABEL}', {});`, JSON.stringify(seededContract), now);
+      .run(name, 'v1', seededScript, JSON.stringify(seededContract), now);
     db.close();
 
     const before = await runCount(name);
