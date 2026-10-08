@@ -191,4 +191,17 @@ describe('#154 B1 (re-opened): an agent()/phase() call inside a function that is
       expect(r.ok, `expected acceptance for: ${script} (got ${r.ok ? '' : JSON.stringify(r.errors)})`).toBe(true);
     });
   }
+
+  // issue #154 B4 follow-up (2026-10-09 re-verification, "NEW-2"/"dead-branch helper"): a name
+  // referenced only from a branch that can never execute at run time still counts as "referenced"
+  // under the plain NAME CENSUS this check deliberately uses (checkAgentCallReachability's own doc:
+  // "dead code reached only via control flow ... is out of scope — it is not a function at all, so
+  // there is no binding name to census"). This is NOT a gap introduced by this fix and NOT something
+  // this fix changes — pinned here as a documented, intentional acceptance (own test, not folded
+  // into ACCEPTED above) so a future change to the census rule notices it is touching this tradeoff.
+  it('ACCEPTED BY DESIGN (known residual, not a defect): a name called only from an always-false branch still registers clean — no reachability analysis of control flow is performed', () => {
+    const script = "const main = async () => { phase('p1'); return await agent('a', {prompt: 'OK', allowedTools: []}); };\nif (false) { await main(); }\nreturn 1;";
+    const r = validateScriptEntry(script);
+    expect(r.ok, `expected acceptance (by design) for: ${script} (got ${r.ok ? '' : JSON.stringify(r.errors)})`).toBe(true);
+  });
 });

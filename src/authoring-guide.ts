@@ -1000,7 +1000,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'or called back out by name) is fine — but an `agent()`/`phase()` call written inside ANY ' +
         'function (a `const`-bound arrow, a nested `function` declaration, …) that the script never ' +
         'demonstrably reaches is refused `SCRIPT_INVALID`, issue #154: the engine counts the call ' +
-        'site as live and the run silently dispatches nothing. ' +
+        'site as live and the run silently dispatches nothing. "Demonstrably reaches" is a plain ' +
+        'NAME census (does the bound name appear anywhere else in the script at all), never a real ' +
+        'reachability analysis of control flow — a name referenced only from inside a branch that ' +
+        'can never execute (e.g. `if (false) await main()`, or any other always-false condition) ' +
+        'still counts as "reached" and registers cleanly, same as a genuinely live call; this is a ' +
+        'known, deliberate scope line (a real reachability analysis rejected legitimate patterns ' +
+        'this codebase relies on — see script-checks.ts\'s own doc), not a gap this guide hides. ' +
         '`export const meta = {…}` is the ONE exception to the no-wrapper rule, and it must be ' +
         'written exactly that way, as a literal object: dropping the `export` makes the whole ' +
         'declaration invisible to the engine, and every `agent()` label is then refused ' +
