@@ -157,9 +157,25 @@ export interface SandboxHostConfig {
    *  `SandboxHost`/`run()` call (run-manager.ts's own issue #53 note on `entry.sandbox` identity), so
    *  each LIVE execution gets its own fresh deadline — time spent suspended never counts against it. */
   maxRunDurationMs?: number;
+  /** issue #163 B1 (test seam): injects a `fork()`-alike for a deterministic fake-child race test —
+   *  mirrors `PiGatewayClient`'s own `spawnChild` seam. Absent -> the real `node:child_process.fork`
+   *  (every production caller). */
+  forkChild?: typeof fork;
+  /** issue #163 B1 (test seam): overrides the `exit`-vs-`message` grace window below (see the
+   *  `child.on('exit', ...)` handler's own doc) — tests inject a short/zero value so the two real
+   *  branches (in-flight message, genuinely no message) stay fast and deterministic. Absent -> the
+   *  real `EXIT_MESSAGE_GRACE_MS` default. */
+  exitMessageGraceMs?: number;
 }
 
 const DEFAULT_AGENT_RESPONSE = 'stub-response';
+
+// issue #163 B1: how long `child.on('exit', ...)` waits for an already-in-flight 'done'/'error'
+// message before concluding ABORTED — see that handler's own doc. Short enough to never be
+// noticeable against any real run's own timeout/duration budget (measured in milliseconds against
+// those, which run in seconds-to-hours), long enough to cover the residual exit-vs-message ordering
+// skew a real-engine check under concurrent load showed.
+const EXIT_MESSAGE_GRACE_MS = 200;
 
 // v36 (DES-248, ARCH-167, TASK-246): `refusalRef`, when the child's terminal error carried one —
 // read from the wire message, never invented here.
@@ -202,7 +218,8 @@ export class SandboxHost {
       };
 
       mkdirSync(this._config.workspaceRoot, { recursive: true });
-      const child = fork(CHILD_ENTRY, [], {
+      const forkImpl = this._config.forkChild ?? fork;
+      const child = forkImpl(CHILD_ENTRY, [], {
         cwd: this._config.workspaceRoot,
         execArgv: [...SANDBOX_CHILD_EXEC_ARGV],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -337,18 +354,32 @@ export class SandboxHost {
           settle({ error: { code: 'SCRIPT_OOM', message: 'the sandboxed script exhausted its memory limit and was terminated' } });
           return;
         }
-        // A killed/crashed child that never sent done/error (e.g. aborted mid-script). Include the
-        // exit code/signal and the tail of the child's own stderr so a real crash (uncaught error,
-        // determinism-guard throw) is diagnosable instead of opaque.
-        const detail = sanitizeStderrTail(rawTail);
-        settle({
-          error: {
-            code: 'ABORTED',
-            message:
-              `sandbox child process terminated before completion (exit ${code ?? 'null'}, signal ${signal ?? 'null'})` +
-              (detail ? `\n--- child stderr (tail) ---\n${detail}` : ''),
-          },
-        });
+        // issue #163 B1: `exit` (SIGCHLD-driven) and a 'done'/'error' `message` (IPC-pipe-driven) are
+        // two independent async notification sources — child-entry.ts now awaits its own
+        // `process.send()` before calling `process.exit()` (closing the CHILD-side half of this race,
+        // issue #162 B), but a real-engine check under genuine concurrent load (30-60 parallel nested
+        // workflow() dispatches) still showed a small residual rate (~1-3%) of this exact ABORTED
+        // message even with that fix in place — 'exit' can still be the PARENT's own event loop
+        // processing the SIGCHLD notification before it has drained an already-arrived 'message' off
+        // the IPC pipe, independent of anything the child did. Giving any in-flight message a short,
+        // bounded grace window to be processed before concluding ABORTED closes this residual case —
+        // `settle()`'s own idempotency guard means a message that arrives during the grace window (or
+        // was already queued) still wins; this handler's own ABORTED path only actually fires if
+        // `settled` is STILL false once the grace elapses. Bounded (never waits for a message that is
+        // never coming): `EXIT_MESSAGE_GRACE_MS`, well under any caller's own run-duration/timeout
+        // budget, so a genuinely aborted/crashed child is still reported promptly.
+        const grace = setTimeout(() => {
+          const detail = sanitizeStderrTail(rawTail);
+          settle({
+            error: {
+              code: 'ABORTED',
+              message:
+                `sandbox child process terminated before completion (exit ${code ?? 'null'}, signal ${signal ?? 'null'})` +
+                (detail ? `\n--- child stderr (tail) ---\n${detail}` : ''),
+            },
+          });
+        }, this._config.exitMessageGraceMs ?? EXIT_MESSAGE_GRACE_MS);
+        grace.unref?.();
       });
 
       child.on('error', (err) => {
