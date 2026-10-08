@@ -798,6 +798,30 @@ export function scanAgentCalls(script: string): AgentCallScan {
   return { labels, calls, violations };
 }
 
+/** Issue #154 NEW HIGH (blocker): the per-label expectation `run-manager.ts`'s dispatch-time
+ *  `_handleAgentRequest` compares a REAL dispatch's `opts.allowedTools`/`opts.bash` against, so a
+ *  script-planted `Array.prototype.toJSON` (or any other post-registration tamper of the opts
+ *  object the IPC hop re-serializes) cannot smuggle a tool surface the registered script never
+ *  literally wrote for that label — `workflow_describe`'s `toolSurface` and the mermaid `tools:`
+ *  check both read the SAME `scanAgentCalls` output but collapse a duplicate label to its LAST
+ *  call (display-only, lossy); this keeps every scanned call's own shape, since duplicate labels
+ *  are legal (`AgentCallScan.calls` is not de-duplicated — e.g. the same label called twice with
+ *  two different literal `allowedTools`). A label absent here (never scanned, or scanned with the
+ *  empty-string placeholder `AGENT_LABEL_NOT_LITERAL`/`AGENT_LABEL_REQUIRED` produces) has no entry
+ *  at all — the caller must fail CLOSED on a missing label, never treat it as "no constraint". */
+export function expectedAgentOptsByLabel(script: string): Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> {
+  const out: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> = {};
+  for (const call of scanAgentCalls(script).calls) {
+    if (call.label === '') continue;
+    const entry: { allowedTools: string[] | 'absent'; bash?: 'readonly' } = {
+      allowedTools: call.allowedTools ?? 'absent',
+      ...(call.bash !== undefined ? { bash: call.bash } : {}),
+    };
+    (out[call.label] ??= []).push(entry);
+  }
+  return out;
+}
+
 /** Issue #78(c): why a `bash:'readonly'` call's literal tool list is not a read-only shell, or null. */
 function readonlyBashConflict(allowedTools: string[] | 'absent'): string | null {
   if (allowedTools === 'absent') {

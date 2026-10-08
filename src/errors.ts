@@ -268,6 +268,14 @@ export const ERROR_CATALOG = {
   // and no event. `see` points at the guide because REQ-120 requires the guide to explain how a
   // budget interacts with fan-out width — the refusal is now self-documenting.
   BUDGET_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'the run\'s token budget is spent; the engine refused to dispatch this agent() call' },
+  // Issue #154 NEW HIGH (blocker, 2026-10-07 reverify): a dispatch-time refusal, same family as
+  // BUDGET_EXCEEDED/PARAM_UNKNOWN just above/below — the REAL opts an agent() call dispatched with
+  // do not match any literal allowedTools/bash shape that label's registered script scanned at
+  // registration. The usual cause is not an author mistake but a planted Array.prototype.toJSON (or
+  // another post-registration tamper of the opts object) smuggling a tool surface past the static
+  // scan at the child->host IPC hop, which re-serializes the opts object through JSON and therefore
+  // honours a script-planted toJSON — this refusal is the dispatch-time backstop for that gap.
+  AGENT_OPTS_TAMPERED: { see: 'workflow_authoring_guide', hint: "the agent() call's dispatched allowedTools/bash does not match any options literal this script's registered scan recorded for that label — the options object was altered after registration (e.g. by a planted Array.prototype.toJSON)" },
   PARAM_SECRET_UNAVAILABLE: { see: null, hint: 'a resumed run\'s admission-time parameters carry a redaction marker that resume cannot restore' },
 
   // Workspace / assets / seeds / CAS

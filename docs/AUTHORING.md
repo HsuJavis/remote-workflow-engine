@@ -321,6 +321,7 @@ A trigger bound through `triggers:[id]` is PINNED to the HIGHEST-numbered versio
 - `TRIGGER_NOT_FOUND` — no trigger (schedule or webhook) is registered under this id
 - `TRIGGER_ALREADY_CLAIMED` — this trigger id is already claimed by a different workflow
 - `BUDGET_EXCEEDED` — the run's token budget is spent; the engine refused to dispatch this agent() call
+- `AGENT_OPTS_TAMPERED` — the agent() call's dispatched allowedTools/bash does not match any options literal this script's registered scan recorded for that label — the options object was altered after registration (e.g. by a planted Array.prototype.toJSON)
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
 - `INVALID_NAME` — the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\', not '.' or '..', at most 128 characters
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
