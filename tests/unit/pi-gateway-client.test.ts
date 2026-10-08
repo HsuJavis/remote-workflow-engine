@@ -27,7 +27,17 @@ function fakeChild() {
     child: emitter,
     stdinWritten,
     sendLine: (obj: unknown) => emitter.stdout.write(JSON.stringify(obj) + '\n'),
-    exit: (code: number | null = 0) => emitter.emit('exit', code, null),
+    // issue #158 F4 (TDD): a REAL child process's stdout pipe reaches EOF when the process exits (the
+    // kernel closes the child's write end), so `PiGatewayClient` now waits for `child.stdout`'s own
+    // 'end' before concluding no result ever arrived — mirror that here so every test using the
+    // DEFAULT (non-racy) `exit()` still resolves promptly instead of waiting out the fix's bounded
+    // grace window. The one test that deliberately models the real race (below) bypasses this helper
+    // and ends the stream itself, later, on purpose.
+    exit: (code: number | null = 0) => {
+      emitter.stdout.end();
+      emitter.stderr.end();
+      emitter.emit('exit', code, null);
+    },
   };
 }
 
@@ -143,6 +153,27 @@ describe('PiGatewayClient — JSONL child protocol (slice c)', () => {
       expect(result.partial).toBe(true);
       expect(result.tokens).toEqual({ input: 5, output: 1, cacheRead: 0, cacheWrite: 0 });
     }
+  });
+
+  it('issue #158 F4: a "final" line delivered AFTER \'exit\' fires (the real exit/stdout race) still resolves ok, not "exited before reporting a result"', async () => {
+    // Reproduces the exact production detail string byte-for-byte: the child's 'exit' event
+    // (SIGCHLD-driven) and its own already-written stdout data (kernel pipe EOF, delivered to the
+    // parent's readline as a 'line' event) are two independent async notification sources — under
+    // load, 'exit' can be processed before the already-arrived 'final' line is parsed. Modeled here
+    // by firing 'exit' SYNCHRONOUSLY and deferring the line + stdout EOF by one setImmediate tick
+    // (the same ordering the real triage used to reproduce it deterministically).
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    setImmediate(() => {
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.child.stdout.end();
+      f.child.stderr.end();
+    });
+    f.child.emit('exit', 0, null);
+    const result = await promise;
+    expect(result.ok).toBe(true);
   });
 
   it('a child that exits with no final/error event is a terminal, non-retryable failure naming the exit code', async () => {

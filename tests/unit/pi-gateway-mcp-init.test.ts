@@ -20,7 +20,7 @@ function fakeChild() {
   return {
     child: emitter,
     sendLine: (obj: unknown) => emitter.stdout.write(JSON.stringify(obj) + '\n'),
-    exit: (code: number | null = 0) => emitter.emit('exit', code, null),
+    exit: (code: number | null = 0) => { emitter.stdout.end(); emitter.stderr.end(); emitter.emit('exit', code, null); },
   };
 }
 

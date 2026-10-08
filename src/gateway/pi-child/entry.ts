@@ -30,6 +30,40 @@ function emit(event: PiChildEvent): void {
   process.stdout.write(JSON.stringify(event) + '\n');
 }
 
+// issue #158 F4 (defense in depth, same bug class as #162 B / #163 B1): a write to `process.stdout`
+// when it is a PIPE (always true here — the parent spawns this child with `stdio: ['pipe','pipe',
+// 'pipe']`) can be queued internally rather than completing synchronously (empirically confirmed: a
+// 2MB `process.stdout.write(...)` immediately followed by `process.exit(0)` truncates the parent's
+// read to exactly 1,048,576 bytes on this machine/Node version — the same "write queued, then torn
+// down before it flushes" mechanism `child-entry.ts`'s `rawSend` fixes for the sandbox child's IPC
+// channel). The PARENT-side fix above (waiting for `child.stdout`'s own 'end' before concluding no
+// result arrived) covers the ordinary case — an ordinary-sized line that already reached the OS pipe
+// before 'exit' fires is just delayed, not lost — but a genuinely large final line (a long tool
+// result/response) could still be torn down mid-write. `writableLength === 0` means every write so
+// far has already handed its data to the OS; otherwise wait for 'drain', bounded so a parent that
+// stopped reading entirely (already gone) can't hang this child forever.
+const STDOUT_DRAIN_TIMEOUT_MS = 2000;
+function flushStdout(): Promise<void> {
+  return new Promise((resolve) => {
+    if (process.stdout.writableLength === 0) { resolve(); return; }
+    let done = false;
+    const finish = (): void => { if (!done) { done = true; resolve(); } };
+    const bound = setTimeout(finish, STDOUT_DRAIN_TIMEOUT_MS);
+    bound.unref?.();
+    process.stdout.once('drain', () => { clearTimeout(bound); finish(); });
+  });
+}
+
+/** Emits the event, then waits for it (and anything still queued ahead of it) to actually reach the
+ *  OS pipe before resolving — ONLY for the handful of call sites in `main()` that call
+ *  `process.exit()` right after, never for the many fire-and-forget streaming emits inside
+ *  `runPiChildSession` (those have more events coming right behind them; nothing is about to tear
+ *  the process down). */
+async function emitAndFlush(event: PiChildEvent): Promise<void> {
+  emit(event);
+  await flushStdout();
+}
+
 /** `entry.ts --probe`: the pi-path confinement boot probe (spec "Confinement posture"), run as its
  *  OWN short-lived child so srt's process-global state never touches the long-lived engine. Prints
  *  ONE JSON line (`PiPathProbeResult`-shaped) to stdout and exits — never reads stdin. */
@@ -44,6 +78,9 @@ async function runProbe(): Promise<void> {
     resolveRipgrepOverride,
   );
   process.stdout.write(JSON.stringify(result) + '\n');
+  // issue #158 F4 (defense in depth, same bug class): see `flushStdout`'s own doc — this probe result
+  // line is written and this process exits immediately, exactly the shape that can truncate.
+  await flushStdout();
   process.exit(0);
 }
 
@@ -59,14 +96,14 @@ async function main(): Promise<void> {
   });
   rl.close();
   if (firstLine === undefined) {
-    emit({ t: 'fatal', message: 'INTERNAL_ERROR: pi child received no config on stdin' });
+    await emitAndFlush({ t: 'fatal', message: 'INTERNAL_ERROR: pi child received no config on stdin' });
     process.exit(1);
   }
   let config: PiChildConfig;
   try {
     config = JSON.parse(firstLine) as PiChildConfig;
   } catch (err) {
-    emit({ t: 'fatal', message: `INTERNAL_ERROR: pi child could not parse its own config: ${err instanceof Error ? err.message : String(err)}` });
+    await emitAndFlush({ t: 'fatal', message: `INTERNAL_ERROR: pi child could not parse its own config: ${err instanceof Error ? err.message : String(err)}` });
     process.exit(1);
   }
   emit({ t: 'ready' });
@@ -76,9 +113,16 @@ async function main(): Promise<void> {
     // A throw here is a programming defect inside session-runner.ts (it is documented to convert
     // every dispatch-shaped failure into an {t:'error'} event itself) — surfaced as 'fatal' so the
     // parent never mistakes it for an ordinary provider failure it should classify/retry.
-    emit({ t: 'fatal', message: err instanceof Error ? (err.stack ?? err.message) : String(err) });
+    await emitAndFlush({ t: 'fatal', message: err instanceof Error ? (err.stack ?? err.message) : String(err) });
     process.exit(1);
   }
+  // issues #158 F4 / #162 B / #163 B1 (same bug class): `runPiChildSession` above already emitted its
+  // own final 'final'/'error' event internally (via the `emit` callback it was handed) before
+  // resolving — fire-and-forget, same as every other streaming event it emits. This is the one place
+  // that matters: right before the process tears itself down, wait for every write still queued to
+  // actually reach the OS pipe (see `flushStdout`'s own doc) — never for the intermediate events,
+  // which have more writes coming right behind them.
+  await flushStdout();
   // review R2-2: this used to ALSO call a `killOwnDescendants()` walk here, SIGKILLing every live
   // descendant of this whole process right before exit — removed, not amended: it ran only AFTER
   // `runPiChildSession` already returned, by which point a `nohup`/`setsid`-backgrounded grandchild
