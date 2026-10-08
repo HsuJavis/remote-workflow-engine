@@ -968,8 +968,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "`RESULT_TOO_LARGE` never applies there) — that failure is local to the one call your script " +
         'made and is catchable with a normal try/catch, not run-terminating.\n\n' +
         'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
-        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, a generous multi-hour default " +
-        "covering every agent()/workflow() round trip across every phase — not a single call, which " +
+        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, operator-configurable, " +
+        "defaulting to 4 hours — covering every agent()/workflow() round trip across every phase, " +
+        "not a single call, which " +
         "`timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either " +
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
@@ -1316,7 +1317,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'only on dimensions both have; there is no instruction-following or tool-calling score. `observed.successRate` ' +
         'counts calls that finished, NOT schema conformance: a call whose output keeps failing an agent() `schema` ' +
         'resolves null in your script yet still counts as a success. The engine enforces `schema` itself (states it in ' +
-        'the prompt, validates the reply, re-asks up to 3 times) on every model, so `capabilities.structuredOutput` ' +
+        'the prompt, validates the reply, makes up to 3 attempts total — the first try plus up to 2 re-asks — ' +
+        'before giving up) on every model, so `capabilities.structuredOutput` ' +
         '(an upstream declaration, null on anthropic-direct rows) neither enables nor guarantees it — keep the schema a ' +
         'small top-level object, prefer stronger models for strict JSON, and handle a null result (retry with another ' +
         'model). Fields outside the compact row (`capabilities`, `ratesPerM`, full `observed` buckets) need ' +
