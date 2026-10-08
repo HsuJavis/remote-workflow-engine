@@ -672,7 +672,7 @@ export const TOOL_SPECS = [
         // the authoring guide interpolates these three strings rather than re-typing them (ADR-032).
         seed: {
           type: 'array',
-          description: 'Seed files by inline content — each element is {path, contentB64}, the file bytes as base64. Refused INVALID_SEED_SPEC if any element is missing contentB64.',
+          description: 'Seed files by inline content — each element is {path, contentB64}, the file bytes as base64. Refused INVALID_SEED_SPEC if any element is missing contentB64, escapes the workspace, or has a reserved rwe- first path segment.',
           // v26 (clarification 10) — DELIBERATELY LEFT OPEN, decision recorded rather than applied.
           // TASK-194's cross-repo read confirmed `additionalProperties:false` would not break the
           // plugin (it never sends an inline `seed` at all). It would, however, change WHICH
@@ -690,7 +690,7 @@ export const TOOL_SPECS = [
         },
         seedManifest: {
           type: 'array',
-          description: 'Seed files already pushed to the CAS via workspace_push({sha256, contentB64}) — each element here is {path, sha256, exec?}, referenced by hash rather than carrying content inline (exec:true materializes that file 0o755, else 0o644). Use for large trees, or content you already have a sha256 for.',
+          description: 'Seed files already pushed to the CAS via workspace_push({sha256, contentB64}) — each element here is {path, sha256, exec?}, referenced by hash rather than carrying content inline (exec:true materializes that file 0o755, else 0o644). Use for large trees, or content you already have a sha256 for. Refused INVALID_SEED_SPEC if any element escapes the workspace or has a reserved rwe- first path segment.',
           items: {
             type: 'object',
             required: ['path', 'sha256'],

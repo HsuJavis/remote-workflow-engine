@@ -76,6 +76,11 @@ describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () 
     ['run-workspace', 'a/.git/HEAD', 'GIT_INTERNAL'],
     ['asset-tree', 'rwe-internal/x', 'RESERVED_PREFIX'],
     ['asset-tree', 'rwe-notes.txt', 'RESERVED_PREFIX'], // a FILE, not just a directory
+    // #159 C6: the reserved-prefix rejection applies to BOTH destinations — a run-workspace seed
+    // path with an 'rwe-' first segment is rejected exactly like an asset-tree one, not silently
+    // accepted (the v0.37.6 'Fixed' claim was wrong; this was structurally unreachable before).
+    ['run-workspace', 'rwe-internal/x', 'RESERVED_PREFIX'],
+    ['run-workspace', 'rwe-notes.txt', 'RESERVED_PREFIX'],
   ];
   it.each(REASON_ROWS)('%s + %s is rejected with reason %s', (dest, rel, reason) => {
     const verdict = lexicalVerdict(dest, rel);
@@ -97,7 +102,6 @@ describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () 
   });
 
   const OK_ROWS: Array<[Dest, string]> = [
-    ['run-workspace', 'rwe-notes.txt'],          // the reserved prefix is asset-tree-ONLY
     ['run-workspace', 'a\\b\\c.txt'],            // backslashes are separators, not an escape
     ['asset-tree', '.claude/settings.json'],     // the strip rule is run-workspace-ONLY
     ['asset-tree', '.git-notes/x'],              // `.git` matches a SEGMENT, not a prefix
@@ -120,8 +124,8 @@ describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () 
     expect(calls).toBe(0);
   });
 
-  it('pathVerdict defaults to the run-workspace destination — an asset-tree rule does not apply', () => {
-    expect(pathVerdict('/workroot/run1', 'rwe-notes.txt', (p) => p).kind).toBe('ok');
+  it('pathVerdict rejects a reserved rwe- segment on the default (run-workspace) destination too (#159 C6)', () => {
+    expect(pathVerdict('/workroot/run1', 'rwe-notes.txt', (p) => p).reason).toBe('RESERVED_PREFIX');
     expect(pathVerdict('/workroot/run1', 'rwe-notes.txt', (p) => p, 'asset-tree').reason).toBe('RESERVED_PREFIX');
   });
 });
