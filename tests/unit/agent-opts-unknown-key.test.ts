@@ -125,4 +125,17 @@ describe('unknown agent() option keys are refused at scan time (UT-165, #55)', (
     const hint = scanAgentCalls('agent("plan", { skills: ["x"] });').violations[0]?.hint ?? '';
     expect(hint).toContain('meta.params.agents.<label>.skills');
   });
+
+  // 2026-10-08 integration (rv) fix (COSMETIC, #154 reverify): `AGENT_OPT_NEAR_MISSES[key]` used a
+  // bare bracket lookup — a `__proto__` key (refused above via the SAME `Object.hasOwn` check this
+  // file's own "quoted key" case exercises against `AGENT_OPT_KEYS`) resolved the near-miss lookup
+  // onto the inherited `Object.prototype` value instead of `undefined`, producing a nonsensical
+  // "did you mean '[object Object]'?" hint instead of the plain "not an agent() option" wording
+  // every other unknown key gets.
+  it("a `__proto__` key gets the plain 'not an agent() option' hint, never a bogus near-miss", () => {
+    const hint = scanAgentCalls('agent("plan", { __proto__: {} });').violations[0]?.hint ?? '';
+    expect(hint).toContain("'__proto__' is not an agent() option.");
+    expect(hint).not.toContain('did you mean');
+    expect(hint).not.toContain('[object Object]');
+  });
 });
