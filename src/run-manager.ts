@@ -37,7 +37,7 @@ import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
-import { SandboxHost } from './sandbox/host.js';
+import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
 import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
@@ -2199,6 +2199,12 @@ export class RunManager {
       // F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc — `undefined` forwards to host.ts's own
       // default, never a second copy of that default value here.
       maxRunDurationMs: this._maxRunDurationMs,
+      // Issue #162 (boot-time sweep): anchored to the WHOLE engine's own workRoot (never the
+      // per-run `workspace`) — one shared registry directory for every run's top-level host, so a
+      // single boot sweep (main.ts) covers all of them. Absent when this RunManager was built with
+      // no workRoot at all (a direct-`createServer()`-less test construction) — those callers get
+      // no bookkeeping, same as today.
+      childRegistryDir: sandboxChildRegistryDir(this._workRoot),
     });
   }
 
@@ -2581,6 +2587,10 @@ export class RunManager {
       // maxWorkflowDescendants cap). A parent could still exceed ITS OWN deadline waiting on a
       // nested frame that is individually within bounds — no narrower, per-frame deadline exists.
       maxRunDurationMs: this._maxRunDurationMs,
+      // Issue #162 (boot-time sweep): same shared, whole-engine registry dir as the top-level
+      // host's own (`_newSandbox`) — a nested frame's child must be swept on a non-graceful
+      // restart exactly like a top-level one.
+      childRegistryDir: sandboxChildRegistryDir(this._workRoot),
     });
     // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
     // above, which wins (see `SandboxHost.run`'s own doc).
