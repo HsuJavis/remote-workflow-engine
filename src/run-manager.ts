@@ -1098,6 +1098,13 @@ export class RunManager {
       // dispatch. Checked AFTER LEGACY_REREGISTER (a pre-v24 row has no `params` at all and would
       // fail this for the unrelated reason of predating the contract entirely — LEGACY_REREGISTER
       // is the right code for that, not NOT_RUNNABLE).
+      // #157 (2026-10-07 re-verification of #154) independently hit the same gap from the OTHER
+      // side: `workflow_describe` already surfaced a stale script as `validation.ok:false`
+      // (`catalog.validateCurrent()`, parse/shape only) while nothing in THIS admission sequence
+      // ever checked it, so `run_start` accepted and dispatched the same row — observed ending
+      // ABORTED with no error code. `validateStoredVersion()` below is a strict superset of that
+      // `validateCurrent()` re-check (same `validateScriptEntry` call, plus name-validity/
+      // `scanAgentCalls`/`parseMetaParams`), so the one call closes both.
       {
         const staleness = await this._catalog.validateStoredVersion(spec.name, resolvedVersion);
         if (!staleness.ok) {

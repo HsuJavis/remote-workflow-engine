@@ -33,9 +33,11 @@ const STRIP_RE = /(^|\/)\.claude\/(settings[^/]*\.json|hooks\/.*)$/;
 export const RESERVED_PREFIX = 'rwe-';
 
 /** Pure, no filesystem access — decides everything that can be decided from the string alone.
- *  Normalizes `\` to `/`; rejects `''`, absolute paths (`/…`, `C:\…`), `..` traversal, and NUL;
- *  strips former `.claude` settings/hooks paths on a `run-workspace` destination; rejects a
- *  reserved `rwe-*` first segment on an `asset-tree` destination. */
+ *  Normalizes `\` to `/`; rejects `''`, absolute paths (`/…`, `C:\…`), `..` traversal, NUL, and a
+ *  reserved `rwe-*` first segment (on EITHER destination — issue #159 C6: this used to be
+ *  asset-tree-only, which made it structurally unreachable for a seed/seedManifest path even though
+ *  the identical-looking `workspace_push` check caught it); strips former `.claude` settings/hooks
+ *  paths on a `run-workspace` destination. */
 export function lexicalVerdict(dest: Dest, rel: string): Verdict {
   if (rel === '') return { kind: 'reject', reason: 'EMPTY' };
   if (rel.includes('\0')) return { kind: 'reject', reason: 'NUL' };
@@ -45,13 +47,12 @@ export function lexicalVerdict(dest: Dest, rel: string): Verdict {
 
   const segments = norm.split('/').filter((s) => s !== '' && s !== '.');
   if (segments.some((s) => s === '..')) return { kind: 'reject', reason: 'ESCAPE' };
+  if (segments[0] && segments[0].startsWith(RESERVED_PREFIX)) return { kind: 'reject', reason: 'RESERVED_PREFIX' };
 
   if (dest === 'run-workspace') {
     if (segments.includes('.git')) return { kind: 'reject', reason: 'GIT_INTERNAL' };
     const m = STRIP_RE.exec('/' + norm.replace(/^\/+/, ''));
     if (m) return { kind: 'stripped', reason: m[2].startsWith('hooks/') ? 'CLAUDE_HOOKS' : 'CLAUDE_SETTINGS' };
-  } else {
-    if (segments[0] && segments[0].startsWith(RESERVED_PREFIX)) return { kind: 'reject', reason: 'RESERVED_PREFIX' };
   }
 
   return { kind: 'ok' };

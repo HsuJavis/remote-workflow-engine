@@ -125,7 +125,8 @@ describe('assertJailed — refusal message names the workspace root, never the r
       message = (e as Error).message;
     }
     expect(message).toMatch(/PATH_ESCAPES_WORKSPACE/);
-    expect(message).toContain(ws); // names the workspace root, as promised
+    expect(message).not.toContain(ws); // never the host-absolute workspace root path either (#159 B11 follow-up)
+    expect(message).toContain('workspace root'); // still names the root, by a stable logical label
     expect(message).not.toContain(outside); // never the resolved host-absolute escape target
   });
 
@@ -143,7 +144,8 @@ describe('assertJailed — refusal message names the workspace root, never the r
       message = (e as Error).message;
     }
     expect(message).toMatch(/PATH_ESCAPES_WORKSPACE/);
-    expect(message).toContain(ws);
+    expect(message).not.toContain(ws); // never the host-absolute workspace root path either (#159 B11 follow-up)
+    expect(message).toContain('workspace root');
     expect(message).not.toContain(secretDir); // the symlink's landing directory never leaks
     expect(message).not.toContain(landingPath);
   });
@@ -161,6 +163,7 @@ describe('assertJailed — refusal message names the workspace root, never the r
       message = (e as Error).message;
     }
     expect(message).toMatch(/PROJECT_CONFIG_PROTECTED/);
-    expect(message).toContain(ws);
+    expect(message).not.toContain(ws); // never the host-absolute workspace root path either (#159 B11 follow-up)
+    expect(message).toContain('workspace root');
   });
 });

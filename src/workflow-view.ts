@@ -136,7 +136,16 @@ export interface WorkflowDescribeView {
   // THIS host for THIS caller (see `projectWorkflowDescribe`'s own `ctx.confinementPosture` doc).
   // issue #154 B1-B4 (2026-10-07 reverify): `'NOT_RUNNABLE'` joins the union — a static
   // registration rule added AFTER this version was registered now refuses it (see
-  // `ctx.notRunnable`'s own doc below).
+  // `ctx.notRunnable`'s own doc below). #157 (2026-10-07 re-verification of #154) independently
+  // hit the SAME gap from `workflow_describe`'s read side: before `ctx.notRunnable` existed,
+  // `workflow_source`'s own `validation.ok:false` (`catalog.validateCurrent()`, parse/shape only)
+  // was the only place this fact surfaced, while `run_start` already refused the SAME row
+  // `NOT_RUNNABLE` (run-manager.ts's admission sequence) — the read and the run path disagreed.
+  // `ctx.notRunnable` (`catalog.validateStoredVersion()`) is a strict superset of that
+  // `validateCurrent()` re-check (it re-runs `validateScriptEntry` plus name-validity/
+  // `scanAgentCalls`/`parseMetaParams`), so it is the one signal used here — `describe`'s
+  // `runnable`/`runnableReason` now mirrors `run_start` for every reason either issue found.
+
   runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE' | null;
 }
 
@@ -257,10 +266,11 @@ export function projectWorkflowDescribe(
     posture: ctx.confinementPosture,
     origin: ctx.isRemoteSubmission || ctx.registeredRemote ? 'remote' : 'local',
   }) !== null;
-  // issue #154 B1-B4: `notRunnable` slots in AFTER legacy/published — both of those are thrown by
-  // `catalog.resolve()`/the contract check well before `RunManager.start()` ever reaches admission
-  // — and BEFORE confinement, which `start()` defers and throws LAST, past every other admission
-  // check including this one.
+  // issue #154 B1-B4 (and #157, which independently re-verified the same gap from the describe
+  // side — see the union doc comment above): `notRunnable` slots in AFTER legacy/published — both
+  // of those are thrown by `catalog.resolve()`/the contract check well before `RunManager.start()`
+  // ever reaches admission — and BEFORE confinement, which `start()` defers and throws LAST, past
+  // every other admission check including this one.
   const runnableReason: WorkflowDescribeView['runnableReason'] = legacy
     ? 'LEGACY_REREGISTER'
     : !published

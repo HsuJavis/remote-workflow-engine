@@ -258,6 +258,33 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
     }
   });
 
+  // #159 D15 (2026-10-07 re-verification): a live check against the real catalog found no
+  // reproducible duplication (repeated push, multiple workflow versions, a second unrelated
+  // workflow — `assets.workflow` is a real PRIMARY KEY, and the AssetCatalogPort merge logic was
+  // confirmed mathematically sound for the catalog shapes that exist today). This is the
+  // task-mandated DEFENSIVE step regardless: `AssetCatalogPort.listAssets()` is an injected
+  // boundary (server.ts's own implementation today, but `list()`/`listGlobal()` take it as a plain
+  // interface) — if a FUTURE catalog implementation, or a future server.ts refactor, ever hands back
+  // the same (workflow, kind, name) row twice, both listing doors should present it once, not twice.
+  it('[#159 D15, defensive] list()/listGlobal() dedupe a catalog port that hands back the same (workflow,kind,name) row twice', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-d15-'));
+    try {
+      const dupeRow: AssetCatalogRow = { scope: 'global', builtin: true, kind: 'skill', name: 'house-toolkit', pushedBy: 'admin', pushedAt: '2026-01-01T00:00:00Z' };
+      const catalog = { putAsset: vi.fn(), deleteAsset: vi.fn(), listAssets: vi.fn(() => [dupeRow, { ...dupeRow }]) };
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      const listed = await svc.list({ workflow: 'some-workflow', kind: 'skill' });
+      expect(listed.filter((r) => r.name === 'house-toolkit')).toHaveLength(1);
+      const listedGlobal = await svc.listGlobal('skill');
+      expect(listedGlobal.filter((r) => r.name === 'house-toolkit')).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // Review send-back LOW-3 (issue #109 follow-up): `description: >-` / `|` / `|-` is legal YAML a
   // skill author may reasonably write for a multi-line description; the one-line frontmatter reader
   // used to return the bare indicator string itself (e.g. literally `">-"`) as the description.

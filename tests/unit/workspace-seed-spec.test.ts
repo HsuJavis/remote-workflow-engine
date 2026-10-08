@@ -79,6 +79,22 @@ describe('validateSeedSpec — one door, refuses the first offender, never throw
     expect(result.message).toMatch(/escape/i);
   });
 
+  it('a seed path with a reserved rwe- first segment is refused naming the path and RESERVED_PREFIX (#159 C6)', () => {
+    const result = validateSeedSpec('seed', [{ path: 'rwe-x/y', contentB64: 'aGk=' }]) as any;
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('INVALID_SEED_SPEC');
+    expect(result.path).toBe('rwe-x/y');
+    expect(result.message).toMatch(/RESERVED_PREFIX/);
+  });
+
+  it('a seedManifest path with a reserved rwe- first segment is refused naming the path and RESERVED_PREFIX (#159 C6)', () => {
+    const result = validateSeedSpec('seedManifest', [{ path: 'rwe-y/z.txt', sha256: '0'.repeat(64) }]) as any;
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('INVALID_SEED_SPEC');
+    expect(result.path).toBe('rwe-y/z.txt');
+    expect(result.message).toMatch(/RESERVED_PREFIX/);
+  });
+
   it('SEED_ITEM_HINT is the ONE string the validator message and the schema description both read (drift lock)', () => {
     const result = validateSeedSpec('seed', [{ path: 'a.txt', sha256: '0'.repeat(64) }]) as any;
     expect(typeof SEED_ITEM_HINT).toBe('string');

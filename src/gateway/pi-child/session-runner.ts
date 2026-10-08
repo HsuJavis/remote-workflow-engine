@@ -356,6 +356,13 @@ export async function walkDir(dir: string, base: string, out: string[], ignore: 
  *  root"). Displaying the path RELATIVE TO `root` instead gives the same actionable information (how
  *  far outside the workspace the path falls, same `../`-counting shape a model already reasons about
  *  for its own relative paths) without naming anything above the shared ancestor.
+ *
+ *  Follow-up (B11, 2026-10-07 re-verification): the FIRST fix made only the target relative but left
+ *  a literal `, ${root}` suffix on both error templates below, so the host-absolute workspace root
+ *  itself (e.g. `/home/rwe/.local/share/rwe-data/workflows/<wf>/runs/<runId>`) still leaked at the
+ *  end of the message. The two templates now name the root only by the stable logical phrase
+ *  "this run's workspace root" — no path of any kind — which still satisfies the guide's promise
+ *  without printing anything host-specific.
  */
 function describeRelativeToRoot(root: string, absolute: string): string {
   return relative(root, absolute);
@@ -373,12 +380,12 @@ export function assertJailed(absolutePath: string, config: PiChildConfig, deps: 
   const containedIn = (r: string): boolean => deps.isPathContained(target, r) && deps.isPathContained(landing, r);
   const skillReadRoots = opts?.readOnly ? (config.skillReadRoots ?? []) : [];
   if (!containedIn(root) && !skillReadRoots.some(containedIn)) {
-    throw new Error(`PATH_ESCAPES_WORKSPACE: "${describeRelativeToRoot(root, target)}" must resolve inside this run's workspace, ${root}`);
+    throw new Error(`PATH_ESCAPES_WORKSPACE: "${describeRelativeToRoot(root, target)}" must resolve inside this run's workspace root`);
   }
   for (const protectedPath of config.protectedFiles) {
     const resolvedProtected = resolve(protectedPath);
     if (deps.isPathContained(target, protectedPath) || deps.isPathContained(landing, protectedPath) || target === resolvedProtected || landing === resolvedProtected) {
-      throw new Error(`PROJECT_CONFIG_PROTECTED: "${describeRelativeToRoot(root, target)}" is a protected path in this run's workspace, ${root}`);
+      throw new Error(`PROJECT_CONFIG_PROTECTED: "${describeRelativeToRoot(root, target)}" is a protected path in this run's workspace root`);
     }
   }
 }

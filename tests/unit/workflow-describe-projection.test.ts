@@ -217,6 +217,36 @@ describe('projectWorkflowDescribe — runnable/runnableReason truth table (DES-1
   }
 });
 
+// #157 (2026-10-07 re-verification of #154): a published, non-legacy version whose STORED script
+// now fails catalog.validateCurrent() (full.validation.ok:false) must not report runnable:true —
+// run_start refuses the SAME row NOT_RUNNABLE (run-manager.ts admission sequence); the read surface
+// and the run path must agree. Checked ahead of CHANNEL_UNPUBLISHED/CONFINEMENT_UNAVAILABLE, same
+// relative priority run-manager.ts's own admission sequence gives it (right after LEGACY_REREGISTER).
+describe('projectWorkflowDescribe — runnable/runnableReason NOT_RUNNABLE (#157)', () => {
+  it('[LOAD-BEARING] published, current contract, but validation.ok:false => runnable:false, runnableReason:NOT_RUNNABLE', () => {
+    const view = projectWorkflowDescribe(
+      fixture({ channels: { release: 'v2' }, validation: { ok: false, errors: [{ code: 'PARSE_ERROR', message: 'x', detail: {} }] } }),
+      { triggers: [] },
+    );
+    expect(view.runnable).toBe(false);
+    expect(view.runnableReason).toBe('NOT_RUNNABLE');
+  });
+
+  it('legacy contract still wins over NOT_RUNNABLE (LEGACY_REREGISTER is the more specific/structural reason)', () => {
+    const view = projectWorkflowDescribe(
+      fixture({ channels: { release: 'v2' }, params: LEGACY_PARAMS as unknown as WorkflowOwnerView['params'], validation: { ok: false, errors: [] } }),
+      { triggers: [] },
+    );
+    expect(view.runnableReason).toBe('LEGACY_REREGISTER');
+  });
+
+  it('validation.ok:true (the default) never reports NOT_RUNNABLE — no false positive', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: { release: 'v2' } }), { triggers: [] });
+    expect(view.runnable).toBe(true);
+    expect(view.runnableReason).toBe(null);
+  });
+});
+
 // issue #93 item 3: a published, non-legacy version that RunManager.start() would actually refuse
 // CONFINEMENT_UNAVAILABLE on THIS host for THIS caller must not report runnable:true — mirrors
 // admissionRefusal() exactly (same predicate run-manager.ts's own admission checks use), checked

@@ -1436,7 +1436,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'suspend/resume cycle of a usage-heavy agent now counts toward, and can trip, a token or ' +
         'USD limit even though every individual attempt was interrupted. Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
-        'from the START, with a NEW agentId — it does not continue the old one. An agent() whose ' +
+        'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
+        'attempt never itself resolves anything to the script (only the replacement agentId\'s own ' +
+        'eventual outcome does); the cut-off attempt still counts toward `failedAgentCount`/' +
+        '`agentFailures` (`reason:\'aborted\'`) even though it is not a genuine gateway failure. An agent() whose ' +
         'ONLY effect is its return value (e.g. a pure-text or `schema`-validated response) is safe to ' +
         're-dispatch this way; one that also performs a non-idempotent side effect through an MCP ' +
         'tool or Bash (writing a row, sending a message, charging something) may perform that effect ' +
