@@ -205,3 +205,81 @@ describe('register() surfaces VALUE_MISMATCH / COLLAPSED_EDGE as their own .code
     await expect(cat.register({ name: 'b2a-collapsed', script, mermaid })).rejects.toMatchObject({ code: 'COLLAPSED_EDGE' });
   });
 });
+
+// Issue #154 B1-B4 (2026-10-07 reverify): a static registration rule added AFTER a version was
+// already stored never retroactively applied to it — a fresh registration of a script is refused,
+// but the ALREADY-STORED row of an equivalent script (seeded directly against the db, the same
+// "already-migrated cohort" raw-insert pattern catalog-v24.test.ts/catalog-versions.test.ts use —
+// `register()` itself cannot produce such a row, since it always runs the CURRENT rule set) keeps
+// reproducing the original bug at dispatch. `validateStoredVersion` is the fix: re-run the same
+// static checks against the STORED script, called from every real admission door.
+describe('validateStoredVersion() — re-validates an ALREADY-STORED version against the CURRENT rule set (#154 B1-B4)', () => {
+  function seedRawVersion(workRoot: string, name: string, version: string, script: string): void {
+    const db = new Database(join(workRoot, 'catalog.db'));
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)').run(name, now, version);
+    db.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run(name, version, script, now);
+    db.close();
+  }
+
+  it('a stored row whose script now fails the #154 NEW-HIGH scan rule (allowedTools via a variable) is NOT_RUNNABLE', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-stale-'));
+    const cat = new WorkflowCatalog(workRoot); // creates the schema
+    const script =
+      "export const meta = { phases: [] };\n" +
+      "const tools = ['Bash', 'Write'];\n" +
+      "return await agent('a', { prompt: 'x', allowedTools: tools });";
+    seedRawVersion(workRoot, '154-stale-scan', 'v1', script);
+    const result = await cat.validateStoredVersion('154-stale-scan', 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('NOT_RUNNABLE');
+      expect(result.detail?.['violation']).toBe('AGENT_OPTS_VALUE_NOT_LITERAL');
+    }
+  });
+
+  it('a stored row whose script still passes every current check is ok:true', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-healthy-'));
+    const cat = new WorkflowCatalog(workRoot);
+    const script = "export const meta = { phases: [] };\nreturn 1;";
+    seedRawVersion(workRoot, '154-healthy', 'v1', script);
+    const result = await cat.validateStoredVersion('154-healthy', 'v1');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('a script that no longer even PARSES (B1) is also NOT_RUNNABLE, not a crash', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-parse-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, '154-badparse', 'v1', 'this is not { valid javascript at all (((');
+    const result = await cat.validateStoredVersion('154-badparse', 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('NOT_RUNNABLE');
+  });
+
+  it('memoizes per (name, version) — a second call does not re-read the row (mutating the script between calls does not change the verdict)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-memo-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, '154-memo', 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const first = await cat.validateStoredVersion('154-memo', 'v1');
+    expect(first).toEqual({ ok: true });
+    // Mutate the stored script directly to something that would now fail — a real version row is
+    // immutable (ADR-025), so this simulates "impossible in practice" only to prove the cache, not
+    // a reachable state.
+    const db = new Database(join(workRoot, 'catalog.db'));
+    db.prepare('UPDATE workflow_versions SET script = ? WHERE name = ? AND version = ?').run('not valid js (((', '154-memo', 'v1');
+    db.close();
+    const second = await cat.validateStoredVersion('154-memo', 'v1');
+    expect(second).toEqual({ ok: true }); // still the cached, first verdict
+  });
+
+  it('does not re-check mermaid/diagram-grammar rules — a v1-contract diagram shape never refuses here', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-mermaid-'));
+    const cat = new WorkflowCatalog(workRoot);
+    // No phase()/agent() calls, no meta.phases at all — would fail v39's PHASES_REQUIRED at a
+    // FRESH registration, and would never have passed checkMermaid's v2 grammar either; a row this
+    // shaped is exactly what a pre-v26/pre-v39 grandfathered row looks like.
+    seedRawVersion(workRoot, '154-mermaid', 'v1', "return 1;");
+    const result = await cat.validateStoredVersion('154-mermaid', 'v1');
+    expect(result).toEqual({ ok: true });
+  });
+});

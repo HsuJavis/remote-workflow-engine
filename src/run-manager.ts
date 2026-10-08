@@ -1057,6 +1057,19 @@ export class RunManager {
           { workflow: spec.name, version: resolvedVersion },
         );
       }
+      // issue #154 B1-B4 (2026-10-07 reverify): a static registration rule added AFTER this
+      // version was registered (e.g. the #154 NEW-HIGH `allowedTools`-via-variable scan violation)
+      // never retroactively re-checked an already-stored row — only a FRESH registration was
+      // refused, so an old version kept `runnable:true` and kept reproducing the original bug at
+      // dispatch. Checked AFTER LEGACY_REREGISTER (a pre-v24 row has no `params` at all and would
+      // fail this for the unrelated reason of predating the contract entirely — LEGACY_REREGISTER
+      // is the right code for that, not NOT_RUNNABLE).
+      {
+        const staleness = await this._catalog.validateStoredVersion(spec.name, resolvedVersion);
+        if (!staleness.ok) {
+          throw codedError(staleness.code, staleness.message, staleness.detail);
+        }
+      }
       // issue #103(a): the admission-time provisioning refusal — BEFORE any durable work (seed
       // materialization, createRun, workspace mkdir), same as every other admission check above.
       // Covers run_start, every schedule/webhook firing (both dispatch through this SAME door), and
@@ -1404,6 +1417,18 @@ export class RunManager {
     // `stopped` is excluded (issue #94) and already refused above — never reachable here.
     if (entry.status !== 'suspended' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
+    }
+    // issue #154 B1-B4 (2026-10-07 reverify): same re-validation `start()` applies, against
+    // whichever version will ACTUALLY run this resume — the legacy-substitution replacement when
+    // one occurred, else the pin. Placed in `resume()` itself (never `_requireLive`, which
+    // `suspend()`/`stop()` also call) for the same R5-F1 reason the confinement/legacy-substitution
+    // refusal above is: a run that newly fails a static rule must still be stoppable.
+    if (entry.name !== undefined) {
+      const versionToRun = entry.legacySubstitution?.resolved ?? entry.pinnedVersion;
+      const staleness = await this._catalog.validateStoredVersion(entry.name, versionToRun);
+      if (!staleness.ok) {
+        throw codedError(staleness.code, staleness.message, staleness.detail);
+      }
     }
     // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH): `_requireLive` never restores a redaction
     // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
@@ -2295,6 +2320,16 @@ export class RunManager {
         `LEGACY_REREGISTER: nested workflow '${name}' version ${registered.version} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
         { workflow: name, version: registered.version },
       );
+    }
+    // issue #154 B1-B4 (2026-10-07 reverify): same re-validation start()/resume() apply, against
+    // the CHILD's own resolved version — a nested workflow() dispatches WITHOUT ever passing
+    // through start(), so without this a parent could compose an old, now-rule-violating child
+    // version this same engine would refuse to run directly.
+    {
+      const staleness = await this._catalog.validateStoredVersion(name, registered.version);
+      if (!staleness.ok) {
+        throw codedError(staleness.code, staleness.message, staleness.detail);
+      }
     }
     // issue #103(a): the nested frame's OWN admission-time provisioning refusal — same door, same
     // resolver as `start()`'s (`_refuseUnprovisionedAssets`), checked against the CHILD's own

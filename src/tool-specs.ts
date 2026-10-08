@@ -728,6 +728,11 @@ export const TOOL_SPECS = [
     // review round 4 (R4-1): PROVIDER_UNSUPPORTED_BY_HARNESS joined this row — only reachable under
     // gateway:"pi" (harnessProviders set), when _refuseUnadmittableParams's checkModelRef gate finds
     // a reachable model this harness cannot dispatch (run-manager.ts).
+    // issue #154 B1-B4 (2026-10-07 reverify): NOT_RUNNABLE is now actually thrown, not merely
+    // documented — a static registration rule added AFTER this version was registered (e.g. an
+    // allowedTools-via-variable scan violation) is re-checked HERE, on every run_start, against the
+    // resolved version's STORED script; `detail.violation` names the specific rule that now fails.
+    // `workflow_list`/`workflow_describe`'s own `runnable`/`runnableReason` reflect the same check.
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     // Service accounts spec: run_start has no ownership subject of its own (ownership:'none' —
@@ -818,7 +823,11 @@ export const TOOL_SPECS = [
     // review round 4 (R4-1): PROVIDER_UNSUPPORTED_BY_HARNESS joined this row — run-manager.ts's own
     // review-L2 resume-time re-check (a run admitted under gateway:"sdk" can be resumed after the
     // deployment switched to gateway:"pi", which cannot dispatch an anthropic/* ref it was pinned to).
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    // issue #154 B1-B4 (2026-10-07 reverify): NOT_RUNNABLE joined this row — a static registration
+    // rule added after this run's pinned (or legacy-substituted) version was registered is
+    // re-checked on every resume, not only at a fresh run_start; see run_start's own errors row for
+    // the full NOT_RUNNABLE contract.
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'NOT_RUNNABLE', 'PARAM_SECRET_UNAVAILABLE', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {

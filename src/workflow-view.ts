@@ -134,7 +134,10 @@ export interface WorkflowDescribeView {
   // issue #93 item 3: `'CONFINEMENT_UNAVAILABLE'` joins the union — a version that would otherwise
   // run (published, non-legacy contract) but that `RunManager.start()` would actually refuse on
   // THIS host for THIS caller (see `projectWorkflowDescribe`'s own `ctx.confinementPosture` doc).
-  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | null;
+  // issue #154 B1-B4 (2026-10-07 reverify): `'NOT_RUNNABLE'` joins the union — a static
+  // registration rule added AFTER this version was registered now refuses it (see
+  // `ctx.notRunnable`'s own doc below).
+  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE' | null;
 }
 
 // Transcribed LITERALLY from WorkflowDescribeView's own top-level field list (same convention as
@@ -218,6 +221,14 @@ export function projectWorkflowDescribe(
     // just the release version (or `[]` when there is none) and `channels.beta` to `null` — the
     // SAME two fields `McpFacade.workflowList`'s per-row projection masks, same reasoning.
     viewerIsOwner?: boolean;
+    // issue #154 B1-B4 (2026-10-07 reverify): true when `catalog.validateStoredVersion(full.name,
+    // full.version)` found this STORED version no longer passes a current static registration
+    // rule — computed by the caller (`McpFacade.workflowDescribe`, which has the async catalog
+    // access this function deliberately stays pure/sync without), same convention as
+    // `confinementPosture`/`isRemoteSubmission`/`registeredRemote` above. Omitted/`false` means
+    // "no newer rule refuses it" (every pre-existing call site, which predates this check, keeps
+    // compiling and keeps its prior behaviour unchanged).
+    notRunnable?: boolean;
   },
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
@@ -246,13 +257,19 @@ export function projectWorkflowDescribe(
     posture: ctx.confinementPosture,
     origin: ctx.isRemoteSubmission || ctx.registeredRemote ? 'remote' : 'local',
   }) !== null;
+  // issue #154 B1-B4: `notRunnable` slots in AFTER legacy/published — both of those are thrown by
+  // `catalog.resolve()`/the contract check well before `RunManager.start()` ever reaches admission
+  // — and BEFORE confinement, which `start()` defers and throws LAST, past every other admission
+  // check including this one.
   const runnableReason: WorkflowDescribeView['runnableReason'] = legacy
     ? 'LEGACY_REREGISTER'
     : !published
       ? 'CHANNEL_UNPUBLISHED'
-      : confinementRefused
-        ? 'CONFINEMENT_UNAVAILABLE'
-        : null;
+      : ctx.notRunnable
+        ? 'NOT_RUNNABLE'
+        : confinementRefused
+          ? 'CONFINEMENT_UNAVAILABLE'
+          : null;
   const mermaid = full.mermaid ?? null;
   // Owner follow-up: masked for anyone who is not the owner/bypass/ownerless-row (`viewerIsOwner
   // === false`, the ONLY value that turns masking on — `undefined` stays full-visibility, see the

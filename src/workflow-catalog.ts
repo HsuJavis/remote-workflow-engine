@@ -274,6 +274,12 @@ export class WorkflowCatalog {
   private readonly _ceilings?: Ceilings;
   /** v36 (DES-243, TASK-241): audit-line sink; TASK-242/244 call it. */
   private readonly _eventSink: EventSink;
+  /** Issue #154 B1-B4: `validateStoredVersion`'s memoization — keyed `${name}@${version}`. A
+   *  version row is immutable (ADR-025) and the static checks re-run have no other input, so the
+   *  verdict can never change for the same key within one process's lifetime; a rule change only
+   *  takes effect on the next process start (the same boundary every other registration-time check
+   *  already has — nothing re-scans a stored row mid-process today). */
+  private readonly _stalenessCache = new Map<string, { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> }>();
 
   constructor(workRoot: string, clock?: Clock, opts?: WorkflowCatalogOpts) {
     this._workRoot = workRoot;
@@ -1261,6 +1267,90 @@ export class WorkflowCatalog {
    *  PARSE_ERROR-only now. */
   validateCurrent(script: string): ReturnType<typeof validateScriptEntry> {
     return validateScriptEntry(script);
+  }
+
+  /** Issue #154 B1-B4 (2026-10-07 reverify): a static registration rule added AFTER a version was
+   *  already registered never retroactively applied to it — only a FRESH `register()` call ran the
+   *  current rule set (`validateRegistration`'s own pinned pipeline below), so an old row kept
+   *  `runnable:true` and kept reproducing whatever bug the new rule exists to catch, forever. This
+   *  re-runs the SAME three STATIC, rule-only checks `validateRegistration` applies to a fresh
+   *  script — against an ALREADY-STORED version's script — called from every real dispatch door
+   *  (`run_start`, `run_resume`, a nested `workflow()` call) so a stale row is refused with a coded
+   *  error instead of silently dispatching the exact bug a newer rule was written to close.
+   *
+   *  Deliberately NOT re-checked (both documented here, not merely by omission):
+   *    - Name validity (`isValidBareName`) — the row's name is immutable; re-checking it can never
+   *      produce a different verdict than it did at registration.
+   *    - Mermaid/diagram-grammar (`checkMermaid`'s v2 rules) — `diagramContract:'v1'` rows are
+   *      EXPLICITLY grandfathered (ADR-025/DES-184); retroactively imposing v26's diagram grammar
+   *      on every pre-v26 row would mass-invalidate a large fraction of an existing fleet for a
+   *      presentation concern this gap has nothing to do with.
+   *    - `TOOL_UNSUPPORTED_BY_HARNESS` — depends on the LIVE deployment's `catalog.harnessProviders`
+   *      (gateway:"pi" vs "sdk"), not on anything about the stored row; re-checking it here would
+   *      make a row's runnability flap on an unrelated gateway config change.
+   *    - Live model-existence (`checkModelRef` against a real openrouter/ollama catalog fetch) —
+   *      `parseMetaParams` below is called with `EMPTY_MODEL_CATALOG` (no live catalog), the SAME
+   *      "unavailable — accepted without verification" path `checkModelRef` already takes for a
+   *      cold/unreachable provider — for the same flapping reason as the harness check above: a
+   *      model vanishing from a provider's live listing tomorrow must not retroactively refuse a
+   *      row that passed yesterday. Only the STATIC shape/bound checks (declared type/enum/min/max,
+   *      locked-key, anthropic static price table) still run.
+   *
+   *  Memoized per (name,version) in `_stalenessCache` — see that field's own doc. */
+  async validateStoredVersion(name: string, version: string): Promise<{ ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> }> {
+    const cacheKey = `${name}@${version}`;
+    const cached = this._stalenessCache.get(cacheKey);
+    if (cached) return cached;
+    const row = this._db
+      .prepare('SELECT script FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, version) as { script: string } | undefined;
+    // Every real caller has already resolved (name, version) through `resolve()` immediately
+    // before calling this — an absent row here would mean the row vanished between that resolve
+    // and this call, which `register()`/`deregisterVersion()`'s own transactional semantics make
+    // unreachable in practice. Fail OPEN (not a fabricated refusal for a row this method cannot
+    // even examine) rather than invent a verdict about content it never saw.
+    if (!row) return { ok: true };
+    const result = this._computeStoredVersionValidity(row.script);
+    this._stalenessCache.set(cacheKey, result);
+    return result;
+  }
+
+  /** The three re-run checks, PINNED to the same relative order `validateRegistration` uses for
+   *  them (`validateScriptEntry` → `scanAgentCalls` → `parseMetaParams`), stopping at the first
+   *  failure — same "first error wins, the rest never run" convention every other registration-time
+   *  check in this file already follows. */
+  private _computeStoredVersionValidity(script: string): { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> } {
+    const scriptCheck = validateScriptEntry(script);
+    if (!scriptCheck.ok) {
+      const first = scriptCheck.errors[0]!;
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version no longer passes registration-time validation (${first.code}: ${first.message}) — re-register it to fix or confirm the script`,
+        detail: { violation: first.code, ...first.detail },
+      };
+    }
+    const scan = scanAgentCalls(script);
+    if (scan.violations.length > 0) {
+      const v = scan.violations[0]!;
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version no longer passes registration-time validation (${v.code}: ${v.hint}, line ${v.line}) — re-register it to fix or confirm the script`,
+        detail: { violation: v.code, line: v.line, ...(v.key !== undefined ? { key: v.key } : {}) },
+      };
+    }
+    // EMPTY_MODEL_CATALOG — see this method's own doc for why no live catalog is passed here.
+    const paramsResult = parseMetaParams(script, EMPTY_MODEL_CATALOG);
+    if (!paramsResult.ok) {
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version no longer passes registration-time validation (${paramsResult.code}: ${paramsResult.message}) — re-register it to fix or confirm the script`,
+        detail: { violation: paramsResult.code, ...paramsResult.detail },
+      };
+    }
+    return { ok: true };
   }
 
   /** v22 (DES-111, REQ-097): moves a named channel pointer to an already-registered version.
