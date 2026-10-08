@@ -825,7 +825,13 @@ export function scanAgentCalls(script: string): AgentCallScan {
         } else if (!Object.hasOwn(AGENT_OPT_KEYS, key)) {
           // v25 (#55, adjudication #9 I-1.4). `Object.hasOwn`, not `key in` — `constructor` and
           // `toString` are `in` every object literal and would be waved through.
-          const nearMiss = AGENT_OPT_NEAR_MISSES[key];
+          // 2026-10-08 integration (rv) fix (cosmetic): same `Object.hasOwn` discipline extended to
+          // this lookup itself — a `__proto__`/`constructor`/`toString` KEY (already refused above
+          // via the SAME hasOwn check against `AGENT_OPT_KEYS`) used to resolve
+          // `AGENT_OPT_NEAR_MISSES[key]` onto an inherited `Object.prototype` member, producing the
+          // nonsensical hint "did you mean '[object Object]'?" (or similar) instead of the correct
+          // "not an agent() option" wording every other unknown key gets.
+          const nearMiss = Object.hasOwn(AGENT_OPT_NEAR_MISSES, key) ? AGENT_OPT_NEAR_MISSES[key] : undefined;
           const lead = nearMiss !== undefined
             ? `'${key}' is not an agent() option — did you mean '${nearMiss}'?`
             : `'${key}' is not an agent() option.`;
@@ -870,7 +876,15 @@ export function scanAgentCalls(script: string): AgentCallScan {
  *  empty-string placeholder `AGENT_LABEL_NOT_LITERAL`/`AGENT_LABEL_REQUIRED` produces) has no entry
  *  at all — the caller must fail CLOSED on a missing label, never treat it as "no constraint". */
 export function expectedAgentOptsByLabel(script: string): Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> {
-  const out: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> = {};
+  // 2026-10-08 integration (rv) fix: a null-prototype object — `call.label` only has to match
+  // `scanAgentCalls`'s label grammar (`/^[A-Za-z_][\w-]*$/`), which admits 'constructor'/
+  // '__proto__'/'toString' as syntactically valid labels (`agent('__proto__', {...})` registers
+  // fine). `out['__proto__'] ??= []` on a PLAIN object never creates an own property at all — the
+  // bracket GET returns the live `Object.prototype` (truthy, so `??=` never assigns), and `.push`
+  // on it then throws. A null-prototype object has no inherited `__proto__`/`constructor`/
+  // `toString` accessor to collide with, so every label — including these three — becomes a real
+  // own property, exactly like any other.
+  const out: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> = Object.create(null);
   for (const call of scanAgentCalls(script).calls) {
     if (call.label === '') continue;
     const entry: { allowedTools: string[] | 'absent'; bash?: 'readonly' } = {

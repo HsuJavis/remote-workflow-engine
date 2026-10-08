@@ -2684,8 +2684,18 @@ export class RunManager {
       // `agent('do-T', { label: 'T' })` — found no scanned entry and failed CLOSED with
       // AGENT_OPTS_TAMPERED on every dispatch, tampered or not.
       {
+        // `Object.hasOwn`, not a bare `?.[...]` index — `positional` matches
+        // `/^[A-Za-z_][\w-]*$/` (scanAgentCalls's own label grammar), which admits
+        // 'constructor'/'__proto__'/'toString' as syntactically valid labels; a bracket lookup for
+        // one of those on a plain `toolSurface` object would resolve to a real `Function`/
+        // `Object.prototype` value instead of `undefined`, which `matchesScannedOpts` (expecting an
+        // array or `undefined`) would then throw on (`scanned.length`/`scanned.some` on a function)
+        // — an uncaught crash BEFORE `markRunning`, below. `Object.hasOwn` means "no scanned entry",
+        // the same fail-closed outcome `matchesScannedOpts(undefined, …)` already returns for any
+        // other never-scanned label.
         const toolSurface = frameToolSurface ?? entry.toolSurface;
-        if (!matchesScannedOpts(toolSurface[positional], rawOpts.allowedTools, rawOpts.bash)) {
+        const scanned = Object.hasOwn(toolSurface, positional) ? toolSurface[positional] : undefined;
+        if (!matchesScannedOpts(scanned, rawOpts.allowedTools, rawOpts.bash)) {
           const detail =
             `AGENT_OPTS_TAMPERED: the dispatched allowedTools/bash for agent() call '${label}' ` +
             "does not match any options literal this script's registered scan recorded for that " +
@@ -2712,8 +2722,29 @@ export class RunManager {
       // same as before this task.
       // A nested workflow() frame passes its CHILD version's snapshot as `frameParams` (see
       // `_handleWorkflowRequest`); a top-level call passes none and reads the run's own.
+      // MAJOR (security, 2026-10-07 reverify of #154): keyed by `positional`, NEVER
+      // `key.opts.label` — the exact same `label`-vs-`positional` decoupling 20cff09 already
+      // explains a few lines above (`opts.label` is a purely cosmetic run-tracking name;
+      // `positional` is the literal first argument the admission snapshot's per-label slices are
+      // actually keyed by, `meta.params.agents.<positional>`). Before this fix, `agent('a', {
+      // label: 'b', ... })` — the single most common agent() shape in this codebase's own fixtures
+      // — resolved 'b's model/effort/timeoutMs/appendPrompt onto an 'a' call that had already been
+      // tamper-checked (above) against 'a's OWN tool surface: a caller-controlled `label` string
+      // picked ANOTHER agent's dispatch config while the host believed it was still enforcing 'a's.
+      // `Object.hasOwn`, not a bare `?.[...]` index — a plain object's bracket lookup consults the
+      // prototype chain, so `positional` (or, pre-fix, `label`) of 'constructor'/'__proto__'/
+      // 'toString' resolved to a real `Function`/`Object.prototype` value (truthy, not undefined),
+      // which this block then destructured (`labelParams.model` etc.) — harmless by itself, but
+      // `labelParams.provenance` came back `undefined`, and `composeEffectivePrompt` (agent-
+      // executor.ts) immediately reads `runParams.provenance.appendPrompt` with no guard, throwing
+      // a TypeError AFTER `markRunning` (below) had already recorded this agent as 'running' — the
+      // exact "stuck running" LOW finding. `Object.hasOwn` means "no entry" for every one of those
+      // three names (none is ever a REAL own key `defaultRunParams` writes), so this now falls
+      // through to `baseParams` exactly like any other label with no per-agent slice at all.
       const baseParams = frameParams ?? entry.effectiveParams;
-      const labelParams = key.opts.label ? baseParams.agents?.[key.opts.label] : undefined;
+      const labelParams = baseParams.agents !== undefined && Object.hasOwn(baseParams.agents, positional)
+        ? baseParams.agents[positional]
+        : undefined;
       const runParams: RunParams = labelParams
         ? { ...baseParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
         : baseParams;
@@ -2731,7 +2762,10 @@ export class RunManager {
       // never the parent run's `entry.declaredAssets`/`entry.name`, which belong to another
       // workflow entirely. A top-level call passes none and reads the run's own registration.
       const assetScope = frameAssets ?? (entry.name !== undefined ? { workflow: entry.name, declared: entry.declaredAssets } : undefined);
-      const declared = key.opts.label && assetScope !== undefined ? assetScope.declared[key.opts.label] : undefined;
+      // MAJOR (security, 2026-10-07 reverify of #154): same `positional`-not-`label` fix as
+      // `labelParams` above — this is the OTHER half of the same bug (REQ-113's declared
+      // skills/mcp scope), closed the same way, for the same reason.
+      const declared = assetScope !== undefined && Object.hasOwn(assetScope.declared, positional) ? assetScope.declared[positional] : undefined;
       const assets = assetScope !== undefined && declared !== undefined
         ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, assetScope.workflow), declared, workflow: assetScope.workflow }
         : undefined;
@@ -2793,6 +2827,24 @@ export class RunManager {
           entry.refusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
         } else {
           entry.refusalsDropped++;
+        }
+      }
+      // 2026-10-08 integration (rv) fix: the general "never stuck running" guarantee — every OTHER
+      // refusal in this method (BUDGET_EXCEEDED, AGENT_OPTS_TAMPERED above) explicitly calls
+      // `markRefused` itself before throwing, but an exception thrown from DEEPER inside
+      // `entry.spawner.run()` — after `markRunning` above already flipped this agentId's live
+      // record to 'running' — reaches only this generic catch, which until now never touched the
+      // record at all. Confirmed live: a synchronous gateway failure recorded `run_status.agents`
+      // with `state:'running'` on an already-`failed` run (the `agent_live_at_terminal` EngineWarning
+      // fires on exactly this gap — see `_transition`'s own doc — but nothing upstream of it ever
+      // corrected the record a client reads before that snapshot is even taken). Finalizes the SAME
+      // way `markRefused` already does for the named-refusal cases above, using the error's own code
+      // when it's a recognized `ErrorCode`, else `INTERNAL_ERROR` (`toErrorCode`'s own fallback) — a
+      // record already terminal (done/failed/refused) is never touched twice.
+      if (entry.spawner instanceof AgentExecutor) {
+        const record = entry.spawner.getRecord(agentId);
+        if (record !== undefined && (record.state === 'queued' || record.state === 'running')) {
+          await entry.spawner.markRefused(runId, agentId, toErrorCode(code), this._clock.isoNow());
         }
       }
       throw err;
