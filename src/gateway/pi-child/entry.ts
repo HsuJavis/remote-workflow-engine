@@ -15,6 +15,7 @@ import { buildBashEnv, isWrapped } from './bash-env.ts';
 import { isPathContained, resolveLanding } from '../../path-containment.ts';
 import { resolveRipgrepOverride } from './ripgrep-override.ts';
 import { runPiPathProbe } from './pi-path-probe.ts';
+import { createStdoutFlusher } from './stdout-flusher.ts';
 import type { PiChildConfig, PiChildEvent } from './protocol.ts';
 
 // Composition, per the "rwe sandbox child .ts imports" memory note: session-runner.ts (which gets
@@ -26,10 +27,6 @@ import type { PiChildConfig, PiChildEvent } from './protocol.ts';
 // injection), never imported a second time inside session-runner.ts.
 const deps = { isPathContained, buildBashEnv, isWrapped, resolveLanding, resolveRipgrepOverride };
 
-function emit(event: PiChildEvent): void {
-  process.stdout.write(JSON.stringify(event) + '\n');
-}
-
 // issue #158 F4 (defense in depth, same bug class as #162 B / #163 B1): a write to `process.stdout`
 // when it is a PIPE (always true here — the parent spawns this child with `stdio: ['pipe','pipe',
 // 'pipe']`) can be queued internally rather than completing synchronously (empirically confirmed: a
@@ -39,29 +36,30 @@ function emit(event: PiChildEvent): void {
 // channel). The PARENT-side fix above (waiting for `child.stdout`'s own 'end' before concluding no
 // result arrived) covers the ordinary case — an ordinary-sized line that already reached the OS pipe
 // before 'exit' fires is just delayed, not lost — but a genuinely large final line (a long tool
-// result/response) could still be torn down mid-write. `writableLength === 0` means every write so
-// far has already handed its data to the OS; otherwise wait for 'drain', bounded so a parent that
-// stopped reading entirely (already gone) can't hang this child forever.
+// result/response) could still be torn down mid-write.
 //
-// Same fix-of-the-fix as `child-entry.ts`'s `SEND_FLUSH_TIMEOUT_MS` (issues #158 F4 / #163 B1 /
-// #162 B): 'drain' is the PRIMARY, deterministic signal and fires whenever the OS pipe has actually
-// taken the buffered data; a real-engine check under concurrent load showed the PARENT stalling for
-// 6-8+ seconds under its own fork/event-loop contention, which the old 2000ms bound mistook for "the
-// parent is gone" and tore this child down mid-write anyway. This bound is now a dead-parent valve
-// only, not a flush deadline. 'error'/'close' on stdout (a parent that actually died — EPIPE)
-// resolve immediately rather than waiting out the bound.
+// 2026-10-08 integration (rv) latency fix (reverify, same bug class): this used to wait for stdout's
+// own 'drain' event when `writableLength > 0` — but 'drain' fires ONLY when a `write()` call itself
+// returned `false` (the buffer crossed its highWaterMark, >=16KiB by default), so a SMALL final line
+// queued behind an already-full OS pipe buffer left `writableLength > 0` with no 'drain' ever
+// coming. A child holding any OTHER live handle (MCP, srt) then sat out the full 60s bound even
+// though its data had already reached the OS — latency only, nothing lost (the parent still got the
+// line once it stalled through to drain its own end, or the bound finally fired). Fixed the same way
+// `child-entry.ts`'s `rawSend` already fixes the analogous IPC case: `stdout-flusher.ts` tracks the
+// LATEST `write()`'s own completion callback — the one deterministic "reached the OS" signal — and
+// `flushStdout()` waits on THAT instead. `STDOUT_DRAIN_TIMEOUT_MS` is now a dead-parent valve only,
+// never a flush deadline: it never fires under ordinary contention (the write callback already
+// resolves by then). 'error'/'close' on stdout (a parent that actually died — EPIPE) still resolve
+// immediately rather than waiting out the bound (`stdout-flusher.ts`'s own doc).
 const STDOUT_DRAIN_TIMEOUT_MS = 60_000;
+const stdoutFlusher = createStdoutFlusher(process.stdout, STDOUT_DRAIN_TIMEOUT_MS);
+
+function emit(event: PiChildEvent): void {
+  stdoutFlusher.write(JSON.stringify(event) + '\n');
+}
+
 function flushStdout(): Promise<void> {
-  return new Promise((resolve) => {
-    if (process.stdout.writableLength === 0) { resolve(); return; }
-    let done = false;
-    const finish = (): void => { if (!done) { done = true; resolve(); } };
-    const bound = setTimeout(finish, STDOUT_DRAIN_TIMEOUT_MS);
-    bound.unref?.();
-    process.stdout.once('drain', () => { clearTimeout(bound); finish(); });
-    process.stdout.once('error', () => { clearTimeout(bound); finish(); });
-    process.stdout.once('close', () => { clearTimeout(bound); finish(); });
-  });
+  return stdoutFlusher.flush();
 }
 
 /** Emits the event, then waits for it (and anything still queued ahead of it) to actually reach the
@@ -87,7 +85,9 @@ async function runProbe(): Promise<void> {
     }),
     resolveRipgrepOverride,
   );
-  process.stdout.write(JSON.stringify(result) + '\n');
+  // Routed through `stdoutFlusher` (not a bare `process.stdout.write`) — same reason as every other
+  // write in this file: `flushStdout()` below only waits on a write it is actually tracking.
+  stdoutFlusher.write(JSON.stringify(result) + '\n');
   // issue #158 F4 (defense in depth, same bug class): see `flushStdout`'s own doc — this probe result
   // line is written and this process exits immediately, exactly the shape that can truncate.
   await flushStdout();
