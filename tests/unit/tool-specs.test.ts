@@ -257,6 +257,24 @@ describe('advertised tool descriptions state the v35 omission semantics (DES-239
       expect(desc).toMatch(/forge/i);
     }
   });
+
+  // #160 DOC-1 (2026-10-07 re-verification): the "agent() calls that fail or time out still resolve
+  // null to the script" sentence, as originally written, read as covering EVERY failure reason —
+  // but reason:'aborted' structurally cannot resolve anything to the script (the run is suspended
+  // mid-call; a resume re-dispatches a brand-new agentId from scratch, and only THAT call's eventual
+  // outcome ever resolves to the script). The description must carve 'aborted' out of that claim,
+  // while still stating the aborted attempt itself counts in failedAgentCount/agentFailures.
+  it('run_status/run_result carve "aborted" out of the "resolves null to the script" claim, and say it still counts as a failure', () => {
+    const runStatus = projectToolsList().find((t) => t.name === 'run_status')!.description;
+    const runResult = projectToolsList().find((t) => t.name === 'run_result')!.description;
+    for (const desc of [runStatus, runResult]) {
+      expect(desc).toMatch(/aborted/i);
+      // the carve-out must sit near the "resolve null" claim, not just mention "aborted" elsewhere
+      // (run_status already names 'aborted' in the agentFailures reason enum, which is not enough).
+      expect(desc).toMatch(/aborted[^.]*(never resolv|not resolving|does not resolv|cannot resolv)|re-?dispatch(ed|es)? a (brand-)?new agentId[^.]*aborted/i);
+      expect(desc).toMatch(/aborted[^.]*(failedAgentCount|agentFailures|AGENT_FAILED|aborted attempt included)/i);
+    }
+  });
 });
 
 // v36 (DES-245, TASK-243, REQ-213/212): the guard that keeps `run.terminal`'s omission of
