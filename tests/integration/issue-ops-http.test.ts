@@ -32,6 +32,7 @@ describe('issue read/reply tools over the real MCP HTTP surface (REQ-031..034)',
     async getComments(number) { return number === 3 ? COMMENTS : null; },
     async createComment(number, body) { if (number !== 3) return null; posted.push({ number, body }); return { commentId: 77, url: 'https://x/3#c77' }; },
     async findOpenByFingerprint() { return null; },
+    async reopenIssue(number, reason) { if (number !== 3) return null; posted.push({ number, body: reason }); return { commentId: 78, url: 'https://x/3#c78' }; },
   };
 
   beforeAll(async () => {
@@ -113,6 +114,7 @@ describe('GET /api/issues — Issues dashboard list API (REQ-067)', () => {
     async getComments() { return [] as CommentView[]; },
     async createComment() { return { commentId: 1, url: 'https://x/1#c1' }; },
     async findOpenByFingerprint() { return null; },
+    async reopenIssue() { return { commentId: 2, url: 'https://x/1#c2' }; },
   };
 
   beforeAll(async () => {

@@ -4,6 +4,14 @@
 // issue_report — de-dup (REQ-035) and runId diagnostics enrichment (REQ-036).
 // v11 slice (REQ-066): version autofill — resolveEngineVersion; renderIssueBody always renders
 // all five Environment fields; IssueReportInput.version (caller-supplied wins).
+// issue #164: issue_reopen — a hidden `<!-- rwe-reporter:<actor> -->` marker (renderIssueBody,
+// alongside the existing `<!-- rwe-fp:<fp> -->` dedup marker) records WHO filed the report, so
+// `IssueReporter.reopen()` can authorize "the issue's original reporter, or an admin" without a
+// second store: the actor is parsed back out of the issue body it is already fetching. `actor` is
+// threaded as a SEPARATE parameter to `report()`, never through `IssueReportInput` — that type is
+// the caller-supplied MCP tool args, which call-tool.ts passes through with undeclared keys
+// forwarded verbatim (issue #107); a `reporter` field living there would be a caller-forgeable
+// identity claim.
 // A connected client/agent supplies a pre-analyzed, structured problem report; this files ONE GitHub
 // issue into the engine's own repo with an agent-consumable body — the intake side of a future
 // "report -> agent solves it" flow. Parent-side only: the GitHub token is read from the server-side
@@ -124,6 +132,8 @@ export type IssueGetResult = { ok: true; issue: IssueView } | { ok: false; error
 export type IssueListResult = { ok: true; issues: IssueSummary[] } | { ok: false; error: IssueError };
 export type IssueCommentsResult = { ok: true; comments: CommentView[] } | { ok: false; error: IssueError };
 export type IssueCommentResult = { ok: true; commentId: number; url: string } | { ok: false; error: IssueError };
+/** issue #164. */
+export type IssueReopenResult = { ok: true; issueNumber: number } | { ok: false; error: IssueError };
 
 /** Injectable port over GitHub's Issues API — a fake in unit tests, the real bounded client in prod.
  *  Read methods that hit a non-existent issue return `null` (mapped to ISSUE_NOT_FOUND upstream)
@@ -136,6 +146,9 @@ export interface GithubIssueClient {
   createComment(number: number, body: string): Promise<{ commentId: number; url: string } | null>;
   /** REQ-035: the number of an OPEN issue carrying the given de-dup fingerprint, or null. */
   findOpenByFingerprint(fp: string): Promise<number | null>;
+  /** issue #164: PATCHes state:'open' then posts `reason` as a comment. Mirrors `createComment`'s
+   *  own 404 contract: an unknown issue number resolves to `null`, never a throw. */
+  reopenIssue(number: number, reason: string): Promise<{ commentId: number; url: string } | null>;
 }
 
 export interface IssueReporterConfig {
@@ -193,7 +206,7 @@ function workflowLabel(name: string): string {
  *  five Environment fields, using `_none_` as a placeholder for absent severity/component. */
 export function renderIssueBody(
   input: IssueReportInput,
-  meta: { version?: string; engineVersion?: string; nowIso: string; fp?: string; diagnostics?: string | null },
+  meta: { version?: string; engineVersion?: string; nowIso: string; fp?: string; diagnostics?: string | null; reporter?: string | null },
 ): string {
   const ver = meta.version ?? meta.engineVersion ?? 'unknown';
   const parts = [
@@ -233,7 +246,18 @@ export function renderIssueBody(
   parts.push(``, `---`, `_Filed by the remote-workflow-engine \`issue_report\` tool (agent-reported)._`);
   // REQ-035: hidden de-dup marker findOpenByFingerprint searches for (`in:body "rwe-fp:<fp>"`).
   if (meta.fp) parts.push(`<!-- rwe-fp:${meta.fp} -->`);
+  // issue #164: hidden reporter marker — `parseReporterMarker` reads it back to authorize
+  // issue_reopen. Omitted when there is no actor (auth-disabled / loopback-exempt dispatch),
+  // which simply means only an admin can later reopen it.
+  if (meta.reporter) parts.push(`<!-- rwe-reporter:${meta.reporter} -->`);
   return parts.join('\n');
+}
+
+/** issue #164: reads the `<!-- rwe-reporter:<actor> --> ` marker `renderIssueBody` stamps, or null
+ *  if the issue predates this marker (or was filed by no actor at all). */
+export function parseReporterMarker(body: string): string | null {
+  const m = /<!--\s*rwe-reporter:(.+?)\s*-->/.exec(body);
+  return m ? m[1]! : null;
 }
 
 /** Typed GitHub API failure — carried across the tool boundary as GITHUB_API_ERROR (REQ-030). */
@@ -387,6 +411,16 @@ export function createGithubIssueClient(opts: {
       const items = Array.isArray(json.items) ? (json.items as Array<Record<string, unknown>>) : [];
       return items.length ? (items[0].number as number) : null;
     },
+
+    // issue #164: PATCH state:'open' first, then post `reason` as a comment — a reopen with no
+    // comment would leave the "why" out of the issue's own history. 404 on EITHER call maps to
+    // null, same contract as createComment/getIssue above.
+    async reopenIssue(number, reason) {
+      const patchRes = await ghFetch('PATCH', `/repos/${opts.repo}/issues/${number}`, { state: 'open' });
+      if (patchRes.status === 404) return null;
+      if (!patchRes.ok) await fail(patchRes);
+      return this.createComment(number, reason);
+    },
   };
 }
 
@@ -418,7 +452,10 @@ export class IssueReporter {
     return { ok: false, error: { code, message: err instanceof Error ? err.message : String(err) } };
   }
 
-  async report(input: IssueReportInput): Promise<IssueReportResult> {
+  /** issue #164: `actor` is a SEPARATE parameter, never a field of `input` (see the file header's
+   *  own doc comment for why) — `null`/undefined (auth-disabled/loopback-exempt dispatch, or a
+   *  caller that passed none) omits the reporter marker entirely. */
+  async report(input: IssueReportInput, actor?: string | null): Promise<IssueReportResult> {
     // REQ-027: fail-fast validation — no partial/no-op GitHub call on a bad request.
     for (const field of REQUIRED_FIELDS) {
       const v = (input as unknown as Record<string, unknown>)[field];
@@ -447,6 +484,7 @@ export class IssueReporter {
       nowIso: (this.cfg.nowIso ?? (() => new Date().toISOString()))(),
       fp,
       diagnostics,
+      reporter: actor ?? null,
     });
     // REQ-029: fixed intake label + optional severity label so the solve-flow can query these.
     // v21 (REQ-095, DES-107): + optional workflow:<name> label, never existence-checked.
@@ -527,6 +565,34 @@ export class IssueReporter {
       const r = await this.resolveClient(tok.token).createComment(number, body);
       if (r === null) return { ok: false, error: { code: 'ISSUE_NOT_FOUND', message: `Issue not found: #${number}` } };
       return { ok: true, commentId: r.commentId, url: r.url };
+    } catch (err) {
+      return this.apiError(err);
+    }
+  }
+
+  /** issue #164: reopen a closed issue. Allowed for the issue's ORIGINAL reporter (the
+   *  `<!-- rwe-reporter:<actor> -->` marker on its body — `parseReporterMarker`) or an admin; anyone
+   *  else is refused `NOT_ISSUE_REPORTER` and nothing changes on GitHub. A missing issue is
+   *  `ISSUE_NOT_FOUND`, checked BEFORE authorization (same "read first, then decide" shape as
+   *  `postComment`'s own 404 mapping) — never discloses WHO reported a nonexistent issue.
+   *  `caller.isAdmin` bypasses the marker check entirely: an admin may reopen any issue, including
+   *  one filed before this marker existed (no reporter recorded at all). */
+  async reopen(number: number, reason: string, caller: { actor: string | null; isAdmin: boolean }): Promise<IssueReopenResult> {
+    const tok = this.resolveToken();
+    if (!tok.ok) return tok;
+    const client = this.resolveClient(tok.token);
+    try {
+      const issue = await client.getIssue(number);
+      if (issue === null) return { ok: false, error: { code: 'ISSUE_NOT_FOUND', message: `Issue not found: #${number}` } };
+      if (!caller.isAdmin) {
+        const reporter = parseReporterMarker(issue.body);
+        if (reporter === null || caller.actor === null || reporter !== caller.actor) {
+          return { ok: false, error: { code: 'NOT_ISSUE_REPORTER', message: `Only the original reporter of #${number} or an admin may reopen it` } };
+        }
+      }
+      const r = await client.reopenIssue(number, reason);
+      if (r === null) return { ok: false, error: { code: 'ISSUE_NOT_FOUND', message: `Issue not found: #${number}` } };
+      return { ok: true, issueNumber: number };
     } catch (err) {
       return this.apiError(err);
     }

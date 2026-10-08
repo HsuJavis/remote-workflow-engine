@@ -20,6 +20,7 @@ function fakeClient(over: Partial<GithubIssueClient> = {}): { client: GithubIssu
     async getComments() { return null; },
     async createComment() { return { commentId: 100, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42#issuecomment-100' }; },
     async findOpenByFingerprint() { return null; },
+    async reopenIssue() { return { commentId: 101, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42#issuecomment-101' }; },
     ...over,
   };
   return { calls, client };

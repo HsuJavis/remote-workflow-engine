@@ -33,7 +33,7 @@ import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-chi
 import type { EventSink } from '../event-log.js';
 import { PI_HARNESS_VERSION } from '../harness-info.js';
 import { materializeAssets, summarizeMcpInit } from './claude-agent-sdk-client.js';
-import { sweepPlantedConfig } from './project-config-guard.js';
+import { sweepPlantedConfig, prepareDispatchMountTargets } from './project-config-guard.js';
 import { resolveMcpConfigs, type ResolveMcpFn } from './mcp-config-resolver.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { SecretSource } from '../secret-resolver.js';
@@ -670,6 +670,21 @@ export class PiGatewayClient implements GatewayClient {
       plantedConfigRemoved = sweepPlantedConfig(workspace);
     } catch (err) {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `PLANTED_CONFIG_UNREMOVABLE: ${(err as Error).message} in the run workspace — refusing to start an agent that would load it` };
+    }
+    // Issue #148: pre-creates every `PROJECT_CONFIG_MOUNT_TARGETS` entry still missing under
+    // `workspace`, BEFORE this dispatch's child (and its Bash tool calls) can start — so two Bash
+    // calls pi-agent-core runs concurrently in one turn never race bwrap's lazy mount-point creation
+    // for the same still-missing denyWrite destination (e.g. `.claude/launch.json`). Scoped to the
+    // pi gateway only: pi's own ResourceLoader never reads `.claude/*` as config (see the comment
+    // just above), so pre-creating these as empty placeholders here changes nothing pi itself loads
+    // — unlike the sdk gateway, where the real Claude CLI DOES load `.claude/settings.json` as
+    // project config, and pre-creating it empty ahead of that load (rather than leaving it absent, as
+    // today) would be a behavior change this fix has not verified is safe there. Run AFTER the sweep
+    // above, matching `prepareReadonlyMountTargets`'s own ordering.
+    try {
+      prepareDispatchMountTargets(workspace);
+    } catch (err) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `DISPATCH_MOUNT_PREP_FAILED: ${(err as Error).message} in the run workspace — refusing to start an agent whose Bash denyWrite mount points could not be prepared` };
     }
     if (plantedConfigRemoved.length > 0) {
       this._eventSink({ kind: 'agent.planted_config_removed', runId: req.runId, agentId: req.agentId, attempt: 1, root: workspace, removed: plantedConfigRemoved });

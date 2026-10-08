@@ -5,7 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
@@ -422,7 +422,12 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
       expect(sent.skillPaths).toHaveLength(1);
       expect(sent.skillPaths[0].startsWith(ws)).toBe(false);
       expect(sent.skillPaths[0].endsWith(join('skills', 'my-skill'))).toBe(true);
-      expect(existsSync(join(ws, '.claude', 'skills'))).toBe(false);
+      // Issue #148: `.claude/skills` is a PROJECT_CONFIG_MOUNT_TARGETS entry, so
+      // prepareDispatchMountTargets (post-sweep, pre-spawn) may now pre-create it as an EMPTY
+      // placeholder dir — the skill itself still never materializes under the workspace.
+      if (existsSync(join(ws, '.claude', 'skills'))) {
+        expect(readdirSync(join(ws, '.claude', 'skills'))).toEqual([]);
+      }
       // `skillReadRoots` widens the pi file-jail (session-runner.ts's `assertJailed`) so the model's
       // own read/grep/find/ls can follow the absolute path pi's skill-prompt listing gives it.
       expect(sent.skillReadRoots).toEqual([dirname(dirname(sent.skillPaths[0]))]);
@@ -458,7 +463,12 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
       expect(sent.skillPaths).toHaveLength(1);
       expect(sent.skillPaths[0].startsWith(ws)).toBe(false);
       expect(sent.skillPaths[0].endsWith(join('skills', 'my-skill'))).toBe(true);
-      expect(existsSync(join(ws, '.claude', 'skills'))).toBe(false);
+      // Issue #148: `.claude/skills` is a PROJECT_CONFIG_MOUNT_TARGETS entry, so
+      // prepareDispatchMountTargets (post-sweep, pre-spawn) may now pre-create it as an EMPTY
+      // placeholder dir — the skill itself still never materializes under the workspace.
+      if (existsSync(join(ws, '.claude', 'skills'))) {
+        expect(readdirSync(join(ws, '.claude', 'skills'))).toEqual([]);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

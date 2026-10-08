@@ -9,7 +9,7 @@
 //    the CLI's OWN forced sandbox mount targets — see `READONLY_MOUNT_TARGETS`'s own doc comment.
 import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from './bash-confinement.js';
+import { PROJECT_CONFIG_PATHS, PROJECT_CONFIG_MOUNT_TARGETS, READONLY_MOUNT_TARGETS } from './bash-confinement.js';
 import { resolveLanding } from '../path-containment.js';
 
 /** `.git/config` (`core.fsmonitor`, `core.hooksPath`) and `.git/hooks/` run commands whenever git
@@ -84,7 +84,18 @@ function present(p: string): boolean {
  *  exists to close, and logging a false `agent.planted_config_removed` for content no agent ever
  *  planted. An empty directory loads nothing into the CLI either way (a planted `.claude/agents/x.md`
  *  still has REAL CONTENT and is still removed below) — so leaving one in place changes nothing this
- *  sweep exists to protect against. */
+ *  sweep exists to protect against.
+ *
+ *  Issue #148: the SAME exemption, extended to a 0-byte real (non-symlink) FILE at a
+ *  `PROJECT_CONFIG_PATHS` entry — `prepareDispatchMountTargets`'s own placeholders for the
+ *  non-readonly confined-Bash denyWrite race (two concurrent Bash calls in one turn both lazily
+ *  materializing the SAME still-missing mount point — see that function's own doc comment). Without
+ *  this, the FIRST sibling agent's sweep (this function runs before every dispatch, and every agent
+ *  in a run shares one workspace) would delete the placeholder out from under a second, already-
+ *  spawned dispatch's still-running session the instant it ran — reopening the exact race this fix
+ *  exists to close, one dispatch later. A 0-byte file carries no more content than an empty
+ *  directory does — a planted `.claude/launch.json` with REAL content is still removed below, same
+ *  as a planted `.claude/agents/x.md`. */
 export function sweepPlantedConfig(root: string): string[] {
   const removed: string[] = [];
   const dotClaude = join(root, '.claude');
@@ -108,6 +119,7 @@ export function sweepPlantedConfig(root: string): string[] {
       continue; // absent — nothing to sweep
     }
     if (st.isDirectory() && readdirSync(abs).length === 0) continue; // empty real dir — an engine placeholder, not planted content
+    if (st.isFile() && st.size === 0) continue; // issue #148: 0-byte real file — an engine placeholder, not planted content
     attempted.push(rel);
     rmSync(abs, { recursive: true, force: true });
     removed.push(rel);
@@ -130,10 +142,10 @@ export function sweepPlantedConfig(root: string): string[] {
  *  observability; THROWS on a genuine creation failure (e.g. `.claude` surviving the sweep as a
  *  non-directory, or a real host permission problem) — the caller must refuse the dispatch rather
  *  than start a CLI whose sandbox setup just failed in an unverifiable way. */
-export function prepareReadonlyMountTargets(root: string): string[] {
+function createMountTargets(root: string, targets: readonly { readonly rel: string; readonly kind: 'dir' | 'file' }[]): string[] {
   mkdirSync(root, { recursive: true });
   const created: string[] = [];
-  for (const { rel, kind } of READONLY_MOUNT_TARGETS) {
+  for (const { rel, kind } of targets) {
     const abs = join(root, rel);
     if (present(abs)) continue;
     if (kind === 'dir') {
@@ -145,4 +157,34 @@ export function prepareReadonlyMountTargets(root: string): string[] {
     created.push(rel);
   }
   return created;
+}
+
+export function prepareReadonlyMountTargets(root: string): string[] {
+  return createMountTargets(root, READONLY_MOUNT_TARGETS);
+}
+
+/** Issue #148: pre-creates each `PROJECT_CONFIG_MOUNT_TARGETS` entry under `root` that is not
+ *  already present, as the correct empty TYPE — same idempotent shape as `prepareReadonlyMountTargets`
+ *  (that one pre-creates a DIFFERENT list, `READONLY_MOUNT_TARGETS`, for a readonly-Bash dispatch's
+ *  fully-denied root; this one is for the ORDINARY non-readonly confined-Bash posture, where the root
+ *  stays writable and `buildBashConfinement` denyWrite's each `PROJECT_CONFIG_PATHS` entry
+ *  INDIVIDUALLY instead).
+ *
+ *  Issue #148's race: pi-agent-core's `executeToolCallsParallel` runs every Bash tool call in one
+ *  assistant turn genuinely concurrently (`Promise.all`, not merely concurrently SCHEDULED — see
+ *  `agent-loop.js`'s own code), and each one independently calls
+ *  `SandboxManager.wrapWithSandboxArgv()` with no lock between them. bwrap materializes a missing
+ *  `denyWrite` destination lazily, on the host, the first time it binds it (`/dev/null` for a file,
+ *  an empty tmpfs for a dir) — so two concurrent bwrap invocations can race to create the SAME
+ *  still-missing mount point (observed: `.claude/launch.json`). Calling this ONCE, before any Bash
+ *  call in the dispatch starts, means bwrap only ever binds an ALREADY-PRESENT node, on every
+ *  concurrent call — never asked to create anything, so there is nothing left to race.
+ *
+ *  Run AFTER `sweepPlantedConfig` in the dispatch sequence (matching `prepareReadonlyMountTargets`'s
+ *  own ordering) — `sweepPlantedConfig` now leaves a 0-byte real file at one of these entries alone
+ *  (issue #148 amendment to its own doc comment), so a parallel sibling agent's sweep, running
+ *  against the SAME shared workspace, cannot undo this dispatch's still-live placeholders. Idempotent
+ *  and side-effect-free on an already-present entry, so re-dispatching the same run is always safe. */
+export function prepareDispatchMountTargets(root: string): string[] {
+  return createMountTargets(root, PROJECT_CONFIG_MOUNT_TARGETS);
 }

@@ -60,6 +60,29 @@ export const PROJECT_CONFIG_PATHS = [
   '.claude/skills',
 ] as const;
 
+// Issue #148: the SAME `PROJECT_CONFIG_PATHS` entries, each tagged with its on-disk TYPE, so
+// `project-config-guard.ts`'s `prepareDispatchMountTargets` can pre-create whichever of them is
+// still missing as the correct empty node — mirrors `READONLY_MOUNT_TARGETS` just below, for a
+// DIFFERENT denyWrite set (this one is `settingsFiles`, bound on every non-readonly confined Bash
+// call per-entry — see `buildBashConfinement`'s own `denyWrite` comment for why readonly needs no
+// equivalent: there, `root` alone is already denyWrite'd, so bwrap can never reach a still-missing
+// child path to lazily create it in the first place). Kept as a literal map rather than derived
+// from the extension (`.json` vs not) — `.claude/skills` has no extension and `.claude/hooks` etc.
+// are directories by convention only, not by any syntactic signal this list should re-derive.
+export const PROJECT_CONFIG_MOUNT_TARGETS: readonly { readonly rel: (typeof PROJECT_CONFIG_PATHS)[number]; readonly kind: 'dir' | 'file' }[] = [
+  { rel: '.claude/settings.json', kind: 'file' },
+  { rel: '.claude/settings.local.json', kind: 'file' },
+  { rel: '.claude/hooks', kind: 'dir' },
+  { rel: '.claude/agents', kind: 'dir' },
+  { rel: '.claude/commands', kind: 'dir' },
+  { rel: '.claude/workflows', kind: 'dir' },
+  { rel: '.claude/routines', kind: 'dir' },
+  { rel: '.claude/scheduled_tasks.json', kind: 'file' },
+  { rel: '.claude/launch.json', kind: 'file' },
+  { rel: '.mcp.json', kind: 'file' },
+  { rel: '.claude/skills', kind: 'dir' },
+] as const;
+
 // Issue #131: the Claude CLI's bundled sandbox is the SAME code as @anthropic-ai/sandbox-runtime
 // (srt), which hardcodes the literal `/tmp/claude` into its OWN always-writable path list
 // (`SANDBOX_OWN_WRITE_PATHS` in srt's sandbox-utils.js — "what the sandbox itself needs" by srt's

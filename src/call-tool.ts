@@ -422,7 +422,7 @@ export async function callTool(
       // `authorize()` already raised above (now that issue_report's `run` row carries
       // `adminCrossRead:true`, tool-specs.ts). An ownerless run's admin-only read never sets the
       // flag (authz.ts), so it stays unaudited exactly like every other audited tool's ownerless case.
-      const doReport = () => deps.issueReporter.report(a as unknown as IssueReportInput);
+      const doReport = () => deps.issueReporter.report(a as unknown as IssueReportInput, actor);
       const res = typeof runId === 'string' && crossPrincipalRead
         ? await auditedWorkspaceRead(deps.audit, { actor, action: 'issue_report', runId, owner: owner ?? 'local' }, doReport)
         : await doReport();
@@ -443,6 +443,21 @@ export async function callTool(
     case 'issue_comment_post': {
       const res = await deps.issueReporter.postComment(Number((a as { number?: unknown }).number), (a as { body?: unknown }).body as string);
       return res.ok ? { result: { commentId: res.commentId, url: res.url } } : { error: res.error };
+    }
+    case 'issue_reopen': {
+      // issue #164: "original reporter or admin" is checked inside IssueReporter.reopen() itself
+      // (it needs the issue's body, an async GitHub read — authorize()/OwnerLookup are pure/sync by
+      // design). `auth-disabled`/`loopback-exempt` carry no actor id (`actor` is already null for
+      // both, set above) and are NOT treated as admin here — only a genuine `kind:'admin'` principal
+      // bypasses the reporter-marker check, so a loopback-exempt caller can reopen only an issue it
+      // itself reported (actor null never matches a marker, which is also never null-valued).
+      const isAdmin = principal.kind === 'admin';
+      const res = await deps.issueReporter.reopen(
+        Number((a as { number?: unknown }).number),
+        (a as { reason?: unknown }).reason as string,
+        { actor, isAdmin },
+      );
+      return res.ok ? { result: { issueNumber: res.issueNumber } } : { error: res.error };
     }
 
     // ---- environment (2) ----

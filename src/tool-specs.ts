@@ -1249,7 +1249,7 @@ export const TOOL_SPECS = [
     fixture: { happy: { id: ref('webhookId') }, errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID } } },
   },
 
-  // ---- issue (5) ----
+  // ---- issue (6) ----
   {
     name: 'issue_report', entity: 'issue', key: null,
     // v24 (integrator, REQ-095/REQ-032 — found by the Batch-C executor): the row advertised
@@ -1305,8 +1305,20 @@ export const TOOL_SPECS = [
   },
   {
     name: 'issue_list', entity: 'issue', key: null,
-    description: 'List issues.',
-    inputSchema: schema({}),
+    // issue #164 B: the underlying client (issue-reporter.ts's listIssues/IssueListFilter) has
+    // always supported state/labels/since/limit/workflow — this row simply used to under-advertise
+    // an already-implemented capability (`schema({})`, description "List issues."), so a caller had
+    // no way to discover `issue_list({state:'closed'})` worked at all.
+    description: "List issues. Defaults to open issues only — pass state:'closed' or state:'all' to see others. " +
+      'Filterable by label, by `since` (ISO 8601 — only issues updated at or after this time), and by `workflow` ' +
+      '(folds into the label filter as `workflow:<name>`, same as issue_report\'s own label — never existence-checked).',
+    inputSchema: schema({
+      state: { type: 'string', enum: ['open', 'closed', 'all'], description: "Defaults to 'open'." },
+      labels: { type: 'array', items: { type: 'string' }, description: 'Only issues carrying ALL of these labels.' },
+      since: { type: 'string', description: 'ISO 8601 timestamp — only issues updated at or after this time.' },
+      limit: { type: 'number', description: 'Defaults to 30, capped at 100.' },
+      workflow: { type: 'string', description: 'Filter to issues labeled workflow:<name>.' },
+    }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
@@ -1332,6 +1344,28 @@ export const TOOL_SPECS = [
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: { number: 1, body: 'hi' }, errors: { ISSUE_NOT_FOUND: { number: 999999999, body: 'hi' } } },
+  },
+  {
+    name: 'issue_reopen', entity: 'issue', key: 'number' as const,
+    // issue #164 A: a closed-but-not-actually-fixed issue previously had no path back to open —
+    // only issue_comment_post, which does not change state and drops the issue off issue_list's
+    // open-only default view. Authorized in the HANDLER (call-tool.ts), not the generic ownership
+    // framework: "the issue's original reporter" is an async GitHub-body read (a hidden
+    // `rwe-reporter:<actor>` marker issue_report now stamps), and `authorize()`/`OwnerLookup` are
+    // deliberately pure/sync (DES-139) — so this row is a plain `ownership:'none'` gate and the
+    // reporter-or-admin check happens inside IssueReporter.reopen() itself.
+    description: "Reopen a closed issue and post `reason` as a comment explaining why. " +
+      'Allowed for the issue\'s original reporter (the caller whose issue_report filed it) or an admin — anyone else is refused NOT_ISSUE_REPORTER and nothing changes on GitHub. ' +
+      'An issue filed before this tool existed has no recorded reporter, so only an admin can reopen it.',
+    inputSchema: schema({
+      number: { type: 'number' },
+      reason: { type: 'string', description: 'Why this is being reopened — posted as a comment on the issue.' },
+    }, ['number', 'reason']),
+    outputSchema: OUT,
+    errors: ['ISSUE_NOT_FOUND', 'NOT_ISSUE_REPORTER'] as ErrorCode[],
+    seeAlso: ['issue_report', 'issue_list'],
+    authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
+    fixture: { happy: { number: 1, reason: 'fixture probe' }, errors: { ISSUE_NOT_FOUND: { number: 999999999, reason: 'fixture probe' } } },
   },
 
   // ---- environment (2) ----
