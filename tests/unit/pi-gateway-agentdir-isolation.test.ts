@@ -523,7 +523,11 @@ describe('PiGatewayClient — sweeps planted SHARED project config (.claude/*, .
       const result = await promise;
 
       expect(result.ok).toBe(true);
-      expect(existsSync(join(plantedClaude, 'settings.json'))).toBe(false);
+      // Issue #148: the REAL planted content is gone (removed by the sweep, reported below) — but
+      // `.claude/settings.json` is one of `PROJECT_CONFIG_MOUNT_TARGETS`, so `prepareDispatchMountTargets`
+      // (which now runs right after the sweep, before the child spawns) re-creates it as an empty
+      // placeholder. The file existing again is NOT the planted content surviving: it is 0 bytes.
+      expect(readFileSync(join(plantedClaude, 'settings.json'), 'utf8')).toBe('');
       expect(harnessCalls[0]?.plantedConfigRemoved).toEqual(['.claude/settings.json']);
       const removedEvents = events.filter((e): e is Extract<EngineEvent, { kind: 'agent.planted_config_removed' }> => e.kind === 'agent.planted_config_removed');
       expect(removedEvents.length).toBe(1);
@@ -587,6 +591,64 @@ describe('PiGatewayClient — sweeps planted SHARED project config (.claude/*, .
       await promise;
       expect(harnessCalls[0]?.plantedConfigRemoved).toBeUndefined();
       expect(events.filter((e) => e.kind === 'agent.planted_config_removed')).toEqual([]);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
+// Issue #148: pi-agent-core runs every Bash tool call in one assistant turn genuinely concurrently,
+// and each independently asks bwrap to lazily materialize whatever PROJECT_CONFIG_PATHS denyWrite
+// destination is still missing — a race between two bwrap subprocesses over the SAME still-missing
+// mount point (e.g. `.claude/launch.json`). `_invokeWithWorkspace` now pre-creates every
+// PROJECT_CONFIG_MOUNT_TARGETS entry (project-config-guard.ts) BEFORE the child (and therefore any
+// Bash tool call within it) can be spawned — mirroring the existing `agentDir` "created before spawn"
+// assertions just above, but for the workspace's own denyWrite mount points instead.
+describe('PiGatewayClient — PROJECT_CONFIG_MOUNT_TARGETS are pre-created before the child spawns (issue #148)', () => {
+  it('every PROJECT_CONFIG_MOUNT_TARGETS entry exists under the workspace by child-spawn time, before any Bash tool call runs', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-dispatch-mount-'));
+    try {
+      let targetsExistedAtSpawnTime: boolean | undefined;
+      const f = fakeChild();
+      const spawnChild = ((_cmd: string, _args: string[], _opts: unknown) => {
+        targetsExistedAtSpawnTime = existsSync(join(ws, '.claude', 'launch.json')) && existsSync(join(ws, '.claude', 'agents'));
+        return f.child;
+      }) as never;
+      const gw = new PiGatewayClient({ spawnChild, entryPath: '/fake/entry.ts' });
+      const promise = gw.invoke({
+        prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts,
+        runId: 'r7', agentId: 'a7', workspace: ws,
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+
+      expect(targetsExistedAtSpawnTime).toBe(true);
+      expect(readFileSync(join(ws, '.claude', 'launch.json'), 'utf8')).toBe('');
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('a real file already planted at a mount-target path survives dispatch untouched — pre-creation never overwrites real content', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-dispatch-mount-real-'));
+    try {
+      mkdirSync(join(ws, '.claude'), { recursive: true });
+      writeFileSync(join(ws, '.claude', 'launch.json'), '{"command":"real"}');
+      const f = fakeChild();
+      const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+      const promise = gw.invoke({
+        prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts,
+        runId: 'r8', agentId: 'a8', workspace: ws,
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+      // sweepPlantedConfig removes genuinely planted content first, same as before this fix —
+      // prepareDispatchMountTargets then re-creates it empty, it does not preserve planted content.
+      expect(readFileSync(join(ws, '.claude', 'launch.json'), 'utf8')).toBe('');
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

@@ -16,8 +16,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync,
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
-import { buildBashConfinement, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from '../../src/gateway/bash-confinement.js';
-import { prepareReadonlyMountTargets, sweepPlantedConfig } from '../../src/gateway/project-config-guard.js';
+import { buildBashConfinement, PROJECT_CONFIG_PATHS, PROJECT_CONFIG_MOUNT_TARGETS, READONLY_MOUNT_TARGETS } from '../../src/gateway/bash-confinement.js';
+import { prepareReadonlyMountTargets, prepareDispatchMountTargets, sweepPlantedConfig } from '../../src/gateway/project-config-guard.js';
 import type { HarnessDescriptor } from '../../src/types.js';
 import type { EngineEvent } from '../../src/event-log.js';
 
@@ -434,5 +434,78 @@ describe('the per-dispatch skill directory is readable (never writable) through 
     const d = await decideAt('Read', { file_path: join(dirname(pluginPath), 'somewhere-else', 'secret.txt') });
     expect(d.viaCallback.behavior).toBe('deny');
     expect(d.viaHook).toBe('deny');
+  });
+});
+
+// Issue #148: pi-agent-core runs every Bash tool call in one assistant turn genuinely concurrently
+// (Promise.all), and each one independently asks bwrap to lazily materialize whatever
+// PROJECT_CONFIG_PATHS denyWrite destination is still missing under a writable (non-readonly) root —
+// a TOCTOU race between two bwrap subprocesses over the SAME still-missing mount point (observed:
+// `.claude/launch.json`). `prepareDispatchMountTargets` pre-creates every entry once, before any
+// Bash call starts, so bwrap only ever binds an already-present node.
+describe('prepareDispatchMountTargets (issue #148) — pre-creates every PROJECT_CONFIG_MOUNT_TARGETS entry so concurrent Bash calls never race bwrap lazy mount creation', () => {
+  let base: string;
+  let root: string;
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'rwe-dispatch-mount-'));
+    root = join(base, 'ws');
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  it('creates every PROJECT_CONFIG_MOUNT_TARGETS entry as the correct empty type, and the workspace itself', () => {
+    const created = prepareDispatchMountTargets(root);
+    expect(existsSync(root)).toBe(true);
+    expect([...created].sort()).toEqual([...PROJECT_CONFIG_MOUNT_TARGETS.map((t) => t.rel)].sort());
+    for (const { rel, kind } of PROJECT_CONFIG_MOUNT_TARGETS) {
+      const st = statSync(join(root, rel));
+      expect(st.isDirectory(), rel).toBe(kind === 'dir');
+      if (kind === 'file') {
+        expect(st.isFile(), rel).toBe(true);
+        expect(readFileSync(join(root, rel), 'utf8')).toBe('');
+      }
+    }
+  });
+
+  it('idempotent: an already-present target (any content) is left untouched, not reported as created', () => {
+    mkdirSync(root, { recursive: true });
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'launch.json'), '{"command":"real"}');
+    const created = prepareDispatchMountTargets(root);
+    expect(created).not.toContain('.claude/launch.json');
+    expect(readFileSync(join(root, '.claude', 'launch.json'), 'utf8')).toBe('{"command":"real"}');
+    expect(prepareDispatchMountTargets(root)).toEqual([]);
+  });
+
+  it('throws when a target cannot be created (e.g. .claude survived as a non-directory file) — the caller must refuse the dispatch', () => {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, '.claude'), 'not a directory');
+    expect(() => prepareDispatchMountTargets(root)).toThrow();
+  });
+
+  // The actual race (two real concurrent bwrap subprocesses) lives in third-party code (srt) this
+  // repo vendors, not here — this asserts the INVARIANT the fix provides instead: once
+  // prepareDispatchMountTargets has run, no further "is this still missing" question exists for
+  // concurrent callers to race on, because every entry is already present.
+  it('after one call, every entry is already present — N "concurrent" callers each see the full set with no further mutation needed', async () => {
+    prepareDispatchMountTargets(root);
+    const results = await Promise.all(
+      Array.from({ length: 16 }, async () => prepareDispatchMountTargets(root)),
+    );
+    for (const created of results) expect(created).toEqual([]);
+    for (const { rel } of PROJECT_CONFIG_MOUNT_TARGETS) expect(existsSync(join(root, rel)), rel).toBe(true);
+  });
+
+  it("sweepPlantedConfig leaves every 0-byte placeholder file alone — a parallel sibling agent's sweep cannot undo them mid-dispatch", () => {
+    prepareDispatchMountTargets(root);
+    const removed = sweepPlantedConfig(root);
+    expect(removed).toEqual([]);
+    for (const { rel } of PROJECT_CONFIG_MOUNT_TARGETS) {
+      expect(existsSync(join(root, rel)), rel).toBe(true);
+    }
+    // genuinely planted content in one of the file placeholders is STILL removed, same as before
+    writeFileSync(join(root, '.claude', 'launch.json'), '{"command":"evil"}');
+    const removed2 = sweepPlantedConfig(root);
+    expect(removed2).toEqual(['.claude/launch.json']);
+    expect(existsSync(join(root, '.claude', 'launch.json'))).toBe(false);
   });
 });
