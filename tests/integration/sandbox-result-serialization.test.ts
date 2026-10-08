@@ -44,6 +44,47 @@ describe('issue #162 A/B — sandbox child result serialization boundary', () =>
   });
 });
 
+// issues #162 B / #163 B1 — TEST-FIRST (RED, now fixed). `child-entry.ts`'s final `send({t:'done',
+// ...})` used to fire `process.exit(0)` immediately after, with no guarantee the IPC write had
+// actually reached the kernel first — Node's own `process.send()` writes to the fork IPC socket
+// ASYNCHRONOUSLY once a message doesn't fit in one syscall (empirically, anything past roughly
+// 160-200KB on a typical Linux box's default socket buffer; deterministically confirmed with a bare
+// `fork()` + `process.send(300KBpayload); process.exit(0)` — the parent's 'message' listener never
+// fires at all, 0/N over repeated runs). `process.exit()` tore the process down mid-write, silently
+// DROPPING the message — the caller-visible `ABORTED "sandbox child process terminated before
+// completion (exit 0, signal null)"`. Needs NO concurrency to reproduce (payload size alone is
+// sufficient and deterministic); #163 B1's purely-concurrent, smaller-payload failures are the SAME
+// mechanism — CPU contention under load delays the same flush a large payload does, widening the
+// same race window. Fixed by awaiting `process.send()`'s own completion callback before every
+// `process.exit()` in `child-entry.ts`.
+describe('issues #162 B / #163 B1 — a large return value is not lost to the send-then-exit race', () => {
+  it('a 300KB return value resolves {result}, not ABORTED — repeated 6x (no concurrency needed, payload size alone triggers it)', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    for (let i = 0; i < 6; i++) {
+      const r = await host.run(`run-300kb-${i}`, `return 'y'.repeat(300000);`, undefined, null);
+      expect('result' in r).toBe(true);
+      if (!('result' in r)) throw new Error(`run ${i} did not complete: ${JSON.stringify(r)}`);
+      expect((r.result as string).length).toBe(300000);
+    }
+  });
+
+  it('a 1MB return value (comfortably under the 10MB cap) also resolves {result}, not ABORTED', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const r = await host.run('run-1mb', `return 'z'.repeat(1000000);`, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+  });
+
+  it('40 concurrent runs each returning 150KB all resolve {result} (production-shaped concurrent load)', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const results = await Promise.all(
+      Array.from({ length: 40 }, (_, i) => host.run(`run-conc-${i}`, `return 'q'.repeat(150000);`, undefined, null)),
+    );
+    const failed = results.filter((r) => 'error' in r);
+    expect(failed).toEqual([]);
+  });
+});
+
 // g2 minor (sandbox robustness sweep, item 4): child-entry.ts's generic `send()` catch used to treat
 // ANY outbound message that fails to serialize as run-terminating — including an agent()/workflow()
 // REQUEST (not the run's own final 'done'/'error'), whose `opts`/`args` are themselves script-

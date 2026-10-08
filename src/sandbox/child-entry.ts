@@ -66,6 +66,38 @@ let spentSoFar: Spend = ZERO_SPEND;
 // parent has to buffer.
 const MAX_RESULT_BYTES = 10 * 1024 * 1024;
 
+// issues #162 B / #163 B1 (concurrency/large-payload result loss — TDD): `process.send()` writes to
+// the IPC socket ASYNCHRONOUSLY — a message that doesn't fit the kernel socket's send buffer in one
+// syscall (empirically, `/proc/sys/net/core/wmem_default` on a typical Linux box is ~208KB; the
+// framed JSON for anything much past ~160KB routinely exceeds it) is queued internally and finished
+// off the event loop. The OLD code (`process.send?.(msg)` followed immediately by `process.exit(0)`
+// in every caller) tore the process down before that queued write ever reached the kernel, silently
+// DROPPING the message — confirmed by a deterministic repro (a real `fork()`, a 300KB
+// `process.send()` immediately followed by `process.exit(0)`): the parent's 'message' listener never
+// fires at all, 0/N over repeated runs, while a run finishing in a single synchronous syscall (a
+// small payload, an idle host) looks fine — exactly the "160KB OK, 200KB ABORTED" / "worse under
+// concurrent load" signature both issues report, since CPU contention under load slows the same
+// flush the same way a large payload does. `process.send(msg, callback)` resolves ITS callback only
+// once the write actually completes (same empirical repro, fixed: 5/5), so `send()` now returns a
+// Promise every caller `await`s before calling `process.exit()` — see `main()` below. Bounded at
+// `SEND_FLUSH_TIMEOUT_MS` so a parent that vanished mid-write (its own crash, a SIGKILL) can never
+// hang this child forever; `settle()`'s own idempotency on the host side makes an unresolved/late
+// flush harmless either way.
+const SEND_FLUSH_TIMEOUT_MS = 2000;
+
+function rawSend(msg: unknown): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof process.send !== 'function') { resolve(); return; }
+    let done = false;
+    const finish = (): void => { if (!done) { done = true; resolve(); } };
+    const bound = setTimeout(finish, SEND_FLUSH_TIMEOUT_MS);
+    bound.unref?.();
+    // The callback fires once the message is actually written (success OR the channel having
+    // failed) — either way there is nothing more this child can do, so both resolve the same way.
+    process.send(msg, () => { clearTimeout(bound); finish(); });
+  });
+}
+
 // g2 minor (sandbox robustness sweep, item 4): `send()` is now the RUN-TERMINATING path only —
 // 'ready'/'phase' (small literals, never unserializable in practice) and the run's own final
 // 'done'/'error' (child-entry.ts's `main()` already pre-checks 'done' with JSON.stringify; 'error'
@@ -73,9 +105,13 @@ const MAX_RESULT_BYTES = 10 * 1024 * 1024;
 // non-terminating path: an agent()/workflow() call REQUEST, whose opts/args are script-authored
 // values that can carry the same shape (a circular reference, a BigInt) — for THAT case the failure
 // must reject the one call, not end the run (see `trySend`'s own doc).
-function send(msg: unknown): void {
+//
+// Returns a Promise so every caller can wait for the write to actually flush before exiting the
+// process (issues #162 B / #163 B1 above) — never rejects; every failure path resolves once it has
+// done everything it can.
+async function send(msg: unknown): Promise<void> {
   try {
-    process.send?.(msg);
+    await rawSend(msg);
   } catch (e) {
     // issue #162 A/B: `process.send()` throws SYNCHRONOUSLY when its argument is not
     // JSON-serializable (a circular reference, a BigInt) — Node's own IPC 'json' serialization,
@@ -92,7 +128,7 @@ function send(msg: unknown): void {
     // more this process can do, and it still exits below.
     const runId = (msg as { runId?: unknown } | null)?.runId;
     try {
-      process.send?.({
+      await rawSend({
         t: 'error',
         runId,
         error: { code: 'RESULT_NOT_SERIALIZABLE', message: `a value sent to the parent is not JSON-serializable: ${safeMessage(e)}` },
@@ -260,26 +296,30 @@ async function main(msg: StartMsg): Promise<void> {
     try {
       serialized = JSON.stringify(result.value) ?? 'null';
     } catch (e) {
-      send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_NOT_SERIALIZABLE', message: `the returned value is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}` } });
+      await send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_NOT_SERIALIZABLE', message: `the returned value is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}` } });
       process.exit(0);
       return;
     }
     const bytes = Buffer.byteLength(serialized, 'utf8');
     if (bytes > MAX_RESULT_BYTES) {
-      send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_TOO_LARGE', message: `the returned value is ${bytes} bytes, exceeding the ${MAX_RESULT_BYTES}-byte return-value cap` } });
+      await send({ t: 'error', runId: msg.runId, error: { code: 'RESULT_TOO_LARGE', message: `the returned value is ${bytes} bytes, exceeding the ${MAX_RESULT_BYTES}-byte return-value cap` } });
       process.exit(0);
       return;
     }
-    send({ t: 'done', runId: msg.runId, result: result.value });
+    // issues #162 B / #163 B1: `send()` above is now ALWAYS awaited before `process.exit()` — see
+    // `rawSend`'s own doc for why a large/under-contention write that hasn't yet reached the kernel
+    // must not be torn down by an immediate exit.
+    await send({ t: 'done', runId: msg.runId, result: result.value });
   } else {
     // v36 (DES-248): `refusalRef` hoisted to a SIBLING of `error` on the wire — `host.ts`'s
     // `RunOutcome` reads `msg.refusalRef`, not a nested field, so the parent ledger lookup at
     // settle time has a plain number to key on.
-    send({ t: 'error', runId: msg.runId, error: result.error, ...(result.error?.refusalRef !== undefined ? { refusalRef: result.error.refusalRef } : {}) });
+    await send({ t: 'error', runId: msg.runId, error: result.error, ...(result.error?.refusalRef !== undefined ? { refusalRef: result.error.refusalRef } : {}) });
   }
   process.exit(0);
 }
 
 // Tell the parent we're ready to receive the 'start' message (avoids a lost-message race
-// where the parent sends before this process has attached its 'message' listener).
-send({ t: 'ready' });
+// where the parent sends before this process has attached its 'message' listener). Fire-and-forget
+// is fine here — unlike the run-terminating sends in `main()` above, nothing exits right after this.
+void send({ t: 'ready' });
