@@ -5,7 +5,7 @@
 // Mock policy (unit): pure functions, no I/O, no subprocess — the real IPC round-trip is covered
 // separately by run-args-resume.test.ts / an acceptance-level nested workflow() case.
 import { describe, it, expect } from 'vitest';
-import { encodeExplicitUndefined, decodeExplicitUndefined, IPC_EXPLICIT_UNDEFINED } from '../../src/sandbox/ipc-sentinel.js';
+import { encodeExplicitUndefined, decodeExplicitUndefined, IPC_EXPLICIT_UNDEFINED, findUnsendableArgValue } from '../../src/sandbox/ipc-sentinel.js';
 
 describe('encodeExplicitUndefined / decodeExplicitUndefined (#161 B2)', () => {
   it('encode: an own key valued `undefined` becomes the sentinel string', () => {
@@ -63,5 +63,71 @@ describe('encodeExplicitUndefined / decodeExplicitUndefined (#161 B2)', () => {
     expect(Object.hasOwn(decoded, 'b')).toBe(true);
     expect(decoded['b']).toBeUndefined();
     expect(decoded['c']).toBe(1);
+  });
+});
+
+// issue #161 B2 (2026-10-09 reverify): a function value (at ANY depth — top-level or nested) and
+// a nested `undefined` (inside a sub-object or array — the top-level own-key case above is the
+// ONE legitimate, encodable shape; this module's own sentinel pair is deliberately scoped to it)
+// both cross `process.send()`'s own JSON serialization with NO error: `JSON.stringify` just
+// silently OMITS a function-valued key / drops an array element to `null` / omits a nested
+// undefined key — the receiving side (and, after `materializeArgDefaults`) sees a key that looks
+// genuinely absent, and a declared default silently fills in instead. `findUnsendableArgValue`
+// detects every such value BEFORE the IPC hop, so the caller gets a real refusal instead of a
+// silently-wrong substitution.
+describe('findUnsendableArgValue (#161 B2 NOT FIXED half: function values, nested undefined)', () => {
+  it('a top-level function value is detected', () => {
+    const hit = findUnsendableArgValue({ n: 3, f: () => 1 });
+    expect(hit).toEqual({ path: 'f', kind: 'function' });
+  });
+
+  it('a function value nested inside an object is detected, with a dotted path', () => {
+    const hit = findUnsendableArgValue({ zzz: { f: () => 1, k: 1 } });
+    expect(hit).toEqual({ path: 'zzz.f', kind: 'function' });
+  });
+
+  it('the exact #161 reverify repro ({zzz:{a:undefined,f:fn,k:1}}) reports the FIRST offender in insertion order', () => {
+    const hit = findUnsendableArgValue({ zzz: { a: undefined, f: () => 1, k: 1 } });
+    expect(hit).toEqual({ path: 'zzz.a', kind: 'undefined' });
+  });
+
+  it('a function value nested inside an array is detected, with an indexed path', () => {
+    const hit = findUnsendableArgValue({ list: [1, () => 2] });
+    expect(hit).toEqual({ path: 'list[1]', kind: 'function' });
+  });
+
+  it('an explicit TOP-LEVEL own-key undefined is NOT flagged (the legitimate, encodable shape)', () => {
+    expect(findUnsendableArgValue({ n: undefined, s: 'x' })).toBeNull();
+  });
+
+  it('an undefined value NESTED inside an object (not top-level) is detected', () => {
+    const hit = findUnsendableArgValue({ zzz: { a: undefined, k: 1 } });
+    expect(hit).toEqual({ path: 'zzz.a', kind: 'undefined' });
+  });
+
+  it('an undefined value nested inside an array is detected', () => {
+    const hit = findUnsendableArgValue({ list: [1, undefined] });
+    expect(hit).toEqual({ path: 'list[1]', kind: 'undefined' });
+  });
+
+  it('a symbol value anywhere is detected', () => {
+    const hit = findUnsendableArgValue({ s: Symbol('x') });
+    expect(hit).toEqual({ path: 's', kind: 'symbol' });
+  });
+
+  it('a clean plain-data args object (including a top-level explicit undefined) returns null', () => {
+    expect(findUnsendableArgValue({ n: 3, s: 'x', n2: undefined, nested: { a: 1, b: [1, 2, 'x'] }, arr: [1, { c: 2 }] })).toBeNull();
+  });
+
+  it('a circular object does not infinite-loop or crash — returns null (the existing circular-value path, RESULT_NOT_SERIALIZABLE, still catches it)', () => {
+    const obj: Record<string, unknown> = { a: 1 };
+    obj['self'] = obj;
+    expect(findUnsendableArgValue({ x: obj })).toBeNull();
+  });
+
+  it('a non-record args value (array, string, non-object) returns null — the existing top-level shape check (validateDeclaredArgs) owns that case', () => {
+    for (const v of [['a'], 'x', 3, null, undefined]) {
+      expect(findUnsendableArgValue(v)).toBeNull();
+    }
   });
 });

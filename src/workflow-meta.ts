@@ -310,7 +310,14 @@ export type AgentCallViolationCode =
    *  gap was that the handler silently left `allowedTools` at 'absent' instead of raising a
    *  violation, so the real value reached `agent-executor.ts`'s dispatch unexamined while every
    *  advisory surface ('absent' read as "nothing to verify") reported no tools at all. */
-  | 'AGENT_OPTS_VALUE_NOT_LITERAL';
+  | 'AGENT_OPTS_VALUE_NOT_LITERAL'
+  /** Issue #162 item C (2026-10-09 reverify): a literal `schema` value that can NEVER be a valid
+   *  JSON Schema — a string/number/array/null/template-literal. The runtime guard
+   *  (agent-executor.ts's `ajv.compile`) already refuses this at DISPATCH time; this catches the
+   *  obvious literal case up front, at registration, before a run can ever reach it. A non-literal
+   *  value (an identifier, a computed expression) is NOT this code — it cannot be checked
+   *  statically and is left to that same runtime guard, unchanged. */
+  | 'AGENT_OPTS_SCHEMA_INVALID';
 
 export interface AgentCallViolation {
   line: number;
@@ -443,6 +450,22 @@ function splitTopLevel(text: string): string[] {
   const last = text.slice(start);
   if (last.trim() !== '') parts.push(last);
   return parts.map((p) => p.trim());
+}
+
+/** Issue #162 item C: a plain text-start check (no AST — the obvious cases need nothing heavier),
+ *  deliberately narrow and false-positive-free: `true` for a string/number/array/null/undefined/
+ *  template-literal `schema` value, which can NEVER be a valid JSON Schema (ajv itself would refuse
+ *  any of these — "schema must be object or boolean"). `false` for an object literal (`{...}` —
+ *  its INNER shape is still ajv's job at dispatch, not this scan's), the literal booleans `true`/
+ *  `false` (valid per the JSON Schema spec itself), and anything else this text-level check cannot
+ *  rule out (an identifier, a member/call expression, a ternary, …) — those are left to the
+ *  existing runtime `ajv.compile` guard (agent-executor.ts), unchanged. */
+function isObviousNonSchemaLiteral(text: string): boolean {
+  const t = text.trim();
+  if (t === 'true' || t === 'false' || t.startsWith('{')) return false;
+  if (t === 'null' || t === 'undefined') return true;
+  const c = t[0];
+  return c === "'" || c === '"' || c === '`' || c === '[' || (c !== undefined && /[0-9-]/.test(c));
 }
 
 /** `null` unless `text` is, in full, one quoted string literal token (splitTopLevel already
@@ -806,6 +829,17 @@ export function scanAgentCalls(script: string): AgentCallScan {
               code: 'AGENT_OPTS_VALUE_NOT_LITERAL',
               key,
               hint: "'allowedTools' must be a literal array of string literals, not a variable or expression — it cannot be checked statically. Write 'allowedTools: [\"Tool\", …]' instead",
+            });
+          }
+        }
+        if (key === 'schema') {
+          const schemaText = entry.slice(colonIdx + 1).trim();
+          if (isObviousNonSchemaLiteral(schemaText)) {
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_SCHEMA_INVALID',
+              key,
+              hint: "'schema' must be a JSON Schema object (or the literal boolean true/false) — a string/number/array/null/template-literal can never be a valid JSON Schema. Write 'schema: { type: ..., properties: {...} }' instead",
             });
           }
         }

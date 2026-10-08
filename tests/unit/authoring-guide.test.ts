@@ -893,6 +893,8 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'AGENT_OPTS_SHORTHAND', // a spread/shorthand entry in an agent() options literal
     'AGENT_OPTS_VALUE_NOT_LITERAL', // issue #154 NEW HIGH: same family — a literal key whose value
     // is a variable/expression rather than a `[...]` literal
+    'AGENT_OPTS_SCHEMA_INVALID', // issue #162 item C: same SCAN_VIOLATION detail.violations[].code
+    // family — a literal `schema` that can never be a valid JSON Schema
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
     'MCP_SERVER_NOT_CONNECTED', // issue #106: a non-fatal harness warning (run_agent_log / run_status warnings), not a refusal code

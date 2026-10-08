@@ -859,7 +859,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'the object as a whole: `allowedTools: tools` (a variable), `allowedTools: cfg.tools` (a ' +
         'member expression), or `allowedTools: getTools()` (a call) are refused ' +
         '`AGENT_OPTS_VALUE_NOT_LITERAL` even though the key itself is written literally — only a ' +
-        '`[...]` array literal of quoted strings is checkable.\n' +
+        '`[...]` array literal of quoted strings is checkable. A literal `schema` that can never be ' +
+        "a valid JSON Schema (a string/number/array/null/template-literal — `schema: 'not-a-schema'`) " +
+        'is refused `AGENT_OPTS_SCHEMA_INVALID` at registration too (issue #162); an object literal ' +
+        '(checked for real JSON-Schema validity only at dispatch, via ajv — `INVALID_SCHEMA`) or the ' +
+        'literal booleans `true`/`false` (valid JSON Schema on their own) are both accepted here, and ' +
+        'a non-literal `schema` value is left entirely to that same dispatch-time ajv check.\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +
@@ -963,8 +968,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "`RESULT_TOO_LARGE` never applies there) — that failure is local to the one call your script " +
         'made and is catchable with a normal try/catch, not run-terminating.\n\n' +
         'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
-        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, a generous multi-hour default " +
-        "covering every agent()/workflow() round trip across every phase — not a single call, which " +
+        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, operator-configurable, " +
+        "defaulting to 4 hours — covering every agent()/workflow() round trip across every phase, " +
+        "not a single call, which " +
         "`timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either " +
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
@@ -1078,6 +1084,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
         "wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an " +
         '`enum` type requires the `enum` array of legal values).\n\n' +
+        'This "explicit value always wins" rule is scoped to a TOP-LEVEL own key only: a nested ' +
+        "`workflow()` call's `args` crosses a real OS-process IPC hop, and a function or symbol " +
+        'value anywhere in it (top-level or nested), or a plain `undefined` NESTED inside a ' +
+        "sub-object/array, cannot survive that hop at all (issue #161) — it is refused " +
+        '`PARAM_OUT_OF_RANGE` up front, before anything is sent, rather than silently vanishing and ' +
+        'letting a declared default fill in behind your back. Pass only plain JSON-shaped data: ' +
+        'objects, arrays, strings, numbers, booleans, `null`, and — at the top level only — an ' +
+        'explicit `undefined`.\n\n' +
         // issue #161 B6 (owner-approved): a workflow with NO `meta.params.args` keys at all (or no
         // `params.args` block) used to skip the top-level shape check entirely, so `run_start`/a
         // nested `workflow(name, args)` call could pass an array or a bare string straight through
@@ -1311,7 +1325,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'only on dimensions both have; there is no instruction-following or tool-calling score. `observed.successRate` ' +
         'counts calls that finished, NOT schema conformance: a call whose output keeps failing an agent() `schema` ' +
         'resolves null in your script yet still counts as a success. The engine enforces `schema` itself (states it in ' +
-        'the prompt, validates the reply, re-asks up to 3 times) on every model, so `capabilities.structuredOutput` ' +
+        'the prompt, validates the reply, makes up to 3 attempts total — the first try plus up to 2 re-asks — ' +
+        'before giving up) on every model, so `capabilities.structuredOutput` ' +
         '(an upstream declaration, null on anthropic-direct rows) neither enables nor guarantees it — keep the schema a ' +
         'small top-level object, prefer stronger models for strict JSON, and handle a null result (retry with another ' +
         'model). Fields outside the compact row (`capabilities`, `ratesPerM`, full `observed` buckets) need ' +
@@ -1345,6 +1360,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `can therefore overshoot EITHER limit by up to one concurrency window ` +
         `(${ceilings.runConcurrency} x one call's cost). Size a budget for the whole workflow, not ` +
         'per call.\n\n' +
+        "A fire-and-forget `agent()` call your script does not `await` keeps running to completion " +
+        "AFTER the script returns and the run goes terminal — the engine never aborts in-flight work " +
+        'just because the run around it finished (issue #162, adjudication #9 I-2, a deliberate ' +
+        "owner ruling, not a bug). Its usage is folded into `run_result.meta.usage`/`run_list`'s " +
+        "totals once it settles, so a figure read AT the terminal moment can be a lower bound until " +
+        'then — poll again a little later for the final number, or `await` every call whose spend ' +
+        "you need counted or whose completion you need to know about.\n\n" +
         'Inside the script, the read-only `budget` object answers each limit with its own accessor: ' +
         '`budget.limits.usd` / `budget.limits.tokens` are the two ceilings (`null` when that limit is ' +
         'unbounded — `null` is `===`-detectable but NOT comparison-safe, `null < 1000` is `true`); ' +

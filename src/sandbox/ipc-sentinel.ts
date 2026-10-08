@@ -51,3 +51,54 @@ export function decodeExplicitUndefined(value: unknown): unknown {
   }
   return out ?? value;
 }
+
+/** Issue #161 B2 (2026-10-09 reverify, the NOT-FIXED half): a function or symbol value — at ANY
+ *  depth, top-level or nested — and an `undefined` value NESTED inside a sub-object/array (the
+ *  encode/decode pair above covers the one legitimate shape, a TOP-LEVEL own-key `undefined`,
+ *  and deliberately goes no deeper — see that pair's own doc) all cross `process.send()`'s own
+ *  JSON serialization with NO error at all: `JSON.stringify` silently OMITS a function/symbol-
+ *  valued object key, turns a function/symbol/undefined ARRAY ELEMENT into `null`, and omits a
+ *  nested `undefined` object key — every one of these reaches the far side looking exactly like
+ *  a key the caller never wrote, so a declared default silently (and wrongly) fills in instead
+ *  of the refusal the caller should see. */
+export interface UnsendableArgValue {
+  path: string;
+  kind: 'function' | 'symbol' | 'undefined';
+}
+
+function walkUnsendable(value: unknown, path: string, topLevelUndefinedOk: boolean, seen: Set<unknown>): UnsendableArgValue | null {
+  if (typeof value === 'function') return { path, kind: 'function' };
+  if (typeof value === 'symbol') return { path, kind: 'symbol' };
+  if (value === undefined) return topLevelUndefinedOk ? null : { path, kind: 'undefined' };
+  if (value === null || typeof value !== 'object') return null;
+  if (seen.has(value)) return null; // a cycle — the existing circular-value path (RESULT_NOT_SERIALIZABLE) owns this, not this scan
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = walkUnsendable(value[i], `${path}[${i}]`, false, seen);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    const hit = walkUnsendable((value as Record<string, unknown>)[key], `${path}.${key}`, false, seen);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/** Scans an `args` value for the first unsendable value (depth-first, own-key insertion order),
+ *  or `null` when there is none. Called on the CHILD side, before `encodeExplicitUndefined`/
+ *  `trySend` — catching this here means the call is refused synchronously, before anything
+ *  crosses the wire, rather than silently losing the value in transit. A non-record `args`
+ *  (array, string, other primitive, `null`/`undefined`) is out of scope here — that is
+ *  `validateDeclaredArgs`'s own top-level shape check's job ("args has the wrong type"), not
+ *  this scan's. */
+export function findUnsendableArgValue(args: unknown): UnsendableArgValue | null {
+  if (!isPlainRecord(args)) return null;
+  for (const key of Object.keys(args)) {
+    const hit = walkUnsendable(args[key], key, true, new Set());
+    if (hit !== null) return hit;
+  }
+  return null;
+}

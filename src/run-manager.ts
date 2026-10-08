@@ -37,7 +37,7 @@ import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
-import { SandboxHost } from './sandbox/host.js';
+import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
 import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
@@ -444,7 +444,7 @@ interface RunEntry {
 /** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
  *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
  *  child cannot value-import this `.ts` file), pinned equal by the drift test. */
-export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED']);
+export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA']);
 
 /** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
  *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
@@ -1385,6 +1385,30 @@ export class RunManager {
     return runId;
   }
 
+  /** Issue #162 (orphan sandbox children): called from the engine's own shutdown path
+   *  (`server.ts`'s `close()`, in turn from `main.ts`'s SIGINT/SIGTERM handler) — SIGKILLs every
+   *  still-`running` entry's forked sandbox child, the SAME mechanism `suspend()`/`stop()` already
+   *  use below, so a script's OS process never outlives this engine process just because nothing
+   *  on the shutdown path ever reached into `RunManager`'s own state before. Also aborts each
+   *  entry's execution generation, which cascades into any CURRENTLY in-flight nested `workflow()`
+   *  frame via the same `killNested` listener issue #53 already wires there (`_handleWorkflowRequest`,
+   *  below) — a nested child is killed too, not just the top-level one. Deliberately writes no store
+   *  transition and awaits no in-flight capture (`settleInflight`): the process is exiting regardless,
+   *  a half-written transition against a store that may itself be mid-close is worse than leaving
+   *  the row at `running` (the next boot's `hydrateAll` already reclassifies a stale `running` row as
+   *  `interrupted`/resumable), and this must never hang shutdown waiting on anything. Best-effort,
+   *  per entry — one entry's kill failing (already exited, ESRCH) never stops the rest from being
+   *  tried. Never throws. */
+  async shutdown(): Promise<void> {
+    await Promise.all(
+      [...this._runs.entries()].map(async ([runId, entry]) => {
+        if (entry.status !== 'running') return;
+        try { entry.abortController.abort(); } catch { /* best-effort */ }
+        try { await entry.sandbox.abort(runId, 'stop'); } catch { /* best-effort */ }
+      }),
+    );
+  }
+
   async suspend(runId: string): Promise<void> {
     const entry = await this._requireLive(runId, 'suspended');
     if (entry.status !== 'running') throw new IllegalTransitionError(entry.status, 'suspended');
@@ -2175,6 +2199,12 @@ export class RunManager {
       // F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc — `undefined` forwards to host.ts's own
       // default, never a second copy of that default value here.
       maxRunDurationMs: this._maxRunDurationMs,
+      // Issue #162 (boot-time sweep): anchored to the WHOLE engine's own workRoot (never the
+      // per-run `workspace`) — one shared registry directory for every run's top-level host, so a
+      // single boot sweep (main.ts) covers all of them. Absent when this RunManager was built with
+      // no workRoot at all (a direct-`createServer()`-less test construction) — those callers get
+      // no bookkeeping, same as today.
+      childRegistryDir: sandboxChildRegistryDir(this._workRoot),
     });
   }
 
@@ -2557,6 +2587,10 @@ export class RunManager {
       // maxWorkflowDescendants cap). A parent could still exceed ITS OWN deadline waiting on a
       // nested frame that is individually within bounds — no narrower, per-frame deadline exists.
       maxRunDurationMs: this._maxRunDurationMs,
+      // Issue #162 (boot-time sweep): same shared, whole-engine registry dir as the top-level
+      // host's own (`_newSandbox`) — a nested frame's child must be swept on a non-graceful
+      // restart exactly like a top-level one.
+      childRegistryDir: sandboxChildRegistryDir(this._workRoot),
     });
     // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
     // above, which wins (see `SandboxHost.run`'s own doc).

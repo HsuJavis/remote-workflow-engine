@@ -158,6 +158,40 @@ describe('issue #107: nested workflow() applies the CHILD contract\'s args valid
     expect(await completedValue(mgr, runId)).toEqual({ receivedN: 3, hasOwnN: true });
   });
 
+  // Issue #161 B2 (2026-10-09 reverify — the NOT-FIXED half, run end-to-end through a REAL forked
+  // sandbox child on both hops): before this fix, a function value anywhere in a nested
+  // workflow()'s args was silently DROPPED by Node's own IPC JSON serialization — the child saw a
+  // key that looked genuinely absent, its declared default silently filled in, and the script got
+  // no error at all for passing a value that can never legitimately cross a process boundary.
+  it('issue #161 B2: a top-level function value in nested workflow() args is refused PARAM_OUT_OF_RANGE, never silently dropped', async () => {
+    await registerPublished(catalog, 'c161-fn-top', `export const meta = { params: { args: { n: { type: 'number', default: 3 } } } };\nreturn args.n;`);
+    const runId = await startScript(mgr, TRY_WORKFLOW(`workflow('c161-fn-top', { n: 1, f: () => 1 })`));
+    expect(await completedValue(mgr, runId)).toEqual({ code: 'PARAM_OUT_OF_RANGE' });
+    // No child run was ever created — refused before the nested SandboxHost existed, same as every
+    // other args-validation refusal in this file.
+    expect((await mgr.status(runId)).workflowNodes).toEqual([]);
+  });
+
+  it('issue #161 B2: the exact reverify repro — a function value NESTED inside args is refused, never silently stripped', async () => {
+    await registerPublished(catalog, 'c161-fn-nested', `export const meta = {};\nreturn args.zzz ? args.zzz.k : null;`);
+    const runId = await startScript(mgr, TRY_WORKFLOW(`workflow('c161-fn-nested', { zzz: { a: undefined, f: () => 1, k: 1 } })`));
+    expect(await completedValue(mgr, runId)).toEqual({ code: 'PARAM_OUT_OF_RANGE' });
+  });
+
+  it('issue #161 B2: an undefined value NESTED inside args (not the top-level own-key case) is refused, not silently dropped', async () => {
+    await registerPublished(catalog, 'c161-undef-nested', `export const meta = {};\nreturn args.zzz ? args.zzz.k : null;`);
+    const runId = await startScript(mgr, TRY_WORKFLOW(`workflow('c161-undef-nested', { zzz: { a: undefined, k: 1 } })`));
+    expect(await completedValue(mgr, runId)).toEqual({ code: 'PARAM_OUT_OF_RANGE' });
+  });
+
+  // Companion: the one LEGITIMATE shape (a top-level own-key explicit undefined, #161 B2's
+  // already-fixed half above) is completely unaffected by this new check — still passes through.
+  it('issue #161 B2 companion: a top-level explicit undefined is still accepted, unaffected by the new function/nested-undefined check', async () => {
+    await registerPublished(catalog, 'c161-regression-guard', `export const meta = { params: { args: { n: { type: 'number', default: 3 } } } };\nreturn args.n === undefined ? 'UNDEFINED' : args.n;`);
+    const runId = await startScript(mgr, `return await workflow('c161-regression-guard', { n: undefined });`);
+    expect(await completedValue(mgr, runId)).toBe('UNDEFINED');
+  });
+
   it('valid args still pass through to the child unchanged', async () => {
     await registerPublished(catalog, 'c107-valid', `export const meta = { params: { args: { x: { type: 'number' } } } };\nreturn args.x * 2;`);
     const runId = await startScript(mgr, `return await workflow('c107-valid', { x: 21 });`);

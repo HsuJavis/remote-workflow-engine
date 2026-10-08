@@ -347,7 +347,13 @@ function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor, wrap: Wra
 // BUDGET_EXCEEDED/PARAM_UNKNOWN are here — it is the ENGINE refusing to dispatch a call (a
 // dispatch-time opts/scan mismatch, not the author's own code failing), so parallel()/pipeline()
 // must propagate it rather than fold it into their null-for-a-throwing-thunk contract.
-const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED']);
+// Issue #162 NEW-2 reverify: INVALID_SCHEMA joins the set for the identical reason — a bad
+// agent() schema is the ENGINE refusing to dispatch at all (agent-executor.ts's pre-dispatch
+// ajv.compile guard), not the author's own code failing, so an uncaught rejection must keep its own
+// catalog code (AUTHORING.md: "every engine refusal carries the same e.code ... as
+// run_result.error.code") instead of flattening to SCRIPT_ERROR (which run-manager's `toErrorCode`
+// would then map to INTERNAL_ERROR).
+const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA']);
 
 // v36 (DES-248, ARCH-165/166, TASK-246, REQ-215): a WeakMap keyed on the Error OBJECT, never a
 // field on it — the object handed to script land is an ordinary mutable Error, so a script writing
@@ -382,9 +388,38 @@ function refusalCode(err: unknown): string | null {
 // implementation detail leaking across the trust boundary). A fixed fallback message, never a
 // re-thrown classification exception.
 const UNREPRESENTABLE_THROWN_VALUE = 'the script threw a value that could not be converted to a message';
+// issue #162 NEW-2: `err instanceof Error` is an EMBEDDING-realm check — an agent()/workflow()
+// rejection that crossed the host->vm IPC boundary (`sanitizeThrownError`, above) is a CtxError
+// NATIVE TO THE VM CONTEXT's own realm, never `instanceof` this module's own `Error`, so the
+// `instanceof` branch always missed it and fell through to `String(err)`. `String()` on an Error
+// renders via the default `Error.prototype.toString` as `${name}: ${message}` — and every
+// engine-refusal message already bakes its own catalog code into the text (codedError's own
+// convention, e.g. `"AGENT_OPTS_TAMPERED: the dispatched ..."`), so the result DOUBLED the code:
+// `"AGENT_OPTS_TAMPERED: AGENT_OPTS_TAMPERED: the dispatched ..."`. Reading `.message` directly
+// (realm-agnostic — a plain string property read, not a prototype-chain check) fixes every
+// cross-realm Error uniformly, both the engine-refusal case above and a script's own
+// `throw new Error(...)` (which is equally cross-realm, vm-context-native) — the latter's message
+// has no baked-in code to double, so this also drops an unwanted "Error: " prefix it never asked
+// for. Order matters: this runs BEFORE the `String(err)` fallback, which stays for every value with
+// no own `.message` string (a thrown non-Error, Object.create(null), a poisoned Proxy, …).
+// NARROWED to `.name === .code` (review follow-up, tighter than the first cut): a string `.code`
+// ALONE is not enough to justify skipping `String(err)` — a script can accidentally produce that
+// shape too (`throw Object.assign(new Error('x'), {code:'oops'})`, no intent to mimic an engine
+// refusal) and would then lose its `Error:` class prefix to a bare message for no reason. The
+// doubling this fixes is specifically `Error.prototype.toString`'s `${name}: ${message}`
+// rendering colliding with a message that ALREADY starts with that SAME name/code —
+// `sanitizeThrownError`/`createGuardError`/child-entry's `agentThrow` `rejectErr` all set
+// `.name === .code` on purpose (so a script's own `e.code` check and `e.name`/`String(e)` agree);
+// a script's own `throw new TypeError('x')` or an accidental `{code:'oops'}` with a DIFFERENT
+// `.name` both still fall through to `String(err)` below, keeping their ordinary class prefix.
 function safeMessage(err: unknown): string {
   try {
-    if (err instanceof Error) return err.message;
+    if (err !== null && typeof err === 'object' && 'message' in err && 'code' in err && 'name' in err) {
+      const m = (err as { message?: unknown }).message;
+      const c = (err as { code?: unknown }).code;
+      const n = (err as { name?: unknown }).name;
+      if (typeof m === 'string' && typeof c === 'string' && n === c) return m;
+    }
   } catch { /* fall through to the next strategy */ }
   try {
     return String(err);

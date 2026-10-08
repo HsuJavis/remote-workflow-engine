@@ -41,6 +41,7 @@ import { validateModelProbeConfig } from './models/model-probe.js';
 import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js';
 import { PiGatewayClient } from './gateway/pi-gateway-client.js';
 import { probePiPath } from './gateway/pi-confinement-probe.js';
+import { sweepOrphanSandboxChildren, sandboxChildRegistryDir } from './sandbox/host.js';
 import type { Provider } from './providers.js';
 import { assertUpdatePathsOutsideWorkRoot } from './self-update.js';
 import { normalizeSeedRefAllowlist, assertHttpsAllowlist } from './seedref-egress.js';
@@ -902,6 +903,14 @@ async function main(): Promise<void> {
   // Issue #101 (CLI scratch): per-dispatch CLI scratch dirs a previous process left behind (crash,
   // kill) — nothing is in flight before createServer(), so the whole parent goes.
   if (config.workRoot !== undefined) sweepCliScratch(config.workRoot);
+  // Issue #162 (reverify-2 finding): BEFORE this call, a sandbox child could only ever be reaped on
+  // a graceful SIGINT/SIGTERM (the shutdown() hook below) — never on a kill -9/OOM/crash, which is
+  // what the real reported incident actually was (the orphan survived an engine RESTART). This is
+  // the layer that covers that: sweep the previous process instance's own on-disk child-pid
+  // record(s) and SIGKILL anything still alive from it, before this new instance ever accepts a
+  // run that could spawn a same-pid collision. Same "nothing is in flight before createServer()"
+  // placement as `sweepCliScratch`.
+  if (config.workRoot !== undefined) sweepOrphanSandboxChildren(sandboxChildRegistryDir(config.workRoot));
   // v0374 integration review L-2: the SDK's unconfined-mode skillsRoot leftovers — see this
   // function's own doc for why it is age/ownership-bounded rather than an unconditional wipe.
   sweepStaleUnconfinedSkillScratch();

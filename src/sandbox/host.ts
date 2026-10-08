@@ -6,7 +6,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { mkdirSync, realpathSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
 import type { Tokens } from '../types.js';
 // Issue #161 B2: marks an explicit own-key `undefined` in `args` so it survives THIS 'start'
 // message's own IPC 'json' serialization into the child (the same hop child-entry.ts's own
@@ -162,6 +162,13 @@ export interface SandboxHostConfig {
    *  `SandboxHost`/`run()` call (run-manager.ts's own issue #53 note on `entry.sandbox` identity), so
    *  each LIVE execution gets its own fresh deadline — time spent suspended never counts against it. */
   maxRunDurationMs?: number;
+  /** Issue #162 (boot-time sweep): when set, every real child this host forks is recorded here
+   *  (`recordChildPid`) the instant it spawns, and de-recorded (`clearChildPidRecord`) the instant
+   *  it settles — the on-disk trail a FUTURE engine boot's `sweepOrphanSandboxChildren` reads to
+   *  reap anything still alive from a process instance that never got to shut down gracefully.
+   *  Absent -> no bookkeeping (every existing non-production caller/test that constructs
+   *  `SandboxHost` directly, with no workRoot to anchor a registry under). */
+  childRegistryDir?: string;
   /** issue #163 B1 (test seam): injects a `fork()`-alike for a deterministic fake-child race test —
    *  mirrors `PiGatewayClient`'s own `spawnChild` seam. Absent -> the real `node:child_process.fork`
    *  (every production caller). */
@@ -211,6 +218,91 @@ interface ActiveRun {
   settle: (outcome: RunOutcome) => void;
 }
 
+// Issue #162 (reverify-2, boot-time sweep): the shutdown hook (RunManager.shutdown(), issue #162
+// commit 9c444d5) only runs on a GRACEFUL SIGINT/SIGTERM. A hard kill (kill -9, OOM, a crash) never
+// reaches that handler, so a forked sandbox child can outlive the engine process entirely — the
+// actual reported incident (pid alive 44+ hours, surviving an engine RESTART). This is the other
+// layer: a small on-disk record, written while a child is live and removed when it settles, that
+// the NEXT engine boot reads BEFORE serving traffic to SIGKILL anything still alive from a previous
+// instance. One file per pid, named `<pid>.json`, holding `{ pid, startTime }` — `startTime` is the
+// kernel's own process-start timestamp (read from /proc/<pid>/stat), not a timestamp this process
+// invents, so a LATER, unrelated process that the OS happens to reuse the same pid for (the one
+// real hazard of trusting a bare pid across a reboot/long gap) is never mistaken for the recorded
+// child and never killed.
+export function sandboxChildRegistryDir(workRoot: string): string {
+  return join(workRoot, 'sandbox-children');
+}
+
+// Linux-only (the only platform this engine ships/tests on — see src/main.ts's own install-path
+// assumptions). `/proc/<pid>/stat`'s 2nd field (`comm`) is parenthesized and may itself contain
+// spaces/parens, so field 22 (starttime) is located from the LAST ')' rather than by a naive
+// whitespace split — the standard, well-known parse for this file. Returns undefined when the pid
+// is not a live process right now, or `/proc` is unavailable (non-Linux) — both callers treat that
+// as "cannot verify," never as license to kill.
+function readProcStartTime(pid: number): string | undefined {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const afterComm = raw.slice(raw.lastIndexOf(')') + 2).trim().split(' ');
+    // afterComm[0] is field 3 (state); starttime is field 22, i.e. index 22-3 = 19.
+    return afterComm[19];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Issue #162: called once, synchronously, right after a sandbox child is forked (while its real
+ *  pid and the kernel's own start-time for it are both freshly knowable) — best-effort, never
+ *  throws into the caller's spawn path over bookkeeping. */
+export function recordChildPid(registryDir: string, pid: number): void {
+  try {
+    const startTime = readProcStartTime(pid);
+    if (startTime === undefined) return; // can't verify later -> don't record an unverifiable entry
+    mkdirSync(registryDir, { recursive: true });
+    writeFileSync(join(registryDir, `${pid}.json`), JSON.stringify({ pid, startTime }));
+  } catch { /* best-effort bookkeeping; a run must never fail over this */ }
+}
+
+/** Issue #162: called once a sandbox child has settled (normally, by timeout, or via abort()) —
+ *  the child is no longer "possibly orphaned," so its record must not survive to be acted on by a
+ *  future boot sweep (which would otherwise try to kill a pid the kernel may have since reused for
+ *  something else entirely unrelated). Best-effort, never throws. */
+export function clearChildPidRecord(registryDir: string, pid: number): void {
+  try { unlinkSync(join(registryDir, `${pid}.json`)); } catch { /* already gone, or never written */ }
+}
+
+/** Issue #162 (boot-time sweep): main.ts's own boot path calls this ONCE, before `createServer()`
+ *  starts accepting traffic — the layer that covers a kill -9/OOM/crash/manual-restart, which a
+ *  graceful-shutdown-only hook (RunManager.shutdown()) cannot reach. For every `<pid>.json` record
+ *  left behind by whatever process instance was running before this one: re-read that pid's CURRENT
+ *  kernel start-time and compare it against the recorded one. A match means the same OS process is
+ *  still alive and is still the one that was recorded (not a later, unrelated reuse of the same
+ *  pid) — SIGKILL it. Either way (killed, already-dead, or a mismatched/unverifiable record) the
+ *  file is removed, so a record is never read twice and can never accumulate across many restarts.
+ *  Best-effort throughout: one entry's failure never stops the rest from being swept, and a missing
+ *  or empty directory is a silent no-op. Never throws. */
+export function sweepOrphanSandboxChildren(registryDir: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(registryDir);
+  } catch {
+    return; // no registry dir at all -> nothing to sweep
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    const recordPath = join(registryDir, name);
+    try {
+      const record = JSON.parse(readFileSync(recordPath, 'utf8')) as { pid?: unknown; startTime?: unknown };
+      if (typeof record.pid === 'number' && typeof record.startTime === 'string') {
+        const currentStartTime = readProcStartTime(record.pid);
+        if (currentStartTime !== undefined && currentStartTime === record.startTime) {
+          try { process.kill(record.pid, 'SIGKILL'); } catch { /* ESRCH: already gone */ }
+        }
+      }
+    } catch { /* malformed record: fall through to removal below */ }
+    try { unlinkSync(recordPath); } catch { /* already gone */ }
+  }
+}
+
 export class SandboxHost {
   private readonly _config: SandboxHostConfig;
   private readonly _active = new Map<string, ActiveRun>();
@@ -234,11 +326,19 @@ export class SandboxHost {
       // the deadline firing on itself below) so exactly one of "the run finished" / "the deadline
       // fired" ever wins, and a run that finishes normally never leaves a live timer behind.
       let deadlineTimer: NodeJS.Timeout | undefined;
+      // Issue #162 (boot-time sweep): captured once the child is actually forked (below) so
+      // `settle` — the single choke point every outcome (done/error/exit/spawn-error/timeout)
+      // funnels through — can de-record it there, in one place, regardless of which path settled.
+      let childPidForRegistry: number | undefined;
+      const childRegistryDir = this._config.childRegistryDir;
       const settle = (outcome: RunOutcome) => {
         if (settled) return;
         settled = true;
         if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
         this._active.delete(runId);
+        if (childRegistryDir !== undefined && childPidForRegistry !== undefined) {
+          clearChildPidRecord(childRegistryDir, childPidForRegistry);
+        }
         resolve(outcome);
       };
 
@@ -259,6 +359,13 @@ export class SandboxHost {
         env: SANDBOX_CHILD_ENV,
       });
       this._active.set(runId, { child, settle });
+      // Issue #162: record AFTER the real OS pid is known — a crash between this line and the
+      // write below just means this one child is unprotected by the sweep for that narrow window,
+      // the same best-effort posture the rest of this bookkeeping already accepts.
+      if (childRegistryDir !== undefined && typeof child.pid === 'number') {
+        childPidForRegistry = child.pid;
+        recordChildPid(childRegistryDir, child.pid);
+      }
 
       // F-1: the wall-clock deadline for this ONE execution. Started here (not after 'ready') so a
       // child that never even boots (a corrupt install, a missing CHILD_ENTRY file) is also bounded,
