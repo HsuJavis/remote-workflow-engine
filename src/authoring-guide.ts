@@ -675,7 +675,7 @@ function harnessDisclosureParagraph(harness?: 'sdk' | 'pi'): string {
     'materializer as the sdk gateway — `${secret:}`/`${run:dir}` substitution never diverges between ' +
     'the two), with two pi-specific differences: a declared skill requires `Read` or `Bash` in ' +
     "`allowedTools` (pi only lists a skill in its system prompt when one of those two tools is present " +
-    '— no separate `Skill` tool exists on pi — refused `SKILL_REQUIRES_READ_TOOL` up front with ' +
+    '— no separate `Skill` tool exists on pi — refused `SKILL_REQUIRES_READ_TOOL` before dispatch with ' +
     'neither), and a `seedManifest`/`workspace_push` skill file\'s ' +
     '`exec:true` is only ever a file-permission bit (0o755 vs 0o644) on pi — there is no inline-shell ' +
     '(`!cmd`) skill syntax to gate the way the sdk gateway\'s `disableSkillShellExecution` does. ' +
@@ -1575,18 +1575,41 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // Issue #144 / v0374 review L-1: a seeded `.claude/skills/**` was never activatable (the
         // engine's own `Options.skills`/`plugins` wiring is an explicit list it builds itself, never
         // scanned off the workspace), but before this engine also removed it entirely at the first
-        // dispatch (the same leftover-config sweep that already removed `.claude/settings.json`/
-        // `.claude/hooks`/`.mcp.json`), it just sat there unreachable; a cold author seeding one had
-        // no way to learn why it silently did nothing, and now also why it disappears from
-        // `workspace_pull` after the run\'s first agent() call.
-        '**A seeded `.claude/skills/**` is removed, not merely inert.** If your `seed`/`seedManifest` ' +
-        'includes files under `.claude/skills/`, the engine strips them from the run workspace before ' +
-        'the first `agent()` dispatch — the same sweep that already removes a planted `.claude/' +
-        'settings.json`, `.claude/hooks/`, or `.mcp.json` (leftover engine-owned config paths, never ' +
-        'something a seed is meant to control). They will not appear in `workspace_pull` after that ' +
-        'point, and were never activatable even before the sweep existed. Provision a skill with ' +
-        "`workspace_push({kind:'skill', workflow, name, files})` instead — see \"Provisioning skills " +
-        'and MCP servers\" below.',
+        // dispatch (the same leftover-config sweep that also removes a planted `.mcp.json`), it just
+        // sat there unreachable; a cold author seeding one had no way to learn why it silently did
+        // nothing, and now also why it disappears from `workspace_pull` after the run's first
+        // agent() call.
+        // Issue #159 (3rd reverification): this paragraph used to claim `.claude/settings.json`/
+        // `.claude/hooks` are removed by the SAME dispatch-time sweep as `.claude/skills`/
+        // `.mcp.json` — wrong, and the exact confusion a tester's reproduction surfaced twice before
+        // being traced to it. There are TWO different mechanisms, at two different times, and they
+        // are now reported through two different fields:
+        //  - `.claude/settings*.json` and `.claude/hooks/**` are stripped at SEED time
+        //    (`seed`/`seedManifest` materialize, before any dispatch) — they never reach disk at
+        //    all, so the dispatch-time sweep below finds nothing to remove and reports nothing for
+        //    them. `run_status`/`run_result`'s `seedConfigStripped` is the ONLY place this is
+        //    visible — the paths your seed asked for that were silently dropped.
+        //  - `.mcp.json` and `.claude/skills/**` (and anything else landing on
+        //    `.claude/agents`/`.claude/commands`/`.claude/workflows`/`.claude/routines`/
+        //    `.claude/settings.local.json`/`.claude/launch.json`/`.claude/scheduled_tasks.json` —
+        //    this engine's own project-configuration set) ARE written by seed, then removed at the
+        //    FIRST `agent()` dispatch by a sweep that runs before every dispatch — reported on that
+        //    dispatch's harness descriptor as `plantedConfigRemoved` (`run_agent_log.harness`), and
+        //    as an `agent.planted_config_removed` event.
+        '**Project configuration under `.claude/` in a seed is neutralised two different ways, at ' +
+        'two different times.** `.claude/settings.json`, `.claude/settings.local.json`, and anything ' +
+        'under `.claude/hooks/` are **stripped at seed time** — never written to the workspace at ' +
+        'all — because `settingSources:[\'project\']` would execute them. The ONLY place this shows ' +
+        'up is `seedConfigStripped` on `run_status`/`run_result` (absent when nothing was stripped); ' +
+        'they will never appear in `workspace_pull` and no dispatch ever reports removing them (there ' +
+        'was nothing on disk to remove). `.mcp.json` and `.claude/skills/**` are different: seed DOES ' +
+        'write them, and the engine removes them from the workspace before the first `agent()` ' +
+        'dispatch\'s CLI can load them — reported as `plantedConfigRemoved` on that dispatch\'s ' +
+        '`run_agent_log.harness` (and an `agent.planted_config_removed` event), never in ' +
+        '`seedConfigStripped`. Either way, a seeded skill was never activatable by being present in ' +
+        "the workspace in the first place (the engine's own skill wiring is an explicit list it " +
+        "builds itself, never scanned off disk) — provision one with `workspace_push({kind:'skill', " +
+        'workflow, name, files})` instead — see "Provisioning skills and MCP servers" below.',
     ),
   );
 
