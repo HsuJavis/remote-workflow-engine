@@ -93,11 +93,28 @@ describe("issue #91: workflow_register refuses the engine-reserved 'rwe-' prefix
       expect(version).toBe('v1');
     }));
 
-  it("an uppercase 'RWE-…' name is accepted — case-sensitive, matching path-verdict.ts's asset-name check exactly (no toLowerCase either side)", () =>
+  // issue #154 B4 follow-up (2026-10-09 re-verification): `RWE-ver01`/`RWE-x` registered and ran —
+  // the reserved segment is a naming convention the engine owns, not a filesystem-identity check,
+  // so varying case must not let a caller claim it back. Flipped from the prior (deliberately
+  // case-sensitive) expectation to match `isReservedPrefixed`'s case-insensitive comparison.
+  it("an uppercase 'RWE-…' name is now ALSO refused RESERVED_PREFIX — case-insensitive (issue #154 B4 follow-up)", () =>
     withTmpFacade(async (facade) => {
-      const call = facadeCaller(facade);
-      const { version } = await registerPublishedVia(call, 'RWE-uppercase', "return 'ok';");
-      expect(version).toBe('v1');
+      const call = facadeCaller(facade, AUTHOR);
+      const res = (await call('workflow_register', { name: 'RWE-uppercase', script: "return 'ok';", mermaid: 'graph LR' })) as {
+        code?: string;
+        error?: { code?: string };
+      };
+      expect(res.code ?? res.error?.code).toBe('RESERVED_PREFIX');
+    }));
+
+  it("a mixed-case 'rWe-…' name is likewise refused RESERVED_PREFIX", () =>
+    withTmpFacade(async (facade) => {
+      const call = facadeCaller(facade, AUTHOR);
+      const res = (await call('workflow_register', { name: 'rWe-mixedcase', script: "return 'ok';", mermaid: 'graph LR' })) as {
+        code?: string;
+        error?: { code?: string };
+      };
+      expect(res.code ?? res.error?.code).toBe('RESERVED_PREFIX');
     }));
 });
 

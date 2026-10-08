@@ -27,7 +27,7 @@ import { parseMeta, parseMetaParams, parseWorkflowSkeleton, checkMetaPhases } fr
 import { deriveExpectedGraph } from './skeleton-graph.js';
 // Issue #91: the SAME literal `path-verdict.ts`'s asset-tree check refuses a reserved-prefix path
 // segment with — reused, not re-typed, so the two checks can never drift on what "reserved" means.
-import { RESERVED_PREFIX, isValidBareName } from './path-verdict.js';
+import { RESERVED_PREFIX, isReservedPrefixed, isValidBareName } from './path-verdict.js';
 import { isPathContained } from './path-containment.js';
 import { scanAgentCalls, type AgentCallViolationCode } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
@@ -654,10 +654,13 @@ export class WorkflowCatalog {
     // Issue #91: checked FIRST, before any other registration work (including `actorFromPrincipal`
     // below has no bearing on it) — the engine registers no `rwe-*` workflows for ANY principal,
     // admin included (owner decision), so a script/mermaid full of unrelated errors must still come
-    // back RESERVED_PREFIX rather than some other code that happened to run first. Same
-    // case-sensitive `startsWith` rule as `path-verdict.ts`'s asset-tree check (no `toLowerCase`) —
-    // a workflow name has no path segments to split on, so the whole name is compared directly.
-    if (name.startsWith(RESERVED_PREFIX)) {
+    // back RESERVED_PREFIX rather than some other code that happened to run first. Same rule as
+    // `path-verdict.ts`'s asset-tree check — a workflow name has no path segments to split on, so
+    // the whole name is compared directly.
+    // issue #154 B4 follow-up (2026-10-09 re-verification): case-INSENSITIVE now
+    // (`isReservedPrefixed`) — a plain `startsWith` let `RWE-ver01`/`RWE-x` register and run; the
+    // reserved segment is a naming convention the engine owns, not a filesystem-identity check.
+    if (isReservedPrefixed(name)) {
       throw codedError(
         'RESERVED_PREFIX',
         `RESERVED_PREFIX: workflow name '${name}' starts with the engine-reserved '${RESERVED_PREFIX}' prefix (ARCH-093) — the engine registers no ${RESERVED_PREFIX}* workflows`,

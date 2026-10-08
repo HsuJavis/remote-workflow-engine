@@ -33,7 +33,10 @@ afterEach(() => {
   rmSync(workRoot, { recursive: true, force: true });
 });
 
-const BAD_NAMES = ['', '   ', '..', '../x', 'a/../../b', 'a/b', '.', 'a'.repeat(300)];
+// issue #154 B4 follow-up (2026-10-09 re-verification): an EMBEDDED control character (not just
+// leading/trailing whitespace, which `.trim()` already caught) registered successfully —
+// `'ver2-01-tab\tmid'` round-tripped through `trim()` unchanged.
+const BAD_NAMES = ['', '   ', '..', '../x', 'a/../../b', 'a/b', '.', 'a'.repeat(300), 'tab\tmid', 'newline\nmid', 'cr\rmid'];
 
 describe('#154 B4: workflow_register refuses malformed/escaping names, not just the rwe- prefix', () => {
   for (const name of BAD_NAMES) {
