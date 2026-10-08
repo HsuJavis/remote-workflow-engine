@@ -660,7 +660,11 @@ export const TOOL_SPECS = [
             '<user-instructions untrusted="true">…</user-instructions> and the model is told that ' +
             'segment is untrusted. The effective bound is min(author, maxAppendPromptBytes) bytes, ' +
             'and a value containing the </user-instructions> frame-close delimiter is refused ' +
-            'PARAM_OUT_OF_RANGE.',
+            'PARAM_OUT_OF_RANGE. `agents` itself and each per-label entry inside it must be a plain ' +
+            'object (`agents: {<label>: \'medium\'}`, a bare string in place of the fields object, ' +
+            'is exactly as malformed as `agents` itself being a string/array/null) — either shape ' +
+            'violation is refused `PARAM_CONTRACT_INVALID`, not a generic schema error, so the ' +
+            'offending slot is named rather than silently coerced.',
         },
         // v26 (DES-170, TASK-175, issue #64): item schemas — a bare `{type:'array'}` told a caller
         // nothing about the required shape, which is exactly how a sha256-only `seed` element (the
@@ -733,7 +737,14 @@ export const TOOL_SPECS = [
     // allowedTools-via-variable scan violation) is re-checked HERE, on every run_start, against the
     // resolved version's STORED script; `detail.violation` names the specific rule that now fails.
     // `workflow_list`/`workflow_describe`'s own `runnable`/`runnableReason` reflect the same check.
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    // issue #156 NEW-2 (2026-10-09 re-verification): `PARAM_CONTRACT_INVALID` is ALSO a genuine
+    // run_start-time refusal, not only a registration-time one (the code's own catalog hint still
+    // says "the declared parameter contract itself ... or out of its own bounds" — a caller's
+    // `overrides.agents`/`overrides.agents.<label>` being the wrong SHAPE, e.g. a bare string
+    // instead of an object, is exactly that: the override cannot be read as part of the contract at
+    // all). validateUserOverrides (params/contract.ts) has returned this code at run_start since
+    // before this fix; it was simply missing from this list and from the guide's error table.
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'PARAM_CONTRACT_INVALID', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     // Service accounts spec: run_start has no ownership subject of its own (ownership:'none' —
     // "run any version" vs "release only" is a separate rule inside RunManager.start(), not
