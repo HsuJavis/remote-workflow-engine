@@ -271,17 +271,20 @@ export function checkMermaid(
     if (triple.length !== 3) return err('MERMAID_INVALID', { line: node.line });
     const [model, effort, timeoutStr] = triple;
     const timeoutMs = parseTimeout(timeoutStr!);
-    if (
-      (def.model !== undefined && model !== def.model) ||
-      (def.effort !== undefined && effort !== def.effort) ||
-      (def.timeoutMs !== undefined && timeoutMs !== def.timeoutMs)
-    ) {
-      // issue #155 B2b: name the label and the specific declared field(s) that disagreed, same as
-      // every other v2 rule's self-describing `expected` — only the fields `def` actually declares.
+    const modelMismatch = def.model !== undefined && model !== def.model;
+    const effortMismatch = def.effort !== undefined && effort !== def.effort;
+    const timeoutMismatch = def.timeoutMs !== undefined && timeoutMs !== def.timeoutMs;
+    if (modelMismatch || effortMismatch || timeoutMismatch) {
+      // issue #155 B2b (2026-10-07 reverify — PARTIAL fixed here): name the label and ONLY the
+      // field(s) whose OWN comparison above actually disagreed — gating each field's inclusion on
+      // `def` declaring a default for it (as before) produced a byte-identical `expected` for
+      // "wrong model only" / "wrong effort only" / "wrong timeout only" / "all three wrong" the
+      // instant `def` declared all three, contradicting the guide's documented "names which
+      // field(s) disagree".
       const expectedValue: { label: string; model?: string; effort?: string; timeoutMs?: number } = { label };
-      if (def.model !== undefined) expectedValue.model = def.model;
-      if (def.effort !== undefined) expectedValue.effort = def.effort;
-      if (def.timeoutMs !== undefined) expectedValue.timeoutMs = def.timeoutMs;
+      if (modelMismatch) expectedValue.model = def.model;
+      if (effortMismatch) expectedValue.effort = def.effort;
+      if (timeoutMismatch) expectedValue.timeoutMs = def.timeoutMs;
       return err('VALUE_MISMATCH', { line: node.line, expected: expectedValue });
     }
   }
