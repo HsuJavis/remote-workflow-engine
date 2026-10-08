@@ -151,3 +151,56 @@ describe('agent() options that merely START/END with braces but are not an objec
     expect(calls[0]?.allowedTools).toEqual(['Read', 'Grep']);
   });
 });
+
+// Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): a STRING-EXPRESSION element inside the
+// `allowedTools` array literal passes as 'literal'. `literalStringValue` (pre-fix) only checked the
+// array element's FIRST and LAST characters, so `'mcp__x__y' && 'Bash'` — a LogicalExpression of
+// two string literals, not one string literal — satisfied `text[0]==="'" && text[last]==="'"` and
+// was read as the literal string `mcp__x__y' && 'Bash` (truncating the quotes), which then also
+// happened to pass the unrelated `mcp__` prefix carve-out downstream. The fixer's own guide text
+// ("only a `[...]` array literal of quoted strings is checkable") was a promise the pre-fix code
+// did not enforce.
+//
+// RED before the fix: zero violations, and `allowedTools` records a garbled string that is neither
+// 'Bash' nor the two literals the author wrote.
+describe('agent() allowedTools array elements that are expressions (not bare string literals) are refused (#154 NEW HIGH variant, array-element AST check)', () => {
+  it('the exact repro: a LogicalExpression element inside the array ⇒ a violation, not zero', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['mcp__x__y' && 'Bash', 'Write'] });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_VALUE_NOT_LITERAL')).toBe(true);
+    expect(calls[0]?.allowedTools).toBe('absent');
+  });
+
+  it('a LogicalExpression element beside a readonly bash declaration is still caught (not waved through by the readonly conflict check)', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['Bash', 'mcp__x__y' && 'Write'], bash: 'readonly' });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_VALUE_NOT_LITERAL')).toBe(true);
+  });
+
+  it('a whole-array LogicalExpression (`[\'Read\'] && [\'Bash\',\'Write\']`) is refused on its own terms, not by accident', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['Read'] && ['Bash', 'Write'] });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_VALUE_NOT_LITERAL')).toBe(true);
+    expect(calls[0]?.allowedTools).toBe('absent');
+  });
+
+  it('a template-literal element is still refused (unchanged behaviour, now via the AST check)', () => {
+    const script = 'agent(\'a\', { prompt: \'p\', allowedTools: [`Bash`] });';
+    const { violations } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_VALUE_NOT_LITERAL')).toBe(true);
+  });
+
+  it('a spread element inside the array is refused', () => {
+    const script = `const extra = ['Write']; agent('a', { prompt: 'p', allowedTools: ['Bash', ...extra] });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_VALUE_NOT_LITERAL')).toBe(true);
+  });
+
+  it('a genuinely literal array of plain strings is unaffected (no false positive)', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['Read', 'mcp__x__y'] });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations).toEqual([]);
+    expect(calls[0]?.allowedTools).toEqual(['Read', 'mcp__x__y']);
+  });
+});

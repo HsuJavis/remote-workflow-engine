@@ -454,17 +454,40 @@ function literalStringValue(text: string): string | null {
   return null;
 }
 
-/** `null` unless `text` is, in full, a `[...]` literal of quoted string tokens — used to read
- *  `allowedTools: [...]` verbatim (DES-174/TASK-184) without a JS parser dependency. `[]` returns
- *  `[]`, not `null` — `allowedTools: []` must be recorded, not treated as absent. */
+/** Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): `null` unless `text` is, in full, an
+ *  `ArrayExpression` AST node every one of whose elements is a string `Literal` node — used to read
+ *  `allowedTools: [...]` verbatim (DES-174/TASK-184). `[]` returns `[]`, not `null` —
+ *  `allowedTools: []` must be recorded, not treated as absent. Parses `(${text})`, the same
+ *  parenthesize-to-force-expression-context trick `objectLiteralInnerText` uses (a bare `[` at
+ *  statement start is unambiguous in acorn, unlike `{`, but wrapping is harmless and keeps both
+ *  parse call sites identical). A REAL AST check, not the pre-fix `literalStringValue`'s "check only
+ *  the first/last character" text scan — that scan read `'mcp__x__y' && 'Bash'` (a two-literal
+ *  LogicalExpression, not one string literal) as literal because its first and last characters
+ *  happen to be quotes, truncating the quotes out of the resulting (wrong) string. A `SpreadElement`,
+ *  a hole (`[, 'x']`), a `TemplateLiteral`, or any non-string `Literal` (number/boolean/null/regex)
+ *  all fail closed to `null` here exactly as before. */
 function parseStringArrayLiteral(text: string): string[] | null {
   const t = text.trim();
-  if (!(t.startsWith('[') && t.endsWith(']'))) return null;
+  let ast: unknown;
+  try {
+    ast = parse(`(${t})`, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return null;
+  }
+  const program = ast as { body?: Array<{ type?: unknown; expression?: unknown }> };
+  if (!Array.isArray(program.body) || program.body.length !== 1) return null;
+  const stmt = program.body[0]!;
+  if (stmt.type !== 'ExpressionStatement') return null;
+  const expr = stmt.expression as { type?: unknown; elements?: Array<unknown> } | undefined;
+  if (!expr || expr.type !== 'ArrayExpression' || !Array.isArray(expr.elements)) return null;
   const out: string[] = [];
-  for (const item of splitTopLevel(t.slice(1, -1))) {
-    const v = literalStringValue(item);
-    if (v === null) return null;
-    out.push(v);
+  for (const el of expr.elements) {
+    // `null` is a real hole in the array literal (e.g. `['Bash', , 'Write']`) — acorn's own shape
+    // for it, not this function's `string[] | null` return sentinel.
+    if (el === null || typeof el !== 'object') return null;
+    const node = el as { type?: unknown; value?: unknown };
+    if (node.type !== 'Literal' || typeof node.value !== 'string') return null;
+    out.push(node.value);
   }
   return out;
 }
