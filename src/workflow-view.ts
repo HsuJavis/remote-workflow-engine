@@ -134,7 +134,14 @@ export interface WorkflowDescribeView {
   // issue #93 item 3: `'CONFINEMENT_UNAVAILABLE'` joins the union — a version that would otherwise
   // run (published, non-legacy contract) but that `RunManager.start()` would actually refuse on
   // THIS host for THIS caller (see `projectWorkflowDescribe`'s own `ctx.confinementPosture` doc).
-  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | null;
+  // #157 (2026-10-07 re-verification of #154): `'NOT_RUNNABLE'` joins the union — a version whose
+  // STORED script now fails `catalog.validateCurrent()`'s re-check (a static rule added after this
+  // version registered). Before this, `workflow_source`'s own `validation.ok:false` was the only
+  // place this fact surfaced; `run_start` refuses the SAME row `NOT_RUNNABLE` (run-manager.ts's
+  // admission sequence), so `describe`'s `runnable`/`runnableReason` now mirrors it — the read and
+  // the run path must agree about the same row, same rule this field exists to enforce for every
+  // other reason already in this union.
+  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE' | null;
 }
 
 // Transcribed LITERALLY from WorkflowDescribeView's own top-level field list (same convention as
@@ -246,13 +253,21 @@ export function projectWorkflowDescribe(
     posture: ctx.confinementPosture,
     origin: ctx.isRemoteSubmission || ctx.registeredRemote ? 'remote' : 'local',
   }) !== null;
+  // #157: a structurally-invalid stored script (validateCurrent re-check) is checked right after
+  // the legacy-contract shape and before publication/confinement — same relative priority
+  // `RunManager.start()`'s own admission sequence gives it (LEGACY_REREGISTER, then NOT_RUNNABLE,
+  // both ahead of CONFINEMENT_UNAVAILABLE). `full.validation` defaults to `{ok:true}` for any
+  // existing `projectWorkflowDescribe` call site that predates this field (see its own doc below).
+  const notRunnable = !legacy && full.validation.ok === false;
   const runnableReason: WorkflowDescribeView['runnableReason'] = legacy
     ? 'LEGACY_REREGISTER'
-    : !published
-      ? 'CHANNEL_UNPUBLISHED'
-      : confinementRefused
-        ? 'CONFINEMENT_UNAVAILABLE'
-        : null;
+    : notRunnable
+      ? 'NOT_RUNNABLE'
+      : !published
+        ? 'CHANNEL_UNPUBLISHED'
+        : confinementRefused
+          ? 'CONFINEMENT_UNAVAILABLE'
+          : null;
   const mermaid = full.mermaid ?? null;
   // Owner follow-up: masked for anyone who is not the owner/bypass/ownerless-row (`viewerIsOwner
   // === false`, the ONLY value that turns masking on — `undefined` stays full-visibility, see the
