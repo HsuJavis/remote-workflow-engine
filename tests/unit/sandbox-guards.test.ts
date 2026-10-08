@@ -454,6 +454,19 @@ describe('issue #162 NEW-2: safeMessage must not double a refusal code via cross
     expect(r.error!.code).toBe('SCRIPT_ERROR');
     expect(r.error!.message).toMatch(/^TypeError: bad input$/);
   });
+
+  // Review follow-up (tightens the `.code`-gate above): a `.code`-and-`.message` pair alone is not
+  // enough to justify skipping `String(err)` — a script can accidentally produce the SAME shape by
+  // writing `throw Object.assign(new Error('x'), {code:'oops'})`, with no intent to mimic an engine
+  // refusal. The doubling this file fixes is specifically `Error.prototype.toString`'s own
+  // `${name}: ${message}` rendering colliding with a message that ALREADY starts with that same
+  // name/code (`sanitizeThrownError`/`createGuardError`/child-entry's `agentThrow` rejectErr all set
+  // `.name === .code`) — so the real gate is `.name === .code`, not merely "both are strings".
+  it("a script's own throw Object.assign(new Error('x'), {code:'oops'}) (name !== code) still renders with its Error: prefix, not a bare message", async () => {
+    const r = await evaluateScript("throw Object.assign(new Error('x'), {code:'oops'});", FAKE_API);
+    expect(r.kind).toBe('error');
+    expect(r.error!.message).toBe('Error: x');
+  });
 });
 
 // g2 minor item 4 follow-up (#157 B1 realm safety): `phase()` can now THROW (a non-serializable

@@ -402,16 +402,23 @@ const UNREPRESENTABLE_THROWN_VALUE = 'the script threw a value that could not be
 // has no baked-in code to double, so this also drops an unwanted "Error: " prefix it never asked
 // for. Order matters: this runs BEFORE the `String(err)` fallback, which stays for every value with
 // no own `.message` string (a thrown non-Error, Object.create(null), a poisoned Proxy, …).
-// NARROWED to a string `.code` present (review follow-up): an ENGINE-coded error (the only shape
-// whose message bakes its own code in) also always carries a string `.code` — a script's own
-// `throw new TypeError('x')` carries no `.code` at all, so it still falls through to `String(err)`
-// below (`"TypeError: x"`, unchanged) rather than losing its error-class prefix to a bare `"x"`.
+// NARROWED to `.name === .code` (review follow-up, tighter than the first cut): a string `.code`
+// ALONE is not enough to justify skipping `String(err)` — a script can accidentally produce that
+// shape too (`throw Object.assign(new Error('x'), {code:'oops'})`, no intent to mimic an engine
+// refusal) and would then lose its `Error:` class prefix to a bare message for no reason. The
+// doubling this fixes is specifically `Error.prototype.toString`'s `${name}: ${message}`
+// rendering colliding with a message that ALREADY starts with that SAME name/code —
+// `sanitizeThrownError`/`createGuardError`/child-entry's `agentThrow` `rejectErr` all set
+// `.name === .code` on purpose (so a script's own `e.code` check and `e.name`/`String(e)` agree);
+// a script's own `throw new TypeError('x')` or an accidental `{code:'oops'}` with a DIFFERENT
+// `.name` both still fall through to `String(err)` below, keeping their ordinary class prefix.
 function safeMessage(err: unknown): string {
   try {
-    if (err !== null && typeof err === 'object' && 'message' in err && 'code' in err) {
+    if (err !== null && typeof err === 'object' && 'message' in err && 'code' in err && 'name' in err) {
       const m = (err as { message?: unknown }).message;
       const c = (err as { code?: unknown }).code;
-      if (typeof m === 'string' && typeof c === 'string') return m;
+      const n = (err as { name?: unknown }).name;
+      if (typeof m === 'string' && typeof c === 'string' && n === c) return m;
     }
   } catch { /* fall through to the next strategy */ }
   try {
