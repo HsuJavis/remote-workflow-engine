@@ -159,6 +159,65 @@ describe('a nested workflow() call re-validates the CHILD version it would actua
 // name this file's own `workFolder()` fix (workflow-catalog.ts) now also refuses outright, since
 // `join(workRoot, 'workflows', '../store')` used to resolve to `<workRoot>/store`, aliasing this
 // very test file's own `SqliteRunStore` directory.
+// 2026-10-08 integration (rv) fix (MINOR, reverify): `_computeStoredVersionValidity` used to
+// short-circuit `scan.unscannable` straight to `{ok:true}` — the EXCEPTION meant to grandfather
+// `AGENT_OPT_RETIRED` for the `agentType` retirement, but broadened by accident to the unscannable
+// case too, which has no such grandfathering intent (it never shipped a per-call runtime guard the
+// way `agentType` did). `workflow_describe` already reports this row `runnable:false`/
+// `NOT_RUNNABLE` (`toolSurfaceUnscannable`), but every admission door below ADMITTED it anyway. The
+// SAME `nonCodeOracle` parse failure `tests/unit/workflow-meta-scan.test.ts` uses.
+const UNSCANNABLE_SCRIPT = "export const meta = {};\nconst x = ((((;";
+
+describe('run_start/run_resume/nested workflow() refuse an unscannable stored row NOT_RUNNABLE, agreeing with workflow_describe (#157 agreement, unscannable case)', () => {
+  it('a version mutated to an unscannable script is refused NOT_RUNNABLE at run_start', async () => {
+    const dir = tempDir();
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    const name = 'it157-unscannable-start';
+    const { version } = await registerPublished(mgr.catalog, name, 'return 1;');
+    mutateStoredScript(dir, name, version, UNSCANNABLE_SCRIPT);
+    await expect(mgr.start({ origin: 'local', name })).rejects.toMatchObject({ code: 'NOT_RUNNABLE' });
+  });
+
+  it('a version mutated to an unscannable script AFTER a run already started is refused NOT_RUNNABLE on resume, not silently dispatched', async () => {
+    const dir = tempDir();
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    const name = 'it157-unscannable-resume';
+    const SUSPENDABLE =
+      "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+      "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, " +
+      "timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
+      "phase('main');\n" +
+      "await agent('worker', {});\n" +
+      "return 'done';";
+    const { version } = await registerPublished(mgr.catalog, name, SUSPENDABLE);
+    const runId = await mgr.start({ origin: 'local', name });
+    await mgr.suspend(runId);
+
+    mutateStoredScript(dir, name, version, UNSCANNABLE_SCRIPT);
+    const mgr2 = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    await expect(mgr2.resume(runId)).rejects.toMatchObject({ code: 'NOT_RUNNABLE' });
+  });
+
+  it("composing a child version mutated to an unscannable script is refused NOT_RUNNABLE from the parent script's own try/catch, no child run ever created", async () => {
+    const dir = tempDir();
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    const childName = 'it157-unscannable-nested-child';
+    const { version } = await registerPublished(mgr.catalog, childName, 'return 1;');
+    mutateStoredScript(dir, childName, version, UNSCANNABLE_SCRIPT);
+    const runId = await startScript(
+      mgr,
+      `try { const r = await workflow('${childName}', {}); return { ok: true, r }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+    );
+    await waitForStatus(mgr, runId, 'completed');
+    const result = await mgr.result(runId);
+    expect(result).toEqual({ ok: true, value: { code: 'NOT_RUNNABLE' } });
+    expect((await mgr.status(runId)).workflowNodes).toEqual([]);
+  });
+});
+
 describe("run_start refuses a stored row whose NAME is no longer valid (#154 B4 PARTIAL)", () => {
   it("a stored row named '../store' is refused NOT_RUNNABLE at run_start, and its workspace is never created at the run store's own directory", async () => {
     const dir = tempDir();

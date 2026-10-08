@@ -1363,19 +1363,35 @@ export class WorkflowCatalog {
       };
     }
     // 2026-10-08 integration (rv) fix: `scanAgentCalls` runs FIRST now (ahead of its pinned
-    // position below `validateScriptEntry`) ONLY to read `scan.unscannable` — a row written before
-    // the `nonCodeSpans` oracle existed (the SAME condition `scanAgentCalls` itself reports as the
-    // `SCRIPT_UNSCANNABLE` violation below) stays RUNNABLE by design: only a read-time marker fires
-    // (`workflow_describe.toolSurfaceUnscannable`, the dag route's
-    // `PREDICTED_OVERLAY_UNAVAILABLE`), never an admission refusal
-    // (tests/integration/scan-unscannable-markers.test.ts, item 6/Gate 8). Genuinely unparseable
-    // JS fails `validateScriptEntry` too (as `PARSE_ERROR`, a DIFFERENT code than `scanAgentCalls`'s
-    // own `SCRIPT_UNSCANNABLE`) — checking `scan.unscannable` before that gate, instead of trying
-    // to special-case `PARSE_ERROR` there, keeps `validateScriptEntry`'s OTHER `PARSE_ERROR` cases
-    // (e.g. an illegal top-level function wrapper — a real, intentional, pre-#154 registration
-    // rule with no such grandfather) refusing NOT_RUNNABLE exactly as before.
+    // position below `validateScriptEntry`) to read `scan.unscannable` — a row written before the
+    // `nonCodeSpans` oracle existed (the SAME condition `scanAgentCalls` itself reports as the
+    // `SCRIPT_UNSCANNABLE` violation below).
+    //
+    // 2026-10-08 integration (rv) MINOR fix (reverify): this USED to return `{ok:true}` here —
+    // "stays RUNNABLE by design, only a read-time marker fires" — but that was never a deliberate
+    // grandfather for THIS case, only an accidental broadening of the one below it that genuinely
+    // IS deliberate (`AGENT_OPT_RETIRED`/`agentType`, which ships its own dispatch-time guard —
+    // see that check's own doc). `workflow_describe` independently derives `runnable:false`/
+    // `NOT_RUNNABLE` for exactly this row via `validateCurrent()` (the OTHER, OR'd half of
+    // `workflow-view.ts`'s `notRunnable`, which has no such short-circuit) — so admission and the
+    // read surface disagreed: `run_start`/`run_resume`/a nested `workflow()` (every caller of this
+    // method) ADMITTED a row the read side already reported as not runnable, the exact #157
+    // "the read and the run path disagreed" shape, just via the unscannable path instead of a
+    // parse/shape violation. Refusing it here, the SAME `NOT_RUNNABLE` code and message shape every
+    // other staleness cause below uses, closes that gap without touching the READ-time marker
+    // (`workflow_describe.toolSurfaceUnscannable`, the dag route's `PREDICTED_OVERLAY_UNAVAILABLE`)
+    // at all — those are computed independently and keep firing exactly as before
+    // (tests/integration/scan-unscannable-markers.test.ts, item 6/Gate 8).
     const scan = scanAgentCalls(script);
-    if (scan.unscannable) return { ok: true };
+    if (scan.unscannable) {
+      const violation = scan.violations[0];
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version's script can no longer be statically scanned (SCRIPT_UNSCANNABLE${violation ? `: ${violation.hint}` : ''}) — re-register it to fix or confirm the script`,
+        detail: { violation: 'SCRIPT_UNSCANNABLE' },
+      };
+    }
     const scriptCheck = validateScriptEntry(script);
     if (!scriptCheck.ok) {
       const first = scriptCheck.errors[0]!;
