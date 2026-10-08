@@ -1051,7 +1051,12 @@ export class McpFacade {
       ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'run_result' as AuditAction, runId: a.runId, owner }, doRead)
       : await doRead();
     const o = outcome as Awaited<ReturnType<RunManager['result']>>;
-    const meta = await this._resultMeta(a.runId, view);
+    // issue #159 (4th reverification): `seedConfigStripped` lives ONLY on the in-memory RunEntry,
+    // overlaid by `_mergeLive` — `view` (raw store.getRun) never carries it, same as `seedRef`/
+    // `seedManifestRef`. `runStatus` already reads it through `runManager.status()`; `run_result`
+    // must read the SAME live overlay or the guide's "both run_status and run_result" claim is false.
+    const merged = await this.runManager.status(a.runId).catch(() => view);
+    const meta = await this._resultMeta(a.runId, view, merged.seedConfigStripped);
     if (o.ok) return { runId: a.runId, status: view.status, result: o.value, meta };
     return { runId: a.runId, status: view.status, error: o.error, meta };
   }
@@ -1068,7 +1073,7 @@ export class McpFacade {
    *  `status()`/`listSummaries()` use, directly off `view.agents`. `run_result` only ever answers
    *  for a TERMINAL run (`RunManager.result()`'s own `RUN_NOT_TERMINAL` gate), so `view.agents` here
    *  is already the settled, final list — no live overlay needed. */
-  private async _resultMeta(runId: string, view: RunStatusView): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] }; warnings?: Array<{ code: 'AGENT_FAILED'; message: string }> }> {
+  private async _resultMeta(runId: string, view: RunStatusView, seedConfigStripped?: string[]): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] }; warnings?: Array<{ code: 'AGENT_FAILED'; message: string }>; seedConfigStripped?: string[] }> {
     const usage = view.usage ?? { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpricedCalls: 0, unmappedMessages: {} };
     const priceBook = await this.store.getPriceBook(runId);
     const pinnedUnpriced = priceBook ? Object.entries(priceBook.pinned).filter(([, e]) => e.price === null).map(([k]) => k) : [];
@@ -1083,7 +1088,14 @@ export class McpFacade {
     const warnings = failedAgentCount !== undefined && failedAgentCount > 0
       ? [{ code: 'AGENT_FAILED' as const, message: `${failedAgentCount} agent(s) failed; see run_status.agentFailures for detail` }]
       : undefined;
-    return { usage, budgetEnforceable, ...(warnings !== undefined ? { warnings } : {}) };
+    return {
+      usage,
+      budgetEnforceable,
+      ...(warnings !== undefined ? { warnings } : {}),
+      // issue #159: mirrors RunStatusView's own rule — present only when something was actually
+      // stripped, never an empty array.
+      ...(seedConfigStripped !== undefined && seedConfigStripped.length > 0 ? { seedConfigStripped } : {}),
+    };
   }
 
   async runSuspend(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {

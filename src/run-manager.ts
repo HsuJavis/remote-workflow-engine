@@ -407,6 +407,9 @@ interface RunEntry {
   seedRef?: RunStatusView['seedRef'];
   /** v14 (REQ-082, DES-087): the seedManifestRef sha used, overlaid onto RunStatusView by _mergeLive. */
   seedManifestRef?: string;
+  /** Issue #159: workspace-relative paths `materializeSeed`/`materializeManifest` stripped (former
+   *  Claude config, never written) — overlaid onto RunStatusView by _mergeLive. */
+  seedConfigStripped?: RunStatusView['seedConfigStripped'];
   /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
    *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
   effectiveParams: RunParams;
@@ -1278,9 +1281,16 @@ export class RunManager {
     // (`seedManifest`, blobs verified present above). Both go through the SAME guardrails and the SAME
     // pre/post steps (mkdir + git baseline), differing only in the materializer — pick it once.
     const cas = this._cas;
+    // Issue #159: the return value used to be discarded entirely (`materialize(workspace);` with
+    // nothing captured) — `materializeSeed`/`materializeManifest` strip former Claude config
+    // (`.claude/settings*.json`, `.claude/hooks/**`) at this point, before it ever touches disk, so
+    // the dispatch-time sweep (`sweepPlantedConfig`) later finds nothing there and correctly reports
+    // nothing; nowhere else ever surfaced that a seeded path was dropped. `seedConfigStripped` below
+    // closes that gap, mirroring `seedRefView`'s own `dropped` just above.
+    let seedConfigStripped: string[] = [];
     const materialize =
-      spec.seed && spec.seed.length > 0 ? (ws: string) => { materializeSeed(ws, spec.seed!); } :
-      spec.seedManifest && spec.seedManifest.length > 0 && cas ? (ws: string) => { materializeManifest(ws, spec.seedManifest!, (sha) => cas.readBlobSync(sha)); } :
+      spec.seed && spec.seed.length > 0 ? (ws: string) => { seedConfigStripped = materializeSeed(ws, spec.seed!).stripped; } :
+      spec.seedManifest && spec.seedManifest.length > 0 && cas ? (ws: string) => { seedConfigStripped = materializeManifest(ws, spec.seedManifest!, (sha) => cas.readBlobSync(sha)).stripped; } :
       null;
     if (materialize) {
       mkdirSync(workspace, { recursive: true });
@@ -1366,6 +1376,7 @@ export class RunManager {
     }
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
     if (spec.seedManifestRef !== undefined) entry.seedManifestRef = spec.seedManifestRef; // v14: DES-087
+    if (seedConfigStripped.length > 0) entry.seedConfigStripped = seedConfigStripped; // issue #159
     if (seedRefFail) {
       // v13 REQ-080: a seedRef fetch failure fails the run typed (never starts the script against an
       // empty/partial tree) via the same resultError channel every other run failure uses.
@@ -1757,7 +1768,7 @@ export class RunManager {
     // records just overlaid above (never from `entry.guard`, which has no production caller of
     // `addUsage` yet — see `foldUsageFromRecords`'s own doc).
     const usage = entry.spawner instanceof AgentExecutor ? foldUsageFromRecords(agents) : view.usage;
-    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(usage !== undefined ? { usage } : {}), ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}), ...(entry.seedManifestRef !== undefined ? { seedManifestRef: entry.seedManifestRef } : {}) };
+    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(usage !== undefined ? { usage } : {}), ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}), ...(entry.seedManifestRef !== undefined ? { seedManifestRef: entry.seedManifestRef } : {}), ...(entry.seedConfigStripped !== undefined ? { seedConfigStripped: entry.seedConfigStripped } : {}) };
   }
 
   /** The script return value for a completed run, or the failure error (DES-001 workflow_result). */

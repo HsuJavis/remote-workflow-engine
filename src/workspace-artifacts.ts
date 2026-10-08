@@ -7,6 +7,21 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, openSync, readSync, closeSync, type Dirent } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { isPathContained } from './path-containment.js';
+import { PROJECT_CONFIG_MOUNT_TARGETS } from './gateway/bash-confinement.js';
+
+// Issue #159 (NEW row): the pi gateway's `prepareDispatchMountTargets` (project-config-guard.ts)
+// pre-creates every still-missing `PROJECT_CONFIG_MOUNT_TARGETS` 'file' entry as a 0-byte real file
+// before each dispatch (issue #148's bwrap lazy-mount-race fix) — an engine-owned placeholder, not a
+// client deliverable, exactly like `.git/` just below. `sweepPlantedConfig` already treats a 0-byte
+// real file at one of these paths as "nothing to sweep" (its own doc comment); listArtifacts applies
+// the SAME "0 bytes at this exact path = placeholder, not content" rule so `workspace_list`/
+// `workspace_pull` don't surface 5 empty files a client never wrote and the sdk gateway (which never
+// calls `prepareDispatchMountTargets`) never produces in the first place. A placeholder that an agent
+// later wrote REAL content into is no longer 0 bytes and is listed normally — this only hides the
+// untouched, genuinely-empty engine artifact.
+const MOUNT_PLACEHOLDER_FILES: ReadonlySet<string> = new Set(
+  PROJECT_CONFIG_MOUNT_TARGETS.filter((t) => t.kind === 'file').map((t): string => t.rel),
+);
 
 /** Default max bytes returned by a single artifact_get chunk (a client pages by advancing offset). */
 export const DEFAULT_MAX_CHUNK = 1024 * 1024; // 1 MiB
@@ -46,8 +61,10 @@ export function listArtifacts(workspace: string): ArtifactEntry[] {
         } catch {
           continue;
         }
+        const relPath = relative(workspace, abs).split(sep).join('/');
+        if (buf.length === 0 && MOUNT_PLACEHOLDER_FILES.has(relPath)) continue; // issue #159: untouched engine mount placeholder, not client content
         out.push({
-          path: relative(workspace, abs).split(sep).join('/'),
+          path: relPath,
           size: buf.length,
           sha256: createHash('sha256').update(buf).digest('hex'),
         });

@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { listArtifacts, readArtifactChunk, DEFAULT_MAX_CHUNK } from '../../src/workspace-artifacts.js';
 import { materializeSeed, isStrippedSeedPath } from '../../src/workspace-seed.js';
+import { prepareDispatchMountTargets } from '../../src/gateway/project-config-guard.js';
 
 let ws: string;
 let outside: string;
@@ -31,6 +32,17 @@ describe('listArtifacts (REQ-023: recursive + sha256, escape-safe)', () => {
     const a = arts.find((x) => x.path === 'a.txt')!;
     expect(a.size).toBe(5);
     expect(a.sha256).toBe(createHash('sha256').update('hello').digest('hex'));
+  });
+
+  it("issue #159: hides the pi gateway's untouched 0-byte PROJECT_CONFIG_MOUNT_TARGETS placeholders (.claude/settings.json, .mcp.json, ...), but lists a real file at the same path", () => {
+    writeFileSync(join(ws, 'real.txt'), 'hello');
+    prepareDispatchMountTargets(ws); // same call pi-gateway-client.ts makes before every dispatch
+    const paths = listArtifacts(ws).map((a) => a.path);
+    expect(paths).toEqual(['real.txt']); // every 0-byte placeholder is hidden
+    // A placeholder an agent later wrote real content into is no longer hidden.
+    writeFileSync(join(ws, '.mcp.json'), '{}');
+    const paths2 = listArtifacts(ws).map((a) => a.path);
+    expect(paths2).toEqual(['.mcp.json', 'real.txt']);
   });
 
   it('skips a symlink whose real target escapes the workspace', () => {
