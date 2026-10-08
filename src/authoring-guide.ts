@@ -968,8 +968,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "`RESULT_TOO_LARGE` never applies there) — that failure is local to the one call your script " +
         'made and is catchable with a normal try/catch, not run-terminating.\n\n' +
         'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
-        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, operator-configurable, " +
-        "defaulting to 4 hours — covering every agent()/workflow() round trip across every phase, " +
+        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, 4 HOURS by default, " +
+        "operator-configurable — covering every agent()/workflow() round trip across every phase, " +
         "not a single call, which `timeoutMs` already bounds — raised or lowered per deployment " +
         "via rwe.config.json's own maxRunDurationMs key, issue #157 follow-up) and the sandboxed " +
         "process has a memory cap. Exceeding either " +
