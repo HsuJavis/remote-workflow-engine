@@ -1508,10 +1508,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'tools: Edit, Read` — the names sorted, comma-space separated, exactly the literal ' +
         '`allowedTools` array on that call, or `tools: none` for `allowedTools: []`. Omitting the ' +
         'segment (or leaving the node with no `<br/>` at all) while `allowedTools` is a literal array ' +
-        'is refused `TOOLS_MISMATCH` — it does NOT fall back to "not compared". Only when the call ' +
-        'declares no `allowedTools` key at all is the segment optional and skipped entirely: write ' +
+        'is refused `TOOLS_MISMATCH` — it does NOT fall back to "not compared". When the call ' +
+        'declares no `allowedTools` key at all, there is no declared list to VALUE-check the ' +
+        'segment against, but the segment is still not free text (issue #155): write exactly ' +
         '`tools: default` (the honest word for "whatever this deployment configures") or leave the ' +
-        'segment off.\n' +
+        'segment off — any OTHER text there, most dangerously a false `tools: none` (indistinguishable ' +
+        'from a REAL `allowedTools: []`), is refused `TOOLS_MISMATCH` too.\n' +
         '4. **Edges — `EDGE_MISMATCH`.** Consecutive calls in your script must be joined in the ' +
         'diagram, across lane boundaries too. A path may run through non-agent shapes (a diamond for ' +
         'a branch, an aggregation for a non-agent join), which is how you draw a ternary or an ' +
