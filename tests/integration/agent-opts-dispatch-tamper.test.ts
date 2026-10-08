@@ -122,4 +122,39 @@ describe('agent() opts tampered between registration and dispatch are refused AG
     expect(spawner.dispatched).toHaveLength(1);
     expect(spawner.dispatched[0]?.opts.allowedTools).toEqual(['Read']);
   });
+
+  // 2026-10-08 integration (rv): `scanAgentCalls`/`expectedAgentOptsByLabel` key the registered
+  // tool surface by the agent() call's FIRST positional string (the contract/`meta.params.agents`
+  // key — `scanAgentCalls`'s own `labelVal`, workflow-meta.ts) — NEVER by `opts.label`, which is a
+  // purely cosmetic run-tracking name `_handleAgentRequest` resolves separately (`rawOpts.label ??
+  // positional`, used for `markQueued`/`run_agent_log`, decoupled from the contract key precisely
+  // so a label can be anything a script wants to display — the v24 integrator comment at this same
+  // call site). The dispatch-tamper lookup (#154 NEW HIGH) looked up `toolSurface[label]` — the
+  // TRACKING name — instead of `toolSurface[positional]`, the SCAN key the map is actually built
+  // with, so every call that gives `label` a different value than its positional arg (the single
+  // most common shape in this very test suite — `dag-restart-survival.test.ts`,
+  // `workflow-dag-tree.test.ts`, etc. all call e.g. `agent('do-T', { label: 'T' })`) found no entry
+  // and failed CLOSED, AGENT_OPTS_TAMPERED, even with zero tampering.
+  it('[LOAD-BEARING] a healthy dispatch whose opts.label differs from the agent() call\'s positional contract key is not falsely flagged AGENT_OPTS_TAMPERED', async () => {
+    const dir = tempDir();
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const spawner = new RecordingSpawner();
+    const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    const name = 'it154new-label-vs-positional';
+    await registerPublished(
+      mgr.catalog,
+      name,
+      "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+        "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, " +
+        "timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
+        "phase('p1');\n" +
+        "return await agent('a', { label: 'display-name', prompt: 'hi', allowedTools: ['Read'] });",
+      { mermaid: TAMPER_MERMAID },
+    );
+    const runId = await mgr.start({ origin: 'local', name });
+    await waitForStatus(mgr, runId, 'completed');
+    expect(await mgr.result(runId)).toEqual({ ok: true, value: 'ok' });
+    expect(spawner.dispatched).toHaveLength(1);
+    expect(spawner.dispatched[0]?.opts.allowedTools).toEqual(['Read']);
+  });
 });

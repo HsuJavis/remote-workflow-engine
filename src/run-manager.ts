@@ -2672,9 +2672,20 @@ export class RunManager {
       // "nothing to check". Before this, the opts object crossed the child->host IPC through JSON
       // serialization, which honours a script-planted `Array.prototype.toJSON` — nothing compared
       // what actually got dispatched against what registration saw.
+      //
+      // 2026-10-08 integration (rv) fix: indexed by `positional`, NEVER the `label` computed a few
+      // lines above (`rawOpts.label ?? positional`) — `expectedAgentOptsByLabel`/`scanAgentCalls`
+      // key their map by the agent() call's literal FIRST positional string (the contract key
+      // matching `meta.params.agents.<key>`; `scanAgentCalls`'s own `labelVal`, workflow-meta.ts),
+      // never by `opts.label`, which is deliberately a SEPARATE, purely cosmetic run-tracking name
+      // (the comment a few lines above this block explains exactly why the two are decoupled). The
+      // original code here read `toolSurface[label]`, so any call passing a `label` different from
+      // its positional — the single most common agent() shape in this codebase's own test fixtures,
+      // `agent('do-T', { label: 'T' })` — found no scanned entry and failed CLOSED with
+      // AGENT_OPTS_TAMPERED on every dispatch, tampered or not.
       {
         const toolSurface = frameToolSurface ?? entry.toolSurface;
-        if (!matchesScannedOpts(toolSurface[label], rawOpts.allowedTools, rawOpts.bash)) {
+        if (!matchesScannedOpts(toolSurface[positional], rawOpts.allowedTools, rawOpts.bash)) {
           const detail =
             `AGENT_OPTS_TAMPERED: the dispatched allowedTools/bash for agent() call '${label}' ` +
             "does not match any options literal this script's registered scan recorded for that " +
