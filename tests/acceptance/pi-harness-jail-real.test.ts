@@ -173,7 +173,11 @@ describe('pi harness v1 — file-tool jail, driven deterministically (review B3/
       expect(results[0]?.isError).toBe(true);
       const text = JSON.stringify(results[0]?.result);
       expect(text).toMatch(/PATH_ESCAPES_WORKSPACE/);
-      expect(text).toContain(ws); // names the workspace root, as the authoring guide promises
+      // #159 B11 follow-up (2026-10-07 re-verification): the FIRST fix made the escaping TARGET
+      // relative but still appended the host-absolute `ws` itself at the end of the message — fixed
+      // again to name the root only by the stable logical phrase "this run's workspace root".
+      expect(text).not.toContain(ws); // never the host-absolute workspace root path either
+      expect(text).toContain('workspace root'); // still names the root, by a stable logical label
       expect(text).not.toContain(outdir); // never the resolved host-absolute directory it escaped to
     } finally {
       await new Promise((r) => fake.server.close(() => r(undefined)));
