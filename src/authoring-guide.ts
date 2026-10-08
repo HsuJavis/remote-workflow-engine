@@ -1432,9 +1432,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'underestimate (the per-turn streamed snapshot it is built from only reaches a turn\'s true ' +
         '`output_tokens` on that turn\'s own final frame, which a cut-short call\'s in-flight turn ' +
         'never reaches) — `input`/cache columns track the eventual finalized total closely. ' +
-        'This figure is charged against `budget` exactly like a completed call\'s, so a repeated ' +
-        'suspend/resume cycle of a usage-heavy agent now counts toward, and can trip, a token or ' +
-        'USD limit even though every individual attempt was interrupted. Separately: resuming a ' +
+        'What "streamed in before the cutoff" means depends on the harness: a cutoff that lands ' +
+        'after at least one turn has FULLY completed (a tool call and its result, say) always ' +
+        'charges that turn\'s own exact figure; for a cutoff mid-TURN, the sdk-cli harness streams ' +
+        'partial tokens continuously and so almost always has something to charge, while the pi ' +
+        'harness\'s wire protocol normally reports nothing for the in-flight turn at all (0, not an ' +
+        'underestimate) unless the provider itself happens to populate usage on an intermediate ' +
+        'chunk — most do not. `partial:true`/a nonzero figure never means "estimated"; it always ' +
+        'means "a real number the provider or harness actually reported, possibly short of the ' +
+        'true total". This figure is charged against `budget` exactly like a completed call\'s, so ' +
+        'a repeated suspend/resume cycle of a usage-heavy agent counts toward, and can trip, a ' +
+        'token or USD limit to the extent described above — never a guarantee that EVERY ' +
+        'suspend/resume cycle accumulates something, only that whatever was genuinely observed ' +
+        'does. Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
         'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
         'attempt never itself resolves anything to the script (only the replacement agentId\'s own ' +
@@ -1597,14 +1607,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Three things a cold author gets wrong',
-      'A **sequential** `await agent(label, options)` call that fails or times out resolves to ' +
-        '`null` for that reason — it does not throw. (An ENGINE refusal, e.g. `BUDGET_EXCEEDED`, is ' +
+      'A **sequential** `await agent(label, options)` call that fails, times out, or is aborted by ' +
+        'run_suspend/run_stop while in flight resolves to `null` for that reason — it does not ' +
+        'throw. (An ENGINE refusal, e.g. `BUDGET_EXCEEDED`, is ' +
         'a different case and still propagates as a thrown error — see "Budget, concurrency" above.) ' +
         "Guard every sequential call the same way `parallel()`'s own thunks already are:\n\n" +
         '```js\n' +
         "const out = await agent('reviewer', { prompt: 'Review the draft' });\n" +
         'if (out === null) {\n' +
-        '  // the agent failed or timed out — there is no result to read here\n' +
+        '  // the agent failed, timed out, or was aborted by run_suspend/run_stop — there is no\n' +
+        '  // result to read here\n' +
         '  return;\n' +
         '}\n' +
         '```\n\n' +

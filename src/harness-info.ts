@@ -64,12 +64,15 @@ export function buildHarnessAnnounce(harnessProviders?: readonly Provider[]): Ha
     // back up.
     effort: 'mapped to pi\'s thinkingLevel; effortApplied is true only for a verified outbound request to a model whose catalog row supports reasoning (OpenRouter\'s reasoning.effort — see DEPLOY.md), false otherwise; ollama has no reasoning dial.',
     // issue #152: made explicit that partial:true on abort/timeout is unconditional (even a known
-    // figure of exactly 0 — pi's child->parent protocol only reports usage on a COMPLETE message_end/
-    // error event, so an attempt killed before its first one has nothing to report) and that this
-    // engine deliberately never estimates the missing figure (no streamed mid-turn usage exists on
-    // pi's wire to read instead, and an estimate would need a schema slot marking it "not exact"
-    // distinct from a real observed figure that this engine does not have — better to omit it than
-    // guess silently).
-    usage: 'summed over every assistant message_end (pi has no stable per-message id); partial:true on abort/timeout, ALWAYS — including a known figure of exactly 0 for an attempt killed before its first message_end, which is reported honestly as a lower bound of 0 rather than a silently exact free call; input tokens are never estimated to fill that gap; pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
+    // figure of exactly 0 — pi's child->parent protocol only GUARANTEES usage on a COMPLETE
+    // message_end/error event) and that this engine deliberately never ESTIMATES the missing figure
+    // client-side (an estimate would need a schema slot marking it "not exact" distinct from a real
+    // observed figure that this engine does not have — better to omit it than guess silently).
+    // issue #160 BUG-4: the in-progress turn itself may still contribute a real, non-estimated
+    // figure — when the provider populates `usage` on an intermediate stream chunk (some do; most
+    // don't), that figure is forwarded and folded in as a lower bound at abort/timeout time, same as
+    // every completed turn's own exact figure. A provider that reports nothing before its turn ends
+    // still yields exactly 0 for that in-flight turn, unchanged from before this fix.
+    usage: 'summed over every assistant message_end (pi has no stable per-message id), PLUS whatever the provider itself already reported for a turn still in flight at abort/timeout time (forwarded verbatim, never estimated); partial:true on abort/timeout, ALWAYS — including a known figure of exactly 0 when neither source has anything yet, which is reported honestly as a lower bound of 0 rather than a silently exact free call; input tokens are never estimated client-side to fill that gap; pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
   };
 }
