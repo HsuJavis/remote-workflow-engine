@@ -242,7 +242,7 @@ describe('runProbe (v0374 review H-1) — against a REAL PiGatewayClient (fake c
       child: emitter,
       stdinWritten,
       sendLine: (obj: unknown) => emitter.stdout.write(JSON.stringify(obj) + '\n'),
-      exit: (code: number | null = 0) => emitter.emit('exit', code, null),
+      exit: (code: number | null = 0) => { emitter.stdout.end(); emitter.stderr.end(); emitter.emit('exit', code, null); },
     };
   }
 

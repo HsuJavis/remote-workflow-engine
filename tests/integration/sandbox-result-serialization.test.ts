@@ -44,6 +44,95 @@ describe('issue #162 A/B — sandbox child result serialization boundary', () =>
   });
 });
 
+// issues #162 B / #163 B1 — TEST-FIRST (RED, now fixed). `child-entry.ts`'s final `send({t:'done',
+// ...})` used to fire `process.exit(0)` immediately after, with no guarantee the IPC write had
+// actually reached the kernel first — Node's own `process.send()` writes to the fork IPC socket
+// ASYNCHRONOUSLY once a message doesn't fit in one syscall (empirically, anything past roughly
+// 160-200KB on a typical Linux box's default socket buffer; deterministically confirmed with a bare
+// `fork()` + `process.send(300KBpayload); process.exit(0)` — the parent's 'message' listener never
+// fires at all, 0/N over repeated runs). `process.exit()` tore the process down mid-write, silently
+// DROPPING the message — the caller-visible `ABORTED "sandbox child process terminated before
+// completion (exit 0, signal null)"`. Needs NO concurrency to reproduce (payload size alone is
+// sufficient and deterministic); #163 B1's purely-concurrent, smaller-payload failures are the SAME
+// mechanism — CPU contention under load delays the same flush a large payload does, widening the
+// same race window. Fixed by awaiting `process.send()`'s own completion callback before every
+// `process.exit()` in `child-entry.ts`.
+describe('issues #162 B / #163 B1 — a large return value is not lost to the send-then-exit race', () => {
+  it('a 300KB return value resolves {result}, not ABORTED — repeated 6x (no concurrency needed, payload size alone triggers it)', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    for (let i = 0; i < 6; i++) {
+      const r = await host.run(`run-300kb-${i}`, `return 'y'.repeat(300000);`, undefined, null);
+      expect('result' in r).toBe(true);
+      if (!('result' in r)) throw new Error(`run ${i} did not complete: ${JSON.stringify(r)}`);
+      expect((r.result as string).length).toBe(300000);
+    }
+  });
+
+  it('a 1MB return value (comfortably under the 10MB cap) also resolves {result}, not ABORTED', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const r = await host.run('run-1mb', `return 'z'.repeat(1000000);`, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+  });
+
+  it('40 concurrent runs each returning 150KB all resolve {result} (production-shaped concurrent load)', async () => {
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR });
+    const results = await Promise.all(
+      Array.from({ length: 40 }, (_, i) => host.run(`run-conc-${i}`, `return 'q'.repeat(150000);`, undefined, null)),
+    );
+    const failed = results.filter((r) => 'error' in r);
+    expect(failed).toEqual([]);
+  });
+
+  // #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the first round of this fix (awaiting
+  // `process.send()` before `process.exit()`, plus a fixed post-exit grace window on the host side)
+  // closed the deterministic "large payload alone" and "small residual exit-vs-message skew" cases
+  // above, but a real-engine check under genuine concurrent load (~150 sandbox forks + ~48 pi
+  // children, no global backpressure) still lost results: this HOST process's own event loop stalled
+  // 6136-8384ms at a time, which (a) blew through the then-200ms post-exit grace entirely and (b)
+  // outlasted the CHILD's own then-2000ms `SEND_FLUSH_TIMEOUT_MS`, so the child gave up waiting for
+  // its own queued write and exited while it was still in flight — a real, observed data-loss path,
+  // not just a slow one. Reproduced here deterministically, with no real concurrency needed: `phase()`
+  // is a synchronous, fire-and-forget IPC send from the CHILD's side, so `onPhase` busy-waiting THIS
+  // process's event loop starves it from reading the child's stdout/IPC pipes for the full stall
+  // window while the child (a separate OS process) keeps running — flushing its own 1MB `send()` and
+  // exiting — exactly the production signature.
+  it('a 1MB return value survives the parent busy-waiting its own event loop for 3s right after the child calls phase() (the production event-loop-delay signature, reproduced deterministically)', async () => {
+    const host = new SandboxHost({
+      workspaceRoot: WORK_DIR,
+      onPhase: () => {
+        const until = Date.now() + 3000;
+        while (Date.now() < until) { /* intentional busy-wait: starves this process's event loop
+          while the real child process (a separate OS process) keeps running, flushes its own
+          send(), and exits */ }
+      },
+    });
+    const r = await host.run('run-stall-phase', `phase('go'); return 'x'.repeat(1000000);`, undefined, null);
+    expect('result' in r).toBe(true);
+    if (!('result' in r)) throw new Error(`run did not complete: ${JSON.stringify(r)}`);
+    expect((r.result as string).length).toBe(1000000);
+  }, 20_000);
+
+  it('20 concurrent 200KB-return runs all survive ONE 3s parent event-loop stall triggered mid-flight by the first phase() call', async () => {
+    let stalled = false;
+    const host = new SandboxHost({
+      workspaceRoot: WORK_DIR,
+      onPhase: () => {
+        if (stalled) return;
+        stalled = true;
+        const until = Date.now() + 3000;
+        while (Date.now() < until) { /* intentional single busy-wait, shared across all 20 runs —
+          models "one momentary stall while many runs are in flight", the real production shape */ }
+      },
+    });
+    const results = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => host.run(`run-stall-conc-${i}`, `phase('go'); return 'x'.repeat(200000);`, undefined, null)),
+    );
+    const failed = results.filter((r) => 'error' in r);
+    expect(failed).toEqual([]);
+  }, 20_000);
+});
+
 // g2 minor (sandbox robustness sweep, item 4): child-entry.ts's generic `send()` catch used to treat
 // ANY outbound message that fails to serialize as run-terminating — including an agent()/workflow()
 // REQUEST (not the run's own final 'done'/'error'), whose `opts`/`args` are themselves script-

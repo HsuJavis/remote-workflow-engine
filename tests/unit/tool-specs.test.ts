@@ -6,6 +6,7 @@
 // `seedManifestRef`.
 // Mock policy (unit): pure data assertion over TOOL_SPECS, no I/O.
 import { describe, it, expect } from 'vitest';
+import Ajv from 'ajv';
 import { TOOL_SPECS, projectToolsList } from '../../src/tool-specs.js';
 
 function runStartSchema() {
@@ -324,5 +325,49 @@ describe('workflow_register advertises VALUE_MISMATCH/COLLAPSED_EDGE as their ow
     expect(spec.errors).toContain('VALUE_MISMATCH');
     expect(spec.errors).toContain('COLLAPSED_EDGE');
     expect(spec.errors).toContain('MERMAID_INVALID');
+  });
+});
+
+// issue #158 NEW (tester re-verify): run_agent_log's implementation (mcp-facade.ts's `runAgentLog`)
+// already branches on `agentId` when present — the code works — but the ADVERTISED schema declared
+// only `{runId, label}` with BOTH required, so a caller who already knows an agentId (e.g. from
+// run_status's own `agents[].agentId`) could not express an agentId-only call at all: ajv refused it
+// with "must have required property 'label'" before mcp-facade.ts's implementation was ever reached.
+// This matters specifically when two concurrent agent() calls share a label (parallel dispatch,
+// issue #158's own concurrency scenario): mcp-facade.ts's label branch is a `.find()`, which returns
+// only the FIRST matching record, so a later-failing same-label agent's log is unreachable by label
+// alone — agentId is the only way to disambiguate, and it must be a DOCUMENTED, schema-valid input.
+describe('run_agent_log advertises agentId as an alternative to label (issue #158 NEW)', () => {
+  const ajv = new Ajv();
+
+  function compiled() {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_agent_log')!;
+    return { spec, validate: ajv.compile(spec.inputSchema) };
+  }
+
+  it('inputSchema declares an agentId property', () => {
+    const { spec } = compiled();
+    const props = (spec.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+    expect(props['agentId']).toEqual({ type: 'string' });
+  });
+
+  it('{runId, agentId} with NO label is schema-valid (today it is wrongly refused)', () => {
+    const { validate } = compiled();
+    expect(validate({ runId: 'r1', agentId: 'a2' })).toBe(true);
+  });
+
+  it('{runId, label} with no agentId is still schema-valid (pre-existing shape unchanged)', () => {
+    const { validate } = compiled();
+    expect(validate({ runId: 'r1', label: 'greet' })).toBe(true);
+  });
+
+  it('{runId} alone (neither label nor agentId) is still refused', () => {
+    const { validate } = compiled();
+    expect(validate({ runId: 'r1' })).toBe(false);
+  });
+
+  it('description documents agentId as a disambiguator for same-label concurrent agents', () => {
+    const { spec } = compiled();
+    expect(spec.description).toMatch(/agentId/);
   });
 });

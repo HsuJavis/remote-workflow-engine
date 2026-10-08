@@ -27,7 +27,17 @@ function fakeChild() {
     child: emitter,
     stdinWritten,
     sendLine: (obj: unknown) => emitter.stdout.write(JSON.stringify(obj) + '\n'),
-    exit: (code: number | null = 0) => emitter.emit('exit', code, null),
+    // issue #158 F4 (TDD): a REAL child process's stdout pipe reaches EOF when the process exits (the
+    // kernel closes the child's write end), so `PiGatewayClient` now waits for `child.stdout`'s own
+    // 'end' before concluding no result ever arrived — mirror that here so every test using the
+    // DEFAULT (non-racy) `exit()` still resolves promptly instead of waiting out the fix's bounded
+    // grace window. The one test that deliberately models the real race (below) bypasses this helper
+    // and ends the stream itself, later, on purpose.
+    exit: (code: number | null = 0) => {
+      emitter.stdout.end();
+      emitter.stderr.end();
+      emitter.emit('exit', code, null);
+    },
   };
 }
 
@@ -144,6 +154,49 @@ describe('PiGatewayClient — JSONL child protocol (slice c)', () => {
       expect(result.tokens).toEqual({ input: 5, output: 1, cacheRead: 0, cacheWrite: 0 });
     }
   });
+
+  it('issue #158 F4: a "final" line delivered AFTER \'exit\' fires (the real exit/stdout race) still resolves ok, not "exited before reporting a result"', async () => {
+    // Reproduces the exact production detail string byte-for-byte: the child's 'exit' event
+    // (SIGCHLD-driven) and its own already-written stdout data (kernel pipe EOF, delivered to the
+    // parent's readline as a 'line' event) are two independent async notification sources — under
+    // load, 'exit' can be processed before the already-arrived 'final' line is parsed. Modeled here
+    // by firing 'exit' SYNCHRONOUSLY and deferring the line + stdout EOF by one setImmediate tick
+    // (the same ordering the real triage used to reproduce it deterministically).
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    setImmediate(() => {
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.child.stdout.end();
+      f.child.stderr.end();
+    });
+    f.child.emit('exit', 0, null);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+  });
+
+  // issues #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the OLD `EXIT_STDOUT_GRACE_MS` (1000ms) was
+  // reasoned about against an idle host; a real-engine check under concurrent load measured this
+  // PARENT process's own event-loop delay peaking at 6136-8384ms — long enough that an ordinary,
+  // successful exit whose 'final' line is merely queued (not missing) blows straight through 1000ms
+  // and gets misreported as "pi child exited before reporting a result". The fix keeps `child.stdout`
+  // 'end' as the PRIMARY signal (unchanged) but raises the fallback bound well past the observed
+  // stall, so a message delayed this long (1500ms) is still waited for, not given up on.
+  it('issue #158 F4 (fix-of-the-fix): a "final" line delivered 1500ms after exit (far past the old 1000ms grace) still resolves ok', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    f.child.emit('exit', 0, null);
+    setTimeout(() => {
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.child.stdout.end();
+      f.child.stderr.end();
+    }, 1500);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+  }, 10_000);
 
   it('a child that exits with no final/error event is a terminal, non-retryable failure naming the exit code', async () => {
     const f = fakeChild();

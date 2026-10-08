@@ -296,3 +296,83 @@ describe('pi harness v1 — OpenRouter request shape via a recording fake server
     expect(appliedSeen).toEqual({ applied: false, reason: 'model does not support reasoning' });
   }, 20_000);
 });
+
+// issues #158 F4 / #163 B1 / #162 B (fix-of-the-fix) — real pi child, real fake HTTP server (same
+// pattern as above), but with a LARGE response and a PARENT-side event-loop stall triggered from
+// `onUsage` at exactly the moment the real pi child (a separate OS process) is about to write its
+// own large 'message_end'/'final' lines and exit. A real-engine check under concurrent load measured
+// this PARENT process's own event-loop delay peaking at 6136-8384ms (~150 sandbox forks + ~48 pi
+// children, no global backpressure); starving this test's event loop for 3s right as the child is
+// mid-flush reproduces that stall deterministically, without needing dozens of real concurrent
+// dispatches. Under the OLD bounds (child-side `STDOUT_DRAIN_TIMEOUT_MS`=2000ms, parent-side
+// `EXIT_STDOUT_GRACE_MS`=1000ms), the child's own write backpressure (nobody reads the pipe while
+// this process busy-waits) blows through 2000ms before the parent resumes at 3000ms, so the child's
+// flush bound gives up and `process.exit()`s with data still queued — truncating/dropping the final
+// line, reproduced as "pi child exited before reporting a result" or a truncated/unparseable final
+// JSONL line.
+describe('issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix) — a real pi child flush survives a parent event-loop stall', () => {
+  function startBigFakeOpenRouterServer(contentLength: number): Promise<{ server: HttpServer; port: number }> {
+    return new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          void chunks;
+          const id = 'chatcmpl-fake-big-1';
+          const created = Math.floor(Date.now() / 1000);
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+          const bigContent = 'y'.repeat(contentLength);
+          const chunk1 = { id, object: 'chat.completion.chunk', created, model: 'fake-model', choices: [{ index: 0, delta: { role: 'assistant', content: bigContent }, finish_reason: null }] };
+          const chunk2 = { id, object: 'chat.completion.chunk', created, model: 'fake-model', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } };
+          res.write(`data: ${JSON.stringify(chunk1)}\n\n`);
+          res.write(`data: ${JSON.stringify(chunk2)}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        });
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+        resolve({ server, port });
+      });
+    });
+  }
+
+  let bigFake: { server: HttpServer; port: number };
+  let bigWs: string;
+
+  beforeAll(async () => {
+    bigFake = await startBigFakeOpenRouterServer(300_000);
+    bigWs = mkdtempSync(join(tmpdir(), 'rwe-pi-fake-or-big-'));
+  });
+
+  afterAll(async () => {
+    await new Promise((r) => bigFake.server.close(() => r(undefined)));
+    rmSync(bigWs, { recursive: true, force: true });
+  });
+
+  it('a ~300KB real pi-child final response survives the parent busy-waiting its own event loop for 3s right after message_end', async () => {
+    const gw = new PiGatewayClient({
+      secretSource: { resolve: () => 'fake-key-not-real' },
+      timeoutMs: 20_000,
+      openrouterBaseUrl: `http://127.0.0.1:${bigFake.port}/api/v1`,
+    });
+    let stalled = false;
+    const result = await gw.invoke({
+      prompt: 'hi',
+      opts: { model: 'openrouter/anthropic/claude-3.5-sonnet', allowedTools: [] },
+      runId: 'fake-or-stall-r1',
+      agentId: 'fake-or-stall-a1',
+      workspace: bigWs,
+      onUsage: () => {
+        if (stalled) return;
+        stalled = true;
+        const until = Date.now() + 3000;
+        while (Date.now() < until) { /* intentional busy-wait — starves this process's event loop
+          while the real pi child process keeps running, flushes its large write, and exits */ }
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect((result.content as string).length).toBe(300_000);
+  }, 20_000);
+});

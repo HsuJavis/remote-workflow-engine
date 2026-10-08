@@ -713,6 +713,14 @@ export interface AgentExecutorDeps {
   /** v26 (DES-180, ARCH-118, TASK-180): this run's admission-time price/capability pin — see
    *  `AgentTranscriptSink`'s own doc for the absent-pin fallback. */
   priceBook?: PriceBook;
+  /** issue #162 D: fired after EVERY `run()` call settles (ok, failed, or aborted) — including a
+   *  fire-and-forget (un-awaited) `agent()` call whose own `capture()` lands well after
+   *  `settleInflight`'s bound (default 2000ms) already expired and the run went terminal without
+   *  it. `RunManager` uses this to re-fold/re-save that run's usage snapshot when it is ALREADY
+   *  terminal by the time this fires — a cheap no-op the rest of the time (the normal, in-bound
+   *  case: the run is still 'running' when its own calls settle, same as before this field existed).
+   *  Optional so every existing `AgentExecutor`/`AgentExecutorDeps` construction compiles unchanged. */
+  onAgentSettled?: (runId: string, agentId: string) => void;
 }
 
 /** Bounded retry budget for schema-mismatched agent() responses (D-V4) — never an infinite loop. */
@@ -731,6 +739,7 @@ export class AgentExecutor implements AgentSpawner {
   private readonly _clock: { isoNow(): string };
   private readonly _secretValueProvider?: SecretValueProvider;
   private readonly _priceBook?: PriceBook;
+  private readonly _onAgentSettled?: (runId: string, agentId: string) => void;
 
   constructor(deps: AgentExecutorDeps = {}) {
     this._gateway = deps.gateway ?? NULL_GATEWAY;
@@ -739,6 +748,7 @@ export class AgentExecutor implements AgentSpawner {
     this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
     this._priceBook = deps.priceBook;
+    this._onAgentSettled = deps.onAgentSettled;
   }
 
   /** v26 integration (DES-179, INV-V26-4, REQ-126): the run's PINNED capability for this call's
@@ -814,7 +824,11 @@ export class AgentExecutor implements AgentSpawner {
     // dispatch validation throw, e.g. PARAM_OUT_OF_RANGE) so that never becomes an unhandled
     // rejection on its own account — the caller below still gets `p` itself, untouched, so a
     // genuine throw still propagates to it exactly as before this change.
-    p.finally(() => this._inflight.delete(p)).catch(() => {});
+    // issue #162 D: `onAgentSettled` fires here too, AFTER `_inflight` bookkeeping — this is the one
+    // point every exit path of `_runTracked` (including `_finalizeAborted`) funnels through, and by
+    // construction it only runs once this call's own `capture()` has already landed (every branch
+    // above awaits it before `p` can settle).
+    p.finally(() => { this._inflight.delete(p); this._onAgentSettled?.(req.runId, req.agentId); }).catch(() => {});
     return p;
   }
 

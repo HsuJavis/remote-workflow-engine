@@ -852,8 +852,12 @@ export const TOOL_SPECS = [
     // lost in the rename. Redaction is live (`secret-resolver.ts`'s marker), and a reader who does
     // not know the marker is engine-written reads it as the agent's own output.
     description:
-      "Read one agent's harness log for a run, by the agent LABEL the script declares. A " +
-      "cross-principal read of another principal's run is audited. " +
+      "Read one agent's harness log for a run, by the agent LABEL the script declares, OR by its " +
+      'engine-minted agentId (read off run_status\'s own agents[].agentId) — pass one of the ' +
+      'two. agentId is the only reliable way to reach ONE specific agent when several concurrent ' +
+      'agent() calls share the same label: label lookup returns the FIRST matching record, so a ' +
+      'later-failing same-label call is unreachable by label alone. ' +
+      "A cross-principal read of another principal's run is audited. " +
       'Secret values are replaced with \u2039secret:NAME\u203a markers in persisted transcripts. ' +
       // v34 (DES-229, TASK-230, REQ-202/203): the retired agentType/systemPrompt harness sentence
       // is replaced by the two-segment truth \u2014 there is no separate systemPrompt slot any more.
@@ -868,7 +872,18 @@ export const TOOL_SPECS = [
       'pre-approves). harness.warnings carries {code: \'MCP_SERVER_NOT_CONNECTED\', server, status, message} ' +
       'for a declared server that was not connected then or exposed no tool \u2014 the model could not use it ' +
       'on that turn.',
-    inputSchema: schema({ runId: { type: 'string' }, label: { type: 'string' } }, ['runId', 'label']),
+    // issue #158 NEW: `runId` is always required; EITHER `label` OR `agentId` must also be present
+    // (mcp-facade.ts's `runAgentLog` already branches on `a.agentId !== undefined` first, falling
+    // back to `label` only when it is absent — this schema used to be strictly narrower than what
+    // the implementation actually accepted, so an agentId-only call was refused before it ever
+    // reached that code). Precedent for a per-tool `anyOf` alongside the plain `schema()` helper's
+    // `required` list: `pushInputSchema()`'s own closed-branch `oneOf`, above.
+    inputSchema: {
+      type: 'object',
+      properties: { runId: { type: 'string' }, label: { type: 'string' }, agentId: { type: 'string' } },
+      required: ['runId'],
+      anyOf: [{ required: ['label'] }, { required: ['agentId'] }],
+    },
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],

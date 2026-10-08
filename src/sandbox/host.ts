@@ -157,9 +157,45 @@ export interface SandboxHostConfig {
    *  `SandboxHost`/`run()` call (run-manager.ts's own issue #53 note on `entry.sandbox` identity), so
    *  each LIVE execution gets its own fresh deadline — time spent suspended never counts against it. */
   maxRunDurationMs?: number;
+  /** issue #163 B1 (test seam): injects a `fork()`-alike for a deterministic fake-child race test —
+   *  mirrors `PiGatewayClient`'s own `spawnChild` seam. Absent -> the real `node:child_process.fork`
+   *  (every production caller). */
+  forkChild?: typeof fork;
+  /** issue #163 B1 (test seam): overrides the safety-bound timer below (see `concludeNoMessage`'s
+   *  own doc) — tests inject a short value so the one real remaining branch (a child that genuinely
+   *  never sends done/error AND never fires 'close', which this test seam's fake `EventEmitter`
+   *  child never does) stays fast and deterministic. Absent -> the real `EXIT_MESSAGE_GRACE_MS`
+   *  default. Does not affect the common cases (message before exit, or message delivered after exit
+   *  but before 'close') — those settle immediately, via the 'message' handler or `child.on('close',
+   *  ...)`, never via this timer. */
+  exitMessageGraceMs?: number;
 }
 
 const DEFAULT_AGENT_RESPONSE = 'stub-response';
+
+// issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): a FIXED grace window armed on 'exit' alone used
+// to decide ABORTED the instant it elapsed, independent of whether a 'done'/'error' `message` (IPC-
+// pipe-driven) or the rest of `stderr` (also pipe-driven) had actually finished arriving — 'exit'
+// (SIGCHLD-driven) is not ordered against either. A real-engine check under genuine concurrent load
+// (~150 sandbox forks + ~48 pi children, no global backpressure) measured this HOST process's own
+// event-loop delay peaking at 6136-8384ms, which blew straight through the old 200ms window: 227
+// terminal messages in one run arrived more than 200ms after 'exit', the slowest 3314ms after, and 9
+// children in the same run had their write queued-but-not-yet-flushed when the (then-2000ms)
+// child-side flush bound gave up and exited anyway, dropping the message for real.
+//
+// The fix: `child.on('close', ...)` (below), never a fixed timer, is now the PRIMARY decision point.
+// `close` fires only once the process has exited AND every stdio stream Node manages for it — the
+// IPC channel included — has itself finished, which is ordered strictly AFTER every 'message' this
+// child already sent and every stderr chunk it already wrote (verified empirically: a real fork(),
+// 60 concurrent children, each writing 50 stderr lines and a 400KB IPC message right before exiting
+// SIGABRT/SIGKILL/normally, under a 2.5s parent event-loop stall — 'close' was last in every run, 0
+// exceptions). `EXIT_MESSAGE_GRACE_MS` below is now a SAFETY BOUND only, armed on 'exit' as a
+// fallback for the case 'close' never fires at all (not expected for this sandbox child specifically
+// — empty env, no child_process capability reachable from inside the vm context, so unlike a pi
+// child's setsid grandchild, nothing here can hold a stdio fd open past this process's own death) —
+// long enough to never fire while a real flush/drain is merely slow, short enough that a child whose
+// IPC machinery is somehow never going to close is still reported in a bounded time.
+const EXIT_MESSAGE_GRACE_MS = 30_000;
 
 // v36 (DES-248, ARCH-167, TASK-246): `refusalRef`, when the child's terminal error carried one —
 // read from the wire message, never invented here.
@@ -202,7 +238,8 @@ export class SandboxHost {
       };
 
       mkdirSync(this._config.workspaceRoot, { recursive: true });
-      const child = fork(CHILD_ENTRY, [], {
+      const forkImpl = this._config.forkChild ?? fork;
+      const child = forkImpl(CHILD_ENTRY, [], {
         cwd: this._config.workspaceRoot,
         execArgv: [...SANDBOX_CHILD_EXEC_ARGV],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -322,25 +359,28 @@ export class SandboxHost {
         }
       });
 
-      child.on('exit', (code, signal) => {
-        const rawTail = stderrTail.trim();
+      // issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the single decision point for "no
+      // done/error message is ever coming" — called from `child.on('close', ...)` (the deterministic
+      // primary signal, below) or from the safety-bound timer armed on 'exit' (the fallback). Reads
+      // `sawOomFingerprint`/`stderrTail` AT CALL TIME, never cached earlier — by the time 'close'
+      // fires every stderr chunk has already been delivered to the `'data'` listener above (same
+      // empirical check as the module doc), so the OOM classification this makes is never stale the
+      // way reading it back at 'exit' time could be.
+      const concludeNoMessage = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if (settled) return;
         // F-1: a V8 heap-limit abort is NOT an ordinary crash — it is a FATAL ERROR that aborts the
         // process outright (no catchable JS exception), so it always reaches this branch, never
-        // guards.ts's own classification. Checked via the STICKY `sawOomFingerprint` set as each
-        // stderr chunk arrived (see its own doc above) — NEVER by re-testing the windowed, trimmed
-        // `rawTail` here, which a real crash's many native frames can push the fingerprint line out
-        // of before `exit` fires (measured in this change's own real-check: a real OOM's ~2.5KB dump
-        // overflows the 2000-char window). V8's own crash dump content (heap statistics, absolute
-        // source paths, the Node version) must never cross the trust boundary either way — the code
-        // alone is the caller-visible signal, with a clean, fixed message.
+        // guards.ts's own classification. Checked via the STICKY `sawOomFingerprint` (see its own doc
+        // above) — NEVER by re-testing the windowed, trimmed `stderrTail` here, which a real crash's
+        // many native frames can push the fingerprint line out of (measured in a real-check: a real
+        // OOM's ~2.5KB dump overflows the 2000-char window). V8's own crash dump content (heap
+        // statistics, absolute source paths, the Node version) must never cross the trust boundary
+        // either way — the code alone is the caller-visible signal, with a clean, fixed message.
         if (sawOomFingerprint) {
           settle({ error: { code: 'SCRIPT_OOM', message: 'the sandboxed script exhausted its memory limit and was terminated' } });
           return;
         }
-        // A killed/crashed child that never sent done/error (e.g. aborted mid-script). Include the
-        // exit code/signal and the tail of the child's own stderr so a real crash (uncaught error,
-        // determinism-guard throw) is diagnosable instead of opaque.
-        const detail = sanitizeStderrTail(rawTail);
+        const detail = sanitizeStderrTail(stderrTail.trim());
         settle({
           error: {
             code: 'ABORTED',
@@ -349,6 +389,27 @@ export class SandboxHost {
               (detail ? `\n--- child stderr (tail) ---\n${detail}` : ''),
           },
         });
+      };
+
+      child.on('exit', (code, signal) => {
+        // Safety-bound fallback ONLY — see `EXIT_MESSAGE_GRACE_MS`'s own doc for why `close` (below)
+        // is the primary decision point and this timer is not expected to fire in practice.
+        // `settle()`'s own idempotency guard (inside `concludeNoMessage`) means a 'message' or
+        // 'close' that arrives before this timer elapses still wins.
+        const safety = setTimeout(() => concludeNoMessage(code, signal), this._config.exitMessageGraceMs ?? EXIT_MESSAGE_GRACE_MS);
+        safety.unref?.();
+      });
+
+      // issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): THE primary decision point. `close` fires
+      // once the process has exited AND every stdio stream Node manages for it (the IPC channel
+      // included) has itself finished — ordered strictly after every 'message' this child already
+      // sent and every stderr chunk it already wrote (see the module-level doc for the empirical
+      // check: 60 concurrent children under a 2.5s parent stall, 0 exceptions to this ordering,
+      // including SIGKILL/SIGABRT/crash exits). A 'message' ('done'/'error') that arrives any time
+      // before 'close' has already settled this run via the 'message' handler above, so
+      // `concludeNoMessage`'s own `settled` check makes this a no-op in every success case.
+      child.on('close', (code, signal) => {
+        concludeNoMessage(code, signal);
       });
 
       child.on('error', (err) => {

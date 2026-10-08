@@ -127,6 +127,21 @@ function buildChildEnv(agentDir: string): NodeJS.ProcessEnv {
 
 const ZERO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+// issue #158 F4: bounds how long `_dispatchOnce` waits for `child.stdout` to reach EOF after 'exit'
+// fires before concluding the child really did exit with no result — see that call site's own doc.
+//
+// #158 F4 / #163 B1 / #162 B (fix-of-the-fix): `child.stdout`'s own 'end' event (the deterministic
+// EOF signal that call site already waits for) stays the PRIMARY decision point — this bound is only
+// the fallback for a child that exited but never reaches stdout EOF at all (the documented setsid-
+// grandchild case). It was 1000ms, reasoned about against an idle host; a real-engine check under
+// concurrent load (~150 sandbox forks + ~48 pi children, no global backpressure) measured this
+// process's own event-loop delay up to 8384ms, which is long enough to blow through 1000ms even on
+// an ordinary successful exit whose 'end' is merely queued, not missing — misreporting it as "pi
+// child exited before reporting a result". Raised well past the observed stall so the deterministic
+// 'end' signal, not this timer, decides the ordinary case; a genuinely abandoned grandchild is still
+// bounded, just more generously.
+const EXIT_STDOUT_GRACE_MS = 30_000;
+
 /** issue #139(b): every effort level `AgentOpts['effort']` can be, lowest first — used to pick the
  *  lowest level a MANDATORY-reasoning model actually advertises (`caps.reasoningEfforts`) when a
  *  dispatch asked for no effort at all. */
@@ -1142,8 +1157,31 @@ export class PiGatewayClient implements GatewayClient {
       }
     });
 
+    // issue #158 F4 (TDD, deterministic repro confirmed): the child's 'exit' event (SIGCHLD-driven)
+    // and its own already-written stdout data (delivered to `rl` as the pipe drains) are two
+    // independent async notification sources — resolving on 'exit' alone could conclude "no result"
+    // while a 'final'/'error' line the child DID send was still sitting unparsed in the pipe, exactly
+    // the "pi child exited before reporting a result (code 0, signal null)" production detail this
+    // reports verbatim. A real child's stdout reaches EOF once the process exits (the kernel closes
+    // its write end), so waiting for `child.stdout`'s own 'end' lets any already-arrived line get
+    // parsed first. Bounded by `EXIT_STDOUT_GRACE_MS`: a backgrounded (`nohup`/`setsid`) grandchild
+    // that inherited this fd (see entry.ts's own R2-2 doc) can hold it open forever, so an unbounded
+    // wait would hang this dispatch on an otherwise-successful exit with a lingering descendant.
+    let exitSeen: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+    let stdoutEnded = false;
     const exitCode: { code: number | null; signal: NodeJS.Signals | null } = await new Promise((resolve) => {
-      child.once('exit', (code, signal) => resolve({ code, signal }));
+      let graceTimer: NodeJS.Timeout | undefined;
+      const finish = (): void => {
+        if (graceTimer) clearTimeout(graceTimer);
+        resolve(exitSeen ?? { code: null, signal: null });
+      };
+      const armGrace = (): void => {
+        if (graceTimer || stdoutEnded) return;
+        graceTimer = setTimeout(finish, EXIT_STDOUT_GRACE_MS);
+        graceTimer.unref?.();
+      };
+      child.stdout?.once('end', () => { stdoutEnded = true; if (exitSeen) finish(); });
+      child.once('exit', (code, signal) => { exitSeen = { code, signal }; if (stdoutEnded) finish(); else armGrace(); });
       child.once('error', () => resolve({ code: null, signal: null }));
     });
     rl.close();
