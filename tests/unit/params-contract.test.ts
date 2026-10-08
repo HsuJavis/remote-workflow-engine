@@ -1153,6 +1153,23 @@ describe('validateUserOverrides() — a non-object override shape is refused wit
     const r = validateUserOverrides(contract, { agents: { a: { effort: 'low' } } }, CATALOG, CEILINGS);
     expect(r.ok).toBe(true);
   });
+
+  // issue #156 NEW-1 (2026-10-07 reverify): `agents: null` and `agents: {<label>: null}` were
+  // laundered into `{}` by `?? {}` BEFORE the isPlainObject guard ever ran — `undefined` (omitted)
+  // and `null` (explicitly supplied) both read as "nullish" to `??`, but only `undefined` means
+  // "the caller didn't say" here; a string/array in the same position IS refused by this same
+  // describe block's other cases, so `null` silently completing instead is the inconsistency.
+  it('overrides.agents = null is refused PARAM_CONTRACT_INVALID, not silently treated as {}', () => {
+    const r = validateUserOverrides(contract, { agents: null }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('overrides.agents.a = null is refused PARAM_CONTRACT_INVALID, not silently treated as {}', () => {
+    const r = validateUserOverrides(contract, { agents: { a: null } }, CATALOG, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
 });
 
 // issue #156 DOC: PARAM_LOCKED/PARAM_UNKNOWN's detail.tunable always listed all 4 TUNABLE_KEYS even
