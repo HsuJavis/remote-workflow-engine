@@ -1385,6 +1385,30 @@ export class RunManager {
     return runId;
   }
 
+  /** Issue #162 (orphan sandbox children): called from the engine's own shutdown path
+   *  (`server.ts`'s `close()`, in turn from `main.ts`'s SIGINT/SIGTERM handler) — SIGKILLs every
+   *  still-`running` entry's forked sandbox child, the SAME mechanism `suspend()`/`stop()` already
+   *  use below, so a script's OS process never outlives this engine process just because nothing
+   *  on the shutdown path ever reached into `RunManager`'s own state before. Also aborts each
+   *  entry's execution generation, which cascades into any CURRENTLY in-flight nested `workflow()`
+   *  frame via the same `killNested` listener issue #53 already wires there (`_handleWorkflowRequest`,
+   *  below) — a nested child is killed too, not just the top-level one. Deliberately writes no store
+   *  transition and awaits no in-flight capture (`settleInflight`): the process is exiting regardless,
+   *  a half-written transition against a store that may itself be mid-close is worse than leaving
+   *  the row at `running` (the next boot's `hydrateAll` already reclassifies a stale `running` row as
+   *  `interrupted`/resumable), and this must never hang shutdown waiting on anything. Best-effort,
+   *  per entry — one entry's kill failing (already exited, ESRCH) never stops the rest from being
+   *  tried. Never throws. */
+  async shutdown(): Promise<void> {
+    await Promise.all(
+      [...this._runs.entries()].map(async ([runId, entry]) => {
+        if (entry.status !== 'running') return;
+        try { entry.abortController.abort(); } catch { /* best-effort */ }
+        try { await entry.sandbox.abort(runId, 'stop'); } catch { /* best-effort */ }
+      }),
+    );
+  }
+
   async suspend(runId: string): Promise<void> {
     const entry = await this._requireLive(runId, 'suspended');
     if (entry.status !== 'running') throw new IllegalTransitionError(entry.status, 'suspended');

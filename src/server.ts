@@ -2328,9 +2328,20 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (gcTimer) clearInterval(gcTimer); // REQ-026: stop the workspace GC sweep on shutdown
       modelProber?.stop(); // issue #73: stop the periodic model probe
       observedStats.stop(); // issue #104: stop the periodic observed-stats refresh
-      return new Promise<void>((resolve, reject) => {
+      // issue #162 (orphan sandbox children): before this, NOTHING on this process's shutdown
+      // path ever touched a live run's forked sandbox child — `http.close()` only stops accepting
+      // new connections, it does not reach into `runManager`'s own state at all. A script's child
+      // OS process (`child_process.fork()`, same mechanism `run_stop`/`run_suspend` already
+      // SIGKILLs) is not a Node-managed resource `process.exit()` cleans up on its own; it is a
+      // fully independent OS process that outlives this one unless explicitly killed, which is
+      // exactly how a 2-day, 100%-CPU `while(true){}` orphan survived an engine restart in
+      // production. `runManager.shutdown()` is the same SIGKILL `stop()` already uses, applied to
+      // every still-running entry, best-effort (never throws) and AWAITED before `http.close()` so
+      // this promise genuinely does not resolve (and `main.ts`'s shutdown handler does not call
+      // `process.exit()`) until every child has been signalled.
+      return runManager.shutdown().then(() => new Promise<void>((resolve, reject) => {
         http.close((err) => (err ? reject(err) : resolve()));
-      })
+      }))
         // D-V2I-6: cascade-stop an internally-constructed (or injected) LiteLLMProxyManager on
         // whichever gateway path built one — closes the v1 DEPLOY known-open orphan-subprocess
         // item for the direct-fetch/legacy gateway path too (the 'sdk' path's own proxy is already
