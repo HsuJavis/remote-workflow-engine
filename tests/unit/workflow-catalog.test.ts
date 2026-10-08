@@ -1,6 +1,7 @@
 // UT-011: WorkflowCatalog — registry, workspace rooting, path escape rejection (DES-011)
 import { describe, it, expect, vi } from 'vitest';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
+import { FixedClock } from '../../src/clock.js';
 import { CatalogNotFoundError, WorkspaceEscapeError } from '../../src/errors.js';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
@@ -23,6 +24,28 @@ describe('WorkflowCatalog', () => {
     const entry = await cat.resolve('my-flow', { version });
     expect(entry.script).toBe('export const meta = { phases: [] };\nreturn 1;');
     expect(entry.version).toBe(version);
+  });
+
+  // issue #154 B5 (2026-10-07 reverify — NOT FIXED): `insertVersion` writes a fresh
+  // `this._clock.isoNow()` into workflow_versions.createdAt on every call, but `resolveDetail`'s
+  // `createdAt` came from `_requireName(name)` — the WORKFLOW-level `workflows.createdAt`, set
+  // once on first registration and identical for every version forever. Two versions registered
+  // minutes apart reported the SAME createdAt.
+  it("resolveDetail's createdAt is the RESOLVED VERSION's own registration time, not the workflow's first (#154 B5)", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-b5-'));
+    const script = 'export const meta = { phases: [] };\nreturn 1;';
+    const cat1 = new WorkflowCatalog(workRoot, new FixedClock(new Date('2026-01-01T00:00:00.000Z')));
+    const { version: v1 } = await cat1.register({ name: 'b5-flow', script, mermaid: 'graph LR' });
+    // A second WorkflowCatalog instance against the SAME on-disk db, minutes later by its own clock —
+    // mirrors two real registrations of the same workflow separated in time.
+    const cat2 = new WorkflowCatalog(workRoot, new FixedClock(new Date('2026-01-01T00:03:00.000Z')));
+    const { version: v2 } = await cat2.register({ name: 'b5-flow', script, mermaid: 'graph LR' });
+    expect(v1).not.toBe(v2);
+    const d1 = await cat2.resolveDetail('b5-flow', { version: v1 });
+    const d2 = await cat2.resolveDetail('b5-flow', { version: v2 });
+    expect(d1.createdAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(d2.createdAt).toBe('2026-01-01T00:03:00.000Z');
+    expect(d1.createdAt).not.toBe(d2.createdAt);
   });
 
   it('registering the same name twice bumps the version and keeps BOTH retrievable (v22, REQ-096)', async () => {

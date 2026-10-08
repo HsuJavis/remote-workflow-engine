@@ -164,9 +164,15 @@ export interface VersionEntry {
    *  its own. Both absent on a version registered without one (and on every pre-#82 row). */
   seedManifestRef?: string;
   seedNamespace?: string;
+  // issue #154 B5 (2026-10-07 reverify): THIS version's own registration timestamp — `insertVersion`
+  // has always written a fresh `this._clock.isoNow()` into `workflow_versions.createdAt` on every
+  // call, but no reader ever selected it; `resolveDetail` instead relabeled the WORKFLOW-level
+  // `workflows.createdAt` (set once, on the name's first registration) as the resolved VERSION's
+  // createdAt, so every version of a workflow reported the same birth time forever.
+  createdAt: string;
 }
 export interface WorkflowDetail extends VersionEntry {
-  name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
+  name: string; owner: string | null; channels: Channels; versions: string[];
 }
 
 // v36 (DES-244, ARCH-157/158/161, TASK-242, REQ-212/REQ-114): `Actor` replaces the overloaded
@@ -1111,11 +1117,13 @@ export class WorkflowCatalog {
       // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
       // for the missing per-agent contract. Reading a retired column kept a dead value flowing
       // through the whole admission path.
-      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number; seed_manifest_ref: string | null; seed_namespace: string | null };
+      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace, createdAt FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number; seed_manifest_ref: string | null; seed_namespace: string | null; createdAt: string };
     return {
       script: vrow.script,
       version: result.version,
+      // issue #154 B5: this version's OWN registration timestamp (see VersionEntry.createdAt's doc).
+      createdAt: vrow.createdAt,
       // v24 Gate 7.5 (D-8, REQ-111): the author-supplied diagram. `insertVersion` has written this
       // column since TASK-143 and NO reader selected it, so every v24 workflow's
       // `workflow_describe(...).mermaid` was null with `mermaidNote:'LEGACY_NO_DIAGRAM'` — the
@@ -1141,11 +1149,13 @@ export class WorkflowCatalog {
   /** v22 (DES-111): the ONE read read (REPLACES getFull()) — adds name/createdAt/owner/channels/versions. */
   async resolveDetail(name: string, sel: VersionSelector): Promise<WorkflowDetail> {
     const row = this._requireName(name);
+    // issue #154 B5: `entry.createdAt` (from `resolve()`) is now the RESOLVED VERSION's own
+    // timestamp — spread it through unmodified; do NOT overwrite it with `row.createdAt` (the
+    // workflow's first-registration time), which is exactly the bug this fixed.
     const entry = await this.resolve(name, sel);
     return {
       ...entry,
       name,
-      createdAt: row.createdAt,
       owner: row.owner,
       channels: { release: row.release_version, beta: row.beta_version },
       versions: this._listVersions(name),
@@ -1305,10 +1315,13 @@ export class WorkflowCatalog {
       const channels: Channels = { release: r.release_version, beta: r.beta_version };
       const version = r.release_version ?? r.beta_version ?? versions[versions.length - 1] ?? '';
       const vrow = version
-        ? (this._db.prepare('SELECT script, params, registeredRemote FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null; registeredRemote: number } | undefined)
+        ? (this._db.prepare('SELECT script, params, registeredRemote, createdAt FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null; registeredRemote: number; createdAt: string } | undefined)
         : undefined;
       return {
-        name: r.name, version, createdAt: r.createdAt, owner: r.owner,
+        // issue #154 B5: the listed row's createdAt is the RESOLVED VERSION's own timestamp (same
+        // fix as resolveDetail) — falls back to the workflow-level createdAt only for the
+        // unreachable-via-register() zero-version case `resolve()`'s own comment above describes.
+        name: r.name, version, createdAt: vrow?.createdAt ?? r.createdAt, owner: r.owner,
         description: parseMeta(vrow?.script ?? '').description,
         params: vrow?.params ? JSON.parse(vrow.params) as ParamContract : undefined,
         versions, channels,
