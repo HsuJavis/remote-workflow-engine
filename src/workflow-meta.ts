@@ -2,6 +2,7 @@
 // no I/O, never execute the workflow, never throw on odd input. Used by the catalog (store purpose at
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
+import { parse } from 'acorn';
 import { checkMeta } from './sandbox/guards.js';
 import { nonCodeSpans } from './script-spans.js';
 import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
@@ -468,6 +469,41 @@ function parseStringArrayLiteral(text: string): string[] | null {
   return out;
 }
 
+/** Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): the exact source text BETWEEN the
+ *  outer `{`/`}` of `optsText`'s own object literal, or `null` when `optsText` is not — in full —
+ *  one `{...}` object-literal EXPRESSION. The pre-fix gate (`optsText.startsWith('{') &&
+ *  optsText.endsWith('}')`) only checked the first/last character, which `{prompt:'x'} ? o : {}`
+ *  and `{prompt:'x'} && o || {}` both satisfy while actually being a ternary/logical expression
+ *  that EVALUATES to whatever `o` is at runtime — invisible to every downstream reader of
+ *  `allowedTools`.
+ *
+ *  Parses `(${optsText})` — wrapped in parens to FORCE expression context: acorn (like the
+ *  language itself) reads a bare leading `{` at statement position as a BLOCK STATEMENT, not an
+ *  object literal, so `prompt: 'x'` inside it would parse as a labelled statement, not a Property
+ *  — the exact ambiguity this wrapper avoids. Requires the wrapped program to be exactly one
+ *  `ExpressionStatement` whose expression is an `ObjectExpression`; anything else (a ternary, a
+ *  logical chain, a sequence expression, a parse error) returns `null`. Returns the literal's own
+ *  inner text (between its braces), not `optsText.slice(1,-1)` — the object's braces need not be
+ *  `optsText`'s own first/last characters (e.g. surrounding whitespace already trimmed by the
+ *  caller, but kept as its own slice rather than assumed for robustness). */
+function objectLiteralInnerText(optsText: string): string | null {
+  let ast: unknown;
+  try {
+    ast = parse(`(${optsText})`, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return null;
+  }
+  const program = ast as { body?: Array<{ type?: unknown; expression?: unknown }> };
+  if (!Array.isArray(program.body) || program.body.length !== 1) return null;
+  const stmt = program.body[0]!;
+  if (stmt.type !== 'ExpressionStatement') return null;
+  const expr = stmt.expression as { type?: unknown; start?: unknown; end?: unknown } | undefined;
+  if (!expr || expr.type !== 'ObjectExpression' || typeof expr.start !== 'number' || typeof expr.end !== 'number') return null;
+  // `expr.start`/`expr.end` are offsets into the WRAPPED string `(${optsText})`, shifted by 1 (the
+  // prepended '(') relative to `optsText` itself.
+  return optsText.slice(expr.start - 1 + 1, expr.end - 1 - 1);
+}
+
 const GROUP_PARALLEL_CALL_RE = /(?<!\.)\bparallel\s*\(/g;
 
 /** DES-174 (TASK-184): the `[start,end)` argument-list span of every `parallel([...])` call, each
@@ -704,10 +740,11 @@ export function scanAgentCalls(script: string): AgentCallScan {
     let bashRaw: string | undefined;
     let bash: 'readonly' | undefined;
     const optsText = optsArg!.trim();
-    if (!(optsText.startsWith('{') && optsText.endsWith('}'))) {
+    const optsInnerText = objectLiteralInnerText(optsText);
+    if (optsInnerText === null) {
       violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
     } else {
-      for (const entry of splitTopLevel(optsText.slice(1, -1))) {
+      for (const entry of splitTopLevel(optsInnerText)) {
         const trimmedEntry = entry.trim();
         if (trimmedEntry === '') continue;
         const colonIdx = entry.indexOf(':');

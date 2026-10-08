@@ -108,3 +108,46 @@ describe('agent() allowedTools given via a variable is refused, not read as abse
     expect(calls[0]?.allowedTools).toEqual([]);
   });
 });
+
+// Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): an options argument that is an
+// EXPRESSION starting with '{' and ending with '}' — not actually a `{...}` object literal at the
+// top level — hides `allowedTools` from the scan entirely. `workflow-meta.ts:707` (pre-fix) only
+// checked `optsText.startsWith('{') && optsText.endsWith('}')`, which `{prompt:'x'} ? o : {}` and
+// `{prompt:'x'} && o || {}` both satisfy while actually being a ternary/logical expression that
+// EVALUATES to whatever `o` is at runtime — invisible to every downstream reader
+// (`scanAgentCalls().calls[].allowedTools`, `toolSurfaceWarnings`, `deriveExpectedGraph`'s
+// `tools:` check).
+//
+// RED before the fix: both report ZERO violations and `allowedTools: 'absent'` even though the
+// real runtime value (`o`) can carry anything.
+describe('agent() options that merely START/END with braces but are not an object literal are refused (#154 NEW HIGH variant, ObjectExpression gate)', () => {
+  it('a ternary whose arms are braces ⇒ a violation, not zero', () => {
+    const script = `const o = { prompt: 'p', allowedTools: ['Bash', 'Write'] }; agent('a', {prompt:'x'} ? o : {});`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_NOT_LITERAL')).toBe(true);
+    expect(calls[0]?.allowedTools).toBe('absent');
+  });
+
+  it('a logical-OR/AND chain whose arms are braces ⇒ a violation, not zero', () => {
+    const script = `const o = { prompt: 'p', allowedTools: ['Bash', 'Write'] }; agent('a', {prompt:'x'} && o || {});`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.some((v) => v.code === 'AGENT_OPTS_NOT_LITERAL')).toBe(true);
+    expect(calls[0]?.allowedTools).toBe('absent');
+  });
+
+  it('a genuinely literal object is still accepted (no false positive from the new gate)', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['Read'] });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations).toEqual([]);
+    expect(calls[0]?.allowedTools).toEqual(['Read']);
+  });
+
+  it('a literal object with trailing whitespace/newlines around it is still accepted', () => {
+    const script = `agent('a',\n  {\n    prompt: 'p',\n    allowedTools: ['Read', 'Grep'],\n  }\n);`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations).toEqual([]);
+    expect(calls[0]?.allowedTools).toEqual(['Read', 'Grep']);
+  });
+});
