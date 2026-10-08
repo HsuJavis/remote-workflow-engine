@@ -27,7 +27,7 @@ const LATE_DELAY_MS = 250;
 function lateGateway(): GatewayClient {
   return {
     invoke: async (req) => {
-      if (req.opts.label === 'late') {
+      if (req.opts.label?.includes('late')) {
         await new Promise((r) => setTimeout(r, LATE_DELAY_MS));
         return { ok: true, provider: 'fake', model: 'm', tokens: { input: 111, output: 222 }, content: 'late result' };
       }
@@ -77,10 +77,49 @@ describe('a fire-and-forget agent() call eventually folds its usage into run_res
     expect(lateResult.meta?.usage.tokens.output).toBe(222);
 
     // run_list's row for the SAME run must agree — the exact second surface the tester's re-verify
-    // found still reporting 0.
-    const summaries = await mgr.listSummaries();
+    // found still reporting 0. Read via a SECOND, independent `RunManager` over the SAME store (no
+    // live `_runs` cache entry for this run) so this assertion exercises the PERSISTED snapshot
+    // specifically — `listSummaries()`'s live-overlay branch already reads `getAllRecords()` fresh
+    // for a cached entry regardless of this fix, which would make this assertion pass even without
+    // it; a fresh instance forces the read through `store.list()`'s own projection instead, which is
+    // what the tester's production evidence (0 in run_list, read well after terminal) was actually
+    // exercising.
+    const freshMgr = new RunManager({ gateway: lateGateway(), store });
+    const summaries = await freshMgr.listSummaries();
     const row = summaries.find((s) => s.runId === runId);
     expect(row).toBeDefined();
     expect(row!.tokensTotal).toBe(333); // 111 + 222
+  }, 15000);
+
+  it('TWO fire-and-forget calls settling at DIFFERENT times still converge to BOTH totals, never a snapshot caught mid-way with one still "running" (review finding: write-ordering/consistency)', async () => {
+    const store = new InMemoryRunStore(new SystemClock());
+    const mgr = new RunManager({ gateway: lateGateway(), store });
+    const runId = await startScript(mgr, `
+agent('late', {});
+agent('alsolate', {});
+return 'script done';
+`);
+    const status = await pollUntilTerminal(mgr, runId);
+    expect(status.status).toBe('completed');
+
+    // Both 'late' and 'alsolate' resolve ~LATE_DELAY_MS after being dispatched (the fake gateway
+    // below treats any label containing 'late' the same way) — close together, not sequenced, so
+    // their two `onAgentSettled` callbacks race each other AND `_transition`'s own terminal write.
+    await new Promise((r) => setTimeout(r, LATE_DELAY_MS + 300));
+
+    const facade = new McpFacade({ runManager: mgr, store, confinementPosture: 'unconfined' } as never);
+    const result = await facade.runResult({ runId }, AUTH_DISABLED, false, null);
+    // Both calls' tokens present — never just one (a snapshot write that landed between the two
+    // settles, or the all-settled guard skipping a still-partial state, would under-report here).
+    expect(result.meta?.usage.tokens.input).toBe(222); // 111 + 111
+    expect(result.meta?.usage.tokens.output).toBe(444); // 222 + 222
+
+    // The persisted `agents` array itself must show BOTH as 'done' — never 'running' — on an
+    // already-terminal run (the exact invariant derived-equals-snapshot.test.ts/
+    // terminal-state-warnings.test.ts pin for `_transition`'s own write, which this fix's extra
+    // writer must not violate).
+    const view = await store.getRun(runId);
+    expect(view?.agents?.every((a) => a.state === 'done')).toBe(true);
+    expect(view?.agents?.length).toBe(2);
   }, 15000);
 });

@@ -1965,7 +1965,22 @@ export class RunManager {
       }
       // v26 (DES-183, TASK-183): the run's usage total, folded from the SAME (possibly redacted)
       // agents array persisted beside it — one fold, not a second derivation that could disagree.
-      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents) });
+      // issue #162 D (correctness, review finding): THIS write and `_maybeRefoldLateUsage`'s late-
+      // settle write are now both routed through `_enqueueSnapshotWrite`'s per-run chain, which
+      // re-reads `getAllRecords()` fresh at EACH write's own turn (not the `agents`/`usage` computed
+      // just above, which stays as-is ONLY for the `agent_live_at_terminal` loop below — that warning
+      // is deliberately "what was still live at the moment of transition", a different question from
+      // "what the persisted row should end up containing"). Without this, a late settle landing
+      // between this `entry.status = to` and this write's own store round trip could race it —
+      // whichever write physically lands last in the store wins even if it read an OLDER view.
+      await this._enqueueSnapshotWrite(runId, async () => {
+        let freshAgents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+        if (this._secretValueProvider) {
+          const secrets = this._secretValueProvider.entries();
+          freshAgents = redact(freshAgents, secrets) as typeof freshAgents;
+        }
+        await this._store.saveSnapshot(runId, { phases: entry.phases, agents: freshAgents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(freshAgents) });
+      });
       // v25 (issue #53, adjudication #9 I-2, warning 1): the run is terminal — is anything it owns
       // still running? Run 3977b82d was in EXACTLY this state (its agent ran on for ~36 seconds
       // after the terminal write and produced real output) and nothing was recorded. Emitted from
@@ -2015,16 +2030,44 @@ export class RunManager {
     const entry = this._runs.get(runId);
     if (!entry || !TERMINAL.includes(entry.status)) return;
     if (!(entry.spawner instanceof AgentExecutor)) return;
-    void (async () => {
-      try {
-        let agents = (entry.spawner as AgentExecutor).getAllRecords();
-        if (this._secretValueProvider) {
-          const secrets = this._secretValueProvider.entries();
-          agents = redact(agents, secrets) as typeof agents;
-        }
-        await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents) });
-      } catch { /* best-effort — the run already has SOME terminal snapshot; never throw from here */ }
-    })();
+    void this._enqueueSnapshotWrite(runId, async () => {
+      let agents = (entry.spawner as AgentExecutor).getAllRecords();
+      // issue #162 D (correctness, review finding): if a DIFFERENT fire-and-forget call on this SAME
+      // run is still mid-flight, skip this write entirely rather than persist a snapshot that shows a
+      // 'queued'/'running' agent on an already-terminal run — the invariant `derived-equals-
+      // snapshot.test.ts`/`terminal-state-warnings.test.ts` pin ("the terminal snapshot's `agents` is
+      // the settled, final list") must hold for every write, not just `_transition`'s own. That OTHER
+      // call's own eventual settle fires this same hook again, and by then every record will be
+      // settled — nothing is lost, only deferred to the write that actually captures the full
+      // picture.
+      if (agents.some((a) => a.state === 'queued' || a.state === 'running')) return;
+      if (this._secretValueProvider) {
+        const secrets = this._secretValueProvider.entries();
+        agents = redact(agents, secrets) as typeof agents;
+      }
+      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents) });
+    });
+  }
+
+  /** issue #162 D (correctness, review finding): serializes every snapshot write for the SAME
+   *  runId — `_transition`'s own terminal write and `_maybeRefoldLateUsage`'s late-settle write(s)
+   *  are two independent async writers to the same persisted row with no serialization otherwise;
+   *  whichever happens to land in the store LAST wins even if it read an OLDER `getAllRecords()`
+   *  view. `build` is called lazily, at THIS write's own turn in the chain — never precomputed
+   *  before enqueueing — so the chain's actual LAST write always reads live records fresh at that
+   *  point, and the persisted row converges to the most complete state regardless of which caller's
+   *  `_enqueueSnapshotWrite` call happened to run first. A failed `build` never wedges a later
+   *  write for the same run (caught, not rethrown into the chain) — the run already has SOME
+   *  terminal snapshot either way; this is best-effort enrichment, not the only writer. Entries for
+   *  runs that have already finished every write are pruned opportunistically (the Map would
+   *  otherwise grow by one settled key per terminal run for the life of the process). */
+  private readonly _snapshotWriteChains = new Map<string, Promise<void>>();
+  private _enqueueSnapshotWrite(runId: string, build: () => Promise<void>): Promise<void> {
+    const prev = this._snapshotWriteChains.get(runId) ?? Promise.resolve();
+    const next = prev.then(build, build).catch(() => { /* best-effort; never wedge the chain */ });
+    this._snapshotWriteChains.set(runId, next);
+    void next.finally(() => { if (this._snapshotWriteChains.get(runId) === next) this._snapshotWriteChains.delete(runId); });
+    return next;
   }
 
   /** v26 (DES-175, ARCH-114, TASK-186): the run's CURRENT phase lane (title+ordinal), read fresh
