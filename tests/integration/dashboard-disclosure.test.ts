@@ -75,6 +75,7 @@ const FAKE_ISSUE_CLIENT: GithubIssueClient = {
   async getComments() { return null; },
   async createComment() { return null; },
   async findOpenByFingerprint() { return null; },
+  async reopenIssue() { return null; },
 };
 
 describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => {

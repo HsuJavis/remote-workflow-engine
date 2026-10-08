@@ -1225,7 +1225,7 @@ export const TOOL_SPECS = [
     fixture: { happy: { id: ref('webhookId') }, errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID } } },
   },
 
-  // ---- issue (5) ----
+  // ---- issue (6) ----
   {
     name: 'issue_report', entity: 'issue', key: null,
     // v24 (integrator, REQ-095/REQ-032 — found by the Batch-C executor): the row advertised
@@ -1308,6 +1308,28 @@ export const TOOL_SPECS = [
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: { number: 1, body: 'hi' }, errors: { ISSUE_NOT_FOUND: { number: 999999999, body: 'hi' } } },
+  },
+  {
+    name: 'issue_reopen', entity: 'issue', key: 'number' as const,
+    // issue #164 A: a closed-but-not-actually-fixed issue previously had no path back to open —
+    // only issue_comment_post, which does not change state and drops the issue off issue_list's
+    // open-only default view. Authorized in the HANDLER (call-tool.ts), not the generic ownership
+    // framework: "the issue's original reporter" is an async GitHub-body read (a hidden
+    // `rwe-reporter:<actor>` marker issue_report now stamps), and `authorize()`/`OwnerLookup` are
+    // deliberately pure/sync (DES-139) — so this row is a plain `ownership:'none'` gate and the
+    // reporter-or-admin check happens inside IssueReporter.reopen() itself.
+    description: "Reopen a closed issue and post `reason` as a comment explaining why. " +
+      'Allowed for the issue\'s original reporter (the caller whose issue_report filed it) or an admin — anyone else is refused NOT_ISSUE_REPORTER and nothing changes on GitHub. ' +
+      'An issue filed before this tool existed has no recorded reporter, so only an admin can reopen it.',
+    inputSchema: schema({
+      number: { type: 'number' },
+      reason: { type: 'string', description: 'Why this is being reopened — posted as a comment on the issue.' },
+    }, ['number', 'reason']),
+    outputSchema: OUT,
+    errors: ['ISSUE_NOT_FOUND', 'NOT_ISSUE_REPORTER'] as ErrorCode[],
+    seeAlso: ['issue_report', 'issue_list'],
+    authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
+    fixture: { happy: { number: 1, reason: 'fixture probe' }, errors: { ISSUE_NOT_FOUND: { number: 999999999, reason: 'fixture probe' } } },
   },
 
   // ---- environment (2) ----

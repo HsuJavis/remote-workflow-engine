@@ -81,7 +81,7 @@ const ajv = new Ajv();
 // demands but `issue_report`'s `inputSchema` does not). `models_list` is deliberately NOT skipped:
 // verified live it succeeds from the curated static catalog with no key at all, contradicting
 // DES-158's boundary text there — reported, not silently overridden.
-const CREDENTIAL_GATED = new Set(['issue_report', 'issue_get', 'issue_list', 'issue_get_comments', 'issue_comment_post']);
+const CREDENTIAL_GATED = new Set(['issue_report', 'issue_get', 'issue_list', 'issue_get_comments', 'issue_comment_post', 'issue_reopen']);
 
 // Destructive-last (DES-158 boundary): run over their own fixture workflow only after every
 // read/list fixture has had its turn. `workspace_purge` destroys the workspace `workspace_pull`

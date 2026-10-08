@@ -37,6 +37,7 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
     async getComments() { return null; },
     async createComment() { return { commentId: 1, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7#issuecomment-1' }; },
     async findOpenByFingerprint() { return null; },
+    async reopenIssue() { return null; },
   };
 
   beforeAll(async () => {

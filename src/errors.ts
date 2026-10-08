@@ -307,6 +307,9 @@ export const ERROR_CATALOG = {
   // closed vocabulary (`dir`, `id` — mcp-run-state.ts) — refused at push time, before the probe.
   UNKNOWN_RUN_PLACEHOLDER: { see: 'workflow_authoring_guide', hint: 'a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run\'s id) are supported' },
   ISSUE_NOT_FOUND: { see: null, hint: 'no GitHub issue matches this reference' },
+  // issue #164: issue_reopen — the caller is neither the issue's original reporter (its hidden
+  // rwe-reporter marker) nor an admin.
+  NOT_ISSUE_REPORTER: { see: null, hint: 'only the issue\'s original reporter or an admin may reopen it' },
 
   // Service accounts (owner decision 2026-10-03): the 6 service_account_* admin tools, and the
   // /token client_credentials grant's per-request re-check of an already-issued bearer.
