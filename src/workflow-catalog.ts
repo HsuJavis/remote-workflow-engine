@@ -1304,14 +1304,19 @@ export class WorkflowCatalog {
    *      model vanishing from a provider's live listing tomorrow must not retroactively refuse a
    *      row that passed yesterday. Only the STATIC shape/bound checks (declared type/enum/min/max,
    *      locked-key, anthropic static price table) still run.
-   *    - `SCRIPT_UNSCANNABLE` (2026-10-08 integration fix) — a row written before the
-   *      `nonCodeSpans` oracle existed is EXPLICITLY grandfathered, same precedent as the Mermaid
-   *      row above: it stays runnable, with only a read-time marker on `workflow_describe`/the dag
-   *      route (tests/integration/scan-unscannable-markers.test.ts, item 6/Gate 8). A genuinely
-   *      unparseable script also fails `validateScriptEntry`'s OWN `PARSE_ERROR` check below — that
-   *      check still runs and still refuses every OTHER `PARSE_ERROR` cause (e.g. an illegal
-   *      top-level function wrapper), just not this one, which is why `scan.unscannable` is read
-   *      BEFORE `validateScriptEntry` runs rather than skipping `PARSE_ERROR` wholesale.
+   *
+   *  NO LONGER on this list (2026-10-08 integration MINOR fix, reverify): `SCRIPT_UNSCANNABLE` — a
+   *  row written before the `nonCodeSpans` oracle existed — USED to be grandfathered here ("stays
+   *  runnable, only a read-time marker fires"), but that was never a deliberate exemption, only an
+   *  accidental broadening of the `AGENT_OPT_RETIRED` grandfather below, which genuinely IS one.
+   *  `workflow_describe` independently reports `runnable:false`/`NOT_RUNNABLE` for exactly this row
+   *  (via `validateCurrent()`, the OTHER half of `workflow-view.ts`'s `notRunnable` OR) — the
+   *  read/run disagreement every grandfather note on this page exists to AVOID. Refused
+   *  `NOT_RUNNABLE` now, same as any other staleness cause (tests/integration/
+   *  stale-registration-revalidation.test.ts, tests/integration/scan-unscannable-markers.test.ts).
+   *  The read-time markers (`workflow_describe.toolSurfaceUnscannable`, the dag route's
+   *  `PREDICTED_OVERLAY_UNAVAILABLE`) are UNCHANGED — computed independently of this method, they
+   *  keep firing regardless of admission.
    *    - `AGENT_OPT_RETIRED` (scanAgentCalls's code for `agentType` and any other key in
    *      `RETIRED_AGENT_OPT_KEYS` specifically — NOT `PARAM_UNKNOWN`, the separate catch-all for a
    *      key that never worked at all, e.g. a typo: that one stays refused, below) for the
@@ -1347,9 +1352,11 @@ export class WorkflowCatalog {
    *  `parseMetaParams`), stopping at the first failure — same "first error wins, the rest never
    *  run" convention every other registration-time check in this file already follows.
    *  `scanAgentCalls` is actually CALLED once before `validateScriptEntry` now (2026-10-08
-   *  integration fix) — only to peek at `scan.unscannable` for the grandfather short-circuit this
-   *  method's own class-level doc describes; its OWN violations are still consulted in the pinned
-   *  relative order, after `validateScriptEntry`. */
+   *  integration fix) — to read `scan.unscannable` and refuse `NOT_RUNNABLE` on it directly (2026-
+   *  10-08 integration MINOR fix, reverify — see this method's own class-level doc: this is NO
+   *  LONGER a grandfather short-circuit, it is a refusal returned BEFORE `validateScriptEntry`
+   *  even runs, same relative position as before, different outcome). Its OWN violations are still
+   *  consulted in the pinned relative order, after `validateScriptEntry`. */
   private _computeStoredVersionValidity(name: string, script: string): { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> } {
     // Issue #154 B4 PARTIAL: checked FIRST, same ordering rationale as `validateRegistration`'s own
     // RESERVED_PREFIX/INVALID_NAME pair at the top of that method — a row whose name predates this
