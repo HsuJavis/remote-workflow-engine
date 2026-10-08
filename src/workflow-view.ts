@@ -143,8 +143,11 @@ export interface WorkflowDescribeView {
   // `NOT_RUNNABLE` (run-manager.ts's admission sequence) — the read and the run path disagreed.
   // `ctx.notRunnable` (`catalog.validateStoredVersion()`) is a strict superset of that
   // `validateCurrent()` re-check (it re-runs `validateScriptEntry` plus name-validity/
-  // `scanAgentCalls`/`parseMetaParams`), so it is the one signal used here — `describe`'s
-  // `runnable`/`runnableReason` now mirrors `run_start` for every reason either issue found.
+  // `scanAgentCalls`/`parseMetaParams`) — ORed with `full.validation.ok===false` below (never
+  // replacing it: `full.validation` is still the one field `workflow_source` itself reads, and an
+  // existing caller that only ever sets `full.validation` — never the newer `ctx.notRunnable` —
+  // must keep reporting NOT_RUNNABLE unchanged), so `describe`'s `runnable`/`runnableReason` now
+  // mirrors `run_start` for every reason either issue found.
 
   runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE' | null;
 }
@@ -275,7 +278,7 @@ export function projectWorkflowDescribe(
     ? 'LEGACY_REREGISTER'
     : !published
       ? 'CHANNEL_UNPUBLISHED'
-      : ctx.notRunnable
+      : ctx.notRunnable || full.validation.ok === false
         ? 'NOT_RUNNABLE'
         : confinementRefused
           ? 'CONFINEMENT_UNAVAILABLE'

@@ -220,8 +220,15 @@ describe('projectWorkflowDescribe — runnable/runnableReason truth table (DES-1
 // #157 (2026-10-07 re-verification of #154): a published, non-legacy version whose STORED script
 // now fails catalog.validateCurrent() (full.validation.ok:false) must not report runnable:true —
 // run_start refuses the SAME row NOT_RUNNABLE (run-manager.ts admission sequence); the read surface
-// and the run path must agree. Checked ahead of CHANNEL_UNPUBLISHED/CONFINEMENT_UNAVAILABLE, same
-// relative priority run-manager.ts's own admission sequence gives it (right after LEGACY_REREGISTER).
+// and the run path must agree. 2026-10-07 integration (rv): checked AFTER CHANNEL_UNPUBLISHED (not
+// ahead of it as this comment originally claimed) — `catalog.resolve()` already refuses an
+// unpublished default-channel request before a row ever reaches this projection, and the #154-side
+// `ctx.notRunnable` signal (now ORed with this file's `full.validation.ok` term — see
+// workflow-view.ts) is likewise checked after `published`, matching run_start's real admission
+// order (resolveForActor()'s own CHANNEL_UNPUBLISHED/VERSION_NOT_FOUND throw precedes the
+// stale-version check). Still right after LEGACY_REREGISTER and still ahead of
+// CONFINEMENT_UNAVAILABLE. No test case here combines unpublished+invalid, so this ordering has no
+// coverage either way — documented, not pinned.
 describe('projectWorkflowDescribe — runnable/runnableReason NOT_RUNNABLE (#157)', () => {
   it('[LOAD-BEARING] published, current contract, but validation.ok:false => runnable:false, runnableReason:NOT_RUNNABLE', () => {
     const view = projectWorkflowDescribe(
