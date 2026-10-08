@@ -343,7 +343,11 @@ function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor, wrap: Wra
 // error) is still a thunk that threw, and still nulls.
 // Inlined rather than imported from ../errors.js on purpose — this module is loaded by the sandbox
 // CHILD, which does not resolve `.js`→`.ts` for value imports (see the checkMeta note at the top).
-const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN']);
+// Issue #154 NEW HIGH (blocker): AGENT_OPTS_TAMPERED joins the set for the same reason
+// BUDGET_EXCEEDED/PARAM_UNKNOWN are here — it is the ENGINE refusing to dispatch a call (a
+// dispatch-time opts/scan mismatch, not the author's own code failing), so parallel()/pipeline()
+// must propagate it rather than fold it into their null-for-a-throwing-thunk contract.
+const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED']);
 
 // v36 (DES-248, ARCH-165/166, TASK-246, REQ-215): a WeakMap keyed on the Error OBJECT, never a
 // field on it — the object handed to script land is an ordinary mutable Error, so a script writing

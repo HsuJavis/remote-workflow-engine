@@ -548,7 +548,12 @@ export function materializeArgDefaults(
   if (specs) {
     for (const [key, spec] of Object.entries(specs)) {
       if (spec.default === undefined) continue;
-      if (result[key] === undefined) result[key] = spec.default;
+      // issue #161 B2: `result[key] === undefined` cannot tell "the caller wrote `key: undefined`
+      // explicitly" from "the caller never mentioned `key` at all" — both read identically. Only
+      // `Object.hasOwn` distinguishes them; an explicit own key (even one valued `undefined`) must
+      // win over the default, per the guide's documented contract ("an explicit caller-supplied
+      // value always wins, including an explicit `undefined`").
+      if (!Object.hasOwn(result, key)) result[key] = spec.default;
     }
   }
   return result;
@@ -631,7 +636,7 @@ function validateOneAgentOverride(
   if (!isPlainObject(raw)) {
     return invalid(
       `agents.${label}`,
-      `agent override must be an object mapping tunable key to value, not ${Array.isArray(raw) ? 'an array' : typeof raw}`,
+      `agent override must be an object mapping tunable key to value, not ${raw === null ? 'null' : Array.isArray(raw) ? 'an array' : typeof raw}`,
     );
   }
   // issue #156 DOC: a locked/unknown-key refusal's `detail.tunable` must list only the keys THIS
@@ -794,14 +799,17 @@ export function validateUserOverrides(
       detail: { param: key, tunable: [...TUNABLE_KEYS] },
     };
   }
-  const agentsIn = obj.agents ?? {};
+  // issue #156 NEW-1: `?? {}` treats an explicit `null` the same as an omitted (`undefined`) key —
+  // only `undefined` means "the caller didn't say", so `null` must reach the isPlainObject guard
+  // below and be refused the same way a string/array already is, not be laundered into `{}` first.
+  const agentsIn = obj.agents === undefined ? {} : obj.agents;
   // issue #156 DOC: `overrides.agents` itself must be a plain object — a string or array used to be
   // iterated char/index-wise by the `Object.entries` loop below, producing a confusing numeric-
   // looking label (`"0"`) instead of a shape refusal.
   if (!isPlainObject(agentsIn)) {
     return invalid(
       'agents',
-      `overrides.agents must be an object mapping agent label to its override fields, not ${Array.isArray(agentsIn) ? 'an array' : typeof agentsIn}`,
+      `overrides.agents must be an object mapping agent label to its override fields, not ${agentsIn === null ? 'null' : Array.isArray(agentsIn) ? 'an array' : typeof agentsIn}`,
     );
   }
   const known = Object.keys(c.agents);
@@ -819,7 +827,10 @@ export function validateUserOverrides(
       };
     }
     const eff = effectiveAgentBounds(spec, ceilings);
-    const result = validateOneAgentOverride(label, eff, overridesForLabel ?? {}, catalog, (w) => warnings.push(w));
+    // issue #156 NEW-1: same `undefined`-only default as `agentsIn` above — an explicit
+    // `{a: null}` must reach validateOneAgentOverride's own isPlainObject guard and be refused,
+    // not be laundered into `{}` and silently accepted.
+    const result = validateOneAgentOverride(label, eff, overridesForLabel === undefined ? {} : overridesForLabel, catalog, (w) => warnings.push(w));
     if (!result.ok) return result;
     resultAgents[label] = result.value;
   }
@@ -861,7 +872,14 @@ export function validateDeclaredArgs(c: ParamContract, args: unknown): { ok: tru
   }
   const obj = (args ?? {}) as Record<string, unknown>;
   for (const [key, spec] of Object.entries(c.args)) {
-    if (!(key in obj)) continue;
+    // issue #161 B2: an own key present with the literal value `undefined` is the caller's
+    // explicit "no value" signal, not a value to type-check — `key in obj` alone cannot tell it
+    // apart from a genuinely-supplied value, and `materializeArgDefaults` (the door this runs
+    // after, both at run_start and a nested workflow() call) deliberately leaves such a key
+    // AT `undefined` rather than filling its default (same issue, same "explicit wins" contract).
+    // Checking it against `expectedType` here would turn the caller's explicit `undefined` into a
+    // hard PARAM_OUT_OF_RANGE refusal instead of the no-op the guide promises.
+    if (!(key in obj) || obj[key] === undefined) continue;
     const result = checkValueAgainstSpec(`args.${key}`, obj[key], spec);
     if (!result.ok) return result;
   }

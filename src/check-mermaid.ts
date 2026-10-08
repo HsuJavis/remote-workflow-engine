@@ -271,17 +271,20 @@ export function checkMermaid(
     if (triple.length !== 3) return err('MERMAID_INVALID', { line: node.line });
     const [model, effort, timeoutStr] = triple;
     const timeoutMs = parseTimeout(timeoutStr!);
-    if (
-      (def.model !== undefined && model !== def.model) ||
-      (def.effort !== undefined && effort !== def.effort) ||
-      (def.timeoutMs !== undefined && timeoutMs !== def.timeoutMs)
-    ) {
-      // issue #155 B2b: name the label and the specific declared field(s) that disagreed, same as
-      // every other v2 rule's self-describing `expected` — only the fields `def` actually declares.
+    const modelMismatch = def.model !== undefined && model !== def.model;
+    const effortMismatch = def.effort !== undefined && effort !== def.effort;
+    const timeoutMismatch = def.timeoutMs !== undefined && timeoutMs !== def.timeoutMs;
+    if (modelMismatch || effortMismatch || timeoutMismatch) {
+      // issue #155 B2b (2026-10-07 reverify — PARTIAL fixed here): name the label and ONLY the
+      // field(s) whose OWN comparison above actually disagreed — gating each field's inclusion on
+      // `def` declaring a default for it (as before) produced a byte-identical `expected` for
+      // "wrong model only" / "wrong effort only" / "wrong timeout only" / "all three wrong" the
+      // instant `def` declared all three, contradicting the guide's documented "names which
+      // field(s) disagree".
       const expectedValue: { label: string; model?: string; effort?: string; timeoutMs?: number } = { label };
-      if (def.model !== undefined) expectedValue.model = def.model;
-      if (def.effort !== undefined) expectedValue.effort = def.effort;
-      if (def.timeoutMs !== undefined) expectedValue.timeoutMs = def.timeoutMs;
+      if (modelMismatch) expectedValue.model = def.model;
+      if (effortMismatch) expectedValue.effort = def.effort;
+      if (timeoutMismatch) expectedValue.timeoutMs = def.timeoutMs;
       return err('VALUE_MISMATCH', { line: node.line, expected: expectedValue });
     }
   }
@@ -365,13 +368,32 @@ function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
   return null;
 }
 
-/** (12) TOOLS_MISMATCH: the stadium's third `<br/>` segment vs `slot.tools[label]` — `'default'`
- *  is SKIPPED ENTIRELY (never read, never partially compared). */
+/** (12) TOOLS_MISMATCH: the stadium's third `<br/>` segment vs `slot.tools[label]`. `'default'`
+ *  (no `allowedTools` key on the call) is not VALUE-compared against anything (there is no
+ *  declared list to compare), but IS now read (issue #155 PARTIAL, tools-lie case 1): the segment
+ *  must be either omitted entirely or the literal `tools: default` — any other text is refused, so
+ *  an author can no longer write a false `tools: none`/`tools: X` for a call the scan never granted
+ *  any tools at all. */
 function checkTools(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], labelToNodes: Map<string, NodeRecord[]>): CheckMermaidResult | null {
   for (const slot of expected.slots) {
     for (const label of slot.labels) {
       const toolsExpected = slot.tools[label];
-      if (toolsExpected === undefined || toolsExpected === 'default') continue;
+      if (toolsExpected === undefined || toolsExpected === 'default') {
+        // issue #155 PARTIAL (tools-lie case 1, 2026-10-07 reverify): 'default' means the call
+        // declares NO `allowedTools` key at all (toolsFor's own mapping — the variable/non-literal
+        // case this used to also collapse into 'default' is now a registration-time violation,
+        // #154 NEW HIGH, so it can no longer reach a stored diagram at all). The guide's rule 3
+        // gives exactly two honest spellings for that case: omit the segment entirely, or write
+        // the literal `tools: default` — anything else (most dangerously a false `tools: none`,
+        // indistinguishable from a REAL `allowedTools: []`) is a lie about a surface the scan never
+        // granted, and used to be skipped here without ever being read.
+        const node = nodeInLane(labelToNodes.get(label), subgraphBlocks[slot.lane]);
+        const actual = node?.text.split('<br/>')[2]?.trim();
+        if (actual !== undefined && actual !== 'tools: default') {
+          return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label, tools: 'default' } });
+        }
+        continue;
+      }
       // The node in THIS slot's lane — the same label in another lane is another slot's business.
       const node = nodeInLane(labelToNodes.get(label), subgraphBlocks[slot.lane]);
       const expectedStr = toolsExpected.length === 0 ? 'tools: none' : `tools: ${[...toolsExpected].sort().join(', ')}`;
@@ -386,7 +408,17 @@ function checkTools(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
   // exempt.
   for (const lane of expected.lanes) {
     for (const entry of lane.dynamicLabels ?? []) {
-      if (entry.tools === undefined) continue;
+      if (entry.tools === undefined) {
+        // issue #155 PARTIAL (tools-lie case 1): same "omit or `tools: default`" contract as the
+        // static-slot loop above, extended to a dynamic lane's own absent-allowedTools call — the
+        // guide draws no distinction ("same as everywhere else").
+        const node = nodeInLane(labelToNodes.get(entry.label), subgraphBlocks[lane.index]);
+        const actual = node?.text.split('<br/>')[2]?.trim();
+        if (actual !== undefined && actual !== 'tools: default') {
+          return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label: entry.label, tools: 'default' } });
+        }
+        continue;
+      }
       const node = nodeInLane(labelToNodes.get(entry.label), subgraphBlocks[lane.index]);
       const expectedStr = entry.tools.length === 0 ? 'tools: none' : `tools: ${[...entry.tools].sort().join(', ')}`;
       const actual = node?.text.split('<br/>')[2]?.trim();

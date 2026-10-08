@@ -855,7 +855,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +
         'property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be ' +
         'checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / ' +
-        '`AGENT_OPTS_SHORTHAND` at registration, issue #154).\n' +
+        '`AGENT_OPTS_SHORTHAND` at registration, issue #154). This applies key-by-key, not just to ' +
+        'the object as a whole: `allowedTools: tools` (a variable), `allowedTools: cfg.tools` (a ' +
+        'member expression), or `allowedTools: getTools()` (a call) are refused ' +
+        '`AGENT_OPTS_VALUE_NOT_LITERAL` even though the key itself is written literally — only a ' +
+        '`[...]` array literal of quoted strings is checkable.\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +
@@ -1209,7 +1213,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'scaffolding around them (that prose line, a schema suffix, and a retry nudge) — it does not ' +
         'decide whether the appended segment is an authorized override or a foreign injection. An ' +
         'author who wants the appended segment to carry override force has to write the adoption rule ' +
-        "into their OWN prompt; the engine draws no such line on the author's behalf.",
+        "into their OWN prompt; the engine draws no such line on the author's behalf. This framing " +
+        'applies ONLY when a caller actually supplies `appendPrompt` (even an explicit empty string). ' +
+        'A declared `appendPrompt.default` that no caller overrides is YOUR OWN text, not the ' +
+        "caller's — it is appended plainly, with no frame and no untrusted-caller prose, exactly as " +
+        'if you had written it straight into your own `prompt` (issue #156).',
     ),
   );
 
@@ -1500,10 +1508,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'tools: Edit, Read` — the names sorted, comma-space separated, exactly the literal ' +
         '`allowedTools` array on that call, or `tools: none` for `allowedTools: []`. Omitting the ' +
         'segment (or leaving the node with no `<br/>` at all) while `allowedTools` is a literal array ' +
-        'is refused `TOOLS_MISMATCH` — it does NOT fall back to "not compared". Only when the call ' +
-        'declares no `allowedTools` key at all is the segment optional and skipped entirely: write ' +
+        'is refused `TOOLS_MISMATCH` — it does NOT fall back to "not compared". When the call ' +
+        'declares no `allowedTools` key at all, there is no declared list to VALUE-check the ' +
+        'segment against, but the segment is still not free text (issue #155): write exactly ' +
         '`tools: default` (the honest word for "whatever this deployment configures") or leave the ' +
-        'segment off.\n' +
+        'segment off — any OTHER text there, most dangerously a false `tools: none` (indistinguishable ' +
+        'from a REAL `allowedTools: []`), is refused `TOOLS_MISMATCH` too.\n' +
         '4. **Edges — `EDGE_MISMATCH`.** Consecutive calls in your script must be joined in the ' +
         'diagram, across lane boundaries too. A path may run through non-agent shapes (a diamond for ' +
         'a branch, an aggregation for a non-agent join), which is how you draw a ternary or an ' +

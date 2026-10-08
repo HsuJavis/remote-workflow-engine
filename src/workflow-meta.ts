@@ -2,6 +2,7 @@
 // no I/O, never execute the workflow, never throw on odd input. Used by the catalog (store purpose at
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
+import { parse } from 'acorn';
 import { checkMeta } from './sandbox/guards.js';
 import { nonCodeSpans } from './script-spans.js';
 import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
@@ -301,7 +302,15 @@ export type AgentCallViolationCode =
   /** Issue #154 B2 (shorthand-property gap, advisor-flagged alongside spread): `{ allowedTools }`
    *  — the key name IS a literal the scan could see, but its value comes from a variable, not from
    *  the object literal itself, so it carries the same unverifiable-value hazard as a spread. */
-  | 'AGENT_OPTS_SHORTHAND';
+  | 'AGENT_OPTS_SHORTHAND'
+  /** Issue #154 NEW (HIGH, 2026-10-07 reverify): `allowedTools: <expr>` — a literal key WITH a
+   *  top-level `:` (so neither AGENT_OPTS_SPREAD's no-colon branch nor AGENT_OPTS_SHORTHAND's
+   *  applies), but whose value is not a `[...]` literal of quoted strings (an identifier, member
+   *  expression, call, ternary, …). `parseStringArrayLiteral` already returns `null` for this; the
+   *  gap was that the handler silently left `allowedTools` at 'absent' instead of raising a
+   *  violation, so the real value reached `agent-executor.ts`'s dispatch unexamined while every
+   *  advisory surface ('absent' read as "nothing to verify") reported no tools at all. */
+  | 'AGENT_OPTS_VALUE_NOT_LITERAL';
 
 export interface AgentCallViolation {
   line: number;
@@ -445,19 +454,77 @@ function literalStringValue(text: string): string | null {
   return null;
 }
 
-/** `null` unless `text` is, in full, a `[...]` literal of quoted string tokens — used to read
- *  `allowedTools: [...]` verbatim (DES-174/TASK-184) without a JS parser dependency. `[]` returns
- *  `[]`, not `null` — `allowedTools: []` must be recorded, not treated as absent. */
+/** Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): `null` unless `text` is, in full, an
+ *  `ArrayExpression` AST node every one of whose elements is a string `Literal` node — used to read
+ *  `allowedTools: [...]` verbatim (DES-174/TASK-184). `[]` returns `[]`, not `null` —
+ *  `allowedTools: []` must be recorded, not treated as absent. Parses `(${text})`, the same
+ *  parenthesize-to-force-expression-context trick `objectLiteralInnerText` uses (a bare `[` at
+ *  statement start is unambiguous in acorn, unlike `{`, but wrapping is harmless and keeps both
+ *  parse call sites identical). A REAL AST check, not the pre-fix `literalStringValue`'s "check only
+ *  the first/last character" text scan — that scan read `'mcp__x__y' && 'Bash'` (a two-literal
+ *  LogicalExpression, not one string literal) as literal because its first and last characters
+ *  happen to be quotes, truncating the quotes out of the resulting (wrong) string. A `SpreadElement`,
+ *  a hole (`[, 'x']`), a `TemplateLiteral`, or any non-string `Literal` (number/boolean/null/regex)
+ *  all fail closed to `null` here exactly as before. */
 function parseStringArrayLiteral(text: string): string[] | null {
   const t = text.trim();
-  if (!(t.startsWith('[') && t.endsWith(']'))) return null;
+  let ast: unknown;
+  try {
+    ast = parse(`(${t})`, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return null;
+  }
+  const program = ast as { body?: Array<{ type?: unknown; expression?: unknown }> };
+  if (!Array.isArray(program.body) || program.body.length !== 1) return null;
+  const stmt = program.body[0]!;
+  if (stmt.type !== 'ExpressionStatement') return null;
+  const expr = stmt.expression as { type?: unknown; elements?: Array<unknown> } | undefined;
+  if (!expr || expr.type !== 'ArrayExpression' || !Array.isArray(expr.elements)) return null;
   const out: string[] = [];
-  for (const item of splitTopLevel(t.slice(1, -1))) {
-    const v = literalStringValue(item);
-    if (v === null) return null;
-    out.push(v);
+  for (const el of expr.elements) {
+    // `null` is a real hole in the array literal (e.g. `['Bash', , 'Write']`) — acorn's own shape
+    // for it, not this function's `string[] | null` return sentinel.
+    if (el === null || typeof el !== 'object') return null;
+    const node = el as { type?: unknown; value?: unknown };
+    if (node.type !== 'Literal' || typeof node.value !== 'string') return null;
+    out.push(node.value);
   }
   return out;
+}
+
+/** Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): the exact source text BETWEEN the
+ *  outer `{`/`}` of `optsText`'s own object literal, or `null` when `optsText` is not — in full —
+ *  one `{...}` object-literal EXPRESSION. The pre-fix gate (`optsText.startsWith('{') &&
+ *  optsText.endsWith('}')`) only checked the first/last character, which `{prompt:'x'} ? o : {}`
+ *  and `{prompt:'x'} && o || {}` both satisfy while actually being a ternary/logical expression
+ *  that EVALUATES to whatever `o` is at runtime — invisible to every downstream reader of
+ *  `allowedTools`.
+ *
+ *  Parses `(${optsText})` — wrapped in parens to FORCE expression context: acorn (like the
+ *  language itself) reads a bare leading `{` at statement position as a BLOCK STATEMENT, not an
+ *  object literal, so `prompt: 'x'` inside it would parse as a labelled statement, not a Property
+ *  — the exact ambiguity this wrapper avoids. Requires the wrapped program to be exactly one
+ *  `ExpressionStatement` whose expression is an `ObjectExpression`; anything else (a ternary, a
+ *  logical chain, a sequence expression, a parse error) returns `null`. Returns the literal's own
+ *  inner text (between its braces), not `optsText.slice(1,-1)` — the object's braces need not be
+ *  `optsText`'s own first/last characters (e.g. surrounding whitespace already trimmed by the
+ *  caller, but kept as its own slice rather than assumed for robustness). */
+function objectLiteralInnerText(optsText: string): string | null {
+  let ast: unknown;
+  try {
+    ast = parse(`(${optsText})`, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return null;
+  }
+  const program = ast as { body?: Array<{ type?: unknown; expression?: unknown }> };
+  if (!Array.isArray(program.body) || program.body.length !== 1) return null;
+  const stmt = program.body[0]!;
+  if (stmt.type !== 'ExpressionStatement') return null;
+  const expr = stmt.expression as { type?: unknown; start?: unknown; end?: unknown } | undefined;
+  if (!expr || expr.type !== 'ObjectExpression' || typeof expr.start !== 'number' || typeof expr.end !== 'number') return null;
+  // `expr.start`/`expr.end` are offsets into the WRAPPED string `(${optsText})`, shifted by 1 (the
+  // prepended '(') relative to `optsText` itself.
+  return optsText.slice(expr.start - 1 + 1, expr.end - 1 - 1);
 }
 
 const GROUP_PARALLEL_CALL_RE = /(?<!\.)\bparallel\s*\(/g;
@@ -696,10 +763,11 @@ export function scanAgentCalls(script: string): AgentCallScan {
     let bashRaw: string | undefined;
     let bash: 'readonly' | undefined;
     const optsText = optsArg!.trim();
-    if (!(optsText.startsWith('{') && optsText.endsWith('}'))) {
+    const optsInnerText = objectLiteralInnerText(optsText);
+    if (optsInnerText === null) {
       violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
     } else {
-      for (const entry of splitTopLevel(optsText.slice(1, -1))) {
+      for (const entry of splitTopLevel(optsInnerText)) {
         const trimmedEntry = entry.trim();
         if (trimmedEntry === '') continue;
         const colonIdx = entry.indexOf(':');
@@ -727,7 +795,19 @@ export function scanAgentCalls(script: string): AgentCallScan {
         if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
         if (key === 'allowedTools') {
           const parsed = parseStringArrayLiteral(entry.slice(colonIdx + 1));
-          if (parsed !== null) allowedTools = parsed;
+          if (parsed !== null) {
+            allowedTools = parsed;
+          } else {
+            // Issue #154 NEW HIGH: a non-literal value is exactly as unverifiable as a spread or
+            // shorthand entry — refuse instead of silently defaulting to 'absent' (readonlyBashConflict
+            // and every downstream reader of `allowedTools` below still see 'absent', unchanged).
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_VALUE_NOT_LITERAL',
+              key,
+              hint: "'allowedTools' must be a literal array of string literals, not a variable or expression — it cannot be checked statically. Write 'allowedTools: [\"Tool\", …]' instead",
+            });
+          }
         }
         if (key === 'bash') bashRaw = entry.slice(colonIdx + 1).trim();
         if (LOCKED_PARAM_KEYS.has(key)) {
@@ -776,6 +856,30 @@ export function scanAgentCalls(script: string): AgentCallScan {
   }
 
   return { labels, calls, violations };
+}
+
+/** Issue #154 NEW HIGH (blocker): the per-label expectation `run-manager.ts`'s dispatch-time
+ *  `_handleAgentRequest` compares a REAL dispatch's `opts.allowedTools`/`opts.bash` against, so a
+ *  script-planted `Array.prototype.toJSON` (or any other post-registration tamper of the opts
+ *  object the IPC hop re-serializes) cannot smuggle a tool surface the registered script never
+ *  literally wrote for that label — `workflow_describe`'s `toolSurface` and the mermaid `tools:`
+ *  check both read the SAME `scanAgentCalls` output but collapse a duplicate label to its LAST
+ *  call (display-only, lossy); this keeps every scanned call's own shape, since duplicate labels
+ *  are legal (`AgentCallScan.calls` is not de-duplicated — e.g. the same label called twice with
+ *  two different literal `allowedTools`). A label absent here (never scanned, or scanned with the
+ *  empty-string placeholder `AGENT_LABEL_NOT_LITERAL`/`AGENT_LABEL_REQUIRED` produces) has no entry
+ *  at all — the caller must fail CLOSED on a missing label, never treat it as "no constraint". */
+export function expectedAgentOptsByLabel(script: string): Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> {
+  const out: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> = {};
+  for (const call of scanAgentCalls(script).calls) {
+    if (call.label === '') continue;
+    const entry: { allowedTools: string[] | 'absent'; bash?: 'readonly' } = {
+      allowedTools: call.allowedTools ?? 'absent',
+      ...(call.bash !== undefined ? { bash: call.bash } : {}),
+    };
+    (out[call.label] ??= []).push(entry);
+  }
+  return out;
 }
 
 /** Issue #78(c): why a `bash:'readonly'` call's literal tool list is not a read-only shell, or null. */

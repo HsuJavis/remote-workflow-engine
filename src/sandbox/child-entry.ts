@@ -10,6 +10,12 @@
 import { evaluateScript, markEngineRefusal } from './guards.ts';
 import type { SandboxApi } from './guards.ts';
 import type { SandboxBudget } from '../types.ts';
+// Issue #161 B2: marks/unmarks an explicit own-key `undefined` so it survives this process's own
+// IPC hops (Node's 'json' serialization, which would otherwise drop such a key the same way
+// `JSON.stringify` does) — ipc-sentinel.ts has no further dependency of its own, so it is safe to
+// import here with the literal `.ts` extension this file's own `.ts` imports already use (see this
+// file's own header note).
+import { encodeExplicitUndefined, decodeExplicitUndefined } from './ipc-sentinel.ts';
 
 // v26 (DES-182, ARCH-118, TASK-182): the live `{usd, tokens}` spend snapshot — piggybacked onto
 // both the initial `start` message (a frame that never calls agent(), e.g. a nested workflow()
@@ -255,14 +261,21 @@ async function main(msg: StartMsg): Promise<void> {
       }
       return result;
     },
-    args: msg.args,
+    // Issue #161 B2: `msg.args` crossed host.ts's own 'start' send, which re-encoded any true
+    // own-key `undefined` the host side had just decoded from a nested workflow() request (or, for
+    // a top-level run, args that were never an issue in the first place — decode is a no-op then).
+    args: decodeExplicitUndefined(msg.args),
     budget: sandboxBudget,
     async workflow(nameOrRef: unknown, wfArgs?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingWorkflow.set(callSeq, { resolve, reject }));
       // g2 minor item 4: same non-terminal handling as agent() above — a non-serializable `wfArgs`
       // rejects THIS workflow() call only.
-      const sent = trySend({ t: 'workflow', runId: msg.runId, callSeq, ref: nameOrRef, args: wfArgs });
+      // Issue #161 B2: encode BEFORE trySend — an own key explicitly set to `undefined` must
+      // reach the host as a decodable sentinel, not silently vanish in process.send()'s own JSON
+      // serialization (which happens inside trySend/send, after this point, and which this
+      // function has no way to intercept).
+      const sent = trySend({ t: 'workflow', runId: msg.runId, callSeq, ref: nameOrRef, args: encodeExplicitUndefined(wfArgs) });
       if (sent !== true) {
         pendingWorkflow.delete(callSeq);
         throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });

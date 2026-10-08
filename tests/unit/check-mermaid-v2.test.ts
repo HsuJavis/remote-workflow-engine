@@ -57,6 +57,45 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     expect((fx.expected as any).graph?.slots?.[0]?.tools?.a).toBe('default');
   });
 
+  // Issue #155 PARTIAL (tools-lie case 1, 2026-10-07 reverify): a call with NO `allowedTools` key
+  // at all ('default') used to have its diagram's tools segment never even read — an author could
+  // write ANY text there, including a false `tools: none` (the exact string checkTools emits for a
+  // REAL `allowedTools: []`), and it registered successfully. The guide's rule 3 gives exactly two
+  // honest spellings for 'default': omit the segment, or write `tools: default` literally.
+  it('"default" + a false `tools: none` segment is now refused TOOLS_MISMATCH (not silently skipped)', () => {
+    const src = 'graph LR\nsubgraph "one"\na(["a<br/>haiku · low · 60s<br/>tools: none"])\nend';
+    const expected = { lanes: [{ index: 0, title: 'one', dynamic: false, slots: [0] }], slots: [{ index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } }], edges: [] };
+    const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('TOOLS_MISMATCH');
+    expect(result.expected).toEqual({ label: 'a', tools: 'default' });
+  });
+
+  it('"default" + a false `tools: Read` segment (claiming a real surface) is also refused TOOLS_MISMATCH', () => {
+    const src = 'graph LR\nsubgraph "one"\na(["a<br/>haiku · low · 60s<br/>tools: Read"])\nend';
+    const expected = { lanes: [{ index: 0, title: 'one', dynamic: false, slots: [0] }], slots: [{ index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } }], edges: [] };
+    const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('TOOLS_MISMATCH');
+  });
+
+  it('"default" + NO tools segment at all is still accepted (the guide\'s first honest spelling)', () => {
+    const src = 'graph LR\nsubgraph "one"\na(["a"])\nend';
+    const expected = { lanes: [{ index: 0, title: 'one', dynamic: false, slots: [0] }], slots: [{ index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } }], edges: [] };
+    const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(true);
+  });
+
+  it('"default" + the literal `tools: default` segment is accepted (the guide\'s second honest spelling)', () => {
+    const src = 'graph LR\nsubgraph "one"\na(["a<br/>haiku · low · 60s<br/>tools: default"])\nend';
+    const expected = { lanes: [{ index: 0, title: 'one', dynamic: false, slots: [0] }], slots: [{ index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } }], edges: [] };
+    const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(true);
+  });
+
+  // The dynamic-lane equivalent of the two cases above lives in the "dynamic lane" describe block
+  // below, alongside that block's other dynamicLabels cases.
+
   // v26 integration (clarification 30): rule 13 was implemented to spec and had NO negative
   // fixture, so nothing proved it ever fired — the one v2 code with no test of its own. Three
   // cases, one per arm of checkEdges.
@@ -266,8 +305,26 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
       expect(result.ok).toBe(true);
     });
 
-    it('a dynamic-lane agent with no literal allowedTools is NOT tools-checked (documented exemption stays)', () => {
+    // issue #155 PARTIAL (tools-lie case 1, 2026-10-07 reverify): REVERSED — a dynamic-lane call
+    // with no literal allowedTools used to let its diagram's tools segment say ANYTHING, including
+    // a false `tools: none` (indistinguishable from a real `allowedTools: []`), unchecked. The
+    // "documented exemption" was real for VALUE comparison (nothing to compare against) but never
+    // meant "any text at all is accepted" — the guide's rule 3 only exempts the segment from being
+    // REQUIRED, giving exactly two honest spellings when it IS written: omitted, or `tools: default`.
+    it('a dynamic-lane agent with no literal allowedTools and a false `tools: none` segment is now refused TOOLS_MISMATCH', () => {
       const src = 'graph LR\nsubgraph "loop"\na(["a<br/>haiku<br/>tools: none"])\nend';
+      const expected = {
+        lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] }],
+        slots: [],
+        edges: [],
+      };
+      const result = checkMermaid(src, ['a'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+      expect(result.ok).toBe(false);
+      expect(result.rule).toBe('TOOLS_MISMATCH');
+    });
+
+    it('a dynamic-lane agent with no literal allowedTools and NO tools segment at all is still accepted', () => {
+      const src = 'graph LR\nsubgraph "loop"\na(["a"])\nend';
       const expected = {
         lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [], dynamicLabels: [{ label: 'a' }] }],
         slots: [],

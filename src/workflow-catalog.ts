@@ -164,9 +164,15 @@ export interface VersionEntry {
    *  its own. Both absent on a version registered without one (and on every pre-#82 row). */
   seedManifestRef?: string;
   seedNamespace?: string;
+  // issue #154 B5 (2026-10-07 reverify): THIS version's own registration timestamp — `insertVersion`
+  // has always written a fresh `this._clock.isoNow()` into `workflow_versions.createdAt` on every
+  // call, but no reader ever selected it; `resolveDetail` instead relabeled the WORKFLOW-level
+  // `workflows.createdAt` (set once, on the name's first registration) as the resolved VERSION's
+  // createdAt, so every version of a workflow reported the same birth time forever.
+  createdAt: string;
 }
 export interface WorkflowDetail extends VersionEntry {
-  name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
+  name: string; owner: string | null; channels: Channels; versions: string[];
 }
 
 // v36 (DES-244, ARCH-157/158/161, TASK-242, REQ-212/REQ-114): `Actor` replaces the overloaded
@@ -268,6 +274,12 @@ export class WorkflowCatalog {
   private readonly _ceilings?: Ceilings;
   /** v36 (DES-243, TASK-241): audit-line sink; TASK-242/244 call it. */
   private readonly _eventSink: EventSink;
+  /** Issue #154 B1-B4: `validateStoredVersion`'s memoization — keyed `${name}@${version}`. A
+   *  version row is immutable (ADR-025) and the static checks re-run have no other input, so the
+   *  verdict can never change for the same key within one process's lifetime; a rule change only
+   *  takes effect on the next process start (the same boundary every other registration-time check
+   *  already has — nothing re-scans a stored row mid-process today). */
+  private readonly _stalenessCache = new Map<string, { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> }>();
 
   constructor(workRoot: string, clock?: Clock, opts?: WorkflowCatalogOpts) {
     this._workRoot = workRoot;
@@ -1111,11 +1123,13 @@ export class WorkflowCatalog {
       // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
       // for the missing per-agent contract. Reading a retired column kept a dead value flowing
       // through the whole admission path.
-      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number; seed_manifest_ref: string | null; seed_namespace: string | null };
+      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace, createdAt FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number; seed_manifest_ref: string | null; seed_namespace: string | null; createdAt: string };
     return {
       script: vrow.script,
       version: result.version,
+      // issue #154 B5: this version's OWN registration timestamp (see VersionEntry.createdAt's doc).
+      createdAt: vrow.createdAt,
       // v24 Gate 7.5 (D-8, REQ-111): the author-supplied diagram. `insertVersion` has written this
       // column since TASK-143 and NO reader selected it, so every v24 workflow's
       // `workflow_describe(...).mermaid` was null with `mermaidNote:'LEGACY_NO_DIAGRAM'` — the
@@ -1141,11 +1155,13 @@ export class WorkflowCatalog {
   /** v22 (DES-111): the ONE read read (REPLACES getFull()) — adds name/createdAt/owner/channels/versions. */
   async resolveDetail(name: string, sel: VersionSelector): Promise<WorkflowDetail> {
     const row = this._requireName(name);
+    // issue #154 B5: `entry.createdAt` (from `resolve()`) is now the RESOLVED VERSION's own
+    // timestamp — spread it through unmodified; do NOT overwrite it with `row.createdAt` (the
+    // workflow's first-registration time), which is exactly the bug this fixed.
     const entry = await this.resolve(name, sel);
     return {
       ...entry,
       name,
-      createdAt: row.createdAt,
       owner: row.owner,
       channels: { release: row.release_version, beta: row.beta_version },
       versions: this._listVersions(name),
@@ -1253,6 +1269,110 @@ export class WorkflowCatalog {
     return validateScriptEntry(script);
   }
 
+  /** Issue #154 B1-B4 (2026-10-07 reverify): a static registration rule added AFTER a version was
+   *  already registered never retroactively applied to it — only a FRESH `register()` call ran the
+   *  current rule set (`validateRegistration`'s own pinned pipeline below), so an old row kept
+   *  `runnable:true` and kept reproducing whatever bug the new rule exists to catch, forever. This
+   *  re-runs the SAME three STATIC, rule-only checks `validateRegistration` applies to a fresh
+   *  script — against an ALREADY-STORED version's script — called from every real dispatch door
+   *  (`run_start`, `run_resume`, a nested `workflow()` call) so a stale row is refused with a coded
+   *  error instead of silently dispatching the exact bug a newer rule was written to close.
+   *
+   *  Issue #154 B4 PARTIAL (2026-10-07 reverify, FIXED here): name validity (`isValidBareName`) now
+   *  JOINS the re-run set. The earlier version of this doc comment claimed re-checking it "can never
+   *  produce a different verdict than it did at registration" — true only for a row `register()`
+   *  itself produced under the rule's own regime, false for any row that PREDATES the rule (seeded
+   *  directly, or genuinely registered before issue #154 B4 shipped): the live reverify measured a
+   *  stored row renamed to `../store` staying `runnable:true` and actually completing a `run_start`,
+   *  with its agent workspace landing at `<workRoot>/store/runs/<runId>` — the SAME path the run
+   *  store's own on-disk directory for that run occupies. Checked FIRST among the four (before
+   *  `validateScriptEntry` even runs) for the same "the cheapest, most fundamental check answers
+   *  first" reason `validateRegistration` checks it before anything else.
+   *
+   *  Deliberately NOT re-checked (both documented here, not merely by omission):
+   *    - Mermaid/diagram-grammar (`checkMermaid`'s v2 rules) — `diagramContract:'v1'` rows are
+   *      EXPLICITLY grandfathered (ADR-025/DES-184); retroactively imposing v26's diagram grammar
+   *      on every pre-v26 row would mass-invalidate a large fraction of an existing fleet for a
+   *      presentation concern this gap has nothing to do with.
+   *    - `TOOL_UNSUPPORTED_BY_HARNESS` — depends on the LIVE deployment's `catalog.harnessProviders`
+   *      (gateway:"pi" vs "sdk"), not on anything about the stored row; re-checking it here would
+   *      make a row's runnability flap on an unrelated gateway config change.
+   *    - Live model-existence (`checkModelRef` against a real openrouter/ollama catalog fetch) —
+   *      `parseMetaParams` below is called with `EMPTY_MODEL_CATALOG` (no live catalog), the SAME
+   *      "unavailable — accepted without verification" path `checkModelRef` already takes for a
+   *      cold/unreachable provider — for the same flapping reason as the harness check above: a
+   *      model vanishing from a provider's live listing tomorrow must not retroactively refuse a
+   *      row that passed yesterday. Only the STATIC shape/bound checks (declared type/enum/min/max,
+   *      locked-key, anthropic static price table) still run.
+   *
+   *  Memoized per (name,version) in `_stalenessCache` — see that field's own doc. */
+  async validateStoredVersion(name: string, version: string): Promise<{ ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> }> {
+    const cacheKey = `${name}@${version}`;
+    const cached = this._stalenessCache.get(cacheKey);
+    if (cached) return cached;
+    const row = this._db
+      .prepare('SELECT script FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, version) as { script: string } | undefined;
+    // Every real caller has already resolved (name, version) through `resolve()` immediately
+    // before calling this — an absent row here would mean the row vanished between that resolve
+    // and this call, which `register()`/`deregisterVersion()`'s own transactional semantics make
+    // unreachable in practice. Fail OPEN (not a fabricated refusal for a row this method cannot
+    // even examine) rather than invent a verdict about content it never saw.
+    if (!row) return { ok: true };
+    const result = this._computeStoredVersionValidity(name, row.script);
+    this._stalenessCache.set(cacheKey, result);
+    return result;
+  }
+
+  /** The four re-run checks (name validity, then the SAME three PINNED to the relative order
+   *  `validateRegistration` uses for them: `validateScriptEntry` → `scanAgentCalls` →
+   *  `parseMetaParams`), stopping at the first failure — same "first error wins, the rest never
+   *  run" convention every other registration-time check in this file already follows. */
+  private _computeStoredVersionValidity(name: string, script: string): { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> } {
+    // Issue #154 B4 PARTIAL: checked FIRST, same ordering rationale as `validateRegistration`'s own
+    // RESERVED_PREFIX/INVALID_NAME pair at the top of that method — a row whose name predates this
+    // rule must come back INVALID_NAME, not some other code a later check happens to hit first.
+    if (!isValidBareName(name)) {
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version's name ('${name}') is no longer a valid workflow name (INVALID_NAME) — re-register it under a valid name`,
+        detail: { violation: 'INVALID_NAME' },
+      };
+    }
+    const scriptCheck = validateScriptEntry(script);
+    if (!scriptCheck.ok) {
+      const first = scriptCheck.errors[0]!;
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version no longer passes registration-time validation (${first.code}: ${first.message}) — re-register it to fix or confirm the script`,
+        detail: { violation: first.code, ...first.detail },
+      };
+    }
+    const scan = scanAgentCalls(script);
+    if (scan.violations.length > 0) {
+      const v = scan.violations[0]!;
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version no longer passes registration-time validation (${v.code}: ${v.hint}, line ${v.line}) — re-register it to fix or confirm the script`,
+        detail: { violation: v.code, line: v.line, ...(v.key !== undefined ? { key: v.key } : {}) },
+      };
+    }
+    // EMPTY_MODEL_CATALOG — see this method's own doc for why no live catalog is passed here.
+    const paramsResult = parseMetaParams(script, EMPTY_MODEL_CATALOG);
+    if (!paramsResult.ok) {
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version no longer passes registration-time validation (${paramsResult.code}: ${paramsResult.message}) — re-register it to fix or confirm the script`,
+        detail: { violation: paramsResult.code, ...paramsResult.detail },
+      };
+    }
+    return { ok: true };
+  }
+
   /** v22 (DES-111, REQ-097): moves a named channel pointer to an already-registered version.
    *  Ownership-gated like register/deregister.
    *  Issue #98 item 8: `version: null` CLEARS the channel (sets its column back to NULL) instead of
@@ -1305,10 +1425,13 @@ export class WorkflowCatalog {
       const channels: Channels = { release: r.release_version, beta: r.beta_version };
       const version = r.release_version ?? r.beta_version ?? versions[versions.length - 1] ?? '';
       const vrow = version
-        ? (this._db.prepare('SELECT script, params, registeredRemote FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null; registeredRemote: number } | undefined)
+        ? (this._db.prepare('SELECT script, params, registeredRemote, createdAt FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null; registeredRemote: number; createdAt: string } | undefined)
         : undefined;
       return {
-        name: r.name, version, createdAt: r.createdAt, owner: r.owner,
+        // issue #154 B5: the listed row's createdAt is the RESOLVED VERSION's own timestamp (same
+        // fix as resolveDetail) — falls back to the workflow-level createdAt only for the
+        // unreachable-via-register() zero-version case `resolve()`'s own comment above describes.
+        name: r.name, version, createdAt: vrow?.createdAt ?? r.createdAt, owner: r.owner,
         description: parseMeta(vrow?.script ?? '').description,
         params: vrow?.params ? JSON.parse(vrow.params) as ParamContract : undefined,
         versions, channels,
@@ -1318,17 +1441,28 @@ export class WorkflowCatalog {
   }
 
   workFolder(name: string): string {
-    const folder = join(this._workRoot, 'workflows', name);
+    const workflowsRoot = join(this._workRoot, 'workflows');
+    const folder = join(workflowsRoot, name);
     // Issue #154 B4, layer 2 (defense in depth): `validateRegistration` is the primary fix — a name
     // that reaches here has normally already passed `isValidBareName` there — but this is a
     // CONTAINMENT check (not a charset check) specifically so it does not reject the `'_adhoc'`
     // sentinel (run-manager.ts's `spec.name ?? '_adhoc'`) or any other internally-constructed name
-    // that never goes through registration at all: anything that resolves INSIDE `_workRoot` is
-    // accepted regardless of its shape, and only a genuine escape is refused. A future caller that
-    // bypasses `validateRegistration` (an internal call, a migration, …) still cannot produce a path
-    // outside `_workRoot` through this method.
-    if (!isPathContained(folder, this._workRoot)) {
-      throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${name}' resolves outside the engine's workRoot`);
+    // that never goes through registration at all: anything that resolves INSIDE this workflow's
+    // own subtree is accepted regardless of its shape, and only a genuine escape is refused. A
+    // future caller that bypasses `validateRegistration` (an internal call, a migration, …) still
+    // cannot produce a path outside it through this method.
+    //
+    // Issue #154 B4 PARTIAL (2026-10-07 reverify, FIXED here): contained against `workflowsRoot`
+    // (`<workRoot>/workflows`), NOT `this._workRoot` at large as before — `join(workRoot,
+    // 'workflows', '../store')` resolves to `<workRoot>/store`, which IS still inside `workRoot`,
+    // so the old check saw no escape at all for a one-level-up name. `<workRoot>/store` is exactly
+    // where this engine's own `RunStore` keeps its on-disk state (the `store` subdirectory every
+    // real deployment and this repo's own fixtures construct it with) — a workflow named
+    // `../store` could alias its own agent workspace onto the run store's directory. A name with
+    // enough `..` segments to escape `workRoot` ENTIRELY was already caught by the old check and
+    // still is here (the same escape, just checked against a narrower, correct root).
+    if (!isPathContained(folder, workflowsRoot)) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${name}' resolves outside the engine's workflows directory`);
     }
     return folder;
   }

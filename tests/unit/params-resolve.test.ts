@@ -20,6 +20,7 @@ import {
   USER_INSTRUCTIONS_OPEN,
   USER_INSTRUCTIONS_CLOSE,
   UNTRUSTED_FRAME_PROSE,
+  composeEffectivePrompt,
 } from '../../src/params/resolve.js';
 import type { RunParams } from '../../src/params/resolve.js';
 import type { HarnessDefaults } from '../../src/harness-defaults.js';
@@ -222,6 +223,53 @@ describe('composePrompt() at TWO arguments — the five v34 goldens, byte-for-by
     // never reach this function un-refused, not something this function fixes.
     expect(closeCount).toBe(2);
     expect(result.endsWith(USER_INSTRUCTIONS_CLOSE)).toBe(true);
+  });
+});
+
+// Issue #156 B2 (2026-10-07 reverify — NOT FIXED, and now more expensive): composePrompt frames
+// purely on `appendPrompt !== undefined`, with zero visibility into WHERE the value came from.
+// Whenever an agent's contract declares ANY `appendPrompt.default` (including `''`), the author's
+// own registered default was framed and prosed as if the CALLER had supplied it — false on its
+// face, and (since #156's prose line) a real per-dispatch token cost for every such agent even
+// when no caller ever supplied anything.
+//
+// `composeEffectivePrompt` is the fix: a thin wrapper around the UNCHANGED, still-pure
+// `composePrompt` (the DES-225 goldens above are untouched) that consults the `Rung` the caller
+// already computes (`EffectiveCallParams.provenance.appendPrompt`) to decide whether framing is
+// appropriate at all.
+//
+// RED before the fix: this function does not exist (`composeEffectivePrompt` import fails / is
+// undefined) — once it exists, the 'default'/'engine' cases below fail against the OLD unconditional
+// framing if reimplemented as a passthrough to composePrompt.
+describe('composeEffectivePrompt() — frames ONLY an actual caller override (#156 B2)', () => {
+  it("rung 'override', non-empty value: framed exactly like composePrompt (unchanged)", () => {
+    expect(composeEffectivePrompt('SCRIPT', 'USER', 'override')).toBe(
+      composePrompt('SCRIPT', 'USER'),
+    );
+  });
+
+  it("rung 'override', EXPLICIT EMPTY STRING: still framed, prose and all (golden 3's exact case — an explicit override of '' is still an override)", () => {
+    expect(composeEffectivePrompt('SCRIPT', '', 'override')).toBe(composePrompt('SCRIPT', ''));
+  });
+
+  it("rung 'default', non-empty value: the author's OWN text, appended with no frame and no prose", () => {
+    const result = composeEffectivePrompt('SCRIPT', 'be concise', 'default');
+    expect(result).toBe('SCRIPT\n\nbe concise');
+    expect(result).not.toMatch(/user-instructions/);
+    expect(result).not.toMatch(/supplied by the caller/);
+  });
+
+  it("rung 'default', EMPTY STRING value: bare scriptPrompt — no frame, no prose, no trailing separator (the exact #156 B2 repro)", () => {
+    expect(composeEffectivePrompt('SCRIPT', '', 'default')).toBe('SCRIPT');
+  });
+
+  it("rung 'default', undefined value: bare scriptPrompt", () => {
+    expect(composeEffectivePrompt('SCRIPT', undefined, 'default')).toBe('SCRIPT');
+  });
+
+  it("rung 'engine': treated the same as 'default' (neither is the caller's text) — no producer sets appendPrompt when the rung is 'engine' today, so this only pins the contract for a future one", () => {
+    expect(composeEffectivePrompt('SCRIPT', 'x', 'engine')).toBe('SCRIPT\n\nx');
+    expect(composeEffectivePrompt('SCRIPT', undefined, 'engine')).toBe('SCRIPT');
   });
 });
 

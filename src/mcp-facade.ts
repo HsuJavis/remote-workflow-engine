@@ -733,12 +733,17 @@ export class McpFacade {
     // (`scheduler.get(id) ?? webhooks.get(id)`) from the RESOLVED VERSION's own `triggers` column —
     // never by workflow, because `listByWorkflow` was retired with `trigger-bindings.ts` and
     // because a claim belongs to a version, not to a name.
+    // issue #154 B1-B4 (2026-10-07 reverify): computed here (async, this facade's own catalog
+    // access) and handed to the pure projector below as a plain fact, same convention as
+    // `confinementPosture`/`isRemoteSubmission`/`registeredRemote`.
+    const staleness = await this.runManager.catalog.validateStoredVersion(full.name, full.version);
     const view = projectWorkflowDescribe(ownerView, {
       ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []), attempts: this.gatewayAttempts,
       confinementPosture: this.confinementPosture, isRemoteSubmission, registeredRemote: full.registeredRemote,
       // Owner follow-up (issue #100 Q5): the SAME `canMutate` notion `canRunResolved` above already
       // folds in — an owner, a bypass actor, or an ownerless row sees every version/channel.
       viewerIsOwner: canMutate(full.owner, actor),
+      notRunnable: !staleness.ok,
     });
     // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
@@ -852,7 +857,7 @@ export class McpFacade {
    *  `workflowDescribe` use — a version this host would actually refuse to run is never reported
    *  `runnable:true` here either. `runnableReason` is present ONLY on a row this fires for (an
    *  additive key — nothing walks this array expecting the field to always exist). */
-  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal, isRemoteSubmission = false): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean; runnableReason?: 'CONFINEMENT_UNAVAILABLE'; description: string; lastRunAt: string | null }>>> {
+  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal, isRemoteSubmission = false): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean; runnableReason?: 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE'; description: string; lastRunAt: string | null }>>> {
     const workflows = await this.runManager.catalog.list();
     // v36 (DES-247, ARCH-163, TASK-245): ONE lookup for the whole request, never one per row — a
     // name absent from the map has never run, which is what turns `?? null` into the honest
@@ -863,16 +868,22 @@ export class McpFacade {
     // per row below — `canMutate`'s owner/bypass/ownerless notion, the SAME one `workflowDescribe`
     // and `RunManager.start()` apply.
     const actor = actorFor(principal, a, 'bypass');
-    const rows = workflows
+    const rows = (await Promise.all(workflows
       // v24 adjudication #6 F-4: `w.owner` directly — the `as unknown as {owner?}` cast this line
       // used to carry is what let tsc stay green while `catalog.list()` had no `owner` field at all.
-      .map((w) => {
+      .map(async (w) => {
         const channels = w.channels as unknown as { release: string | null; beta: string | null };
         const published = channels.release != null;
         const confinementRefused = published && admissionRefusal({
           posture: this.confinementPosture,
           origin: isRemoteSubmission || w.registeredRemote ? 'remote' : 'local',
         }) !== null;
+        // issue #154 B1-B4 (2026-10-07 reverify): the SAME re-validation `run_start`/`run_resume`
+        // apply against the resolved VERSION's stored script — `runnable` must agree with what a
+        // real run_start against this exact row would do, not merely with publish state and
+        // confinement. `w.version` is the SAME resolved-version string `catalog.list()` already
+        // used to fetch this row's `description`/`params` above it.
+        const staleness = published ? await this.runManager.catalog.validateStoredVersion(w.name, w.version) : { ok: true as const };
         // Owner follow-up: a non-owner (not owner, not admin/bypass, not an ownerless legacy row —
         // `canMutate` false) never sees a non-release version id through this row — `versions[]`
         // collapses to `[release]` (or `[]` with none) and `channels.beta` is masked to `null`. The
@@ -884,14 +895,18 @@ export class McpFacade {
           owner: w.owner,
           versions: view.versions,
           channels: view.channels as unknown as Record<string, string>,
-          runnable: published && !confinementRefused,
-          ...(confinementRefused ? { runnableReason: 'CONFINEMENT_UNAVAILABLE' as const } : {}),
+          runnable: published && !confinementRefused && staleness.ok,
+          ...(confinementRefused
+            ? { runnableReason: 'CONFINEMENT_UNAVAILABLE' as const }
+            : !staleness.ok
+              ? { runnableReason: 'NOT_RUNNABLE' as const }
+              : {}),
           // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
           // this (v9/REQ-061); this projection's `.map` was silently dropping it.
           description: w.description,
           lastRunAt: lastRuns.get(w.name) ?? null,
         };
-      })
+      })))
       // Service accounts spec (owner decision 2026-10-03), §Authorization: an allowlisted
       // service-account principal sees only the workflows named in its allowlist — run_list needs
       // no equivalent filter (it is already scoped to the caller's OWN runs via runListScope/nsOf,

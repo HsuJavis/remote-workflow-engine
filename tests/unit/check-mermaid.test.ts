@@ -57,13 +57,44 @@ describe('checkMermaid (UT-149, DES-147)', () => {
   });
 
   // issue #155 B2b: VALUE_MISMATCH carried only {line} — no declared value or which field
-  // disagreed, unlike every other v2 rule's self-describing `expected`.
-  it('a VALUE_MISMATCH names the label and the declared field(s) in `expected`', () => {
-    const src = 'graph TD\n  plan(["plan<br/>haiku · low · 60s"])';
+  // disagreed, unlike every other v2 rule's self-describing `expected`. Fixture below has ALL
+  // THREE fields genuinely disagree (model/effort/timeout all differ from the diagram's triple).
+  it('a VALUE_MISMATCH names the label and the declared field(s) in `expected` (all three disagree)', () => {
+    const src = 'graph TD\n  plan(["plan<br/>haiku · medium · 30s"])';
     const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5', effort: 'low', timeoutMs: 60000 } }, limits, NO_V2) as any;
     expect(result.ok).toBe(false);
     expect(result.rule).toBe('VALUE_MISMATCH');
     expect(result.expected).toEqual({ label: 'plan', model: 'sonnet-5', effort: 'low', timeoutMs: 60000 });
+  });
+
+  // issue #155 B2b (2026-10-07 reverify — PARTIAL): `expected` named every field `def` declares a
+  // default for, not the specific field(s) whose OWN comparison actually disagreed — four distinct
+  // mismatch scenarios (wrong model only / wrong effort only / wrong timeout only / all three
+  // wrong) produced byte-identical payloads. Here only `model` disagrees (effort 'low'==='low',
+  // timeoutMs 60000===60000) even though `def` declares all three — `expected` must name ONLY
+  // `model`.
+  it('a VALUE_MISMATCH `expected` names ONLY the field(s) that actually disagreed, even when `def` declares more', () => {
+    const src = 'graph TD\n  plan(["plan<br/>haiku · low · 60s"])';
+    const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5', effort: 'low', timeoutMs: 60000 } }, limits, NO_V2) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('VALUE_MISMATCH');
+    expect(result.expected).toEqual({ label: 'plan', model: 'sonnet-5' });
+  });
+
+  it('a VALUE_MISMATCH `expected` names ONLY effort when only effort disagrees', () => {
+    const src = 'graph TD\n  plan(["plan<br/>sonnet-5 · medium · 60s"])';
+    const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5', effort: 'low', timeoutMs: 60000 } }, limits, NO_V2) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('VALUE_MISMATCH');
+    expect(result.expected).toEqual({ label: 'plan', effort: 'low' });
+  });
+
+  it('a VALUE_MISMATCH `expected` names ONLY timeoutMs when only the timeout disagrees', () => {
+    const src = 'graph TD\n  plan(["plan<br/>sonnet-5 · low · 30s"])';
+    const result = checkMermaid(src, ['plan'], { plan: { model: 'sonnet-5', effort: 'low', timeoutMs: 60000 } }, limits, NO_V2) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('VALUE_MISMATCH');
+    expect(result.expected).toEqual({ label: 'plan', timeoutMs: 60000 });
   });
 
   it('a VALUE_MISMATCH `expected` only names the fields the contract actually declares', () => {

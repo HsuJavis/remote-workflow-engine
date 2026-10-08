@@ -38,6 +38,7 @@ import { SystemClock } from './clock.js';
 import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost } from './sandbox/host.js';
+import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
 import { redact, hasSecretMarker } from './secret-resolver.js';
@@ -52,7 +53,7 @@ import { defaultRunParams, mergeRunParams, type RunParams } from './params/resol
 import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
 import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
 import { createEventSink, type EventSink } from './event-log.js';
-import { scanAgentCalls } from './workflow-meta.js';
+import { scanAgentCalls, expectedAgentOptsByLabel } from './workflow-meta.js';
 import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
 import { assertPositiveInteger } from './config-numeric.js';
 
@@ -420,6 +421,15 @@ interface RunEntry {
    *  never populated at all, which is why DES-154's selective materialization had never fired on a
    *  real dispatch (adjudication #4 C-2). Empty for an unregistered/legacy contract. */
   declaredAssets: Record<string, { skills: string[]; mcp: string[] }>;
+  /** Issue #154 NEW HIGH (blocker): this run's TOP-LEVEL script's own `expectedAgentOptsByLabel`
+   *  (workflow-meta.ts) — computed ONCE at admission (`start()`/`resume()`), from the SAME `script`
+   *  the run actually executes, never re-derived per call. `_handleAgentRequest` compares every
+   *  TOP-LEVEL dispatch's real `opts.allowedTools`/`opts.bash` against this (a nested `workflow()`
+   *  frame instead threads its OWN child script's version via `frameToolSurface` — see
+   *  `_handleWorkflowRequest`) and refuses `AGENT_OPTS_TAMPERED` on a mismatch, closing the gap a
+   *  planted `Array.prototype.toJSON` (or any other post-registration opts tamper the child->host
+   *  IPC hop's JSON re-serialization would otherwise honour) used to walk straight through. */
+  toolSurface: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>>;
   /** v36 (DES-245, TASK-243): from `spec.principal` at admission, and rehydrated from
    *  `getSpec()` on resume (`_requireLive`) — carried by the `run.terminal` event. */
   principal?: string | null;
@@ -434,7 +444,7 @@ interface RunEntry {
 /** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
  *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
  *  child cannot value-import this `.ts` file), pinned equal by the drift test. */
-export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN']);
+export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED']);
 
 /** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
  *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
@@ -447,6 +457,31 @@ function declaredAssetsOf(contract: ParamContract | undefined): Record<string, {
     out[label] = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
   }
   return out;
+}
+
+/** Issue #154 NEW HIGH (blocker): `true` when `dispatchedAllowedTools`/`dispatchedBash` — the REAL
+ *  opts an agent() call is about to dispatch with — matches ANY of `scanned`'s literal shapes
+ *  recorded for that call's label (`expectedAgentOptsByLabel`, workflow-meta.ts; DES-174 "duplicate
+ *  labels are legal" means a label can have more than one scanned call site, each with its own
+ *  literal options — matching any one of them is correct). `undefined`/`[]` (no scanned call at all
+ *  for this label) always returns `false` — `_handleAgentRequest`'s own call site relies on this
+ *  failing CLOSED rather than treating an unscanned label as "nothing to check". Pure; no I/O. */
+function matchesScannedOpts(
+  scanned: Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }> | undefined,
+  dispatchedAllowedTools: unknown,
+  dispatchedBash: unknown,
+): boolean {
+  if (!scanned || scanned.length === 0) return false;
+  return scanned.some((s) => {
+    const expectedTools = s.allowedTools;
+    const toolsMatch = expectedTools === 'absent'
+      ? dispatchedAllowedTools === undefined
+      : Array.isArray(dispatchedAllowedTools)
+        && dispatchedAllowedTools.length === expectedTools.length
+        && dispatchedAllowedTools.every((t, i) => t === expectedTools[i]);
+    if (!toolsMatch) return false;
+    return (s.bash ?? undefined) === (dispatchedBash ?? undefined);
+  });
 }
 
 /** v26 (DES-183, ARCH-118, ADR-046, TASK-183, REQ-127): pure — the LIVE `RunUsage` producer,
@@ -1056,6 +1091,19 @@ export class RunManager {
           { workflow: spec.name, version: resolvedVersion },
         );
       }
+      // issue #154 B1-B4 (2026-10-07 reverify): a static registration rule added AFTER this
+      // version was registered (e.g. the #154 NEW-HIGH `allowedTools`-via-variable scan violation)
+      // never retroactively re-checked an already-stored row — only a FRESH registration was
+      // refused, so an old version kept `runnable:true` and kept reproducing the original bug at
+      // dispatch. Checked AFTER LEGACY_REREGISTER (a pre-v24 row has no `params` at all and would
+      // fail this for the unrelated reason of predating the contract entirely — LEGACY_REREGISTER
+      // is the right code for that, not NOT_RUNNABLE).
+      {
+        const staleness = await this._catalog.validateStoredVersion(spec.name, resolvedVersion);
+        if (!staleness.ok) {
+          throw codedError(staleness.code, staleness.message, staleness.detail);
+        }
+      }
       // issue #103(a): the admission-time provisioning refusal — BEFORE any durable work (seed
       // materialization, createRun, workspace mkdir), same as every other admission check above.
       // Covers run_start, every schedule/webhook firing (both dispatch through this SAME door), and
@@ -1277,6 +1325,7 @@ export class RunManager {
       effectiveParams,
       priceBook,
       declaredAssets: declaredAssetsOf(contract),
+      toolSurface: expectedAgentOptsByLabel(script),
       principal: spec.principal,
       refusals: new Map(),
       refusalsDropped: 0,
@@ -1403,6 +1452,18 @@ export class RunManager {
     // `stopped` is excluded (issue #94) and already refused above — never reachable here.
     if (entry.status !== 'suspended' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
+    }
+    // issue #154 B1-B4 (2026-10-07 reverify): same re-validation `start()` applies, against
+    // whichever version will ACTUALLY run this resume — the legacy-substitution replacement when
+    // one occurred, else the pin. Placed in `resume()` itself (never `_requireLive`, which
+    // `suspend()`/`stop()` also call) for the same R5-F1 reason the confinement/legacy-substitution
+    // refusal above is: a run that newly fails a static rule must still be stoppable.
+    if (entry.name !== undefined) {
+      const versionToRun = entry.legacySubstitution?.resolved ?? entry.pinnedVersion;
+      const staleness = await this._catalog.validateStoredVersion(entry.name, versionToRun);
+      if (!staleness.ok) {
+        throw codedError(staleness.code, staleness.message, staleness.detail);
+      }
     }
     // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH): `_requireLive` never restores a redaction
     // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
@@ -1930,6 +1991,7 @@ export class RunManager {
       effectiveParams,
       priceBook: persistedPriceBook,
       declaredAssets: declaredAssetsOf(registeredContract),
+      toolSurface: expectedAgentOptsByLabel(script),
       principal: spec.principal,
       refusals: new Map(),
       refusalsDropped: 0,
@@ -2291,12 +2353,19 @@ export class RunManager {
   private async _handleWorkflowRequest(
     runId: string,
     ref: unknown,
-    args: unknown,
+    rawArgs: unknown,
     parentPathKey: string,
     parentCallSeq: number,
     depth: number,
     ancestors: Set<string>,
   ): Promise<unknown> {
+    // Issue #161 B2: `rawArgs` has already crossed the sandbox child's IPC 'json' serialization —
+    // an own key the script set to explicit `undefined` arrives here as the ipc-sentinel.ts
+    // marker, not as a true `undefined` (JSON drops the key outright otherwise). Decode BEFORE
+    // `materializeRunArgs` ever sees it, so `Object.hasOwn`-based default-fill (contract.ts) can
+    // tell "explicit undefined" apart from "key never mentioned" for THIS args object exactly as
+    // it already does for a top-level run_start submission (which crosses no such hop).
+    const args = decodeExplicitUndefined(rawArgs);
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     // issue #53: the execution generation this frame belongs to. suspend()/stop() abort it and
@@ -2362,6 +2431,16 @@ export class RunManager {
         { workflow: name, version: registered.version },
       );
     }
+    // issue #154 B1-B4 (2026-10-07 reverify): same re-validation start()/resume() apply, against
+    // the CHILD's own resolved version — a nested workflow() dispatches WITHOUT ever passing
+    // through start(), so without this a parent could compose an old, now-rule-violating child
+    // version this same engine would refuse to run directly.
+    {
+      const staleness = await this._catalog.validateStoredVersion(name, registered.version);
+      if (!staleness.ok) {
+        throw codedError(staleness.code, staleness.message, staleness.detail);
+      }
+    }
     // issue #103(a): the nested frame's OWN admission-time provisioning refusal — same door, same
     // resolver as `start()`'s (`_refuseUnprovisionedAssets`), checked against the CHILD's own
     // contract/name (never the parent's — a nested workflow's declared assets are scoped to it).
@@ -2394,6 +2473,13 @@ export class RunManager {
     // no matching label at all, the child got nothing). A nested workflow() is another workflow's
     // black box (AUTHORING.md) — its declared assets are its own, never the parent's.
     const frameAssets = { workflow: name, declared: declaredAssetsOf(childContract) };
+    // Issue #154 NEW HIGH (blocker): this frame's OWN per-label tool-surface expectation — the
+    // CHILD workflow's own registered script (`registered.script`, already fetched above), never
+    // the parent run's `entry.toolSurface` — a nested workflow() frame dispatches the CHILD
+    // script's agent() calls, and comparing them against the PARENT's scan would either wrongly
+    // refuse every legitimate child call (no matching label) or, worse, accept a child label that
+    // happens to collide with a same-named parent label's wider tool surface.
+    const frameToolSurface = expectedAgentOptsByLabel(registered.script);
     // 2026-09-26 (owner decision 6): the nested frame is its own admission point, so it fetches its
     // own catalog snapshot rather than inheriting the parent run's (which may be stale by the time a
     // deep/late nested workflow() fires) — `ModelBook`'s own TTL cache means this is a real fetch
@@ -2441,7 +2527,7 @@ export class RunManager {
       // generation (after an immediate resume they otherwise ran live under the new controller).
       onAgentRequest: (prompt, opts, callSeq, phase) => {
         if (generation.aborted) throw new Error(`run ${runId}: agent() from a suspended/stopped nested workflow() frame`);
-        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase, childParams, frameAssets);
+        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase, childParams, frameAssets, frameToolSurface);
       },
       // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
@@ -2503,7 +2589,7 @@ export class RunManager {
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }, frameParams?: RunParams, frameAssets?: { workflow: string; declared: Record<string, { skills: string[]; mcp: string[] }> }): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }, frameParams?: RunParams, frameAssets?: { workflow: string; declared: Record<string, { skills: string[]; mcp: string[] }> }, frameToolSurface?: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>>): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
@@ -2565,6 +2651,33 @@ export class RunManager {
           await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
         }
         throw err;
+      }
+      // Issue #154 NEW HIGH (blocker, 2026-10-07 reverify): the dispatch-time backstop — the REAL
+      // `opts.allowedTools`/`opts.bash` this call is about to dispatch with must match ONE of the
+      // literal shapes this label's registered script scanned at registration (a label can
+      // legitimately be called from more than one call site with different literal options, DES-174
+      // "duplicate labels are legal" — any one of them is accepted). `toolSurface` is a nested
+      // frame's OWN child-script scan when this call came through `_handleWorkflowRequest`
+      // (`frameToolSurface`), else this run's top-level `entry.toolSurface` — never the other way
+      // around (see `frameToolSurface`'s own doc at its call site). A label with NO scanned entry at
+      // all (should be unreachable for an admitted run — `validateStoredVersion`/`scanAgentCalls`
+      // already refuse registration of an unlabeled/unscannable call) fails CLOSED, never treated as
+      // "nothing to check". Before this, the opts object crossed the child->host IPC through JSON
+      // serialization, which honours a script-planted `Array.prototype.toJSON` — nothing compared
+      // what actually got dispatched against what registration saw.
+      {
+        const toolSurface = frameToolSurface ?? entry.toolSurface;
+        if (!matchesScannedOpts(toolSurface[label], rawOpts.allowedTools, rawOpts.bash)) {
+          const detail =
+            `AGENT_OPTS_TAMPERED: the dispatched allowedTools/bash for agent() call '${label}' ` +
+            "does not match any options literal this script's registered scan recorded for that " +
+            'label — the options object may have been altered after registration (e.g. a planted ' +
+            `Array.prototype.toJSON), or '${label}' has no scanned agent() call at all`;
+          if (entry.spawner instanceof AgentExecutor) {
+            await entry.spawner.markRefused(runId, agentId, 'AGENT_OPTS_TAMPERED', this._clock.isoNow());
+          }
+          throw codedError('AGENT_OPTS_TAMPERED', detail, { label });
+        }
       }
       if (entry.spawner instanceof AgentExecutor) {
         entry.spawner.markRunning(agentId, this._clock.isoNow());
