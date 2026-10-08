@@ -859,7 +859,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'the object as a whole: `allowedTools: tools` (a variable), `allowedTools: cfg.tools` (a ' +
         'member expression), or `allowedTools: getTools()` (a call) are refused ' +
         '`AGENT_OPTS_VALUE_NOT_LITERAL` even though the key itself is written literally — only a ' +
-        '`[...]` array literal of quoted strings is checkable.\n' +
+        '`[...]` array literal of quoted strings is checkable. A literal `schema` that can never be ' +
+        "a valid JSON Schema (a string/number/array/null/template-literal — `schema: 'not-a-schema'`) " +
+        'is refused `AGENT_OPTS_SCHEMA_INVALID` at registration too (issue #162); an object literal ' +
+        '(checked for real JSON-Schema validity only at dispatch, via ajv — `INVALID_SCHEMA`) or the ' +
+        'literal booleans `true`/`false` (valid JSON Schema on their own) are both accepted here, and ' +
+        'a non-literal `schema` value is left entirely to that same dispatch-time ajv check.\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +
