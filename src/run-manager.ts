@@ -1248,7 +1248,7 @@ export class RunManager {
     // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
     // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
     // bug class). This is the `start()` half; `_requireLive` reads the same pin back from the row.
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook, onAgentSettled: (settledRunId) => this._maybeRefoldLateUsage(settledRunId) });
     const entry: RunEntry = {
       script,
       // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
@@ -1900,7 +1900,7 @@ export class RunManager {
     // reads just above), never re-resolved from today's catalog. `null` for a pre-v26 row leaves
     // the sink unpriced, which is its documented "we never looked" state.
     const persistedPriceBook = await this._store.getPriceBook(runId);
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}), onAgentSettled: (settledRunId) => this._maybeRefoldLateUsage(settledRunId) });
     const entry: RunEntry = {
       script,
       // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
@@ -1994,6 +1994,37 @@ export class RunManager {
       const fire = this._onTerminal;
       queueMicrotask(() => { try { fire(runId, to); } catch { /* listener errors never wedge the run */ } });
     }
+  }
+
+  /** issue #162 D: a fire-and-forget (un-awaited) `agent()` call keeps running after its workflow
+   *  script returns and the run goes terminal (adjudication #9 I-2: this is deliberate, unchanged —
+   *  the engine never aborts in-flight work just because the run around it finished). Before this
+   *  fix, that call's eventual usage reached `run_status` (which reads the LIVE records) but never
+   *  `run_result.meta.usage`/`run_list` (both read the ONE terminal snapshot `_transition` wrote,
+   *  which — by definition — predates this late settle) — a permanent gap, not a race that
+   *  eventually resolves. `AgentExecutor.onAgentSettled` (wired at both construction sites above)
+   *  fires this after EVERY agent() call settles, not only late ones; this is a cheap no-op for the
+   *  overwhelmingly common case (the run is not yet terminal — `_transition`'s own snapshot, taken
+   *  moments later, is the one that counts) and only does real work for the rare late case, which is
+   *  exactly where it is needed. Idempotent (just another `saveSnapshot` of the same shape
+   *  `_transition` already writes) and safe to call any number of times — a second late settle for a
+   *  different agentId on the same already-terminal run re-folds again, correctly, from the full
+   *  current `getAllRecords()` each time (not an incremental patch). Never throws into its caller
+   *  (`run()`'s own `.finally()`, which must never itself reject). */
+  private _maybeRefoldLateUsage(runId: string): void {
+    const entry = this._runs.get(runId);
+    if (!entry || !TERMINAL.includes(entry.status)) return;
+    if (!(entry.spawner instanceof AgentExecutor)) return;
+    void (async () => {
+      try {
+        let agents = (entry.spawner as AgentExecutor).getAllRecords();
+        if (this._secretValueProvider) {
+          const secrets = this._secretValueProvider.entries();
+          agents = redact(agents, secrets) as typeof agents;
+        }
+        await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents) });
+      } catch { /* best-effort — the run already has SOME terminal snapshot; never throw from here */ }
+    })();
   }
 
   /** v26 (DES-175, ARCH-114, TASK-186): the run's CURRENT phase lane (title+ordinal), read fresh
