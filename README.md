@@ -93,7 +93,7 @@
   `POST /assets/blob/:sha`（streaming raw-body 大檔案上傳，bypass 8MiB JSON-RPC cap）；
   `POST /assets/manifest`（manifest-as-CAS-blob，`seedManifestRef = sha256(bytes)`，可由用戶端自行推導）；
   engine-pull `seedRef:{repoUrl,sha}`（`HardenedSeedRefFetcher`，SSRF-safe egress allowlist，`seedRefAllowlist:[]` 省略則 `SEEDREF_DISABLED`）
-- **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_get_comments`/`issue_comment_post`；必填欄位是 `title`/`reproSteps`/`analysis`）；`issue_reopen({number, reason})` 重開已關閉但未真正修好的 issue，限原回報者或 admin（否則 `NOT_ISSUE_REPORTER`），會把 `reason` 貼成留言
+- **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_get_comments`/`issue_comment_post`；必填欄位是 `title`/`reproSteps`/`analysis`）；`issue_list` 可用 `state`（`open`/`closed`/`all`，預設 `open`）/`labels`/`since`/`limit`/`workflow` 篩選；`issue_reopen({number, reason})` 重開已關閉但未真正修好的 issue，限原回報者或 admin（否則 `NOT_ISSUE_REPORTER`），會把 `reason` 貼成留言
 - **用量與花費**：每個 `agent()` 呼叫結束都記四欄 token（`input`／`output`／`cacheRead`／`cacheWrite`）
   與依模型單價算出的 `costUSD`；查不到價格的呼叫記 `unpriced:true` 並計入 `run_result.meta.usage.unpricedCalls`
   （以 0 計費，不拒絕）。整個 run 的合計看 `run_status` / `run_result.meta.usage` / 儀表板。

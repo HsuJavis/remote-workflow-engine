@@ -1281,8 +1281,20 @@ export const TOOL_SPECS = [
   },
   {
     name: 'issue_list', entity: 'issue', key: null,
-    description: 'List issues.',
-    inputSchema: schema({}),
+    // issue #164 B: the underlying client (issue-reporter.ts's listIssues/IssueListFilter) has
+    // always supported state/labels/since/limit/workflow — this row simply used to under-advertise
+    // an already-implemented capability (`schema({})`, description "List issues."), so a caller had
+    // no way to discover `issue_list({state:'closed'})` worked at all.
+    description: "List issues. Defaults to open issues only — pass state:'closed' or state:'all' to see others. " +
+      'Filterable by label, by `since` (ISO 8601 — only issues updated at or after this time), and by `workflow` ' +
+      '(folds into the label filter as `workflow:<name>`, same as issue_report\'s own label — never existence-checked).',
+    inputSchema: schema({
+      state: { type: 'string', enum: ['open', 'closed', 'all'], description: "Defaults to 'open'." },
+      labels: { type: 'array', items: { type: 'string' }, description: 'Only issues carrying ALL of these labels.' },
+      since: { type: 'string', description: 'ISO 8601 timestamp — only issues updated at or after this time.' },
+      limit: { type: 'number', description: 'Defaults to 30, capped at 100.' },
+      workflow: { type: 'string', description: 'Filter to issues labeled workflow:<name>.' },
+    }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
