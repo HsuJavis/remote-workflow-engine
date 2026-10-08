@@ -963,9 +963,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "`RESULT_TOO_LARGE` never applies there) — that failure is local to the one call your script " +
         'made and is catchable with a normal try/catch, not run-terminating.\n\n' +
         'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
-        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, a generous multi-hour default " +
-        "covering every agent()/workflow() round trip across every phase — not a single call, which " +
-        "`timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either " +
+        "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, 4 HOURS by default — covering " +
+        "every agent()/workflow() round trip across every phase, not a single call, which " +
+        "`timeoutMs` already bounds — raised or lowered per deployment via rwe.config.json's own " +
+        "maxRunDurationMs key, issue #157 follow-up) and the sandboxed process has a memory cap. Exceeding either " +
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
         "which blocks the script's own event loop and so cannot be caught or reported from inside " +
@@ -1542,9 +1543,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'A script whose shape a static read cannot resolve at all — an `agent()` inside a `for`, ' +
         '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rule 4 has no ' +
         'edges to compare there. Declare the agent\'s node inside that lane anyway: rule 2 (LANE) ' +
-        'still requires it, and rule 3 (TOOLS) still applies whenever that call declares a literal ' +
-        '`allowedTools` array — only an absent or variable `allowedTools` on a dynamic-lane call ' +
-        'skips rule 3, same as everywhere else.\n\n' +
+        'still requires it, and rule 3 (TOOLS) applies EXACTLY the same way it does everywhere else ' +
+        '— a dynamic lane earns no exemption at all (issue #154/#155 follow-up, 2026-10-09 ' +
+        're-verification): an `allowedTools` array still requires the exact `tools: …` segment, and ' +
+        'an ABSENT `allowedTools` still only accepts `tools: default` or no segment at all, same as ' +
+        'rule 3\'s own paragraph above states. A VARIABLE `allowedTools` (`agent(\'a\', {allowedTools: ' +
+        'tools})`, a ternary, a spread, `[...arr]`, …) is not a dynamic-lane carve-out either — it ' +
+        'cannot even REGISTER, refused `AGENT_OPTS_VALUE_NOT_LITERAL` at registration time, before ' +
+        'the diagram is ever checked (every `agent()` option, in every lane, must be a literal).\n\n' +
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +

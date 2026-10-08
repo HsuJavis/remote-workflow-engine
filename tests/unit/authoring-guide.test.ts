@@ -12,6 +12,7 @@ import { probeConfinement } from '../../src/gateway/confinement-probe.js';
 // (never a second hand-typed copy in the test itself).
 import { LOCKED_KEYS } from '../../src/params/contract.js';
 import { ERROR_CATALOG } from '../../src/errors.js';
+import { TOOL_SPECS } from '../../src/tool-specs.js';
 import type { ScheduleStatus } from '../../src/scheduler.js';
 import type { WebhookView } from '../../src/webhook-registry.js';
 
@@ -1002,5 +1003,24 @@ describe('the harness-disclosure paragraph does not contradict an already-known 
     const text = buildAuthoringGuide(CEILINGS);
     const s = sectionOf(text, 'Providers and the model catalog');
     expect(s).toMatch(/may instead be configured with `gateway:"pi"`/);
+  });
+});
+
+describe('issue #155/#157 follow-up (2026-10-09 re-verification): stale doc nits corrected', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('the dynamic-lane paragraph states rule 3 applies the SAME way as everywhere else (no absent/variable carve-out)', () => {
+    expect(text).toMatch(/a dynamic lane earns no exemption at all/);
+    expect(text).not.toMatch(/only an absent or variable `allowedTools` on a dynamic-lane call/);
+  });
+
+  it('workflow_describe documents toolSurface and the dynamic-lane phases[].agents:[] convention', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'workflow_describe');
+    expect(spec?.description).toMatch(/toolSurface/);
+    expect(spec?.description).toMatch(/dynamic/);
+  });
+
+  it('states the maxRunDurationMs default as 4 hours, not just "a generous multi-hour default"', () => {
+    expect(text).toMatch(/maxRunDurationMs`, 4 HOURS by default/);
   });
 });
