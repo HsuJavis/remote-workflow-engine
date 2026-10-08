@@ -279,6 +279,28 @@ export interface AssetCatalogRow {
   config?: McpServerConfig; // kind === 'mcp' only
 }
 
+/** #159 D15 (2026-10-07 re-verification): defensive dedupe at the `AssetCatalogPort.listAssets()`
+ *  boundary, by `(workflow ?? '', kind, name)` — the real PRIMARY KEY `WorkflowCatalog`'s own
+ *  `assets` table enforces (workflow-catalog.ts's `ON CONFLICT (workflow,kind,name) DO UPDATE`), so
+ *  a live check (repeated push, multiple workflow versions, a second unrelated workflow registered)
+ *  could not reproduce a genuine duplicate through today's server.ts port implementation — but the
+ *  port is an INJECTED interface `list()`/`listGlobal()` take as a plain seam, not tied to that one
+ *  implementation, so a future catalog/port change handing back the same row twice should still
+ *  present it once on every listing door, not twice. Never merges a global row with a
+ *  workflow-scoped one of the same name (different `workflow` key) — only a TRUE duplicate
+ *  collapses. First occurrence wins (stable, no reordering). */
+function dedupeAssetRows(rows: AssetCatalogRow[]): AssetCatalogRow[] {
+  const seen = new Set<string>();
+  const out: AssetCatalogRow[] = [];
+  for (const r of rows) {
+    const key = `${r.workflow ?? ''}\u0000${r.kind}\u0000${r.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
 /** issue #109: the safe-to-disclose projection of a GLOBAL-scope row, returned by
  *  `AssetSyncService.listGlobal()` — NEVER `command`/`args`/`env`/`url`/headers/secret refs/file
  *  contents, only what a discovery listing needs: the exact name to opt in with, plus a skill's own
@@ -706,7 +728,7 @@ export class AssetSyncService {
    *  caller asked through their OWN workflow's listing instead. A workflow-scoped row the caller
    *  already owns keeps its full shape (`config` included), unchanged. */
   async list(query: { workflow: string; kind: AssetKind }): Promise<Array<AssetCatalogRow | (Omit<AssetCatalogRow, 'config'> & GlobalAssetView)>> {
-    const rows = await this._catalog.listAssets();
+    const rows = dedupeAssetRows(await this._catalog.listAssets());
     return rows
       .filter((r) => r.kind === query.kind && (r.scope === 'global' || r.workflow === query.workflow))
       .map((r) => (r.scope === 'global' ? this._projectGlobalRowForList(r) : r));
@@ -730,7 +752,7 @@ export class AssetSyncService {
    *  'user', same as the rest of this discovery door) — an admin must never put a secret in a global
    *  skill's `SKILL.md`; the tool-facing description states this (mcp-facade.ts/tool-specs.ts). */
   async listGlobal(kind: AssetKind, opts?: { includeBody?: boolean }): Promise<GlobalAssetView[]> {
-    const rows = (await this._catalog.listAssets()).filter((r) => r.scope === 'global' && r.kind === kind);
+    const rows = dedupeAssetRows(await this._catalog.listAssets()).filter((r) => r.scope === 'global' && r.kind === kind);
     return rows.map((r) => this._projectGlobalRow(r, opts));
   }
 
