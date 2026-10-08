@@ -88,6 +88,16 @@ describe('issue #159: seed-time .claude/settings.json + .claude/hooks strip is o
     expect(paths).toContain('real.txt');
     expect(paths).not.toContain('.claude/settings.json');
     expect(paths).not.toContain('.claude/hooks/h.sh');
+
+    // #159 (4th reverification): the guide (and docs/AUTHORING.md:247) tells the reader
+    // `seedConfigStripped` shows up on BOTH `run_status` AND `run_result` — so `run_result` must
+    // actually carry it too (on `meta`, beside `usage`/`budgetEnforceable`), or a tester who checks
+    // run_result instead of run_status sees nothing and reports NOT FIXED again.
+    const runResult = await mcpCall('run_result', { runId });
+    expect(runResult.meta?.seedConfigStripped).toEqual(
+      expect.arrayContaining(['.claude/settings.json', '.claude/hooks/h.sh']),
+    );
+    expect(runResult.meta?.seedConfigStripped).toHaveLength(2);
   });
 
   it('a seed with nothing to strip omits seedConfigStripped entirely (never [])', async () => {
@@ -100,5 +110,8 @@ describe('issue #159: seed-time .claude/settings.json + .claude/hooks strip is o
     const done = await poll(runId);
     expect(done.status).toBe('completed');
     expect('seedConfigStripped' in (done.result ?? {})).toBe(false);
+
+    const runResult = await mcpCall('run_result', { runId });
+    expect('seedConfigStripped' in (runResult.meta ?? {})).toBe(false);
   });
 });

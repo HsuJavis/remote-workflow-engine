@@ -88,6 +88,12 @@ export interface ResultEnvelope<T = unknown> {
     usage: RunUsage;
     budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] };
     warnings?: Array<{ code: 'AGENT_FAILED'; message: string }>;
+    /** issue #159 (4th reverification): the guide (docs/AUTHORING.md:247) documents
+     *  `seedConfigStripped` as present on BOTH `run_status` and `run_result` — mirrors
+     *  `RunStatusView.seedConfigStripped` exactly (same absent-when-nothing-stripped rule, never
+     *  `[]`), read live via `RunManager.status()`'s `_mergeLive` overlay since it is never
+     *  persisted to the store (same in-memory-only shape as `seedRef`/`seedManifestRef`). */
+    seedConfigStripped?: string[];
   };
 }
 
