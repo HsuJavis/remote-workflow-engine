@@ -1110,16 +1110,18 @@ describe('validateUserOverrides() — timeoutMs has an engine-side integer>=1 fl
   });
 });
 
-// issue #156 B2 — INVESTIGATED, NOT A BUG, left unchanged: an agent that declares
-// `appendPrompt.default: ''` and receives no override resolves to appendPrompt:'' at dispatch, and
-// `composePrompt(script, '')` DOES frame it. The reporter's suggested fix ("only frame when
-// non-empty") is exactly what
-// tests/unit/params-resolve.test.ts's "golden 3: scriptPrompt + EMPTY-STRING appendPrompt → still
-// framed (empty is not absent)" already pins as INTENTIONAL (DES-225/UT-271, captured byte-for-byte
-// off the pre-cut function per Gate 5 constraint 1). Changing resolve.ts:183 to treat '' as absent
-// would turn that passing, deliberately-commented golden red — this is a prior, documented owner
-// decision, not an oversight, so it is NOT changed here (see return summary: classified
-// owner-decision, not fixed).
+// issue #156 B2 — REOPENED and FIXED (2026-10-07 reverify): the "INVESTIGATED, NOT A BUG" note
+// this comment used to carry conflated two different provenances under one resolved VALUE. An
+// agent that declares `appendPrompt.default: ''` and receives no CALLER override resolves to
+// appendPrompt:'' with `provenance.appendPrompt === 'default'`, not `'override'` — composePrompt
+// itself still frames ANY defined value unconditionally (byte-identical, UNCHANGED — golden 3
+// below is about an actual `'override'`-rung empty string, e.g. `overrides.agents.a.appendPrompt:
+// ''`, which legitimately stays framed). The fix is at the ONE real call site
+// (agent-executor.ts), not in composePrompt or golden 3: `composeEffectivePrompt` (params/
+// resolve.ts) now consults `provenance.appendPrompt` and frames only an actual `'override'`;
+// a `'default'`/`'engine'`-rung value (including `''`) is appended with no frame and no
+// untrusted-caller prose — see params-resolve.test.ts's "composeEffectivePrompt()" describe block
+// and agent-log-harness-shape.test.ts's two new IT-066 cases for the end-to-end pin.
 
 // issue #156 DOC: a non-object `overrides.agents` value, or a non-object per-label override value,
 // used to be iterated with Object.entries/Object.keys as if it were a plain object — a string is

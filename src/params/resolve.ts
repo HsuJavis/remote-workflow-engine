@@ -200,3 +200,26 @@ export function composePrompt(scriptPrompt: string, appendPrompt?: string): stri
     ? `${scriptPrompt}${USER_INSTRUCTIONS_OPEN}${UNTRUSTED_FRAME_PROSE}\n${appendPrompt}${USER_INSTRUCTIONS_CLOSE}`
     : scriptPrompt;
 }
+
+/** Issue #156 B2 (2026-10-07 reverify — NOT FIXED, and now more expensive): `composePrompt` frames
+ *  purely on `appendPrompt !== undefined`, with zero visibility into WHERE the value came from.
+ *  `resolveAgentParams` already computes `provenance.appendPrompt` (a `Rung`) distinguishing "the
+ *  caller actually overrode this" from "this is just the author's registered
+ *  `appendPrompt.default`" from "neither" — but the one real call site (`agent-executor.ts`)
+ *  discarded it and called `composePrompt` on the resolved VALUE alone. So an agent whose contract
+ *  declares `appendPrompt.default` at all (even `''`) got the untrusted frame, and (since #156) the
+ *  "supplied by the caller" prose, for text that is not the caller's at all.
+ *
+ *  This wraps `composePrompt` with that one missing fact; `composePrompt` itself is UNCHANGED (the
+ *  DES-225/UT-271 goldens above still pin it exactly, called only for a real override):
+ *    - `'override'`: an actual caller-supplied value (even an explicit `''` — golden 3's case) —
+ *      frame it via `composePrompt`, prose and all. The caller's text is genuinely untrusted input.
+ *    - `'default'` / `'engine'` with a non-empty value: the AUTHOR's own text (their registered
+ *      default, or a future engine-level fallback) — the SAME trust level as `scriptPrompt` itself,
+ *      so it is appended plainly, with no frame and no untrusted-caller prose to lie about.
+ *    - `'default'` / `'engine'` with an absent or empty value: nothing was actually supplied by
+ *      anyone — bare `scriptPrompt`, byte-identical to no `appendPrompt` key at all. */
+export function composeEffectivePrompt(scriptPrompt: string, appendPrompt: string | undefined, rung: Rung): string {
+  if (rung === 'override') return composePrompt(scriptPrompt, appendPrompt);
+  return appendPrompt ? `${scriptPrompt}\n\n${appendPrompt}` : scriptPrompt;
+}

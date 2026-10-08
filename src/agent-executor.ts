@@ -9,7 +9,7 @@ import { ZERO_TOKENS, priceCall, sumTokens } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
-import { composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
+import { composeEffectivePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
 import { isEffort } from './params/contract.js';
 import { codedError } from './errors.js';
 import type { ErrorCode } from './errors.js';
@@ -902,7 +902,10 @@ export class AgentExecutor implements AgentSpawner {
 
     // v34 (DES-225, REQ-094/202/203/204): two-segment composition — [script prompt] +
     // [framed appendPrompt]. Byte-identical to the prior bare `prompt` when appendPrompt is absent.
-    const effectivePrompt = composePrompt(req.prompt, req.runParams.appendPrompt);
+    // Issue #156 B2: framing (and the untrusted-caller prose) is appropriate ONLY for a real caller
+    // override — `composeEffectivePrompt` consults `provenance.appendPrompt` (discarded here
+    // before this fix) to tell an actual override apart from the author's own registered default.
+    const effectivePrompt = composeEffectivePrompt(req.prompt, req.runParams.appendPrompt, req.runParams.provenance.appendPrompt);
 
     // D-V4: schema present → real JSON-schema validation with bounded retry-on-mismatch
     // (never a type-cast passthrough). No schema → single attempt, final text.

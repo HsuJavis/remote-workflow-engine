@@ -1213,7 +1213,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'scaffolding around them (that prose line, a schema suffix, and a retry nudge) — it does not ' +
         'decide whether the appended segment is an authorized override or a foreign injection. An ' +
         'author who wants the appended segment to carry override force has to write the adoption rule ' +
-        "into their OWN prompt; the engine draws no such line on the author's behalf.",
+        "into their OWN prompt; the engine draws no such line on the author's behalf. This framing " +
+        'applies ONLY when a caller actually supplies `appendPrompt` (even an explicit empty string). ' +
+        'A declared `appendPrompt.default` that no caller overrides is YOUR OWN text, not the ' +
+        "caller's — it is appended plainly, with no frame and no untrusted-caller prose, exactly as " +
+        'if you had written it straight into your own `prompt` (issue #156).',
     ),
   );
 

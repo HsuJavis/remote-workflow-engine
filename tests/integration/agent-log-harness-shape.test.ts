@@ -307,4 +307,54 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
     expect(harness?.prompt?.startsWith('SCRIPT PROMPT')).toBe(true);
     expect(harness?.prompt).toContain('OUTPUT FORMAT');
   }, 10_000);
+
+  // Issue #156 B2 (2026-10-07 reverify — the exact repro): an agent whose contract declares
+  // `appendPrompt: { default: '' }` but whose caller supplies NO override at all must NOT get the
+  // untrusted-caller frame — `appendPromptRung` is 'default' here (the author's own registered
+  // default, happens to be empty), not 'override'. Before the fix, `composePrompt` saw only the
+  // resolved value (`''`, defined) and framed it anyway, appending the (false) "supplied by the
+  // caller" prose to every dispatch.
+  it('persisted descriptor.prompt: a declared EMPTY-STRING appendPrompt.default with NO caller override is the bare script prompt — no frame, no prose (#156 B2)', async () => {
+    const script =
+      `export const meta = { params: { agents: { say: { ` +
+      `model: { type: 'string', default: 'ollama/qwen2.5:7b' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 }, ` +
+      `appendPrompt: { type: 'string', default: '' } } } } };\n` +
+      `phase('Work');\n` +
+      `return await agent('say', { prompt: 'SCRIPT PROMPT' });`;
+    const sub = await runScriptVia(provCallTool, script) as { runId?: string };
+    const runId = sub.runId!;
+    const label = 'say';
+    let harness: { prompt?: string } | undefined;
+    for (let i = 0; i < 60 && !harness?.prompt; i++) {
+      const log = await provCallTool('run_agent_log', { runId, label }) as { harness?: { prompt?: string } };
+      harness = log.harness ?? undefined;
+      if (!harness?.prompt) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(harness?.prompt).toBe('SCRIPT PROMPT');
+  }, 10_000);
+
+  // Companion case: a NON-empty declared default, still no caller override — the author's own
+  // text is appended (same trust level as the script prompt), with no frame and no prose.
+  it("persisted descriptor.prompt: a declared NON-EMPTY appendPrompt.default with NO caller override is appended plainly, no frame, no prose (#156 B2)", async () => {
+    const script =
+      `export const meta = { params: { agents: { say: { ` +
+      `model: { type: 'string', default: 'ollama/qwen2.5:7b' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 }, ` +
+      `appendPrompt: { type: 'string', default: 'be concise' } } } } };\n` +
+      `phase('Work');\n` +
+      `return await agent('say', { prompt: 'SCRIPT PROMPT' });`;
+    const sub = await runScriptVia(provCallTool, script) as { runId?: string };
+    const runId = sub.runId!;
+    const label = 'say';
+    let harness: { prompt?: string } | undefined;
+    for (let i = 0; i < 60 && !harness?.prompt; i++) {
+      const log = await provCallTool('run_agent_log', { runId, label }) as { harness?: { prompt?: string } };
+      harness = log.harness ?? undefined;
+      if (!harness?.prompt) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(harness?.prompt).toBe('SCRIPT PROMPT\n\nbe concise');
+  }, 10_000);
 });
