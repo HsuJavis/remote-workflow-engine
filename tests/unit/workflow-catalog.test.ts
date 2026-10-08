@@ -282,4 +282,78 @@ describe('validateStoredVersion() — re-validates an ALREADY-STORED version aga
     const result = await cat.validateStoredVersion('154-mermaid', 'v1');
     expect(result).toEqual({ ok: true });
   });
+
+  // Issue #154 B4 PARTIAL left open (2026-10-07 reverify): `_computeStoredVersionValidity`
+  // deliberately skipped `isValidBareName(name)` — the code comment claimed re-checking it "can
+  // never produce a different verdict than it did at registration", which is true for a row
+  // REGISTERED under the current rule set but false for a row that predates it: `register()`
+  // itself cannot produce an invalid name any more, but a row seeded directly (the same
+  // "already-migrated cohort" shape every other #154 B1-B4 case in this file uses) or left over
+  // from before the rule existed is never re-checked by anything. The live reverify measured this
+  // as a stored row renamed to `../store` staying `runnable:true` and actually completing a
+  // `run_start`, with its agent workspace landing at `<workRoot>/store/runs/<runId>` — the SAME
+  // path the run store's own on-disk directory for that run occupies.
+  it('a stored row whose NAME is no longer a valid bare name is NOT_RUNNABLE / INVALID_NAME', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-b4-name-'));
+    const cat = new WorkflowCatalog(workRoot);
+    const script = "export const meta = { phases: [] };\nreturn 1;";
+    seedRawVersion(workRoot, '../store', 'v1', script);
+    const result = await cat.validateStoredVersion('../store', 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('NOT_RUNNABLE');
+      expect(result.detail?.['violation']).toBe('INVALID_NAME');
+    }
+  });
+
+  it('an empty-string stored name is also NOT_RUNNABLE / INVALID_NAME (not merely the dotdot shape)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-b4-empty-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, '', 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion('', 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail?.['violation']).toBe('INVALID_NAME');
+  });
+
+  it('a valid name is unaffected by the new name check (no false positive)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-b4-valid-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, '154-b4-valid-name', 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion('154-b4-valid-name', 'v1');
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+// Issue #154 B4 PARTIAL (2026-10-07 reverify): `workFolder`'s containment check was against
+// `this._workRoot` as a WHOLE — `join(workRoot, 'workflows', '../store')` resolves to
+// `<workRoot>/store`, which is STILL inside `workRoot`, so the pre-fix check saw no escape at all.
+// `<workRoot>/store` is exactly where `SqliteRunStore`/`InMemoryRunStore` keep their own on-disk
+// state (the `store` subdirectory passed at construction in every real deployment and in this
+// file's own sibling fixtures) — a workflow named `../store` could make its own agent workspace
+// alias the engine's run-store directory. Fixed by containing against `<workRoot>/workflows`
+// itself, not `workRoot` at large.
+describe("workFolder() — containment against 'workRoot/workflows', not 'workRoot' at large (#154 B4 PARTIAL)", () => {
+  it("a name of '../store' no longer resolves inside workRoot/workflows — refused, not silently aliased to a sibling directory", () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-workfolder-'));
+    const cat = new WorkflowCatalog(workRoot);
+    expect(() => cat.workFolder('../store')).toThrow();
+    try {
+      cat.workFolder('../store');
+      throw new Error('workFolder did not throw');
+    } catch (e) {
+      expect((e as { code?: string }).code).toBe('INVALID_NAME');
+    }
+  });
+
+  it('a ridiculously-dotted name escaping workRoot entirely is still refused (unchanged behaviour)', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-workfolder-deep-'));
+    const cat = new WorkflowCatalog(workRoot);
+    expect(() => cat.workFolder('../../../../tmp/evil')).toThrow();
+  });
+
+  it('an ordinary name still resolves fine (no false positive)', () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-workfolder-ok-'));
+    const cat = new WorkflowCatalog(workRoot);
+    expect(cat.workFolder('my-flow')).toBe(join(workRoot, 'workflows', 'my-flow'));
+  });
 });

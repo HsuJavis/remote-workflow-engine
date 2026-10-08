@@ -15,7 +15,7 @@
 // test.ts): real RunManager + real on-disk WorkflowCatalog/SqliteRunStore; a trivial AgentSpawner
 // (the subject here is admission, never agent() dispatch itself).
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -149,5 +149,43 @@ describe('a nested workflow() call re-validates the CHILD version it would actua
       code: 'NOT_RUNNABLE',
       detail: { violation: 'AGENT_OPTS_VALUE_NOT_LITERAL' },
     });
+  });
+});
+
+// Issue #154 B4 PARTIAL left open (2026-10-07 reverify): `_computeStoredVersionValidity` never
+// re-checked name validity, so a stored row whose NAME predates `isValidBareName` (seeded directly
+// — `register()` itself cannot produce such a row any more) stayed `runnable:true` and actually
+// completed a `run_start`. The live reverify's own repro renamed a row to `../store` — the SAME
+// name this file's own `workFolder()` fix (workflow-catalog.ts) now also refuses outright, since
+// `join(workRoot, 'workflows', '../store')` used to resolve to `<workRoot>/store`, aliasing this
+// very test file's own `SqliteRunStore` directory.
+describe("run_start refuses a stored row whose NAME is no longer valid (#154 B4 PARTIAL)", () => {
+  it("a stored row named '../store' is refused NOT_RUNNABLE at run_start, and its workspace is never created at the run store's own directory", async () => {
+    const dir = tempDir();
+    const storeDir = join(dir, 'store');
+    const store = new SqliteRunStore(storeDir, clock);
+    const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    const name = '../store';
+    const placeholder = 'it154new-b4-placeholder';
+    // `register()` itself refuses `../store` today (INVALID_NAME) — register under a VALID
+    // placeholder name first, then simulate the pre-#154-B4 row a real registration can no longer
+    // produce by renaming the already-inserted row directly (the same "already-migrated cohort"
+    // technique this file's own STALE_SCRIPT cases use for the script column, applied to the name
+    // column instead).
+    const { version } = await registerPublished(mgr.catalog, placeholder, 'return 1;');
+    const db = new Database(join(dir, 'catalog.db'));
+    db.prepare('UPDATE workflows SET name = ? WHERE name = ?').run(name, placeholder);
+    db.prepare('UPDATE workflow_versions SET name = ? WHERE name = ?').run(name, placeholder);
+    db.close();
+
+    await expect(mgr.start({ origin: 'local', name, version })).rejects.toMatchObject({
+      code: 'NOT_RUNNABLE',
+      detail: { violation: 'INVALID_NAME' },
+    });
+
+    // The engine's own run-store directory is untouched — no agent workspace was ever created
+    // inside it (the collision the live reverify actually measured).
+    expect(existsSync(storeDir)).toBe(true); // created by SqliteRunStore itself, not by this run
+    expect(existsSync(join(storeDir, 'runs'))).toBe(false);
   });
 });
