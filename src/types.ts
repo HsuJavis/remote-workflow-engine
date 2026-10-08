@@ -453,6 +453,16 @@ export interface RunStatusView {
   /** v14 (REQ-082 / DES-087): sha256 of the manifest blob used for this run's seed (client-derivable).
    *  Absent unless the run used a seedManifestRef. */
   seedManifestRef?: string;
+  /** Issue #159: workspace-relative paths from `seed`/`seedManifest` that were NEVER written because
+   *  they landed on former Claude CLI config (`.claude/settings*.json`, `.claude/hooks/**` —
+   *  `lexicalVerdict`'s `'stripped'` verdict, workspace-seed.ts) — the RCE-gate half of "project
+   *  configuration never loads", the other half being `AgentHarnessDescriptor.plantedConfigRemoved`
+   *  (which only sees what the dispatch-time sweep finds ALREADY ON DISK; a stripped seed path never
+   *  reaches disk at all, so the sweep correctly reports nothing for it and this field is the only
+   *  place it is ever visible). Set once, at seed-materialize time (before any agent dispatches),
+   *  never per-dispatch. Absent unless the run used `seed`/`seedManifest` AND at least one element
+   *  was stripped. */
+  seedConfigStripped?: string[];
   /** v15 (REQ-086 / DES-096): authenticated caller identity attributed at submission time.
    *  Absent when auth is disabled or the caller is a token-free loopback peer. */
   principal?: string;
