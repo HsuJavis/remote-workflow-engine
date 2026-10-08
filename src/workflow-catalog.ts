@@ -1312,12 +1312,16 @@ export class WorkflowCatalog {
    *      check still runs and still refuses every OTHER `PARSE_ERROR` cause (e.g. an illegal
    *      top-level function wrapper), just not this one, which is why `scan.unscannable` is read
    *      BEFORE `validateScriptEntry` runs rather than skipping `PARSE_ERROR` wholesale.
-   *    - `AGENT_OPT_RETIRED` / `PARAM_UNKNOWN` for the `agentType` retirement (2026-10-08
-   *      integration fix; REQ-203/DES-224/226) — a PRE-v34 pinned row carrying `agentType` is the
-   *      ONLY way dispatch's own `agent-executor.ts` runtime guard is ever reached; that refusal is
+   *    - `AGENT_OPT_RETIRED` (scanAgentCalls's code for `agentType` and any other key in
+   *      `RETIRED_AGENT_OPT_KEYS` specifically — NOT `PARAM_UNKNOWN`, the separate catch-all for a
+   *      key that never worked at all, e.g. a typo: that one stays refused, below) for the
+   *      `agentType` retirement (2026-10-08 integration fix; REQ-203/DES-224/226) — a PRE-v34
+   *      pinned row carrying `agentType` is the ONLY way dispatch's own `agent-executor.ts` runtime
+   *      guard is ever reached (it throws the DIFFERENT code `PARAM_UNKNOWN` at that point — a
+   *      separate mapping, unrelated to scanAgentCalls's violation-code naming); that refusal is
    *      DELIBERATELY at dispatch, with a structured per-agent detail, never a blanket admission
    *      NOT_RUNNABLE (tests/integration/resume-legacy-params.test.ts IT-176,
-   *      tests/integration/refusal-marker-real-child.test.ts IT-298).
+   *      tests/integration/refusal-marker-real-child.test.ts IT-298 — both use `agentType` only).
    *
    *  Memoized per (name,version) in `_stalenessCache` — see that field's own doc. */
   async validateStoredVersion(name: string, version: string): Promise<{ ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> }> {
@@ -1382,17 +1386,19 @@ export class WorkflowCatalog {
         detail: { violation: first.code, ...first.detail },
       };
     }
-    // 2026-10-08 integration (rv) fix: `AGENT_OPT_RETIRED` / `PARAM_UNKNOWN` (the `agentType`
-    // retirement, REQ-203/DES-224/226) are likewise EXCLUDED from this re-check — a PRE-v34 pinned
-    // row carrying `agentType` is the ONLY way dispatch's own `agent-executor.ts` runtime guard is
-    // ever reached; REQ-203's whole point is that THIS refusal happens at DISPATCH, with a
-    // structured per-agent detail, not as a blanket admission NOT_RUNNABLE
-    // (tests/integration/resume-legacy-params.test.ts IT-176,
-    // tests/integration/refusal-marker-real-child.test.ts IT-298). Every OTHER violation code (the
-    // actual #154 NEW-HIGH targets: AGENT_LABEL_*, AGENT_OPTS_SPREAD/SHORTHAND/VALUE_NOT_LITERAL/
-    // NOT_LITERAL, PARAM_IN_SCRIPT) still refuses NOT_RUNNABLE here unchanged — none of those has
-    // any other handling anywhere in the engine.
-    const GRANDFATHERED_SCAN_CODES = new Set<AgentCallViolationCode>(['AGENT_OPT_RETIRED', 'PARAM_UNKNOWN']);
+    // 2026-10-08 integration (rv) fix: `AGENT_OPT_RETIRED` ONLY (the `agentType` retirement,
+    // REQ-203/DES-224/226) is likewise EXCLUDED from this re-check — a PRE-v34 pinned row carrying
+    // `agentType` is the ONLY way dispatch's own `agent-executor.ts` runtime guard is ever reached;
+    // REQ-203's whole point is that THIS refusal happens at DISPATCH, with a structured per-agent
+    // detail, not as a blanket admission NOT_RUNNABLE (tests/integration/resume-legacy-params.test.ts
+    // IT-176, tests/integration/refusal-marker-real-child.test.ts IT-298 — both exercise `agentType`
+    // specifically, never a merely-unrecognized key). `PARAM_UNKNOWN` (a key that NEVER worked —
+    // e.g. a typo'd `alowedTools`) is deliberately NOT in this exclusion: nothing else in the engine
+    // defers it to dispatch, so a stale row carrying one is exactly "a bug a newer/any rule exists
+    // to catch" and must still refuse here. Every OTHER violation code (the actual #154 NEW-HIGH
+    // targets: AGENT_LABEL_*, AGENT_OPTS_SPREAD/SHORTHAND/VALUE_NOT_LITERAL/NOT_LITERAL,
+    // PARAM_IN_SCRIPT, PARAM_UNKNOWN) still refuses NOT_RUNNABLE here unchanged.
+    const GRANDFATHERED_SCAN_CODES = new Set<AgentCallViolationCode>(['AGENT_OPT_RETIRED']);
     const staleViolation = scan.violations.find((v) => !GRANDFATHERED_SCAN_CODES.has(v.code));
     if (staleViolation !== undefined) {
       const v = staleViolation;
