@@ -444,7 +444,7 @@ interface RunEntry {
 /** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
  *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
  *  child cannot value-import this `.ts` file), pinned equal by the drift test. */
-export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED']);
+export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA']);
 
 /** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
  *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching

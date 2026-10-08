@@ -397,6 +397,65 @@ describe('F-2: a non-stringifiable thrown value is still classified as a clean S
   });
 });
 
+// issue #162 NEW-2 reverify: an uncaught agent()/workflow() rejection crosses the host->vm IPC
+// boundary as a CtxError native to the vm context's OWN realm, never the embedding realm's `Error`
+// — so `safeMessage`'s `err instanceof Error` check (an embedding-realm check) was always false for
+// it, falling through to `String(err)`. For an Error, `String()` renders via the default
+// `Error.prototype.toString` as `${name}: ${message}` — and every engine-refusal message already
+// bakes its own catalog code into the text (`"AGENT_OPTS_TAMPERED: the dispatched ..."`), so the
+// result doubled the code: `"AGENT_OPTS_TAMPERED: AGENT_OPTS_TAMPERED: the dispatched ..."`.
+describe('issue #162 NEW-2: safeMessage must not double a refusal code via cross-realm String(err)', () => {
+  it('an uncaught cross-realm refusal error (name+code+a self-prefixed message, as agentThrow IPC builds it) is reported with a single, non-doubled prefix', async () => {
+    const api: SandboxApi = {
+      async agent(): Promise<unknown> {
+        const err = new Error("AGENT_OPTS_TAMPERED: the dispatched allowedTools/bash for agent() call 'x' does not match");
+        err.name = 'AGENT_OPTS_TAMPERED';
+        (err as Error & { code?: string }).code = 'AGENT_OPTS_TAMPERED';
+        throw err;
+      },
+      args: undefined,
+      budget: NEVER_BUDGET,
+    };
+    const r = await evaluateScript("await agent('x', {prompt:'p'}); return 1;", api);
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('AGENT_OPTS_TAMPERED');
+    expect(r.error!.message).toBe("AGENT_OPTS_TAMPERED: the dispatched allowedTools/bash for agent() call 'x' does not match");
+  });
+
+  // issue #162 NEW-2 (the other half): an uncaught INVALID_SCHEMA refusal (agent-executor.ts's
+  // ajv.compile pre-dispatch guard) was not in guards.ts's `ENGINE_REFUSAL_CODES` allowlist, so
+  // `refusalCode()` never recognized it and it fell through to the generic SCRIPT_ERROR branch —
+  // violating the guide's "every engine refusal carries the same e.code catalog code as
+  // run_result.error.code" (AUTHORING.md), same as BUDGET_EXCEEDED/PARAM_UNKNOWN/AGENT_OPTS_TAMPERED.
+  it('an uncaught INVALID_SCHEMA refusal surfaces as INVALID_SCHEMA, never flattened to SCRIPT_ERROR', async () => {
+    const api: SandboxApi = {
+      async agent(): Promise<unknown> {
+        const err = new Error("INVALID_SCHEMA: agent()'s schema option is not a valid JSON Schema: schema must be object or boolean");
+        err.name = 'INVALID_SCHEMA';
+        (err as Error & { code?: string }).code = 'INVALID_SCHEMA';
+        throw err;
+      },
+      args: undefined,
+      budget: NEVER_BUDGET,
+    };
+    const r = await evaluateScript("await agent('x', {prompt:'p', schema:'not-a-schema'}); return 1;", api);
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('INVALID_SCHEMA');
+    expect(r.error!.message).toBe("INVALID_SCHEMA: agent()'s schema option is not a valid JSON Schema: schema must be object or boolean");
+  });
+
+  // Pin (review follow-up): the `safeMessage` fix above is narrowed to objects that ALSO carry a
+  // string `.code` (the engine-coded shape) — a script's own `throw new TypeError(...)` has no
+  // `.code` at all, so it must keep falling through to `String(err)` (`"TypeError: x"`) exactly as
+  // before, never losing its error-class prefix to a bare `"x"`.
+  it("a script's own throw new TypeError(...) (no .code) still renders with its error-class prefix, unaffected by the .code-gated safeMessage fix", async () => {
+    const r = await evaluateScript("throw new TypeError('bad input');", FAKE_API);
+    expect(r.kind).toBe('error');
+    expect(r.error!.code).toBe('SCRIPT_ERROR');
+    expect(r.error!.message).toMatch(/^TypeError: bad input$/);
+  });
+});
+
 // g2 minor item 4 follow-up (#157 B1 realm safety): `phase()` can now THROW (a non-serializable
 // title rejects that one call — child-entry.ts) where it never could before. `makeAgent`/
 // `makeWorkflow` already re-realm a delegate's thrown error via `sanitizeThrownError` before it

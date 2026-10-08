@@ -347,7 +347,13 @@ function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor, wrap: Wra
 // BUDGET_EXCEEDED/PARAM_UNKNOWN are here — it is the ENGINE refusing to dispatch a call (a
 // dispatch-time opts/scan mismatch, not the author's own code failing), so parallel()/pipeline()
 // must propagate it rather than fold it into their null-for-a-throwing-thunk contract.
-const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED']);
+// Issue #162 NEW-2 reverify: INVALID_SCHEMA joins the set for the identical reason — a bad
+// agent() schema is the ENGINE refusing to dispatch at all (agent-executor.ts's pre-dispatch
+// ajv.compile guard), not the author's own code failing, so an uncaught rejection must keep its own
+// catalog code (AUTHORING.md: "every engine refusal carries the same e.code ... as
+// run_result.error.code") instead of flattening to SCRIPT_ERROR (which run-manager's `toErrorCode`
+// would then map to INTERNAL_ERROR).
+const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA']);
 
 // v36 (DES-248, ARCH-165/166, TASK-246, REQ-215): a WeakMap keyed on the Error OBJECT, never a
 // field on it — the object handed to script land is an ordinary mutable Error, so a script writing
@@ -382,9 +388,31 @@ function refusalCode(err: unknown): string | null {
 // implementation detail leaking across the trust boundary). A fixed fallback message, never a
 // re-thrown classification exception.
 const UNREPRESENTABLE_THROWN_VALUE = 'the script threw a value that could not be converted to a message';
+// issue #162 NEW-2: `err instanceof Error` is an EMBEDDING-realm check — an agent()/workflow()
+// rejection that crossed the host->vm IPC boundary (`sanitizeThrownError`, above) is a CtxError
+// NATIVE TO THE VM CONTEXT's own realm, never `instanceof` this module's own `Error`, so the
+// `instanceof` branch always missed it and fell through to `String(err)`. `String()` on an Error
+// renders via the default `Error.prototype.toString` as `${name}: ${message}` — and every
+// engine-refusal message already bakes its own catalog code into the text (codedError's own
+// convention, e.g. `"AGENT_OPTS_TAMPERED: the dispatched ..."`), so the result DOUBLED the code:
+// `"AGENT_OPTS_TAMPERED: AGENT_OPTS_TAMPERED: the dispatched ..."`. Reading `.message` directly
+// (realm-agnostic — a plain string property read, not a prototype-chain check) fixes every
+// cross-realm Error uniformly, both the engine-refusal case above and a script's own
+// `throw new Error(...)` (which is equally cross-realm, vm-context-native) — the latter's message
+// has no baked-in code to double, so this also drops an unwanted "Error: " prefix it never asked
+// for. Order matters: this runs BEFORE the `String(err)` fallback, which stays for every value with
+// no own `.message` string (a thrown non-Error, Object.create(null), a poisoned Proxy, …).
+// NARROWED to a string `.code` present (review follow-up): an ENGINE-coded error (the only shape
+// whose message bakes its own code in) also always carries a string `.code` — a script's own
+// `throw new TypeError('x')` carries no `.code` at all, so it still falls through to `String(err)`
+// below (`"TypeError: x"`, unchanged) rather than losing its error-class prefix to a bare `"x"`.
 function safeMessage(err: unknown): string {
   try {
-    if (err instanceof Error) return err.message;
+    if (err !== null && typeof err === 'object' && 'message' in err && 'code' in err) {
+      const m = (err as { message?: unknown }).message;
+      const c = (err as { code?: unknown }).code;
+      if (typeof m === 'string' && typeof c === 'string') return m;
+    }
   } catch { /* fall through to the next strategy */ }
   try {
     return String(err);
