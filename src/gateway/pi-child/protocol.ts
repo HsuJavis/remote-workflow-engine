@@ -149,4 +149,16 @@ export type PiChildEvent =
    *  child stopped waiting" (either every declared server's `direct` tools showed up, or the ~10s
    *  `startupWaitMs` window elapsed first) — the parent derives per-server status from it via the
    *  SAME `mcp__<server>__` prefix matching `summarizeMcpInit` already does for the sdk gateway. */
-  | { t: 'mcp_init'; servers: string[]; activeTools: string[] };
+  | { t: 'mcp_init'; servers: string[]; activeTools: string[] }
+  /** issue #160 BUG-4: the CURRENT (not-yet-ended) assistant turn's latest known usage snapshot,
+   *  forwarded from pi-ai's own streaming `message_update` events (`AssistantMessageEvent.partial.
+   *  usage`) whenever the provider populates it before the turn's `message_end` — some backends
+   *  (verified against a real fake-OpenRouter stream: a provider MAY set `usage` on an
+   *  intermediate chunk, not only the final one) make the input/output figures observable mid-
+   *  stream. This is a REPLACEMENT snapshot of the in-progress turn, never summed across updates
+   *  (unlike `message_end`'s delta) — the parent keeps only the latest one and folds it onto
+   *  `cumulative` (completed turns) ONLY as a live/abort-time lower bound, never into the
+   *  committed total a `message_end` for the SAME turn will supersede. Never emitted when the
+   *  provider reports no usage at all before the turn ends (the pre-existing "no estimate" floor
+   *  for that case is unchanged — see pi-gateway-client.ts's own doc on this). */
+  | { t: 'usage_update'; usage: Tokens };

@@ -1082,6 +1082,17 @@ export class PiGatewayClient implements GatewayClient {
     req.signal?.addEventListener('abort', onAbort, { once: true });
 
     let cumulative: Tokens = { ...ZERO_TOKENS };
+    // issue #160 BUG-4: the CURRENT (not-yet-ended) turn's latest `usage_update` snapshot — a
+    // REPLACEMENT figure, never summed (the child only ever sends the latest known total for the
+    // in-progress turn, mirroring `message_end`'s own per-turn `usage`). Reset to zero whenever a
+    // turn ends (`message_end`/`error`, both already fold their own usage into `cumulative`) so it
+    // never double-counts a turn `message_end` already committed. `addTokens(cumulative,
+    // liveInFlightUsage)` is this attempt's best honest "spent so far" figure at any moment,
+    // including the instant an abort/timeout lands before the in-progress turn's own message_end —
+    // previously an unconditional 0 for that common "killed mid-turn" case (see the `#152`-era doc
+    // just below, which still holds for the far more common case of a provider that reports NO
+    // usage at all before a turn ends).
+    let liveInFlightUsage: Tokens = { ...ZERO_TOKENS };
     let settled: GatewayResult | undefined;
     // issue #153 L4: the child's own `seq` (session-runner.ts: incremented once per ASSISTANT
     // `message_end`, i.e. once per completed turn — including a tool-call turn, not just the final
@@ -1094,7 +1105,13 @@ export class PiGatewayClient implements GatewayClient {
     rl.on('line', (line) => {
       let event: PiChildEvent;
       try { event = JSON.parse(line) as PiChildEvent; } catch { return; }
-      if (event.t === 'message_end') {
+      if (event.t === 'usage_update') {
+        // issue #160 BUG-4: a REPLACEMENT snapshot for the in-progress turn — never added onto
+        // `cumulative` (that turn's own eventual `message_end` still carries the one complete,
+        // authoritative figure and folds it in exactly once, below).
+        liveInFlightUsage = event.usage;
+        req.onUsage?.(addTokens(cumulative, liveInFlightUsage));
+      } else if (event.t === 'message_end') {
         completedTurns = event.seq;
         cumulative = {
           input: cumulative.input + event.usage.input,
@@ -1102,6 +1119,8 @@ export class PiGatewayClient implements GatewayClient {
           cacheRead: cumulative.cacheRead + event.usage.cacheRead,
           cacheWrite: cumulative.cacheWrite + event.usage.cacheWrite,
         };
+        // This turn ended — its own usage is now committed into `cumulative`; nothing in-flight.
+        liveInFlightUsage = { ...ZERO_TOKENS };
         req.onUsage?.(cumulative);
         void req.onEvent?.({ ts: new Date().toISOString(), kind: 'message', data: { text: event.text, role: 'assistant' } });
       } else if (event.t === 'final') {
@@ -1123,6 +1142,8 @@ export class PiGatewayClient implements GatewayClient {
             cacheRead: cumulative.cacheRead + event.usage.cacheRead,
             cacheWrite: cumulative.cacheWrite + event.usage.cacheWrite,
           };
+          // This turn ended (in error) — its usage is now committed into `cumulative`.
+          liveInFlightUsage = { ...ZERO_TOKENS };
           req.onUsage?.(cumulative);
         }
         settled = {
@@ -1220,15 +1241,20 @@ export class PiGatewayClient implements GatewayClient {
     // the one honest reading of "the provider almost certainly billed something we never observed".
     //
     // What is NOT done here, on purpose (owner-approved scope, issue #152 item 3): no input-token
-    // ESTIMATE stands in for the real figure. pi's child->parent protocol only ever reports usage on
-    // a COMPLETE `message_end`/`error` event (session-runner.ts only emits those two — there is no
-    // streamed, mid-turn usage event on the wire to capture instead), and the kill signal here fires
-    // with no grace window for a graceful partial-usage handoff (see `killDescendantsBestEffort`
-    // above) — the only honest number available before that event exists is the exact one already
-    // folded into `cumulative`. A client-side request-token estimate has no schema slot to mark it
-    // "estimated, never priced as exact" distinct from a real observed figure, and the issue's own
-    // instruction is to leave it out rather than guess silently — see `harness-info.ts`'s pi `usage`
-    // disclosure string for the same decision, stated for every reader of system_info/the guide.
+    // ESTIMATE stands in for the real figure. pi's child->parent protocol reports a COMPLETE,
+    // authoritative usage figure only on `message_end`/`error` (folded into `cumulative` above) —
+    // `liveInFlightUsage` (issue #160 BUG-4) is the one exception, and only when the provider itself
+    // chose to populate `usage` on an intermediate chunk of the turn still in flight when the kill
+    // signal landed (session-runner.ts's `usage_update`, forwarded verbatim, never estimated
+    // client-side); most providers never do, and `liveInFlightUsage` then stays ZERO_TOKENS, same as
+    // before this fix. The kill signal here fires with no grace window for a graceful handoff (see
+    // `killDescendantsBestEffort` above), so `addTokens(cumulative, liveInFlightUsage)` below is the
+    // only honest number available: every turn that fully ended, plus whatever the provider itself
+    // already told this in-progress one. A client-side request-token estimate still has no schema
+    // slot to mark it "estimated, never priced as exact" distinct from a real observed figure, and
+    // the issue's own instruction is to leave THAT out rather than guess silently — see
+    // `harness-info.ts`'s pi `usage` disclosure string for the same decision, stated for every
+    // reader of system_info/the guide.
     const attemptNum = mcpCtx?.attempt ?? 1;
     const totalAttempts = mcpCtx?.attempts ?? 1;
     const modelName = childConfig.model.model;
@@ -1241,20 +1267,20 @@ export class PiGatewayClient implements GatewayClient {
       : 'before the first response';
     if (req.signal?.aborted) {
       return {
-        ok: false, provider, reason: 'aborted', transport: 'pi', tokens: cumulative, partial: true,
+        ok: false, provider, reason: 'aborted', transport: 'pi', tokens: addTokens(cumulative, liveInFlightUsage), partial: true,
         detail: `attempt ${attemptNum}/${totalAttempts} aborted (run suspended or stopped) ${turnsClause} from model "${modelName}" (provider "${provider}")`,
       };
     }
     if (timedOut) {
       return {
-        ok: false, provider, reason: 'timeout', transport: 'pi', tokens: cumulative, partial: true,
+        ok: false, provider, reason: 'timeout', transport: 'pi', tokens: addTokens(cumulative, liveInFlightUsage), partial: true,
         detail: `attempt ${attemptNum}/${totalAttempts} timed out after ${timeoutMs}ms, ${turnsClause} from model "${modelName}" (provider "${provider}")`,
       };
     }
     return {
       ok: false, provider, reason: 'terminal', transport: 'pi', retryable: false,
       detail: `pi child exited before reporting a result (code ${exitCode.code ?? 'null'}, signal ${exitCode.signal ?? 'null'})` + (stderrTail.trim() ? `\n--- child stderr (tail) ---\n${stderrTail.trim()}` : ''),
-      tokens: cumulative,
+      tokens: addTokens(cumulative, liveInFlightUsage),
     };
   }
 

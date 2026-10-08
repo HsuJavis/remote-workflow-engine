@@ -970,8 +970,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'Two more limits bound the sandbox itself, independent of anything your script does right or ' +
         "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, operator-configurable, " +
         "defaulting to 4 hours — covering every agent()/workflow() round trip across every phase, " +
-        "not a single call, which " +
-        "`timeoutMs` already bounds) and the sandboxed process has a memory cap. Exceeding either " +
+        "not a single call, which `timeoutMs` already bounds — raised or lowered per deployment " +
+        "via rwe.config.json's own maxRunDurationMs key, issue #157 follow-up) and the sandboxed " +
+        "process has a memory cap. Exceeding either " +
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
         "which blocks the script's own event loop and so cannot be caught or reported from inside " +
@@ -1006,7 +1007,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'or called back out by name) is fine — but an `agent()`/`phase()` call written inside ANY ' +
         'function (a `const`-bound arrow, a nested `function` declaration, …) that the script never ' +
         'demonstrably reaches is refused `SCRIPT_INVALID`, issue #154: the engine counts the call ' +
-        'site as live and the run silently dispatches nothing. ' +
+        'site as live and the run silently dispatches nothing. "Demonstrably reaches" is a plain ' +
+        'NAME census (does the bound name appear anywhere else in the script at all), never a real ' +
+        'reachability analysis of control flow — a name referenced only from inside a branch that ' +
+        'can never execute (e.g. `if (false) await main()`, or any other always-false condition) ' +
+        'still counts as "reached" and registers cleanly, same as a genuinely live call; this is a ' +
+        'known, deliberate scope line (a real reachability analysis rejected legitimate patterns ' +
+        'this codebase relies on — see script-checks.ts\'s own doc), not a gap this guide hides. ' +
         '`export const meta = {…}` is the ONE exception to the no-wrapper rule, and it must be ' +
         'written exactly that way, as a literal object: dropping the `export` makes the whole ' +
         'declaration invisible to the engine, and every `agent()` label is then refused ' +
@@ -1454,9 +1461,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'underestimate (the per-turn streamed snapshot it is built from only reaches a turn\'s true ' +
         '`output_tokens` on that turn\'s own final frame, which a cut-short call\'s in-flight turn ' +
         'never reaches) — `input`/cache columns track the eventual finalized total closely. ' +
-        'This figure is charged against `budget` exactly like a completed call\'s, so a repeated ' +
-        'suspend/resume cycle of a usage-heavy agent now counts toward, and can trip, a token or ' +
-        'USD limit even though every individual attempt was interrupted. Separately: resuming a ' +
+        'What "streamed in before the cutoff" means depends on the harness: a cutoff that lands ' +
+        'after at least one turn has FULLY completed (a tool call and its result, say) always ' +
+        'charges that turn\'s own exact figure; for a cutoff mid-TURN, the sdk-cli harness streams ' +
+        'partial tokens continuously and so almost always has something to charge, while the pi ' +
+        'harness\'s wire protocol normally reports nothing for the in-flight turn at all (0, not an ' +
+        'underestimate) unless the provider itself happens to populate usage on an intermediate ' +
+        'chunk — most do not. `partial:true`/a nonzero figure never means "estimated"; it always ' +
+        'means "a real number the provider or harness actually reported, possibly short of the ' +
+        'true total". This figure is charged against `budget` exactly like a completed call\'s, so ' +
+        'a repeated suspend/resume cycle of a usage-heavy agent counts toward, and can trip, a ' +
+        'token or USD limit to the extent described above — never a guarantee that EVERY ' +
+        'suspend/resume cycle accumulates something, only that whatever was genuinely observed ' +
+        'does. Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
         'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
         'attempt never itself resolves anything to the script (only the replacement agentId\'s own ' +
@@ -1548,9 +1565,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'A script whose shape a static read cannot resolve at all — an `agent()` inside a `for`, ' +
         '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rule 4 has no ' +
         'edges to compare there. Declare the agent\'s node inside that lane anyway: rule 2 (LANE) ' +
-        'still requires it, and rule 3 (TOOLS) still applies whenever that call declares a literal ' +
-        '`allowedTools` array — only an absent or variable `allowedTools` on a dynamic-lane call ' +
-        'skips rule 3, same as everywhere else.\n\n' +
+        'still requires it, and rule 3 (TOOLS) applies EXACTLY the same way it does everywhere else ' +
+        '— a dynamic lane earns no exemption at all (issue #154/#155 follow-up, 2026-10-09 ' +
+        're-verification): an `allowedTools` array still requires the exact `tools: …` segment, and ' +
+        'an ABSENT `allowedTools` still only accepts `tools: default` or no segment at all, same as ' +
+        'rule 3\'s own paragraph above states. A VARIABLE `allowedTools` (`agent(\'a\', {allowedTools: ' +
+        'tools})`, a ternary, a spread, `[...arr]`, …) is not a dynamic-lane carve-out either — it ' +
+        'cannot even REGISTER, refused `AGENT_OPTS_VALUE_NOT_LITERAL` at registration time, before ' +
+        'the diagram is ever checked (every `agent()` option, in every lane, must be a literal).\n\n' +
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +
@@ -1642,14 +1664,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Three things a cold author gets wrong',
-      'A **sequential** `await agent(label, options)` call that fails or times out resolves to ' +
-        '`null` for that reason — it does not throw. (An ENGINE refusal, e.g. `BUDGET_EXCEEDED`, is ' +
+      'A **sequential** `await agent(label, options)` call that fails, times out, or is aborted by ' +
+        'run_suspend/run_stop while in flight resolves to `null` for that reason — it does not ' +
+        'throw. (An ENGINE refusal, e.g. `BUDGET_EXCEEDED`, is ' +
         'a different case and still propagates as a thrown error — see "Budget, concurrency" above.) ' +
         "Guard every sequential call the same way `parallel()`'s own thunks already are:\n\n" +
         '```js\n' +
         "const out = await agent('reviewer', { prompt: 'Review the draft' });\n" +
         'if (out === null) {\n' +
-        '  // the agent failed or timed out — there is no result to read here\n' +
+        '  // the agent failed, timed out, or was aborted by run_suspend/run_stop — there is no\n' +
+        '  // result to read here\n' +
         '  return;\n' +
         '}\n' +
         '```\n\n' +

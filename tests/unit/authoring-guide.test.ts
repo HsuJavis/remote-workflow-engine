@@ -12,6 +12,7 @@ import { probeConfinement } from '../../src/gateway/confinement-probe.js';
 // (never a second hand-typed copy in the test itself).
 import { LOCKED_KEYS } from '../../src/params/contract.js';
 import { ERROR_CATALOG } from '../../src/errors.js';
+import { TOOL_SPECS } from '../../src/tool-specs.js';
 import type { ScheduleStatus } from '../../src/scheduler.js';
 import type { WebhookView } from '../../src/webhook-registry.js';
 
@@ -345,11 +346,13 @@ describe('the guide states the script-body form (UT-215, defect D6)', () => {
   });
 
   it('says `export const meta` is the one exception and that dropping its export costs AGENT_UNDECLARED', () => {
-    // Window widened from 900 (issue #154 B1 re-opened): the paragraph now also states the
-    // function-wrapper DEAD-CODE rule (SCRIPT_INVALID) between the no-wrapper sentence and the
-    // meta-exception sentence this case checks for — the two assertions below are still about the
-    // SAME paragraph, just with more accurate content in between.
-    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 1400);
+    // Window widened from 900, then from 1400 (issue #154 B4 follow-up, 2026-10-09
+    // re-verification: the paragraph now ALSO states the "NAME census, not real reachability"
+    // caveat — dead-branch control flow, e.g. `if (false) await main()`, still counts as
+    // "reached") between the no-wrapper sentence and the meta-exception sentence this case checks
+    // for — the two assertions below are still about the SAME paragraph, just with more accurate
+    // content in between.
+    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 2000);
     expect(para).toMatch(/export const meta/);
     expect(para).toMatch(/AGENT_UNDECLARED/);
   });
@@ -1002,5 +1005,24 @@ describe('the harness-disclosure paragraph does not contradict an already-known 
     const text = buildAuthoringGuide(CEILINGS);
     const s = sectionOf(text, 'Providers and the model catalog');
     expect(s).toMatch(/may instead be configured with `gateway:"pi"`/);
+  });
+});
+
+describe('issue #155/#157 follow-up (2026-10-09 re-verification): stale doc nits corrected', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('the dynamic-lane paragraph states rule 3 applies the SAME way as everywhere else (no absent/variable carve-out)', () => {
+    expect(text).toMatch(/a dynamic lane earns no exemption at all/);
+    expect(text).not.toMatch(/only an absent or variable `allowedTools` on a dynamic-lane call/);
+  });
+
+  it('workflow_describe documents toolSurface and the dynamic-lane phases[].agents:[] convention', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'workflow_describe');
+    expect(spec?.description).toMatch(/toolSurface/);
+    expect(spec?.description).toMatch(/dynamic/);
+  });
+
+  it('states the maxRunDurationMs default as 4 hours, not just "a generous multi-hour default"', () => {
+    expect(text).toMatch(/maxRunDurationMs`, 4 HOURS by default/);
   });
 });

@@ -201,6 +201,15 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
     // silently ignored.
     expect(codeOf(await start({ agents: { 'no-such-label': { model: DEFAULT_MODEL_REF } } }))).toBe('UNKNOWN_AGENT_LABEL');
 
+    // issue #156 NEW-2 (2026-10-09 re-verification): a non-object override VALUE — the per-agent
+    // slot itself ({agents: {<label>: 'medium'}}, a bare string instead of a fields object) — is
+    // refused PARAM_CONTRACT_INVALID, which this row now also advertises in run_start's errors[]
+    // (tool-specs.ts) and the authoring guide (previously undocumented, even though the code was
+    // already live).
+    expect(codeOf(await start({ agents: { [LABEL]: 'medium' } }))).toBe('PARAM_CONTRACT_INVALID');
+    // The overrides.agents slot itself, non-object (a string), is refused the SAME code.
+    expect(codeOf(await start({ agents: 'not-an-object' }))).toBe('PARAM_CONTRACT_INVALID');
+
     // …and none of the refusals above burned a durable run row.
     expect(await runCount(name)).toBe(0);
   }, 30000);

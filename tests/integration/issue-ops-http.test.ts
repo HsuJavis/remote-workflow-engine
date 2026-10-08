@@ -42,10 +42,11 @@ describe('issue read/reply tools over the real MCP HTTP surface (REQ-031..034)',
   });
   afterAll(async () => { await server?.close(); });
 
-  it('tools/list advertises the four v6 tools', async () => {
+  it('tools/list advertises the four v6 tools, plus issue_reopen (issue #164 reverify: a stale ' +
+    'client cache, never a missing server advertisement, is what the 2026-10-09 re-verification hit)', async () => {
     const body = await rpc(baseUrl, 'tools/list', {});
     const names = (body.result!.tools ?? []).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(['issue_get', 'issue_list', 'issue_get_comments', 'issue_comment_post']));
+    expect(names).toEqual(expect.arrayContaining(['issue_get', 'issue_list', 'issue_get_comments', 'issue_comment_post', 'issue_reopen']));
   });
 
   it('issue_get returns the issue view; unknown → ISSUE_NOT_FOUND', async () => {

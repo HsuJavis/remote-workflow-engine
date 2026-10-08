@@ -360,4 +360,49 @@ describe('PiGatewayClient — timeout path (rest of slice f)', () => {
       expect(result.detail).toContain('aborted');
     }
   });
+
+  // issue #160 BUG-4: a provider MAY populate `usage` on an intermediate stream chunk, before the
+  // turn's own message_end — session-runner.ts forwards that as a `usage_update` wire event. An
+  // abort that lands while such a turn is still in flight must charge that already-known figure
+  // (a real provider-reported number, never a client-side estimate) instead of an unconditional 0.
+  it('an abort mid-turn charges the latest usage_update figure as a lower bound, not an unconditional 0', async () => {
+    const f = fakeChild();
+    const spawnChild = vi.fn(() => f.child as never);
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+    const ac = new AbortController();
+    const liveUsage: unknown[] = [];
+    const promise = gw.invoke(req({ signal: ac.signal, onUsage: (t) => liveUsage.push(t) }));
+    f.sendLine({ t: 'usage_update', usage: { input: 42, output: 7, cacheRead: 0, cacheWrite: 0 } });
+    await new Promise((r) => setTimeout(r, 10));
+    ac.abort();
+    await vi.waitFor(() => expect(f.child.kill).toHaveBeenCalled(), { timeout: 2000 });
+    f.exit(null);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('aborted');
+      // The provider's own mid-turn figure, never the unconditional 0 this reported before the fix.
+      expect(result.tokens).toEqual({ input: 42, output: 7, cacheRead: 0, cacheWrite: 0 });
+      expect(result.partial).toBe(true);
+    }
+    // The live onUsage stream also saw the figure before the abort landed (agent-executor.ts's
+    // markUsage/_finalizeAborted path depends on this for the SAME scenario at the executor level).
+    expect(liveUsage).toContainEqual({ input: 42, output: 7, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  // A turn that completes NORMALLY (message_end) after its own usage_update must not double-count
+  // that turn's usage — message_end's own figure supersedes it exactly once.
+  it('a usage_update followed by that SAME turn\'s message_end does not double-count the turn', async () => {
+    const f = fakeChild();
+    const spawnChild = vi.fn(() => f.child as never);
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    f.sendLine({ t: 'usage_update', usage: { input: 20, output: 2, cacheRead: 0, cacheWrite: 0 } });
+    f.sendLine({ t: 'message_end', seq: 1, text: 'done', usage: { input: 20, output: 9, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.sendLine({ t: 'final', seq: 1, text: 'done', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.tokens).toEqual({ input: 20, output: 9, cacheRead: 0, cacheWrite: 0 });
+  });
 });

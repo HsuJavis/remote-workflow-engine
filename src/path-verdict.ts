@@ -28,9 +28,20 @@ const STRIP_RE = /(^|\/)\.claude\/(settings[^/]*\.json|hooks\/.*)$/;
 
 // Issue #91: exported so every other caller-supplied-NAME check (workflow_register's, so far —
 // see workflow-catalog.ts's validateRegistration) reuses this ONE literal instead of duplicating
-// it; the case-sensitivity (plain `startsWith`, no `toLowerCase`) is part of the contract other
-// callers must match, not an implementation detail local to this file.
+// it.
+// issue #154 B4 follow-up (2026-10-09 re-verification): a plain case-SENSITIVE `startsWith` let
+// `RWE-ver01`/`RWE-x` register and run — the reserved segment is a human-facing naming convention
+// ("this is engine territory"), not a filesystem-identity check, so a caller should not be able to
+// claim it back just by varying case. `isReservedPrefixed` below is now the ONE comparison every
+// caller (including this file's own `lexicalVerdict`) uses; matching is case-INSENSITIVE.
 export const RESERVED_PREFIX = 'rwe-';
+
+/** Case-insensitive "does this bare name/path-segment start with the engine-reserved prefix" —
+ *  the one comparison every caller of `RESERVED_PREFIX` must use (never a raw `startsWith` on the
+ *  literal, which is case-sensitive and under this issue's fix no longer the actual rule). */
+export function isReservedPrefixed(segment: string): boolean {
+  return segment.toLowerCase().startsWith(RESERVED_PREFIX);
+}
 
 /** Pure, no filesystem access — decides everything that can be decided from the string alone.
  *  Normalizes `\` to `/`; rejects `''`, absolute paths (`/…`, `C:\…`), `..` traversal, NUL, and a
@@ -47,7 +58,7 @@ export function lexicalVerdict(dest: Dest, rel: string): Verdict {
 
   const segments = norm.split('/').filter((s) => s !== '' && s !== '.');
   if (segments.some((s) => s === '..')) return { kind: 'reject', reason: 'ESCAPE' };
-  if (segments[0] && segments[0].startsWith(RESERVED_PREFIX)) return { kind: 'reject', reason: 'RESERVED_PREFIX' };
+  if (segments[0] && isReservedPrefixed(segments[0])) return { kind: 'reject', reason: 'RESERVED_PREFIX' };
 
   if (dest === 'run-workspace') {
     if (segments.includes('.git')) return { kind: 'reject', reason: 'GIT_INTERNAL' };
@@ -101,12 +112,21 @@ export const MAX_BARE_NAME_LENGTH = 128;
 /** True for a non-empty, length-bounded name with no leading/trailing whitespace that contains
  *  neither path separator and is not exactly `.`/`..` — safe to join as exactly one path segment
  *  with no risk of adding, removing, or escaping a directory level. Deliberately silent on the
- *  `rwe-` reserved prefix: callers that care (workflow_register) check `RESERVED_PREFIX` separately,
- *  as a distinct refusal code from "malformed" (`INVALID_NAME`). */
+ *  `rwe-` reserved prefix: callers that care (workflow_register) check `isReservedPrefixed`
+ *  separately, as a distinct refusal code from "malformed" (`INVALID_NAME`).
+ *
+ *  issue #154 B4 follow-up (2026-10-09 re-verification): `name.trim() !== name` only ever caught a
+ *  LEADING/TRAILING control/whitespace character — an EMBEDDED one (a tab, newline, or other C0
+ *  control byte in the middle of the name, e.g. `'ver2-01-tab\tmid'`) round-tripped through `trim()`
+ *  unchanged and registered. Every C0 control character (0x00–0x1F) and DEL (0x7F) anywhere in the
+ *  name is now refused — not just the three ('\0', '/', '\\') already checked for path-escape
+ *  reasons; a bare name has no business carrying a tab/newline/etc. at all, embedded or not. */
 export function isValidBareName(name: string): boolean {
   if (typeof name !== 'string' || name.length === 0 || name.length > MAX_BARE_NAME_LENGTH) return false;
   if (name.trim() !== name) return false; // rejects '', whitespace-only, and leading/trailing padding
-  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false;
+  if (name.includes('/') || name.includes('\\')) return false;
+  // eslint-disable-next-line no-control-regex -- deliberately matching C0 controls + DEL
+  if (/[\x00-\x1f\x7f]/.test(name)) return false;
   if (name === '.' || name === '..') return false;
   return true;
 }

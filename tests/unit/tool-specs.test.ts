@@ -389,3 +389,15 @@ describe('run_agent_log advertises agentId as an alternative to label (issue #15
     expect(spec.description).toMatch(/agentId/);
   });
 });
+
+// issue #156 NEW-2 (2026-10-09 re-verification): run_start can genuinely return
+// PARAM_CONTRACT_INVALID (overrides.agents/overrides.agents.<label> the wrong shape,
+// e.g. a bare string) — the code was live before this fix but missing from this row's
+// OWN advertised errors[], so a cold client reading tools/list had no way to learn it.
+describe('run_start advertises PARAM_CONTRACT_INVALID (issue #156 NEW-2)', () => {
+  it("run_start's errors[] includes PARAM_CONTRACT_INVALID", () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_start');
+    if (!spec) throw new Error('run_start not found in TOOL_SPECS');
+    expect(spec.errors).toContain('PARAM_CONTRACT_INVALID');
+  });
+});

@@ -694,6 +694,11 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
   const safeJson = (v: unknown): string => {
     try { return JSON.stringify(v) ?? 'null'; } catch (err) { return JSON.stringify({ unserializable: err instanceof Error ? err.message : String(err) }); }
   };
+  // issue #160 BUG-4: the current (in-progress) assistant turn's latest reported usage, tracked
+  // ONLY to detect a CHANGE worth forwarding (`usage_update` below) — never summed itself; the
+  // eventual `message_end`/`error` for this SAME turn is still the one real, complete figure.
+  // Reset to 'none seen yet' on every message_end/error (a fresh turn starts with nothing known).
+  let lastInFlightUsage: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
   session.subscribe((event) => {
     if (event.type === 'tool_execution_start') {
       emit({ t: 'tool_call', toolCallId: event.toolCallId, toolName: event.toolName, argsJson: safeJson(event.args) });
@@ -703,7 +708,36 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
       emit({ t: 'tool_result', toolCallId: event.toolCallId, toolName: event.toolName, resultJson: safeJson(event.result), isError: event.isError });
       return;
     }
+    // issue #160 BUG-4: pi-ai's own streaming `AssistantMessageEvent.partial.usage` (a REQUIRED
+    // field on every streamed partial, confirmed against a real fake-OpenRouter stream whose
+    // SSE chunks carried a `usage` object before the final one) is the only pre-message_end
+    // signal this wire protocol has. Most providers never populate it before the end of the
+    // turn — `usage` then stays all-zero on every partial, and nothing is forwarded (the
+    // pre-existing "no estimate" floor for that common case is unchanged). When a provider DOES
+    // populate it early, forward the latest snapshot so an abort mid-turn has a real lower bound
+    // instead of an unconditional 0.
+    if (event.type === 'message_update' && event.message.role === 'assistant') {
+      // `AssistantMessageEvent`'s streaming variants carry the in-progress message as `partial`;
+      // its two terminal variants ('done'/'error', reached only via pi-ai's OWN internal plumbing —
+      // never observed here before this subscriber's owning `message_end`/error branch above already
+      // fires) carry it as `message` instead — both are `AssistantMessage`, same `usage` shape.
+      const ame = event.assistantMessageEvent;
+      const am = 'partial' in ame ? ame.partial
+        : 'message' in ame ? ame.message
+          : 'error' in ame ? ame.error
+            : undefined;
+      if (am === undefined) return;
+      const partialUsage = am.usage;
+      const usage = { input: partialUsage.input, output: partialUsage.output, cacheRead: partialUsage.cacheRead, cacheWrite: partialUsage.cacheWrite };
+      const sum = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+      if (sum > 0 && (lastInFlightUsage === undefined || sum !== lastInFlightUsage.input + lastInFlightUsage.output + lastInFlightUsage.cacheRead + lastInFlightUsage.cacheWrite)) {
+        lastInFlightUsage = usage;
+        emit({ t: 'usage_update', usage });
+      }
+      return;
+    }
     if (event.type !== 'message_end' || event.message.role !== 'assistant') return;
+    lastInFlightUsage = undefined;
     const msg = event.message;
     const text = msg.content.filter((c): c is { type: 'text'; text: string } => c.type === 'text').map((c) => c.text).join('');
     const usage = { input: msg.usage.input, output: msg.usage.output, cacheRead: msg.usage.cacheRead, cacheWrite: msg.usage.cacheWrite };
