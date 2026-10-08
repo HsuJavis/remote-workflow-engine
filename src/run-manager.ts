@@ -1056,6 +1056,22 @@ export class RunManager {
           { workflow: spec.name, version: resolvedVersion },
         );
       }
+      // #157 (2026-10-07 re-verification of #154): `catalog.validateCurrent()` re-runs the CURRENT
+      // (possibly stricter than at registration time) structural script checks — `workflow_describe`
+      // already surfaces a failure here as `runnable:false`/`validation.ok:false`
+      // (mcp-facade.ts's `workflowDescribe`), but until now nothing in THIS admission sequence ever
+      // called it, so a version a static rule shipped after registration made stale was still
+      // ACCEPTED by run_start and dispatched — observed ending ABORTED with no error code. Checked
+      // here (pure, no I/O beyond re-parsing the already-fetched script), same place
+      // LEGACY_REREGISTER is, before every PARAM_*/CONFINEMENT_UNAVAILABLE check below.
+      const currentValidity = this._catalog.validateCurrent(script);
+      if (!currentValidity.ok) {
+        throw codedError(
+          'NOT_RUNNABLE',
+          `NOT_RUNNABLE: workflow '${spec.name}' version ${resolvedVersion} no longer passes the current script-validity rules (${currentValidity.errors.map((e) => e.code).join(', ')}); re-register a fixed version`,
+          { workflow: spec.name, version: resolvedVersion, errors: currentValidity.errors },
+        );
+      }
       // issue #103(a): the admission-time provisioning refusal — BEFORE any durable work (seed
       // materialization, createRun, workspace mkdir), same as every other admission check above.
       // Covers run_start, every schedule/webhook firing (both dispatch through this SAME door), and
