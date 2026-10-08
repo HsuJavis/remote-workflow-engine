@@ -1360,6 +1360,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `can therefore overshoot EITHER limit by up to one concurrency window ` +
         `(${ceilings.runConcurrency} x one call's cost). Size a budget for the whole workflow, not ` +
         'per call.\n\n' +
+        "A fire-and-forget `agent()` call your script does not `await` keeps running to completion " +
+        "AFTER the script returns and the run goes terminal — the engine never aborts in-flight work " +
+        'just because the run around it finished (issue #162, adjudication #9 I-2, a deliberate ' +
+        "owner ruling, not a bug). Its usage is folded into `run_result.meta.usage`/`run_list`'s " +
+        "totals once it settles, so a figure read AT the terminal moment can be a lower bound until " +
+        'then — poll again a little later for the final number, or `await` every call whose spend ' +
+        "you need counted or whose completion you need to know about.\n\n" +
         'Inside the script, the read-only `budget` object answers each limit with its own accessor: ' +
         '`budget.limits.usd` / `budget.limits.tokens` are the two ceilings (`null` when that limit is ' +
         'unbounded — `null` is `===`-detectable but NOT comparison-safe, `null < 1000` is `true`); ' +
