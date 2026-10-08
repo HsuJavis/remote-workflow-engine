@@ -176,6 +176,28 @@ describe('PiGatewayClient — JSONL child protocol (slice c)', () => {
     expect(result.ok).toBe(true);
   });
 
+  // issues #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the OLD `EXIT_STDOUT_GRACE_MS` (1000ms) was
+  // reasoned about against an idle host; a real-engine check under concurrent load measured this
+  // PARENT process's own event-loop delay peaking at 6136-8384ms — long enough that an ordinary,
+  // successful exit whose 'final' line is merely queued (not missing) blows straight through 1000ms
+  // and gets misreported as "pi child exited before reporting a result". The fix keeps `child.stdout`
+  // 'end' as the PRIMARY signal (unchanged) but raises the fallback bound well past the observed
+  // stall, so a message delayed this long (1500ms) is still waited for, not given up on.
+  it('issue #158 F4 (fix-of-the-fix): a "final" line delivered 1500ms after exit (far past the old 1000ms grace) still resolves ok', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    f.child.emit('exit', 0, null);
+    setTimeout(() => {
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.child.stdout.end();
+      f.child.stderr.end();
+    }, 1500);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+  }, 10_000);
+
   it('a child that exits with no final/error event is a terminal, non-retryable failure naming the exit code', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });

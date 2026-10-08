@@ -68,6 +68,55 @@ describe('issue #163 B1 — SandboxHost does not settle ABORTED when a done mess
     expect('error' in outcome).toBe(true);
     if ('error' in outcome) expect((outcome.error as { code: string }).code).toBe('ABORTED');
   });
+
+  // issues #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the OLD `child.on('exit', ...)` handler armed
+  // a FIXED grace window (200ms in production) the instant 'exit' fired, independent of whether a
+  // message was merely delayed rather than never coming. A real-engine check under concurrent load
+  // measured this host process's own event-loop delay peaking at 6136-8384ms — 227 terminal messages
+  // in one run arrived more than 200ms after 'exit', the slowest 3314ms after — so a fixed short
+  // window misclassifies a message that is simply running late as "never coming". No
+  // `exitMessageGraceMs` override here: the real (now 30s) safety-bound default applies, and this
+  // test proves the message is NOT waited out via that timer at all — `child.on('close', ...)` (a
+  // real ChildProcess's own deterministic "IPC channel fully drained" signal) is what the host
+  // actually waits for, long before any 30s bound would matter.
+  it('a done message delivered 1500ms after exit (far past the old fixed 200ms grace) still resolves {result}, because `close` — not a fixed timer — decides', async () => {
+    const child = fakeChild();
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR, forkChild: (() => child) as never });
+    const runPromise = host.run('race-4', 'return 1;', undefined, null);
+    await new Promise((r) => setImmediate(r));
+    child.emit('exit', 0, null);
+    setTimeout(() => {
+      child.emit('message', { t: 'done', runId: 'race-4', result: 'very-late-but-real' });
+      child.emit('close', 0, null);
+    }, 1500);
+    const outcome = await runPromise;
+    expect('result' in outcome).toBe(true);
+    if ('result' in outcome) expect(outcome.result).toBe('very-late-but-real');
+  }, 10_000);
+
+  // issues #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the OLD `exit` handler read the STICKY
+  // `sawOomFingerprint` flag synchronously, at 'exit' time, and committed to its ABORTED-vs-SCRIPT_OOM
+  // branch right then — a real OS pipe's buffered-but-unread stderr bytes can still be draining to
+  // the `'data'` listener AFTER 'exit' fires (independent of anything the child did), so a crash dump
+  // whose fingerprint line arrives in that window was misclassified as a generic ABORTED, with the
+  // real OOM diagnosis lost. The fix defers the classification decision itself to `close` (ordered
+  // after every stderr chunk, same as every IPC message — see host.ts's own module-level doc) via
+  // `concludeNoMessage`, which reads the flag at CALL time, never earlier.
+  it('OOM fingerprint text arriving on stderr AFTER exit (but before close) is still classified SCRIPT_OOM, not ABORTED', async () => {
+    const child = fakeChild();
+    const host = new SandboxHost({ workspaceRoot: WORK_DIR, forkChild: (() => child) as never });
+    const runPromise = host.run('race-oom-late', 'return 1;', undefined, null);
+    await new Promise((r) => setImmediate(r));
+    child.emit('exit', null, 'SIGABRT');
+    child.stderr.write('FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n');
+    // Let the PassThrough's own 'data' event actually fire (stream emission is asynchronous even
+    // though `.write()` is called synchronously) before the channel is declared fully closed.
+    await new Promise((r) => setImmediate(r));
+    child.emit('close', null, 'SIGABRT');
+    const outcome = await runPromise;
+    expect('error' in outcome).toBe(true);
+    if ('error' in outcome) expect((outcome.error as { code: string }).code).toBe('SCRIPT_OOM');
+  });
 });
 
 afterAllCleanup();

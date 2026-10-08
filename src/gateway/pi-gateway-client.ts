@@ -129,7 +129,18 @@ const ZERO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 // issue #158 F4: bounds how long `_dispatchOnce` waits for `child.stdout` to reach EOF after 'exit'
 // fires before concluding the child really did exit with no result — see that call site's own doc.
-const EXIT_STDOUT_GRACE_MS = 1000;
+//
+// #158 F4 / #163 B1 / #162 B (fix-of-the-fix): `child.stdout`'s own 'end' event (the deterministic
+// EOF signal that call site already waits for) stays the PRIMARY decision point — this bound is only
+// the fallback for a child that exited but never reaches stdout EOF at all (the documented setsid-
+// grandchild case). It was 1000ms, reasoned about against an idle host; a real-engine check under
+// concurrent load (~150 sandbox forks + ~48 pi children, no global backpressure) measured this
+// process's own event-loop delay up to 8384ms, which is long enough to blow through 1000ms even on
+// an ordinary successful exit whose 'end' is merely queued, not missing — misreporting it as "pi
+// child exited before reporting a result". Raised well past the observed stall so the deterministic
+// 'end' signal, not this timer, decides the ordinary case; a genuinely abandoned grandchild is still
+// bounded, just more generously.
+const EXIT_STDOUT_GRACE_MS = 30_000;
 
 /** issue #139(b): every effort level `AgentOpts['effort']` can be, lowest first — used to pick the
  *  lowest level a MANDATORY-reasoning model actually advertises (`caps.reasoningEfforts`) when a

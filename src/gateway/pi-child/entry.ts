@@ -42,7 +42,15 @@ function emit(event: PiChildEvent): void {
 // result/response) could still be torn down mid-write. `writableLength === 0` means every write so
 // far has already handed its data to the OS; otherwise wait for 'drain', bounded so a parent that
 // stopped reading entirely (already gone) can't hang this child forever.
-const STDOUT_DRAIN_TIMEOUT_MS = 2000;
+//
+// Same fix-of-the-fix as `child-entry.ts`'s `SEND_FLUSH_TIMEOUT_MS` (issues #158 F4 / #163 B1 /
+// #162 B): 'drain' is the PRIMARY, deterministic signal and fires whenever the OS pipe has actually
+// taken the buffered data; a real-engine check under concurrent load showed the PARENT stalling for
+// 6-8+ seconds under its own fork/event-loop contention, which the old 2000ms bound mistook for "the
+// parent is gone" and tore this child down mid-write anyway. This bound is now a dead-parent valve
+// only, not a flush deadline. 'error'/'close' on stdout (a parent that actually died — EPIPE)
+// resolve immediately rather than waiting out the bound.
+const STDOUT_DRAIN_TIMEOUT_MS = 60_000;
 function flushStdout(): Promise<void> {
   return new Promise((resolve) => {
     if (process.stdout.writableLength === 0) { resolve(); return; }
@@ -51,6 +59,8 @@ function flushStdout(): Promise<void> {
     const bound = setTimeout(finish, STDOUT_DRAIN_TIMEOUT_MS);
     bound.unref?.();
     process.stdout.once('drain', () => { clearTimeout(bound); finish(); });
+    process.stdout.once('error', () => { clearTimeout(bound); finish(); });
+    process.stdout.once('close', () => { clearTimeout(bound); finish(); });
   });
 }
 

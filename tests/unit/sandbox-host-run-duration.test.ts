@@ -122,7 +122,12 @@ describe('F-1: a child terminated by its own V8 heap limit settles a coded SCRIP
       ' 1: 0x... node::Abort() [/home/rwe/app/node]\n' +
       'Node.js v22.14.3\n';
     child.stderr.emit('data', Buffer.from(rawCrash));
+    // issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the host now decides on `close` (ordered
+    // after every stderr chunk and every IPC message a REAL child ever sends), not on `exit` alone —
+    // a real ChildProcess always eventually emits `close` after `exit` once its stdio streams finish,
+    // so this fake mirrors that rather than relying on the (now 30s) exit-only safety-bound fallback.
     child.emit('exit', null, 'SIGABRT');
+    child.emit('close', null, 'SIGABRT');
     const outcome = await runPromise;
     expect('error' in outcome).toBe(true);
     if (!('error' in outcome)) throw new Error('unreachable');
@@ -150,6 +155,7 @@ describe('F-1: a child terminated by its own V8 heap limit settles a coded SCRIP
     const frame = ' N: 0x1234567 v8::internal::SomeNativeFrame(args) [/home/rwe/.local/node/bin/node]\n';
     child.stderr.emit('data', Buffer.from(frame.repeat(40))); // ~3200 chars, well over 2000
     child.emit('exit', null, 'SIGABRT');
+    child.emit('close', null, 'SIGABRT');
     const outcome = await runPromise;
     expect('error' in outcome).toBe(true);
     if (!('error' in outcome)) throw new Error('unreachable');
@@ -163,6 +169,7 @@ describe('F-1: a child terminated by its own V8 heap limit settles a coded SCRIP
     const child = createdChildren[0]!;
     child.stderr.emit('data', Buffer.from('TypeError: something broke\n'));
     child.emit('exit', 1, null);
+    child.emit('close', 1, null);
     const outcome = await runPromise;
     expect('error' in outcome).toBe(true);
     if (!('error' in outcome)) throw new Error('unreachable');

@@ -79,11 +79,21 @@ const MAX_RESULT_BYTES = 10 * 1024 * 1024;
 // concurrent load" signature both issues report, since CPU contention under load slows the same
 // flush the same way a large payload does. `process.send(msg, callback)` resolves ITS callback only
 // once the write actually completes (same empirical repro, fixed: 5/5), so `send()` now returns a
-// Promise every caller `await`s before calling `process.exit()` — see `main()` below. Bounded at
-// `SEND_FLUSH_TIMEOUT_MS` so a parent that vanished mid-write (its own crash, a SIGKILL) can never
-// hang this child forever; `settle()`'s own idempotency on the host side makes an unresolved/late
-// flush harmless either way.
-const SEND_FLUSH_TIMEOUT_MS = 2000;
+// Promise every caller `await`s before calling `process.exit()` — see `main()` below.
+//
+// #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the callback is the PRIMARY signal and fires on
+// success OR on the channel having failed (parent crash/SIGKILL -> EPIPE/ECONNRESET on the next
+// write attempt) — there is no case where this child has more to do and the callback just never
+// comes. The original 2000ms bound was reasoned about as "a parent that vanished mid-write", but a
+// real-engine check under concurrent load (~150 sandbox forks + ~48 pi children, no global
+// backpressure) showed the PARENT's own process, not this child, stalling for 6-8+ seconds at a
+// time — `process.send()`'s queued OS-level write doesn't complete until the parent's event loop
+// actually drains its end of the socket, so a 2s bound routinely fired while the write was still
+// genuinely in flight (not abandoned), and the `process.exit()` right after it then dropped that
+// queued write for real. `SEND_FLUSH_TIMEOUT_MS` is now a hung-parent valve only (the parent is
+// truly gone and will never read again), not a flush deadline — set long enough that it is never
+// confused with ordinary contention, never so long that a genuinely abandoned child lingers.
+const SEND_FLUSH_TIMEOUT_MS = 60_000;
 
 function rawSend(msg: unknown): Promise<void> {
   return new Promise((resolve) => {
