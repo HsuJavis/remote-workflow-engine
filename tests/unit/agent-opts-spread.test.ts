@@ -55,3 +55,56 @@ describe('agent() options spread / shorthand entries are refused, not silently s
     expect(violations).toEqual([]);
   });
 });
+
+// Issue #154 NEW (HIGH, 2026-10-07 reverify): `allowedTools: <non-literal>` — a literal key WITH a
+// top-level `:` (so neither AGENT_OPTS_SPREAD's no-colon branch nor AGENT_OPTS_SHORTHAND's applies),
+// but whose VALUE is a variable/expression rather than a `[...]` literal. `parseStringArrayLiteral`
+// correctly returns `null` for this, but the `key === 'allowedTools'` handler silently left
+// `allowedTools` at its 'absent' default instead of raising a violation — asymmetric with the
+// sibling spread/shorthand checks, which DO refuse. Confirmed live: the real array still reaches
+// agent-executor.ts's dispatch unexamined (runtime opts, never the static scan), while
+// workflow_describe's toolSurface and the mermaid checker both read 'absent' as "nothing to verify".
+//
+// RED before the fix: reports zero violations and `allowedTools: 'absent'` even though the call
+// site plainly grants real tools.
+describe('agent() allowedTools given via a variable is refused, not read as absent (#154 NEW HIGH)', () => {
+  it('the exact repro: `allowedTools: tools` (an identifier) ⇒ a violation, not zero', () => {
+    const script = `const tools=['Bash','Write']; agent('a',{prompt:'x', allowedTools: tools})`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(calls[0]?.allowedTools).toBe('absent');
+  });
+
+  it('a member-expression value (`cfg.tools`) is also refused', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: cfg.tools });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+  });
+
+  it('a call-expression value (`getTools()`) is also refused', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: getTools() });`;
+    const { violations } = scanAgentCalls(script);
+    expect(violations.length).toBeGreaterThan(0);
+  });
+
+  it('the hint names the hazard, not a generic message', () => {
+    const script = `const tools=['Bash']; agent('a', { prompt: 'p', allowedTools: tools });`;
+    const { violations } = scanAgentCalls(script);
+    const v = violations.find((x) => x.key === 'allowedTools');
+    expect(v?.hint).toMatch(/literal array/i);
+  });
+
+  it('a genuine literal array is unaffected (no false positive)', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: ['Read', 'Bash'] });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations).toEqual([]);
+    expect(calls[0]?.allowedTools).toEqual(['Read', 'Bash']);
+  });
+
+  it('an empty literal array `[]` is still recorded as `[]`, not flagged', () => {
+    const script = `agent('a', { prompt: 'p', allowedTools: [] });`;
+    const { violations, calls } = scanAgentCalls(script);
+    expect(violations).toEqual([]);
+    expect(calls[0]?.allowedTools).toEqual([]);
+  });
+});

@@ -301,7 +301,15 @@ export type AgentCallViolationCode =
   /** Issue #154 B2 (shorthand-property gap, advisor-flagged alongside spread): `{ allowedTools }`
    *  — the key name IS a literal the scan could see, but its value comes from a variable, not from
    *  the object literal itself, so it carries the same unverifiable-value hazard as a spread. */
-  | 'AGENT_OPTS_SHORTHAND';
+  | 'AGENT_OPTS_SHORTHAND'
+  /** Issue #154 NEW (HIGH, 2026-10-07 reverify): `allowedTools: <expr>` — a literal key WITH a
+   *  top-level `:` (so neither AGENT_OPTS_SPREAD's no-colon branch nor AGENT_OPTS_SHORTHAND's
+   *  applies), but whose value is not a `[...]` literal of quoted strings (an identifier, member
+   *  expression, call, ternary, …). `parseStringArrayLiteral` already returns `null` for this; the
+   *  gap was that the handler silently left `allowedTools` at 'absent' instead of raising a
+   *  violation, so the real value reached `agent-executor.ts`'s dispatch unexamined while every
+   *  advisory surface ('absent' read as "nothing to verify") reported no tools at all. */
+  | 'AGENT_OPTS_VALUE_NOT_LITERAL';
 
 export interface AgentCallViolation {
   line: number;
@@ -727,7 +735,19 @@ export function scanAgentCalls(script: string): AgentCallScan {
         if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
         if (key === 'allowedTools') {
           const parsed = parseStringArrayLiteral(entry.slice(colonIdx + 1));
-          if (parsed !== null) allowedTools = parsed;
+          if (parsed !== null) {
+            allowedTools = parsed;
+          } else {
+            // Issue #154 NEW HIGH: a non-literal value is exactly as unverifiable as a spread or
+            // shorthand entry — refuse instead of silently defaulting to 'absent' (readonlyBashConflict
+            // and every downstream reader of `allowedTools` below still see 'absent', unchanged).
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_VALUE_NOT_LITERAL',
+              key,
+              hint: "'allowedTools' must be a literal array of string literals, not a variable or expression — it cannot be checked statically. Write 'allowedTools: [\"Tool\", …]' instead",
+            });
+          }
         }
         if (key === 'bash') bashRaw = entry.slice(colonIdx + 1).trim();
         if (LOCKED_PARAM_KEYS.has(key)) {
