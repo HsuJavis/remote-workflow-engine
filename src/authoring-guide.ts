@@ -1084,6 +1084,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
         "wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an " +
         '`enum` type requires the `enum` array of legal values).\n\n' +
+        'This "explicit value always wins" rule is scoped to a TOP-LEVEL own key only: a nested ' +
+        "`workflow()` call's `args` crosses a real OS-process IPC hop, and a function or symbol " +
+        'value anywhere in it (top-level or nested), or a plain `undefined` NESTED inside a ' +
+        "sub-object/array, cannot survive that hop at all (issue #161) — it is refused " +
+        '`PARAM_OUT_OF_RANGE` up front, before anything is sent, rather than silently vanishing and ' +
+        'letting a declared default fill in behind your back. Pass only plain JSON-shaped data: ' +
+        'objects, arrays, strings, numbers, booleans, `null`, and — at the top level only — an ' +
+        'explicit `undefined`.\n\n' +
         // issue #161 B6 (owner-approved): a workflow with NO `meta.params.args` keys at all (or no
         // `params.args` block) used to skip the top-level shape check entirely, so `run_start`/a
         // nested `workflow(name, args)` call could pass an array or a bare string straight through

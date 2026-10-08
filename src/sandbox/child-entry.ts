@@ -15,7 +15,7 @@ import type { SandboxBudget } from '../types.ts';
 // `JSON.stringify` does) — ipc-sentinel.ts has no further dependency of its own, so it is safe to
 // import here with the literal `.ts` extension this file's own `.ts` imports already use (see this
 // file's own header note).
-import { encodeExplicitUndefined, decodeExplicitUndefined } from './ipc-sentinel.ts';
+import { encodeExplicitUndefined, decodeExplicitUndefined, findUnsendableArgValue } from './ipc-sentinel.ts';
 
 // v26 (DES-182, ARCH-118, TASK-182): the live `{usd, tokens}` spend snapshot — piggybacked onto
 // both the initial `start` message (a frame that never calls agent(), e.g. a nested workflow()
@@ -267,6 +267,18 @@ async function main(msg: StartMsg): Promise<void> {
     args: decodeExplicitUndefined(msg.args),
     budget: sandboxBudget,
     async workflow(nameOrRef: unknown, wfArgs?: unknown): Promise<unknown> {
+      // Issue #161 B2 (2026-10-09 reverify): a function/symbol value (any depth) or a nested
+      // `undefined` (inside a sub-object/array, NOT the one legitimate top-level own-key shape
+      // `encodeExplicitUndefined` below exists to carry) crosses `process.send()`'s own JSON
+      // serialization with NO error — `JSON.stringify` just silently drops it, so the host side
+      // sees a key that looks genuinely absent and a declared default silently (and wrongly)
+      // fills in instead. Checked BEFORE any IPC send: refused synchronously, right here, rather
+      // than losing the value in transit and reporting nothing.
+      const unsendable = findUnsendableArgValue(wfArgs);
+      if (unsendable !== null) {
+        const message = `workflow() args.${unsendable.path} is a ${unsendable.kind} value, which cannot cross the sandbox IPC boundary — pass only plain JSON-shaped data (objects, arrays, strings, numbers, booleans, null, and a top-level explicit undefined)`;
+        throw Object.assign(new Error(message), { name: 'PARAM_OUT_OF_RANGE', code: 'PARAM_OUT_OF_RANGE' });
+      }
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingWorkflow.set(callSeq, { resolve, reject }));
       // g2 minor item 4: same non-terminal handling as agent() above — a non-serializable `wfArgs`
