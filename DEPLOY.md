@@ -2785,7 +2785,8 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
     緊急情況用的**逃生閥，不是常態設定**，不要在 unit 裡預設打開；這一步的 `TMPDIR` 固定改成
     `$HOME/.cache/rwt`（`RWE_UPDATE_TEST_TMPDIR` 可覆寫），不用共用的 `/tmp`——`/tmp` 是 tmpfs 時，
     其他使用者的暫存會把剩餘空間壓到引擎的 DISK_LOW 下限以下，整套測試因此大量失敗、更新被退回；
-    覆寫時路徑要短，CLI scratch socket 路徑只有 56 bytes 的額度）→ 跑 `npm run check-config`
+    覆寫時路徑要短，CLI scratch socket 路徑只有 56 bytes 的額度；每次跑之前會刪掉該目錄下超過 12 小時的
+    `rwe-test-*` 殘留（測試行程當掉時留下的），其他東西不動）→ 跑 `npm run check-config`
     （有設 `RWE_CONFIG_PATH` 才跑）→ 全綠才 `$SYSTEMCTL restart rwe`，這裡的 `$SYSTEMCTL` 指的是
     `deploy/systemctl-user` wrapper，實際效果等同 `deploy/rwectl restart`）→ 失敗在任何一步都
     安全失敗、服務留在原版本，見 §6b「可觀測性」。新主機第一次啟動建議手動跑一次

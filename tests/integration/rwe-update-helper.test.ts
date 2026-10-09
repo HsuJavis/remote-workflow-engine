@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync,
-  existsSync, rmSync,
+  existsSync, rmSync, utimesSync,
 } from 'node:fs';
 import { execFileSync, execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -256,5 +256,21 @@ describe('rwe-update.sh test gate TMPDIR (DISK_LOW on a shared /tmp tmpfs)', () 
     expect(exitCode).toBe(0);
     expect(testLine).toBe(`test TMPDIR=${custom}`);
     expect(existsSync(custom)).toBe(true);
+  }, 30000);
+
+  it('prunes rwe-test-* roots older than 12h (a crashed earlier run), never a fresh one or anything else', async () => {
+    const custom = join(rootDir, 'prune-tt');
+    mkdirSync(join(custom, 'rwe-test-crashed', 'deep'), { recursive: true });
+    writeFileSync(join(custom, 'rwe-test-crashed', 'deep', 'blob'), 'x');
+    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
+    utimesSync(join(custom, 'rwe-test-crashed'), dayAgo, dayAgo);
+    mkdirSync(join(custom, 'rwe-test-live'), { recursive: true });  // a suite still running elsewhere
+    writeFileSync(join(custom, 'keep-me'), 'operator file');
+    utimesSync(join(custom, 'keep-me'), dayAgo, dayAgo);
+    const { exitCode } = await runRecorded('tmpdir-prune', { RWE_UPDATE_TEST_TMPDIR: custom });
+    expect(exitCode).toBe(0);
+    expect(existsSync(join(custom, 'rwe-test-crashed'))).toBe(false);
+    expect(existsSync(join(custom, 'rwe-test-live'))).toBe(true);
+    expect(existsSync(join(custom, 'keep-me'))).toBe(true);
   }, 30000);
 });

@@ -162,6 +162,11 @@ fi
 if [ "${RWE_UPDATE_SKIP_TESTS:-}" != "1" ]; then
   TEST_TMPDIR="${RWE_UPDATE_TEST_TMPDIR:-${HOME:-/tmp}/.cache/rwt}"
   mkdir -p "$TEST_TMPDIR"
+  # tests/setup/tmp-root.ts removes its rwe-test-* root on a clean exit only; a crashed worker
+  # leaves it behind. Prune those (and only those) once they are >12h old — no suite runs that
+  # long, so a concurrently running one is never touched.
+  find "$TEST_TMPDIR" -mindepth 1 -maxdepth 1 -name 'rwe-test-*' -mmin +720 -exec rm -rf {} + 2>/dev/null || true
+  echo "test gate TMPDIR=$TEST_TMPDIR"
   if ! TMPDIR="$TEST_TMPDIR" "$NPM" test 2>&1; then
     revert_and_fail "npm test failed"
   fi
