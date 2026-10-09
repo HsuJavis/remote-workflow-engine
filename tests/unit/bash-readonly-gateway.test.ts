@@ -98,7 +98,11 @@ describe('#78(c) SDK gateway — readonly Bash is enforced or refused, never dow
     let realWorkRoot: string;
     let realRoot: string;
     beforeEach(() => {
-      realWorkRoot = mkdtempSync(join(tmpdir(), 'rwe-readonly-gateway-'));
+      // Kept terse on purpose: the SDK gateway's own CLI-scratch sandbox-socket budget allows at
+      // most 56 bytes for workRoot (CLI_SCRATCH_PATH_TOO_LONG) — this prefix, plus tests/setup/
+      // tmp-root.ts's own `rwe-test-XXXXXX` private-root wrapper plus mkdtemp's 6 random chars,
+      // must still fit under that ceiling even when TMPDIR itself is a long path.
+      realWorkRoot = mkdtempSync(join(tmpdir(), 'ro-gw-'));
       realRoot = join(realWorkRoot, 'workflows', 'wf', 'runs', 'run-1');
     });
     afterEach(() => rmSync(realWorkRoot, { recursive: true, force: true }));
