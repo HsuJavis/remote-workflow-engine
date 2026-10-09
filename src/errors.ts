@@ -179,7 +179,10 @@ export const ERROR_CATALOG = {
   AGENT_BEFORE_PHASE: { see: 'workflow_authoring_guide', hint: 'under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()' },
   AGENT_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script agent() label has no params.agents.<label> declaration' },
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
-  PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
+  // issue #156 NEW-2 reverify: also returned at run_start ADMISSION (not only registration) when
+  // `overrides.agents`/`overrides.agents.<label>` is the wrong shape (e.g. a bare string/array/null
+  // instead of an object) — a reader of this one generic table had no way to learn that case existed.
+  PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds; also returned at run_start admission when overrides.agents (or overrides.agents.<label>) is not an object' },
   PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
   // issue #162 item C: an agent()'s `schema` option is not a valid JSON Schema (e.g. a string, or
   // any shape Ajv itself rejects at compile time, such as `schema must be object or boolean`) — a

@@ -350,6 +350,11 @@ export interface RunDagSnapshot {
    *  pre-v26 snapshot (never wrote this key) parses as `undefined` and falls through to
    *  `foldUsage` below, never to a fabricated zero. */
   usage?: RunUsage;
+  /** issue #159 (reverify-3): the seed-time `.claude` config paths stripped before this run's
+   *  terminal transition (mirrors `RunEntry.seedConfigStripped`, run-manager.ts) — OPTIONAL so a
+   *  pre-this-fix snapshot (never wrote this key) parses as `undefined`, same convention as
+   *  `usage` above. Present only when something was actually stripped (never `[]`). */
+  seedConfigStripped?: string[];
 }
 
 interface StoredRun {
@@ -489,6 +494,9 @@ export class InMemoryRunStore implements RunStore {
       // v35 (DES-231): gated on status === 'failed' — a stale column (crash-window row later
       // reclassified interrupted/completed) is never served.
       ...(run.status === 'failed' && run.error ? { error: run.error } : {}),
+      // issue #159 (reverify-3): mirrors SqliteRunStore's own getRun() overlay — present only
+      // when something was actually stripped.
+      ...(s?.seedConfigStripped !== undefined ? { seedConfigStripped: s.seedConfigStripped } : {}),
     };
   }
 

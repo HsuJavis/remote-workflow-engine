@@ -108,4 +108,15 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
     expect(Object.keys(ERROR_CATALOG)).toContain('INVALID_SCHEMA');
     expect(ERROR_CATALOG.INVALID_SCHEMA.see).toBe('workflow_authoring_guide');
   });
+
+  // issue #156 NEW-2 reverify (commit 418a1bf's own message claimed this table was fixed too; it
+  // wasn't — the diff only touched tool-specs.ts's run_start row): PARAM_CONTRACT_INVALID's generic
+  // catalog hint named only the registration-time case (a declared contract malformed/out of its
+  // own bounds) with no mention that run_start admission ALSO returns this code for a malformed
+  // `overrides.agents`/`overrides.agents.<label>` shape — a reader of this ONE generic table (not
+  // run_start's own errors[] row) had no way to learn that.
+  it('[#156 NEW-2] PARAM_CONTRACT_INVALID\'s hint also names the run_start admission case (malformed overrides.agents shape)', () => {
+    expect(ERROR_CATALOG.PARAM_CONTRACT_INVALID.hint).toMatch(/run_start/);
+    expect(ERROR_CATALOG.PARAM_CONTRACT_INVALID.hint).toMatch(/overrides\.agents/);
+  });
 });

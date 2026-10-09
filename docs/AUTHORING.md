@@ -310,7 +310,7 @@ A trigger bound through `triggers:[id]` is PINNED to the HIGHEST-numbered versio
 - `AGENT_BEFORE_PHASE` — under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()
 - `AGENT_UNDECLARED` — a script agent() label has no params.agents.<label> declaration
 - `AGENT_DECLARED_NOT_IN_SCRIPT` — params.agents declares a label no agent() call in the script uses
-- `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds
+- `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds; also returned at run_start admission when overrides.agents (or overrides.agents.<label>) is not an object
 - `PARAM_OUT_OF_RANGE` — a declared or overridden parameter value is outside its allowed range
 - `INVALID_SCHEMA` — an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error
 - `PARAM_LOCKED` — a caller override targets a key the author locked (prompt/allowedTools/bash/skills/mcp/workdir/cwd)

@@ -87,6 +87,17 @@ describe('readArtifactChunk (REQ-022: windowed, capped, realpath-contained)', ()
     expect(readArtifactChunk(ws, 'adir')).toEqual({ error: 'NOT_A_FILE' });
   });
 
+  it("issue #159 (reverify-3): an untouched 0-byte pi mount placeholder is NOT_A_FILE, consistent with listArtifacts hiding it", () => {
+    prepareDispatchMountTargets(ws); // same call pi-gateway-client.ts makes before every dispatch
+    expect(readArtifactChunk(ws, '.claude/settings.json')).toEqual({ error: 'NOT_A_FILE' });
+    expect(readArtifactChunk(ws, '.mcp.json')).toEqual({ error: 'NOT_A_FILE' });
+    // A placeholder an agent later wrote real content into is pullable normally, same as listArtifacts.
+    writeFileSync(join(ws, '.mcp.json'), '{}');
+    const r = readArtifactChunk(ws, '.mcp.json');
+    if ('error' in r) throw new Error(r.error);
+    expect(r.size).toBe(2);
+  });
+
   it('DEFAULT_MAX_CHUNK is a sane 1 MiB ceiling', () => {
     expect(DEFAULT_MAX_CHUNK).toBe(1024 * 1024);
   });

@@ -363,6 +363,10 @@ export class SqliteRunStore implements RunStore {
       // v35 (DES-231): gated on status === 'failed' — a stale column (crash-window row later
       // reclassified interrupted/completed) is never served.
       ...(row.status === 'failed' && row.error ? { error: JSON.parse(row.error) as RunStatusView['error'] } : {}),
+      // issue #159 (reverify-3): restores the seed-time strip report after a restart, same
+      // conditional-spread convention as the fields above (present only when something was
+      // actually stripped — mirrors RunDagSnapshot's own "never []" rule).
+      ...(snap?.seedConfigStripped !== undefined ? { seedConfigStripped: snap.seedConfigStripped } : {}),
     };
   }
 

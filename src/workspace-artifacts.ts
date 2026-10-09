@@ -106,6 +106,12 @@ export function readArtifactChunk(
   } catch {
     return { error: 'NOT_A_FILE' };
   }
+  // issue #159 (reverify-3): the SAME "0 bytes at this exact path = untouched engine mount
+  // placeholder, not client content" rule listArtifacts applies above — workspace_pull must agree
+  // with workspace_list, or a client sees the placeholder hidden from one tool and still readable
+  // from the other. relPath is compared as given (forward-slash already, same as listArtifacts'
+  // own relPath — this engine ships/tests on Linux only).
+  if (size === 0 && MOUNT_PLACEHOLDER_FILES.has(relPath)) return { error: 'NOT_A_FILE' };
   const off = Math.max(0, Math.floor(offset));
   const cap = Math.max(0, Math.floor(maxChunk));
   const want = length === undefined ? cap : Math.min(Math.max(0, Math.floor(length)), cap);

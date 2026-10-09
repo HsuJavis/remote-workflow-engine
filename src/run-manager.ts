@@ -2083,7 +2083,10 @@ export class RunManager {
           const secrets = this._secretValueProvider.entries();
           freshAgents = redact(freshAgents, secrets) as typeof freshAgents;
         }
-        await this._store.saveSnapshot(runId, { phases: entry.phases, agents: freshAgents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(freshAgents) });
+        // issue #159 (reverify-3): carry seedConfigStripped into the persisted snapshot too — the
+        // SAME terminal write `entry.seedConfigStripped` (set at materialize time, above) is read
+        // from everywhere else, so a restart does not lose it (mirrors usage's own convention here).
+        await this._store.saveSnapshot(runId, { phases: entry.phases, agents: freshAgents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(freshAgents), ...(entry.seedConfigStripped !== undefined ? { seedConfigStripped: entry.seedConfigStripped } : {}) });
       });
       // v25 (issue #53, adjudication #9 I-2, warning 1): the run is terminal — is anything it owns
       // still running? Run 3977b82d was in EXACTLY this state (its agent ran on for ~36 seconds
@@ -2149,7 +2152,7 @@ export class RunManager {
         const secrets = this._secretValueProvider.entries();
         agents = redact(agents, secrets) as typeof agents;
       }
-      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents) });
+      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents), ...(entry.seedConfigStripped !== undefined ? { seedConfigStripped: entry.seedConfigStripped } : {}) });
     });
   }
 

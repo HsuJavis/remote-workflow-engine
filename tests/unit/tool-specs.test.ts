@@ -401,3 +401,21 @@ describe('run_start advertises PARAM_CONTRACT_INVALID (issue #156 NEW-2)', () =>
     expect(spec.errors).toContain('PARAM_CONTRACT_INVALID');
   });
 });
+
+// issue #159 (reverify-3): run_status/run_result's OWN descriptions never mentioned
+// seedConfigStripped — only the authoring guide and docs/AUTHORING.md did, which breaks the "an MCP
+// tool description must be self-contained" contract (the client plugin is removed; a cold client
+// reading tools/list alone has no way to learn this field exists).
+describe("run_status/run_result descriptions document seedConfigStripped (issue #159 reverify-3)", () => {
+  it("run_status's description mentions seedConfigStripped", () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_status');
+    if (!spec) throw new Error('run_status not found in TOOL_SPECS');
+    expect(spec.description).toMatch(/seedConfigStripped/);
+  });
+
+  it("run_result's description mentions seedConfigStripped", () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_result');
+    if (!spec) throw new Error('run_result not found in TOOL_SPECS');
+    expect(spec.description).toMatch(/seedConfigStripped/);
+  });
+});
