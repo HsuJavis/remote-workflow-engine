@@ -2782,7 +2782,10 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
     偵測到旗標 → `rwe-update.service` 跑 `deploy/rwe-update.sh`（`git fetch` 官方 remote 限定 →
     checkout tag → `npm ci && npm run build` → **`npm test` 當 gate**（任一紅就安全失敗、不繼續；
     `RWE_UPDATE_SKIP_TESTS=1` 可以跳過這一步，但這是給測試套件本身壞掉、需要先繞過才能恢復服務的
-    緊急情況用的**逃生閥，不是常態設定**，不要在 unit 裡預設打開）→ 跑 `npm run check-config`
+    緊急情況用的**逃生閥，不是常態設定**，不要在 unit 裡預設打開；這一步的 `TMPDIR` 固定改成
+    `$HOME/.cache/rwt`（`RWE_UPDATE_TEST_TMPDIR` 可覆寫），不用共用的 `/tmp`——`/tmp` 是 tmpfs 時，
+    其他使用者的暫存會把剩餘空間壓到引擎的 DISK_LOW 下限以下，整套測試因此大量失敗、更新被退回；
+    覆寫時路徑要短，CLI scratch socket 路徑只有 56 bytes 的額度）→ 跑 `npm run check-config`
     （有設 `RWE_CONFIG_PATH` 才跑）→ 全綠才 `$SYSTEMCTL restart rwe`，這裡的 `$SYSTEMCTL` 指的是
     `deploy/systemctl-user` wrapper，實際效果等同 `deploy/rwectl restart`）→ 失敗在任何一步都
     安全失敗、服務留在原版本，見 §6b「可觀測性」。新主機第一次啟動建議手動跑一次

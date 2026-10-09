@@ -13,6 +13,11 @@
 #   RWE_CONFIG_ENV_FILE — optional env file whose RWE_SECRET_* lines check-config gets (see below)
 #   GIT                 — git binary override (default: git)
 #   NPM                 — npm binary override (default: npm)
+#   RWE_UPDATE_TEST_TMPDIR — TMPDIR for the `npm test` gate only (default: $HOME/.cache/rwt).
+#                         Keeps the suite off a shared /tmp tmpfs, where other users' scratch
+#                         can push free space under the engine's DISK_LOW floor and fail the
+#                         deploy (v0.37.9, 2026-10-09). Keep it short: the CLI scratch socket
+#                         path built under it has a 56-byte budget.
 #   SYSTEMCTL           — systemctl binary override (default: systemctl)
 #
 # Exit codes (feed the result detail; match DES-060):
@@ -155,7 +160,9 @@ fi
 # RWE_UPDATE_SKIP_TESTS=1 (service Environment) to opt out if the suite ever needs an env
 # the oneshot lacks.
 if [ "${RWE_UPDATE_SKIP_TESTS:-}" != "1" ]; then
-  if ! "$NPM" test 2>&1; then
+  TEST_TMPDIR="${RWE_UPDATE_TEST_TMPDIR:-${HOME:-/tmp}/.cache/rwt}"
+  mkdir -p "$TEST_TMPDIR"
+  if ! TMPDIR="$TEST_TMPDIR" "$NPM" test 2>&1; then
     revert_and_fail "npm test failed"
   fi
 fi

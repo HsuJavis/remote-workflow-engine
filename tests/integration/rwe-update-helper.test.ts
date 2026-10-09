@@ -58,6 +58,8 @@ async function runHelper(opts: {
   remoteDir: string;
   shimDir: string;
   npmExitCode?: number;
+  npmRecordFile?: string;
+  extraEnv?: Record<string, string>;
   systemctlRecordFile?: string;
   flagPath: string;
   resultPath: string;
@@ -68,6 +70,9 @@ async function runHelper(opts: {
     writeFileSync(flagPath, opts.flagContent);
   }
   const npmShim = makeShim(shimDir, 'npm', opts.npmExitCode ?? 0);
+  if (opts.npmRecordFile) {
+    writeFileSync(npmShim, `#!/bin/sh\necho "$1 TMPDIR=$TMPDIR" >> "${opts.npmRecordFile}"\nexit ${opts.npmExitCode ?? 0}\n`);
+  }
   const systemctlRecord = opts.systemctlRecordFile ?? join(shimDir, 'systemctl-calls.txt');
   const systemctlShim = makeShim(shimDir, 'systemctl', 0, systemctlRecord);
 
@@ -84,6 +89,7 @@ async function runHelper(opts: {
         SYSTEMCTL: systemctlShim,
         GIT: 'git',
         HOME: shimDir,  // prevent ~/.gitconfig from interfering
+        ...opts.extraEnv,
       },
       cwd: workDir,
     });
@@ -212,5 +218,43 @@ describe('rwe-update.sh child-process harness (DES-060)', () => {
     // Must be clean exit 0 (not exit 10 / failure) — systemd should not mark the oneshot failed
     expect(exitCode).toBe(0);
     expect(result).toBeNull();
+  }, 30000);
+});
+
+// 2026-10-09: the v0.37.9 self-update failed twice because `npm test` ran in the shared /tmp tmpfs —
+// other users' scratch pushed free space under the engine's 5 GiB DISK_LOW floor, so ~290 tests
+// failed and the deploy reverted. The test gate now runs with TMPDIR on the updater's own disk.
+describe('rwe-update.sh test gate TMPDIR (DISK_LOW on a shared /tmp tmpfs)', () => {
+  async function runRecorded(name: string, extraEnv?: Record<string, string>) {
+    const caseDir = join(rootDir, name);
+    mkdirSync(caseDir, { recursive: true });
+    const remoteDir = initRemote(caseDir, 'v1.0.0');
+    const workDir = initWorking(caseDir, remoteDir);
+    const shimDir = join(caseDir, 'shims');
+    mkdirSync(shimDir, { recursive: true });
+    const npmRecordFile = join(caseDir, 'npm-calls.txt');
+    const { exitCode } = await runHelper({
+      flagContent: 'v1.0.0\n', workDir, remoteDir, shimDir,
+      flagPath: join(caseDir, 'update.flag'), resultPath: join(caseDir, 'result.json'),
+      lockPath: join(caseDir, 'update.lock'), npmRecordFile, extraEnv,
+    });
+    const lines = readFileSync(npmRecordFile, 'utf-8').trim().split('\n');
+    return { exitCode, shimDir, caseDir, testLine: lines.find((l) => l.startsWith('test ')), ciLine: lines.find((l) => l.startsWith('ci ')) };
+  }
+
+  it('npm test runs with TMPDIR=$HOME/.cache/rwt (created), not the inherited /tmp; npm ci keeps the inherited TMPDIR', async () => {
+    const { exitCode, shimDir, testLine, ciLine } = await runRecorded('tmpdir-default', { TMPDIR: '/tmp' });
+    expect(exitCode).toBe(0);
+    expect(testLine).toBe(`test TMPDIR=${join(shimDir, '.cache', 'rwt')}`);
+    expect(existsSync(join(shimDir, '.cache', 'rwt'))).toBe(true);
+    expect(ciLine).toBe('ci TMPDIR=/tmp');
+  }, 30000);
+
+  it('RWE_UPDATE_TEST_TMPDIR overrides the default', async () => {
+    const custom = join(rootDir, 'custom-tt');
+    const { exitCode, testLine } = await runRecorded('tmpdir-override', { RWE_UPDATE_TEST_TMPDIR: custom });
+    expect(exitCode).toBe(0);
+    expect(testLine).toBe(`test TMPDIR=${custom}`);
+    expect(existsSync(custom)).toBe(true);
   }, 30000);
 });
