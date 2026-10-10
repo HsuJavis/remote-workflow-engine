@@ -557,6 +557,9 @@ export class AssetSyncService {
     // second regex (a duplicated rule is a rule that drifts).
     const nameVerdict = lexicalVerdict('asset-tree', req.name);
     if (nameVerdict.kind !== 'ok') return { error: assetNameErrorCode(nameVerdict) };
+    // lexicalVerdict drops a bare "." segment, so an asset NAME of exactly "." came back ok and
+    // would be stored at `<…>/<kind>/.` — the kind directory itself (#166 final reverify).
+    if (req.name === '.') return { error: 'INVALID_ARGUMENT' };
     const pushedBy = req.pushedBy ?? 'local';
     const pushedAt = this._clock.isoNow();
     const workflow = req.scope === 'workflow' ? req.workflow : undefined;
@@ -839,6 +842,11 @@ export class AssetSyncService {
    *  surfaced as `warning: 'ASSET_CLEANUP_INCOMPLETE'` on the otherwise-successful result, same
    *  convention as `deleteWorkflowTree`. */
   async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean; warning?: string }> {
+    // The ASSET name is a path segment too: a bare "." would resolve `<…>/skill/.` to the whole
+    // skill directory (every skill of the workflow, or every global skill). Refused pre-commit.
+    if (!this._lenientWorkflowSegmentOk(req.name)) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: asset name '${req.name}' is not a valid path segment`);
+    }
     const root = req.kind === 'skill' ? this._skillRootLenient(req.scope, req.workflow, req.name) : undefined;
     if (req.kind === 'skill' && root === undefined) {
       throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${req.workflow}' is not a valid path segment`);
@@ -870,8 +878,9 @@ export class AssetSyncService {
    *  the EXACT same way the byte ceiling did: a real, previously-deletable skill tree becomes
    *  undeletable through `workspace_delete`. The reserved prefix is a registration-time naming
    *  POLICY, not a path-safety rule — on a delete site, with the row already catalog-confirmed,
-   *  it protects nothing, so a `RESERVED_PREFIX` verdict is tolerated (`_lenientWorkflowSegmentOk`,
-   *  below); every OTHER lexical rejection (`ESCAPE`, `ABSOLUTE`, `NUL`, `EMPTY`) still refuses.
+   *  it protects nothing, so it is tolerated (`_lenientWorkflowSegmentOk`, below, which checks
+   *  single-segment containment directly: empty, NUL, a separator, or a bare `.`/`..` refuse;
+   *  a drive-shaped `C:foo` is a plain POSIX segment and is allowed).
    *  `deleteWorkflowTree` (the sibling used by `workflow_deregister`) now shares this exact same
    *  helper, for the identical reason — see round-3 reverify note on that method's own doc. */
   private _skillRootLenient(scope: AssetScope, workflow: string | undefined, name: string): string | undefined {
@@ -900,9 +909,15 @@ export class AssetSyncService {
    *  the gap `lexicalVerdict`'s segment-dropping leaves open for this call shape, with no effect
    *  on any other caller of `lexicalVerdict`. */
   private _lenientWorkflowSegmentOk(workflow: string): boolean {
-    if (workflow === '.' || workflow === '..') return false;
-    if (workflow.includes('/') || workflow.includes('\\')) return false;
-    const verdict = lexicalVerdict('asset-tree', workflow);
-    return verdict.kind === 'ok' || verdict.reason === 'RESERVED_PREFIX';
+    // A bare catalog name is exactly ONE path segment. With no separator, no NUL, and not the
+    // literal `.`/`..`, `join(root, workflow)` can only ever name a direct child of `root` — so
+    // every other `lexicalVerdict` refusal (RESERVED_PREFIX, and ABSOLUTE for a drive-shaped
+    // `C:foo`, which `isValidBareName` admits and which is NOT absolute on POSIX) is a
+    // registration-time naming policy, never a containment risk at this cleanup site. Checking
+    // the containment rules directly (rather than whitelisting lexicalVerdict reasons) keeps a
+    // legal-but-unusual legacy name from orphaning its tree (#166 final reverify).
+    if (workflow === '' || workflow === '.' || workflow === '..') return false;
+    if (workflow.includes('\0') || workflow.includes('/') || workflow.includes('\\')) return false;
+    return true;
   }
 }

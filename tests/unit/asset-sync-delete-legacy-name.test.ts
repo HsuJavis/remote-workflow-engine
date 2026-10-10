@@ -195,4 +195,48 @@ describe('AssetSyncService.delete() — a legacy byte-oversized workflow name mu
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Final reverify: a drive-letter-shaped legacy workflow name (C:foo) is registerable
+  // (isValidBareName admits it) and is a single POSIX segment — its skill tree must be deletable.
+  it('a drive-letter-shaped workflow name (C:foo) is deletable — ABSOLUTE is not a containment risk for a single POSIX segment', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-delete-drive-'));
+    try {
+      const svc = makeService(dir, true);
+      const skillDir = join(dir, 'C:foo', 'skill', 'myskill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '# myskill');
+      const result = await svc.delete({ scope: 'workflow', workflow: 'C:foo', kind: 'skill', name: 'myskill' });
+      expect(result.deleted).toBe(true);
+      expect(existsSync(skillDir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Final reverify (pre-existing, low): an ASSET name of exactly "." passed lexicalVerdict (the
+  // bare "." segment is dropped), so delete({name:'.'}) resolved to <assets>/<wf>/skill and
+  // removed EVERY skill of that workflow. A single-segment asset name must be refused on delete
+  // (pre-commit) and on push.
+  it('asset name "." / ".." is refused INVALID_NAME before any catalog call and touches nothing; push refuses "." too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-delete-dot-asset-'));
+    try {
+      const svc = makeService(dir, true);
+      const skillDir = join(dir, 'wf', 'skill', 'keep');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '# keep');
+      for (const name of ['.', '..']) {
+        let code: string | undefined;
+        try { await svc.delete({ scope: 'workflow', workflow: 'wf', kind: 'skill', name }); }
+        catch (err) { code = (err as { code?: string }).code; }
+        expect(code).toBe('INVALID_NAME');
+        expect(existsSync(skillDir)).toBe(true);
+      }
+      const pushed = await svc.push({ scope: 'workflow', workflow: 'wf', kind: 'skill', name: '.', files: [{ path: 'SKILL.md', contentB64: Buffer.from('# x').toString('base64') }] } as never);
+      expect((pushed as { error?: string }).error).toBeDefined();
+      expect(existsSync(skillDir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+

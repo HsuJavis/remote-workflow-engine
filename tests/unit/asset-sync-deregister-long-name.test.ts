@@ -155,4 +155,27 @@ describe('AssetSyncService.deleteWorkflowTree — ENAMETOOLONG/ENOENT tolerance 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Final reverify (medium): `C:foo` passes `isValidBareName`, so it is registerable and
+  // workspace_push creates `<assets>/C:foo/…`; but `lexicalVerdict` classifies a leading drive
+  // letter as ABSOLUTE, so the cleanup refused it and orphaned the tree. On POSIX a single
+  // segment with no separator — drive-shaped or not — always joins INSIDE the asset root.
+  it('a drive-letter-shaped legacy name (C:foo) with a real tree is removed; empty/NUL names are still refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-del-drive-'));
+    try {
+      const svc = makeService(dir);
+      const treeDir = join(dir, 'C:foo', 'skill', 'declared-skill');
+      mkdirSync(treeDir, { recursive: true });
+      writeFileSync(join(treeDir, 'SKILL.md'), '# x');
+      expect(svc.deleteWorkflowTree('C:foo')).toEqual({ removed: true });
+      expect(existsSync(join(dir, 'C:foo'))).toBe(false);
+      expect(existsSync(dir)).toBe(true);
+      expect(svc.deleteWorkflowTree('')).toEqual({ removed: false });
+      expect(svc.deleteWorkflowTree('a\0b')).toEqual({ removed: false });
+      expect(existsSync(dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+
