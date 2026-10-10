@@ -350,12 +350,18 @@ export function viewerWorkflowVersions(
  *  agent passes through exactly those two states on the way to settling), not a warning; without
  *  this gate every poll of an ordinary in-progress run would carry a spurious warning on its very
  *  first agent() call. `undefined` when the run is not terminal, or nothing is `queued`/`running`,
- *  so both callers' own `warnings` array stays absent rather than `[]` on every healthy run. */
-function agentStillRunningWarning(status: RunStatus, agents: AgentRecord[]): { code: 'AGENT_STILL_RUNNING'; message: string } | undefined {
+ *  so both callers' own `warnings` array stays absent rather than `[]` on every healthy run.
+ *
+ *  issue #165 reverify-2 (independent-verifier finding, 2026-10-10): `inflightAgentCount` is read
+ *  from `RunManager.inflightAgentCount(runId)` — THIS process's own live records — never from
+ *  `agents.filter(...)` over a persisted snapshot (the prior shape). Counting off the snapshot made
+ *  this warning PERMANENT once the process that owned an in-flight fire-and-forget call restarted:
+ *  the snapshot still shows it `queued`/`running` forever, nothing will ever settle it again, and
+ *  "poll again" stops being true advice. See `RunManager.inflightAgentCount`'s own doc. */
+function agentStillRunningWarning(status: RunStatus, inflightAgentCount: number): { code: 'AGENT_STILL_RUNNING'; message: string } | undefined {
   if (!TERMINAL.has(status)) return undefined;
-  const n = agents.filter((a) => a.state === 'queued' || a.state === 'running').length;
-  if (n === 0) return undefined;
-  return { code: 'AGENT_STILL_RUNNING', message: `${n} agent() call(s) still in flight; usage will be back-filled once they settle — poll again` };
+  if (inflightAgentCount === 0) return undefined;
+  return { code: 'AGENT_STILL_RUNNING', message: `${inflightAgentCount} agent() call(s) still in flight; usage will be back-filled once they settle — poll again` };
 }
 
 export class McpFacade {
@@ -1058,11 +1064,13 @@ export class McpFacade {
     const isOwner = merged.principal !== undefined && principal.kind !== 'auth-disabled' && principal.kind !== 'loopback-exempt' && principal.id === merged.principal;
     const adminReads = isOwner ? this.store.auditFor(a.runId) : undefined;
     // issue #162(1) (owner decision): `run_status` gets the SAME `AGENT_STILL_RUNNING` signal
-    // `_resultMeta` computes for `run_result` (below), off the live overlay `status()` already
-    // resolved — never the heavier usage/budgetEnforceable machinery `run_result`'s own `meta`
-    // carries, which nothing here needs. `warnings` here is the ONLY populated key, matching
-    // `ResultEnvelope.meta`'s own doc ("`run_status` populates ONLY `warnings`").
-    const stillRunning = agentStillRunningWarning(merged.status, merged.agents);
+    // `_resultMeta` computes for `run_result` (below) — never the heavier usage/budgetEnforceable
+    // machinery `run_result`'s own `meta` carries, which nothing here needs. `warnings` here is
+    // the ONLY populated key, matching `ResultEnvelope.meta`'s own doc ("`run_status` populates
+    // ONLY `warnings`"). issue #165 reverify-2: the COUNT comes from `runManager.inflightAgentCount`
+    // (this process's own live records), not from `merged.agents` (see that accessor's own doc
+    // for why a persisted snapshot cannot tell a restart-orphaned call apart from a live one).
+    const stillRunning = agentStillRunningWarning(merged.status, this.runManager.inflightAgentCount(a.runId));
     return {
       runId: merged.runId, status: merged.status,
       ...(merged.principal ? { principal: merged.principal } : {}),
@@ -1118,11 +1126,14 @@ export class McpFacade {
     const unpricedModels = [...new Set([...pinnedUnpriced, ...usedUnpriced])];
     const budgetEnforceable = { usd: priceBook !== null && unpricedModels.length === 0 && usage.unpricedCalls === 0, tokens: true, unpricedModels };
     const { failedAgentCount } = summarizeAgentFailures(view.agents);
-    // issue #162(1) (owner decision): `view.agents` is the terminal snapshot `_transition` took —
-    // the SAME array `agent_live_at_terminal` (run-manager.ts) checks for a `queued`/`running` entry
-    // at the exact moment this run went terminal; a fire-and-forget call still in flight then shows
-    // up here exactly like it does there, no live overlay needed (`_resultMeta`'s own doc, above).
-    const stillRunning = agentStillRunningWarning(view.status, view.agents);
+    // issue #162(1) (owner decision): a fire-and-forget call still in flight the moment this run
+    // went terminal is exactly what `agent_live_at_terminal` (run-manager.ts) also observes at that
+    // same moment. issue #165 reverify-2: the COUNT here is `runManager.inflightAgentCount(runId)`
+    // — this process's own live records — never `view.agents` (the persisted snapshot
+    // `_transition` wrote). A snapshot-only read cannot tell a call that genuinely is still
+    // settling apart from one whose owning process restarted and will NEVER settle it again; see
+    // `RunManager.inflightAgentCount`'s own doc.
+    const stillRunning = agentStillRunningWarning(view.status, this.runManager.inflightAgentCount(runId));
     const warnings = [
       ...(failedAgentCount !== undefined && failedAgentCount > 0
         ? [{ code: 'AGENT_FAILED' as const, message: `${failedAgentCount} agent(s) failed; see run_status.agentFailures for detail` }]

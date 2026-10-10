@@ -1580,6 +1580,29 @@ export class RunManager {
     await this._transition(runId, entry, 'stopped');
   }
 
+  /** issue #165 reverify-2 (independent-verifier finding, 2026-10-10): the number of this run's
+   *  agent() calls genuinely still in flight IN THIS PROCESS right now — i.e. this process still
+   *  holds a live `RunEntry` for `runId` whose spawner is a real `AgentExecutor`, and that
+   *  executor's own live records (the SAME source `_mergeLive` reads) show `queued`/`running`.
+   *
+   *  Deliberately NOT a read of `view.agents`/`merged.agents` (the run's PERSISTED snapshot) —
+   *  `McpFacade`'s `agentStillRunningWarning` used to count straight off that array, which can
+   *  legitimately show a fire-and-forget call `queued`/`running` the instant the run went terminal
+   *  (the documented #162 D gap, closed once that call settles IN-PROCESS via
+   *  `onAgentSettled`/`_maybeRefoldLateUsage`). After an ENGINE RESTART that snapshot is all that
+   *  is left — the process that owned the in-flight call is gone, its sandbox child was SIGKILLed
+   *  with it (`sweepOrphanSandboxChildren`, main.ts), and nothing will EVER settle it again; a
+   *  fresh process's RunManager has no `_runs` entry for that already-terminal run (entries are
+   *  rehydrated only on an explicit suspend/resume call, never speculatively on every runId), so
+   *  this returns `0` for it — correctly, since there is genuinely nothing left for THIS process
+   *  to observe settling. A snapshot-only read could not tell that case apart from the ordinary,
+   *  will-settle-soon one; this accessor can. */
+  inflightAgentCount(runId: string): number {
+    const entry = this._runs.get(runId);
+    if (!entry || !(entry.spawner instanceof AgentExecutor)) return 0;
+    return entry.spawner.getAllRecords().filter((a) => a.state === 'queued' || a.state === 'running').length;
+  }
+
   async status(runId: string): Promise<RunStatusView> {
     const view = await this._store.getRun(runId);
     // issue #92 item 2: 'not found' replaces the hardcoded 'unknown' — there genuinely is no

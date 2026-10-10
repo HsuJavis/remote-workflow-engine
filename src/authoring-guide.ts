@@ -1400,7 +1400,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "totals once it settles, so a figure read AT the terminal moment can be a lower bound until " +
         'then. While this is happening, `run_result`/`run_status`\'s own `meta.warnings` carries ' +
         "`{code:'AGENT_STILL_RUNNING', message}` (issue #162(1)) — that is the signal to poll again " +
-        'rather than trust the figure as final; it disappears once every call has settled. Otherwise ' +
+        'rather than trust the figure as final; it disappears once every call has settled. This ' +
+        'tracks the engine PROCESS that owns the call, not a persisted fact (issue #165 ' +
+        'reverify-2): across an engine restart the warning stops appearing for a call that process ' +
+        'owned — there is nothing left for any process to observe settling — and that call\'s ' +
+        'usage, if any, is whatever had already been captured before the restart, final. Otherwise ' +
         '`await` every call whose spend you need counted or whose completion you need to know about.\n\n' +
         'Inside the script, the read-only `budget` object answers each limit with its own accessor: ' +
         '`budget.limits.usd` / `budget.limits.tokens` are the two ceilings (`null` when that limit is ' +
