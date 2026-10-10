@@ -645,7 +645,12 @@ export class McpFacade {
       // workspace. Only on an actual removal (`removed:false` deleted nothing and must delete
       // nothing here either), and optional-chained because a unit-constructed facade may have no
       // asset sync bound at all.
-      if (removed) this.assetSync?.deleteWorkflowTree(a.name);
+      // Issue #166 decision 1: by this point the catalog's DB-side delete has ALREADY committed —
+      // `deleteWorkflowTree` itself never throws any more (ENOENT/ENAMETOOLONG mean "nothing to
+      // remove"; any other fs error is logged server-side and comes back as `warning` instead),
+      // so this can only ever ADD an advisory note to the otherwise-successful response below,
+      // never flip it to a failure for a delete that already happened.
+      const treeResult = removed ? this.assetSync?.deleteWorkflowTree(a.name) : undefined;
       // v25 (REQ-119, DES-166): and the rendered diagrams — same reason as the asset tree above.
       // Issue #87 (2026-09-26): a re-registration of the freed NAME no longer starts its version
       // numbering back at 'v1' (the per-name high-water mark in `workflow_version_hwm` survives a
@@ -661,7 +666,13 @@ export class McpFacade {
         const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
         return { runId: '', status: 'failed', code: error.code, error };
       }
-      return { runId: '', status: 'completed', name: a.name, removed, releasedTriggers, result: { name: a.name, removed, releasedTriggers } };
+      // Issue #166 decision 1: `treeResult?.warning` surfaces ONLY when asset-tree cleanup hit a
+      // real (non-ENOENT/ENAMETOOLONG) fs error — never for the common "nothing to clean up" case,
+      // and never in place of `removed:true`, which is already guaranteed by this point.
+      return {
+        runId: '', status: 'completed', name: a.name, removed, releasedTriggers,
+        result: { name: a.name, removed, releasedTriggers, ...(treeResult?.warning ? { warning: treeResult.warning } : {}) },
+      };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };
@@ -1517,7 +1528,11 @@ export class McpFacade {
       const r = a.scope === 'global'
         ? await this.assetSync.delete({ scope: 'global', kind: a.kind, name: a.name })
         : await this.assetSync.delete({ scope: 'workflow', workflow: a.workflow!, kind: a.kind, name: a.name });
-      return { runId: '', status: 'completed', result: { deleted: r.deleted } };
+      // Issue #166 decision 1 (r5-a round-3 reverify): same convention as `workflowDeregister`'s
+      // own `treeResult?.warning` forwarding above — `delete()`'s on-disk cleanup is best-effort
+      // and never turns a completed catalog delete into a reported failure; a non-ENOENT/
+      // ENAMETOOLONG fs error surfaces here as an advisory `warning`, present only when it fired.
+      return { runId: '', status: 'completed', result: { deleted: r.deleted, ...(r.warning ? { warning: r.warning } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: a.runId ?? '', status: 'failed', code: e.code, error: e };

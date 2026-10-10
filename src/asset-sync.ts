@@ -513,8 +513,12 @@ export class AssetSyncService {
     // exposure the workflow-catalog.ts B4 fix closed at registration, named explicitly in that
     // issue's plan as a second site needing the same check. `push()` below already refuses an
     // invalid `workflow` before ever reaching here (returning the clean `{error}` shape its callers
-    // expect); this is the backstop for this method's OTHER two callers (the provisioning-check read
-    // and `delete()`), which have no such pre-check of their own.
+    // expect); this is the backstop for this method's one remaining caller with no pre-check of its
+    // own — `resolveDeclaredAssets`'s provisioning-check read. (`delete()` used to rely on this same
+    // backstop too; #166 decision 1, r5-a round-3 reverify, moved it to its own PRE-commit lenient
+    // check, `_skillRootLenient` + its own throw, because this method's STRICT byte/char ceiling —
+    // right for a fresh read — wrongly refused a legacy, byte-oversized-but-otherwise-valid workflow
+    // name on delete.)
     if (scope === 'workflow' && workflow !== undefined && !isValidBareName(workflow)) {
       throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${workflow}' is not a valid path segment`);
     }
@@ -553,6 +557,9 @@ export class AssetSyncService {
     // second regex (a duplicated rule is a rule that drifts).
     const nameVerdict = lexicalVerdict('asset-tree', req.name);
     if (nameVerdict.kind !== 'ok') return { error: assetNameErrorCode(nameVerdict) };
+    // lexicalVerdict drops a bare "." segment, so an asset NAME of exactly "." came back ok and
+    // would be stored at `<…>/<kind>/.` — the kind directory itself (#166 final reverify).
+    if (req.name === '.') return { error: 'INVALID_ARGUMENT' };
     const pushedBy = req.pushedBy ?? 'local';
     const pushedAt = this._clock.isoNow();
     const workflow = req.scope === 'workflow' ? req.workflow : undefined;
@@ -765,26 +772,153 @@ export class AssetSyncService {
    *
    *  The workflow name is a PATH SEGMENT here, so it goes through the same `lexicalVerdict` every
    *  asset name and file path goes through before anything is removed: a name that is not a plain
-   *  contained segment deletes NOTHING (returning false) rather than resolving to some parent of
-   *  the asset root. `deregister` accepts an arbitrary string from the wire; `rmSync` does not get
-   *  to see one. */
-  deleteWorkflowTree(workflow: string): boolean {
-    const verdict = lexicalVerdict('asset-tree', workflow);
-    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return false;
-    rmSync(join(this._workRoot, workflow), { recursive: true, force: true });
-    return true;
+   *  contained segment deletes NOTHING (returning `{removed:false}`) rather than resolving to some
+   *  parent of the asset root. `deregister` accepts an arbitrary string from the wire; `rmSync`
+   *  does not get to see one.
+   *
+   *  Issue #166 decision 1: by the time this runs, the catalog's DB-side delete has ALREADY
+   *  committed (`mcp-facade.ts`'s `workflowDeregister` only calls this `if (removed)`) — there is
+   *  no DB row left to roll back, so nothing this method does can turn the overall deregister back
+   *  into "it didn't happen". A legacy name that predates the length limits (registered before
+   *  #154/#166, or — per #166 decision 2 — one that satisfies the 128-character ceiling while
+   *  still exceeding the 200-UTF-8-byte one) can be long enough that `rmSync`'s own `lstat` fails
+   *  with `ENAMETOOLONG` regardless of whether anything is actually on disk at that path;
+   *  `force:true` only ever suppresses `ENOENT`, never that. Both are caught HERE and treated as
+   *  "nothing on disk to remove" — a deregister whose own on-disk asset tree can no longer even be
+   *  NAMED is, as far as this method is concerned, already clean. Any OTHER fs error (e.g. EACCES)
+   *  is caught too, for the same "the DB delete already happened" reason, logged server-side
+   *  (never shipped to the MCP caller — see `errors.ts`'s `toErrEnvelope`, #166 decision 3) and
+   *  surfaced as a `warning` on the otherwise-successful `{removed:true}` result rather than a
+   *  thrown `INTERNAL_ERROR` that would misreport a completed delete as a failure.
+   *
+   *  reverify-r5-a round 3 (medium): used to run a STRICT `lexicalVerdict` that also rejects a
+   *  `RESERVED_PREFIX` name (case-insensitive, #154 B4 follow-up) — a legacy `RWE-*`/`rwe-*`-named
+   *  workflow (valid at registration before that follow-up, and whose pushed skill tree was itself
+   *  materialized through the prefix-blind `isValidBareName`) got `{removed:false}` with NO
+   *  warning: the DB row was already gone (same as any other name) but the tree was silently
+   *  orphaned, permanently out of reach (the freed name can't be re-registered to retry, and
+   *  `workspace_delete` needs `catalog.exists`, which is also now false). Routed through the SAME
+   *  `_lenientWorkflowSegmentOk` helper `_skillRootLenient` (below) already used for `delete()`'s
+   *  own pre-commit check, for the identical reason: the reserved prefix is a REGISTRATION-time
+   *  naming policy, not a path-safety rule, and protects nothing once the row is already gone. */
+  deleteWorkflowTree(workflow: string): { removed: boolean; warning?: string } {
+    if (!this._lenientWorkflowSegmentOk(workflow)) return { removed: false };
+    try {
+      rmSync(join(this._workRoot, workflow), { recursive: true, force: true });
+      return { removed: true };
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'ENOENT' || code === 'ENAMETOOLONG') return { removed: true };
+      console.error(`[asset-sync] deleteWorkflowTree: on-disk cleanup failed after the catalog row was already removed (code=${code ?? 'unknown'}) — see workflow_deregister's warning`);
+      return { removed: true, warning: 'ASSET_CLEANUP_INCOMPLETE' };
+    }
   }
 
   /** Removes the row THEN the tree (DES-153) — a `skill` row also owns an on-disk tree; `mcp` is
    *  catalog-only. Issue #92 part B: the tree is only touched when the catalog actually removed a
    *  row (`deleted:true`) — a `deleted:false` (nothing matched) leaves whatever is on disk alone
    *  rather than blindly `rmSync`-ing a path that may not even belong to this name. The `{deleted}`
-   *  the catalog reports is returned as-is, not re-derived. */
-  async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean }> {
+   *  the catalog reports is returned as-is, not re-derived.
+   *
+   *  Issue #166 decision 1 (regression fix, r5-a round-3 reverify): the tree cleanup below runs
+   *  AFTER `deleteAsset` has already committed the DB-side delete — there is no row left to roll
+   *  back by then, the exact same invariant `deleteWorkflowTree` documents for
+   *  `workflow_deregister`. `_skillRoot()`'s strict `isValidBareName` check (which also enforces
+   *  `MAX_BARE_NAME_BYTES`, #166 decision 2's own ceiling) is therefore run BEFORE `deleteAsset`
+   *  here as its own pre-check — `codedError('INVALID_NAME', …)` thrown here never reaches the "DB
+   *  committed, then a filesystem step throws" trap decision 1 forbids, because nothing has been
+   *  committed yet; it keeps B4's original guarantee that this reusable class refuses a garbage
+   *  workflow string (an escape attempt, embedded `/`, `..`, …) on its own, independent of any
+   *  caller-side check. That strict pre-check is exactly what regressed for a LEGACY workflow name
+   *  between 201 and 255 UTF-8 bytes — fully valid at registration time (under the pre-#166
+   *  128-character limit, and under the filesystem's own NAME_MAX), so a real skill could really
+   *  have been pushed under it — so the pre-check here uses the LENIENT twin instead
+   *  (`_skillRootLenient`): a lexical-only verdict (blocks `/`, `\`, `..`, empty, NUL, a reserved
+   *  prefix — still a real refusal, still BEFORE any DB call — but never the byte/char ceilings
+   *  `isValidBareName` added, which are a registration-time POLICY, not a filesystem necessity).
+   *  `rmSync`'s own `ENOENT`/`ENAMETOOLONG` (reachable only for a TRULY NAME_MAX-exceeding legacy
+   *  name, past the lenient check's own byte-blind pass) are treated as "nothing on disk to
+   *  remove", never re-thrown. Any OTHER fs error (e.g. `EACCES`) is logged server-side and
+   *  surfaced as `warning: 'ASSET_CLEANUP_INCOMPLETE'` on the otherwise-successful result, same
+   *  convention as `deleteWorkflowTree`. */
+  async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean; warning?: string }> {
+    // The ASSET name is a path segment too: a bare "." would resolve `<…>/skill/.` to the whole
+    // skill directory (every skill of the workflow, or every global skill). Refused pre-commit.
+    if (!this._lenientWorkflowSegmentOk(req.name)) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: asset name '${req.name}' is not a valid path segment`);
+    }
+    const root = req.kind === 'skill' ? this._skillRootLenient(req.scope, req.workflow, req.name) : undefined;
+    if (req.kind === 'skill' && root === undefined) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${req.workflow}' is not a valid path segment`);
+    }
     const result = await this._catalog.deleteAsset(req);
-    if (result.deleted && req.kind === 'skill') {
-      rmSync(this._skillRoot(req.scope, req.workflow, req.name), { recursive: true, force: true });
+    if (!result.deleted || req.kind !== 'skill' || root === undefined) return result;
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'ENOENT' || code === 'ENAMETOOLONG') return result;
+      console.error(`[asset-sync] delete(): on-disk cleanup failed after the catalog row was already removed (code=${code ?? 'unknown'}) — surfaced as workspace_delete's result.warning`);
+      return { ...result, warning: 'ASSET_CLEANUP_INCOMPLETE' };
     }
     return result;
+  }
+
+  /** Issue #166 decision 1: the lenient twin of `_skillRoot()` for `delete()`'s own PRE-commit
+   *  refusal check — never throws itself (the caller does, from `undefined`). Tolerates a legacy,
+   *  byte-oversized-but-otherwise-valid workflow name (see `delete()`'s own doc for why
+   *  `_skillRoot()`'s strict `isValidBareName` check is wrong for this call site). `undefined`
+   *  means "this workflow string is not safely joinable at all" (empty, a path separator, `..`,
+   *  NUL, or a bare `.`/`..` name) — `delete()` refuses BEFORE calling the catalog for that case.
+   *
+   *  Advisor-caught defect (r5-a, pre-report): `lexicalVerdict` ALSO rejects a `RESERVED_PREFIX`
+   *  (case-insensitive, post the #154 B4 follow-up), but `isValidBareName` is deliberately
+   *  prefix-blind (path-verdict.ts's own comment on it) — a legacy `RWE-*`-named workflow,
+   *  perfectly valid under the check `_skillRoot()` used to run here, would otherwise regress
+   *  the EXACT same way the byte ceiling did: a real, previously-deletable skill tree becomes
+   *  undeletable through `workspace_delete`. The reserved prefix is a registration-time naming
+   *  POLICY, not a path-safety rule — on a delete site, with the row already catalog-confirmed,
+   *  it protects nothing, so it is tolerated (`_lenientWorkflowSegmentOk`, below, which checks
+   *  single-segment containment directly: empty, NUL, a separator, or a bare `.`/`..` refuse;
+   *  a drive-shaped `C:foo` is a plain POSIX segment and is allowed).
+   *  `deleteWorkflowTree` (the sibling used by `workflow_deregister`) now shares this exact same
+   *  helper, for the identical reason — see round-3 reverify note on that method's own doc. */
+  private _skillRootLenient(scope: AssetScope, workflow: string | undefined, name: string): string | undefined {
+    if (scope !== 'workflow') return join(this._globalRoot, 'skill', name);
+    if (workflow === undefined) return undefined;
+    if (!this._lenientWorkflowSegmentOk(workflow)) return undefined;
+    return join(this._workRoot, workflow, 'skill', name);
+  }
+
+  /** Shared by `deleteWorkflowTree` and `_skillRootLenient` — both are POST-commit (DB row already
+   *  gone) cleanup-site checks, so neither needs `isValidBareName`'s registration-time POLICY
+   *  ceilings (byte/char length) or its `RESERVED_PREFIX` naming convention: tolerating them here
+   *  protects nothing once the row is confirmed gone, and refusing them is exactly what orphans a
+   *  real, previously-deletable tree (round-3 reverify finding on `deleteWorkflowTree`; the
+   *  `RESERVED_PREFIX` half of this was already fixed on `_skillRootLenient` alone, round 2).
+   *
+   *  Still refuses every GENUINE path escape for a single segment — `/`, `\`, NUL, EMPTY, `..` —
+   *  checked directly (no longer via `lexicalVerdict`, whose ABSOLUTE verdict wrongly refused a
+   *  POSIX-safe `C:foo`), plus, explicitly, the literal name `.`. `lexicalVerdict` drops a bare `.`
+   *  PATH SEGMENT before deciding (so a MULTI-segment relative path like `foo/.` still correctly
+   *  resolves to `foo`), but that same rule makes a workflow NAME of EXACTLY `.` come back
+   *  `kind:'ok'` with an EMPTY segment list — joined as `join(root, '.')`, that resolves to `root`
+   *  ITSELF. For `deleteWorkflowTree`, a legacy `.`-named catalog row would `rmSync` the WHOLE
+   *  asset root (every workflow's tree); for `_skillRootLenient`, it resolves to
+   *  `<root>/skill/<name>` — inside a (real) sibling workflow literally named `skill`. A bare
+   *  workflow name is never multi-segment, so refusing the literal `.`/`..` strings here closes
+   *  the gap `lexicalVerdict`'s segment-dropping leaves open for this call shape, with no effect
+   *  on any other caller of `lexicalVerdict`. */
+  private _lenientWorkflowSegmentOk(workflow: string): boolean {
+    // A bare catalog name is exactly ONE path segment. With no separator, no NUL, and not the
+    // literal `.`/`..`, `join(root, workflow)` can only ever name a direct child of `root` — so
+    // every other `lexicalVerdict` refusal (RESERVED_PREFIX, and ABSOLUTE for a drive-shaped
+    // `C:foo`, which `isValidBareName` admits and which is NOT absolute on POSIX) is a
+    // registration-time naming policy, never a containment risk at this cleanup site. Checking
+    // the containment rules directly (rather than whitelisting lexicalVerdict reasons) keeps a
+    // legal-but-unusual legacy name from orphaning its tree (#166 final reverify).
+    if (workflow === '' || workflow === '.' || workflow === '..') return false;
+    if (workflow.includes('\0') || workflow.includes('/') || workflow.includes('\\')) return false;
+    return true;
   }
 }

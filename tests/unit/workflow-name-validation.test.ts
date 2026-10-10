@@ -71,3 +71,37 @@ describe('#154 B4: workflow_register refuses malformed/escaping names, not just 
     expect(resolve(folder).startsWith(resolve(workRoot))).toBe(true);
   });
 });
+
+// Issue #166 decision 2: a name within the 128-CHARACTER limit can still exceed Linux's NAME_MAX
+// (255 UTF-8 bytes per path component) once it is built from multi-byte characters — the exact
+// live repro (`ver-01-u-` + ~119 CJK characters, 128 chars/~366 bytes) that reached
+// `workflow_deregister` and threw a raw `ENAMETOOLONG` instead of ever being refused at
+// registration. New registrations must ALSO satisfy a 200-UTF-8-byte ceiling
+// (`MAX_BARE_NAME_BYTES`, path-verdict.ts) — refused INVALID_NAME, with the byte limit named in
+// the message so a caller can tell this refusal apart from the character-count one.
+describe('#166 decision 2: workflow_register ALSO refuses a byte-oversized (but character-limit-compliant) name', () => {
+  it('a 128-character CJK name (well under MAX_BARE_NAME_LENGTH, ~384 UTF-8 bytes) is refused INVALID_NAME', async () => {
+    const name = '名'.repeat(128);
+    expect(name.length).toBe(128);
+    expect(Buffer.byteLength(name, 'utf8')).toBeGreaterThan(255);
+    await expect(
+      catalog.validateRegistration({ name, script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ code: 'INVALID_NAME' });
+  });
+
+  it('the INVALID_NAME message names the 200-byte ceiling (not just the 128-character one)', async () => {
+    const name = '名'.repeat(128);
+    await expect(
+      catalog.validateRegistration({ name, script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ message: expect.stringContaining('200') });
+  });
+
+  it('a name just under BOTH ceilings (character and byte) still registers (no false positive)', async () => {
+    // 100 chars of 'ñ' (2 UTF-8 bytes each) = 100 characters, 200 bytes — exactly AT the byte
+    // ceiling and well under the character one; MAX_BARE_NAME_BYTES itself is inclusive.
+    const name = 'ñ'.repeat(100);
+    await expect(
+      catalog.validateRegistration({ name, script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).resolves.toBeDefined();
+  });
+});

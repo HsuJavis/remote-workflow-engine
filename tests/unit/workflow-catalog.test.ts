@@ -315,6 +315,41 @@ describe('validateStoredVersion() — re-validates an ALREADY-STORED version aga
     if (!result.ok) expect(result.detail?.['violation']).toBe('INVALID_NAME');
   });
 
+  // Issue #166 decision 2: a legacy row registered BEFORE the 128-character limit existed (or,
+  // after it, built from multi-byte characters so it stayed under 128 characters while still
+  // exceeding 200 UTF-8 bytes — the exact live repro) must be demoted the SAME way every other
+  // #154 B1-B4 staleness cause is: `NOT_RUNNABLE`/`INVALID_NAME` via this method, which reuses the
+  // SAME `isValidBareName` registration now checks — never a code this method invents on its own.
+  it('a stored row whose NAME exceeds the 200-UTF-8-byte ceiling (but not the 128-character one) is NOT_RUNNABLE / INVALID_NAME', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-166-byte-'));
+    const cat = new WorkflowCatalog(workRoot);
+    const name = 'ver-01-u-' + '名'.repeat(119); // 128 chars, ~366 UTF-8 bytes — the issue's own repro shape
+    expect(name.length).toBe(128);
+    expect(Buffer.byteLength(name, 'utf8')).toBeGreaterThan(255);
+    seedRawVersion(workRoot, name, 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion(name, 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('NOT_RUNNABLE');
+      expect(result.detail?.['violation']).toBe('INVALID_NAME');
+    }
+  });
+
+  // An ASCII legacy name (registered before any length rule existed at all) exceeding 255 bytes —
+  // the OTHER half of the issue's live repro — must be demoted the same way.
+  it('a stored row whose ASCII NAME exceeds both the character and byte ceilings is NOT_RUNNABLE / INVALID_NAME', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-166-ascii-'));
+    const cat = new WorkflowCatalog(workRoot);
+    const name = 'edge-01-long-' + 'x'.repeat(290);
+    seedRawVersion(workRoot, name, 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion(name, 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('NOT_RUNNABLE');
+      expect(result.detail?.['violation']).toBe('INVALID_NAME');
+    }
+  });
+
   it('a valid name is unaffected by the new name check (no false positive)', async () => {
     const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-b4-valid-'));
     const cat = new WorkflowCatalog(workRoot);

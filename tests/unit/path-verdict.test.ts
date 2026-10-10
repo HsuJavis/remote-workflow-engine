@@ -2,7 +2,7 @@
 // realpath; the three caller-typed namespaces removed. Written test-first (Gate 5, RED) —
 // src/path-verdict.ts does not exist yet.
 import { describe, it, expect } from 'vitest';
-import { lexicalVerdict, pathVerdict, type Dest } from '../../src/path-verdict.js';
+import { lexicalVerdict, pathVerdict, isValidBareName, MAX_BARE_NAME_BYTES, type Dest } from '../../src/path-verdict.js';
 
 describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () => {
   const STRIPPED_ROWS = [
@@ -127,5 +127,47 @@ describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () 
   it('pathVerdict rejects a reserved rwe- segment on the default (run-workspace) destination too (#159 C6)', () => {
     expect(pathVerdict('/workroot/run1', 'rwe-notes.txt', (p) => p).reason).toBe('RESERVED_PREFIX');
     expect(pathVerdict('/workroot/run1', 'rwe-notes.txt', (p) => p, 'asset-tree').reason).toBe('RESERVED_PREFIX');
+  });
+});
+
+// Issue #166 decision 2: the pre-existing `MAX_BARE_NAME_LENGTH` (128) counts JS string
+// characters — a 128-character name built from 3-byte-UTF-8 CJK characters (e.g. "名") is
+// ~384 UTF-8 bytes, well past Linux's NAME_MAX (255 bytes per path component), yet
+// `isValidBareName` admitted it, and the same name joined directly as `assets/<name>` (asset-sync
+// .ts) and `workflows/<name>` (workflow-catalog.ts's `workFolder`) — ENAMETOOLONG territory. A
+// NEW byte ceiling is added ALONGSIDE the existing character ceiling, not instead of it, so both
+// `validateRegistration` and `_computeStoredVersionValidity` (workflow-catalog.ts, both call
+// `isValidBareName` directly) gain the byte check for free and can never disagree about it.
+describe('isValidBareName — UTF-8 byte ceiling, additional to the character ceiling (#166 decision 2)', () => {
+  it('MAX_BARE_NAME_BYTES is 200', () => {
+    expect(MAX_BARE_NAME_BYTES).toBe(200);
+  });
+
+  it('a 128-character CJK name (~384 UTF-8 bytes) is UNDER the character limit but now refused for exceeding the byte limit', () => {
+    const name = '名'.repeat(128);
+    expect(name.length).toBe(128); // under MAX_BARE_NAME_LENGTH
+    expect(Buffer.byteLength(name, 'utf8')).toBeGreaterThan(255); // past NAME_MAX
+    expect(isValidBareName(name)).toBe(false);
+  });
+
+  it('a name of exactly MAX_BARE_NAME_BYTES bytes, still under the character limit, is accepted (boundary, no false positive)', () => {
+    // 'ñ' is 2 UTF-8 bytes — 100 of them is 200 bytes and only 100 characters (under the
+    // separate 128-character ceiling, isolating this case to the byte check alone).
+    const name = 'ñ'.repeat(100);
+    expect(name.length).toBe(100);
+    expect(Buffer.byteLength(name, 'utf8')).toBe(MAX_BARE_NAME_BYTES);
+    expect(isValidBareName(name)).toBe(true);
+  });
+
+  it('a name of MAX_BARE_NAME_BYTES + 1 bytes, still under the character limit, is refused (one byte over the boundary)', () => {
+    const name = 'ñ'.repeat(100) + 'x'; // 201 bytes, 101 characters
+    expect(name.length).toBe(101);
+    expect(Buffer.byteLength(name, 'utf8')).toBe(MAX_BARE_NAME_BYTES + 1);
+    expect(isValidBareName(name)).toBe(false);
+  });
+
+  it('an ordinary short multi-byte name is unaffected (no false positive)', () => {
+    expect(isValidBareName('guide-nested workflow() black box')).toBe(true);
+    expect(isValidBareName('名-01')).toBe(true);
   });
 });
