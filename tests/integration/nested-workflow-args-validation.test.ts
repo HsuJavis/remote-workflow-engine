@@ -231,3 +231,53 @@ describe('issue #107: nested workflow() applies the CHILD contract\'s args valid
     expect(dispatchedPrompts).toEqual([]);
   });
 });
+
+// Issue #161 (round-3 INFO, 2026-10-10 reverify): the tester reported these as SILENT, lossy
+// conversions a nested `workflow()` args call makes that neither the refusal above nor the guide
+// documents: a `Map`/`Set` value becomes `{}`, a nested `NaN` becomes `null`, and a symbol-keyed
+// own property is dropped — "behaviour unchanged, docs only" per the contract, but the contract
+// also requires verifying the claim empirically BEFORE documenting it, so this run end-to-end
+// through a REAL forked sandbox child (same `workflow()` path the #161 B2 cases above exercise)
+// rather than assuming `JSON.stringify`'s well-known behavior carries over unchanged through this
+// engine's own `findUnsendableArgValue`/encode-decode layer untouched.
+describe('issue #161 (round-3 INFO): nested workflow() args lossy-conversion claims, verified empirically before documenting', () => {
+  let workRoot: string;
+  let catalog: WorkflowCatalog;
+  let mgr: RunManager;
+
+  beforeEach(() => {
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-nested-args-lossy-'));
+    catalog = new WorkflowCatalog(workRoot, CLOCK);
+    const store = new InMemoryRunStore(CLOCK);
+    mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner() });
+  });
+  afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
+
+  it('a Map/Set value nested in args becomes {} in the child (own-key scan sees no own string keys to flag, then JSON serialization drops the internal slot)', async () => {
+    await registerPublished(catalog, 'c161-map-set', `export const meta = {};\nreturn { m: args.zzz.m, s: args.zzz.s };`);
+    const runId = await startScript(
+      mgr,
+      `return await workflow('c161-map-set', { zzz: { m: new Map([['a', 1]]), s: new Set([1, 2]) } });`,
+    );
+    expect(await completedValue(mgr, runId)).toEqual({ m: {}, s: {} });
+  });
+
+  it('a nested NaN becomes null in the child (JSON.stringify(NaN) === "null"; not caught by the unsendable-value scan, which only flags function/symbol/undefined)', async () => {
+    await registerPublished(catalog, 'c161-nested-nan', `export const meta = {};\nreturn { n: args.zzz.n, isNull: args.zzz.n === null };`);
+    const runId = await startScript(mgr, `return await workflow('c161-nested-nan', { zzz: { n: NaN } });`);
+    expect(await completedValue(mgr, runId)).toEqual({ n: null, isNull: true });
+  });
+
+  it('a symbol-keyed own property is silently dropped (Object.keys/JSON.stringify both ignore symbol keys; the string-keyed siblings are unaffected)', async () => {
+    await registerPublished(
+      catalog,
+      'c161-symbol-key',
+      `export const meta = {};\nreturn { keys: Object.keys(args.zzz), k: args.zzz.k };`,
+    );
+    const runId = await startScript(
+      mgr,
+      `return await workflow('c161-symbol-key', { zzz: { [Symbol('sneaky')]: 'should not survive', k: 1 } });`,
+    );
+    expect(await completedValue(mgr, runId)).toEqual({ keys: ['k'], k: 1 });
+  });
+});

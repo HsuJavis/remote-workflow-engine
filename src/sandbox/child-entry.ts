@@ -15,7 +15,7 @@ import type { SandboxBudget } from '../types.ts';
 // `JSON.stringify` does) — ipc-sentinel.ts has no further dependency of its own, so it is safe to
 // import here with the literal `.ts` extension this file's own `.ts` imports already use (see this
 // file's own header note).
-import { encodeExplicitUndefined, decodeExplicitUndefined, findUnsendableArgValue } from './ipc-sentinel.ts';
+import { encodeExplicitUndefined, decodeExplicitUndefined, findUnsendableArgValue, unsendableArgMessage } from './ipc-sentinel.ts';
 
 // v26 (DES-182, ARCH-118, TASK-182): the live `{usd, tokens}` spend snapshot — piggybacked onto
 // both the initial `start` message (a frame that never calls agent(), e.g. a nested workflow()
@@ -276,8 +276,10 @@ async function main(msg: StartMsg): Promise<void> {
       // than losing the value in transit and reporting nothing.
       const unsendable = findUnsendableArgValue(wfArgs);
       if (unsendable !== null) {
-        const message = `workflow() args.${unsendable.path} is a ${unsendable.kind} value, which cannot cross the sandbox IPC boundary — pass only plain JSON-shaped data (objects, arrays, strings, numbers, booleans, null, and a top-level explicit undefined)`;
-        throw Object.assign(new Error(message), { name: 'PARAM_OUT_OF_RANGE', code: 'PARAM_OUT_OF_RANGE' });
+        // Issue #161 (round-3): message text ("a function/symbol value", "an undefined value")
+        // now built by the one shared, directly-tested `unsendableArgMessage` (ipc-sentinel.ts)
+        // rather than hand-typed here — that is where the "a undefined value" grammar bug was.
+        throw Object.assign(new Error(unsendableArgMessage(unsendable)), { name: 'PARAM_OUT_OF_RANGE', code: 'PARAM_OUT_OF_RANGE' });
       }
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingWorkflow.set(callSeq, { resolve, reject }));

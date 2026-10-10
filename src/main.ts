@@ -334,6 +334,16 @@ function resolveAuthSecrets(auth: FileConfig['auth'], source: SecretSource): Fil
 // exported, independently testable composition helper (IT-021/IT-022's own documented contract) —
 // this is what makes a wiring gap here catchable by a unit/integration-tier test that boots the
 // way main.ts itself does, not only by a real-run validation round (ORCH D-F10 structural rule).
+// Issue #121 (owner decision 2026-10-10): workspace-retention default. The engine shipped with
+// workspaceTtlMs OMITTED meaning "no auto-GC at all" (ServerConfig's own doc comment, server.ts) —
+// safe but meant every deployment accumulated terminal-run workspaces forever unless an operator
+// opted in by hand. The owner decided the DEFAULT should be 7 days, applied automatically on
+// deploy with no production rwe.config.json edit required; an EXPLICIT `workspaceTtlMs: 0` in the
+// file must still mean disabled (composeConfig's own `??` below only ever substitutes for an
+// ABSENT key, never for `0` — `0` is a real, intentional value here, same as every other ceiling
+// in this file that distinguishes "operator wrote 0" from "operator wrote nothing").
+export const WORKSPACE_TTL_DEFAULT_MS = 7 * 24 * 60 * 60 * 1000; // 604800000
+
 export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigDeps = {}): Promise<ServerConfig> {
   // v24 (ARCH-090, DES-141) / v34 (DES-227, ARCH-139, TASK-229, REQ-203): an unrecognized top-level
   // key — a typo, or a key that USED to be forwarded and was retired (`graphAnalyzer`,
@@ -634,7 +644,14 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // is silently dropped here — server.ts defaults _gcTtl to 0, so the sweep timer fires
     // hourly instead of at workspaceTtlMs (the auth-table GC clause still runs, but
     // workspace reclaim is also broken). Same class as the v15 auth-forwarding fix.
-    workspaceTtlMs: fileConfig.workspaceTtlMs,
+    // Issue #121: `?? WORKSPACE_TTL_DEFAULT_MS` applies ONLY when the key is absent from the file
+    // (`undefined`) — an explicit `0` passes straight through unchanged, still disabled. The
+    // default lives HERE (composeConfig), not as ServerConfig's own fallback in server.ts: that
+    // would also change what every `createServer()` test/in-process caller gets with no
+    // workspaceTtlMs at all, arming a GC timer (and, with `hasWorkflow` wired, the destructive
+    // asset-tree sweep legacy-asset-migration.test.ts's own premise depends on being OFF by
+    // default) for callers that never went through a config FILE and never opted into this at all.
+    workspaceTtlMs: fileConfig.workspaceTtlMs ?? WORKSPACE_TTL_DEFAULT_MS,
     // v21 (ARCH-066 inv-6, DES-104, TASK-100): forwarded regardless of gateway choice — RunManager/
     // McpFacade apply their own fail-closed defaults (600_000ms / 1024 bytes / 'high') when omitted.
     // Same wiring-gap class as v11 updateFlagPath / v15 auth / v16 workspaceTtlMs.

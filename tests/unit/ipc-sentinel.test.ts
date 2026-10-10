@@ -5,7 +5,7 @@
 // Mock policy (unit): pure functions, no I/O, no subprocess — the real IPC round-trip is covered
 // separately by run-args-resume.test.ts / an acceptance-level nested workflow() case.
 import { describe, it, expect } from 'vitest';
-import { encodeExplicitUndefined, decodeExplicitUndefined, IPC_EXPLICIT_UNDEFINED, findUnsendableArgValue } from '../../src/sandbox/ipc-sentinel.js';
+import { encodeExplicitUndefined, decodeExplicitUndefined, IPC_EXPLICIT_UNDEFINED, findUnsendableArgValue, unsendableArgMessage } from '../../src/sandbox/ipc-sentinel.js';
 
 describe('encodeExplicitUndefined / decodeExplicitUndefined (#161 B2)', () => {
   it('encode: an own key valued `undefined` becomes the sentinel string', () => {
@@ -129,5 +129,27 @@ describe('findUnsendableArgValue (#161 B2 NOT FIXED half: function values, neste
     for (const v of [['a'], 'x', 3, null, undefined]) {
       expect(findUnsendableArgValue(v)).toBeNull();
     }
+  });
+});
+
+// Issue #161 (round-3 INFO): "a undefined value" is a grammar bug — 'undefined' starts with a
+// vowel sound, so the message must read "an undefined value". 'function'/'symbol' both correctly
+// take 'a' already; pinned here too so a future regression (or a new `kind` added with the wrong
+// hardcoded article) is caught for every current value, not just the one that was wrong.
+describe('unsendableArgMessage (#161 round-3: "a <kind> value" grammar)', () => {
+  it('uses "an undefined value" (not "a undefined value")', () => {
+    const msg = unsendableArgMessage({ path: 'zzz.a', kind: 'undefined' });
+    expect(msg).toContain('args.zzz.a is an undefined value,');
+    expect(msg).not.toContain('is a undefined value');
+  });
+
+  it('uses "a function value"', () => {
+    const msg = unsendableArgMessage({ path: 'f', kind: 'function' });
+    expect(msg).toContain('args.f is a function value,');
+  });
+
+  it('uses "a symbol value"', () => {
+    const msg = unsendableArgMessage({ path: 's', kind: 'symbol' });
+    expect(msg).toContain('args.s is a symbol value,');
   });
 });

@@ -62,6 +62,55 @@ describe('listArtifacts (REQ-023: recursive + sha256, escape-safe)', () => {
     expect(paths2).toEqual(['.gitconfig', 'real.txt']);
   });
 
+  // Issue #159 (round-3, RUNNING-run row): `.idea`/`.vscode` are `kind:'dir'` entries in
+  // `READONLY_MOUNT_TARGETS` (bash-confinement.ts) — this engine always pre-creates them as real
+  // empty DIRECTORIES (project-config-guard.ts's `createMountTargets`, `kind:'dir'` branch:
+  // `mkdirSync`). But neither gateway's OWN dispatch-prep ever pre-creates `.idea`/`.vscode` for pi:
+  // `prepareDispatchMountTargets` only covers `PROJECT_CONFIG_MOUNT_TARGETS`, which has no
+  // `.idea`/`.vscode` entry, and `prepareReadonlyMountTargets` (the one that WOULD pre-create them)
+  // is only ever called by the SDK gateway's `bashMode:'readonly'` branch — pi's own dispatch path
+  // never calls it at all (grep confirms no `prepareReadonlyMountTargets`/`READONLY_MOUNT_TARGETS`
+  // reference anywhere in pi-gateway-client.ts).
+  // Root cause (traced into the vendored dependency, @anthropic-ai/sandbox-runtime 0.0.78, the ONLY
+  // srt copy the pi gateway loads — bash-confinement.ts's own HOME_CONVENIENCE_WRITE_DIRS doc
+  // comment has the "bundled CLI embeds its own compiled copy, pi loads the npm package" precedent
+  // this reuses): `getDangerousDirectories()` (sandbox-utils.js) hardcodes `.vscode`/`.idea` into
+  // the MANDATORY write-deny set for EVERY sandboxed Bash call regardless of bashMode
+  // (`linuxGetCwdMandatoryDenyPaths`, unconditional — not gated on `readonly` the way this engine's
+  // OWN `settingsFiles` denyWrite is). `linux-sandbox-utils.js`'s deny-path loop, when a deny target
+  // is ABSENT and is the leaf (not an intermediate path component, i.e. no `.idea/<child>` below it
+  // is ALSO denied), mounts `/dev/null` directly onto it ("Handle non-existent paths by mounting
+  // /dev/null to block creation" — that function's own comment) — and since `/dev/null` is a file,
+  // bwrap creates the destination AS A REAL 0-BYTE FILE on the host for the live duration of that
+  // sandboxed child process, tracked in `bwrapMountPoints` and removed by `cleanupBwrapMountPoints()`
+  // only once the process exits. That is exactly the tester's observed shape: present while the run
+  // is RUNNING (the sandboxed Bash call is still alive), gone once it completes — and exactly why
+  // `.idea`/`.vscode` need the SAME "untouched 0-byte placeholder, regardless of file-or-dir kind"
+  // exemption `MOUNT_PLACEHOLDER_FILES` already gives every `kind:'file'` entry: the on-disk node
+  // this specific race produces is a FILE even though this engine's own (unrelated) pre-creation
+  // path for the same relative path is a DIRECTORY.
+  it("issue #159 (round-3): hides a 0-byte FILE materialized at a dir-kind READONLY_MOUNT_TARGETS path (.idea, .vscode — the shape pi's vendored sandbox-runtime's own mandatory dangerous-directory deny leaves behind on the host while a sandboxed Bash call is still running), but lists a real file written at the same path", () => {
+    writeFileSync(join(ws, 'real.txt'), 'hello');
+    // Simulates bwrap's own lazy `--ro-bind /dev/null <dest>` mount-point creation for an absent
+    // leaf deny target — a real 0-byte FILE at a path this engine otherwise only ever pre-creates
+    // as a directory.
+    writeFileSync(join(ws, '.idea'), '');
+    writeFileSync(join(ws, '.vscode'), '');
+    const paths = listArtifacts(ws).map((a) => a.path);
+    expect(paths).toEqual(['real.txt']); // the untouched 0-byte file placeholders are hidden
+    expect(readArtifactChunk(ws, '.idea')).toEqual({ error: 'NOT_A_FILE' });
+    expect(readArtifactChunk(ws, '.vscode')).toEqual({ error: 'NOT_A_FILE' });
+    // A placeholder an agent later wrote real content into is no longer hidden — same rule as
+    // every other MOUNT_PLACEHOLDER_FILES entry (listArtifacts/readArtifactChunk's own "0 bytes at
+    // this exact path" test, not the declared `kind`, is what exempts it).
+    writeFileSync(join(ws, '.idea'), 'not an engine placeholder any more');
+    const paths2 = listArtifacts(ws).map((a) => a.path);
+    expect(paths2).toEqual(['.idea', 'real.txt']);
+    const r = readArtifactChunk(ws, '.idea');
+    if ('error' in r) throw new Error(r.error);
+    expect(r.size).toBe('not an engine placeholder any more'.length);
+  });
+
   it('skips a symlink whose real target escapes the workspace', () => {
     writeFileSync(join(outside, 'secret'), 'TOP SECRET');
     try {

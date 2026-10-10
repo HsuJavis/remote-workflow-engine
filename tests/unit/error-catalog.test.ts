@@ -26,6 +26,23 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
     expect((ERROR_CATALOG as Record<string, { see: unknown }>).INTERNAL_ERROR.see).toBeNull();
   });
 
+  // Issue #154 (round-3 INFO, 2026-10-10): the tester's third-round reverify found the guide's
+  // error-code table silent on two already-true behaviors — RESERVED_PREFIX's match is
+  // case-insensitive (path-verdict.ts's `isReservedPrefixed` lowercases before comparing, so
+  // `RWE-x`/`Rwe-x` are refused the same as `rwe-x`) and INVALID_NAME also rejects any C0 control
+  // character (0x00-0x1F) or DEL (0x7F) anywhere in the name, not just leading/trailing whitespace
+  // (`isValidBareName`'s own control-character check). Both behaviors already shipped (v0.37.9/
+  // v0.37.11); this pins the DOCS catching up — the guide is generated from these hints
+  // (`npm run gen:authoring`), so asserting the hint text here is the same guarantee as asserting
+  // the rendered guide text, without duplicating docs/AUTHORING.md's generated prose in a test.
+  it('RESERVED_PREFIX\'s hint states the match is case-insensitive', () => {
+    expect(ERROR_CATALOG.RESERVED_PREFIX.hint.toLowerCase()).toContain('case-insensitiv');
+  });
+
+  it('INVALID_NAME\'s hint states control characters are rejected', () => {
+    expect(ERROR_CATALOG.INVALID_NAME.hint.toLowerCase()).toContain('control charact');
+  });
+
   it('toErrEnvelope(err) reads `see` from the catalog, never hand-typed', () => {
     const err = codedError('CHANNEL_UNPUBLISHED', 'no release', { name: 'x' });
     const env = toErrEnvelope(err);
