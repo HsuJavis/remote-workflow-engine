@@ -111,6 +111,42 @@ describe('AssetSyncService.delete() — a legacy byte-oversized workflow name mu
     }
   });
 
+  // Advisor-caught defect (r5-a, pre-report): a legacy `RWE-*`-prefixed workflow name (registered
+  // before the #154 B4 follow-up made the reserved-prefix check case-insensitive, 2026-10-09) is
+  // STILL valid under `isValidBareName` (prefix-blind by design, path-verdict.ts's own comment) —
+  // `_skillRoot()` happily resolved it at base. `lexicalVerdict('asset-tree', …)`, which
+  // `_skillRootLenient` uses for its pre-commit check, DOES reject a reserved prefix — a strictly
+  // NARROWER tolerance than `isValidBareName` on this one axis, which would make a real,
+  // previously-deletable legacy skill tree undeletable through `workspace_delete` the same way the
+  // byte ceiling did. The reserved-prefix rule is a REGISTRATION-time naming policy, not a
+  // path-safety one; on a delete site, with the row already catalog-confirmed, it protects
+  // nothing, so this pre-commit check must tolerate it (while still refusing a real escape shape).
+  it('a legacy RWE-prefixed workflow name (valid under isValidBareName, which is prefix-blind by design) is still deletable — the lenient check does not newly refuse on RESERVED_PREFIX', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-delete-legacy-prefix-'));
+    try {
+      const svc = makeService(dir, true);
+      const name = 'RWE-legacy-wf';
+      const skillDir = join(dir, name, 'skill', 'myskill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '# myskill');
+      expect(existsSync(skillDir)).toBe(true);
+
+      let result: { deleted: boolean; warning?: string } | undefined;
+      let threw: unknown;
+      try {
+        result = await svc.delete({ scope: 'workflow', workflow: name, kind: 'skill', name: 'myskill' });
+      } catch (err) {
+        threw = err;
+      }
+
+      expect(threw).toBeUndefined();
+      expect(result?.deleted).toBe(true);
+      expect(existsSync(skillDir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('an escaping/invalid workflow string on delete is refused INVALID_NAME BEFORE any catalog call — this fix does not loosen the escape guard, and the refusal is pre-commit', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-166-delete-legacy-escape-'));
     try {

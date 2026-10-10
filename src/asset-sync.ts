@@ -851,12 +851,24 @@ export class AssetSyncService {
    *  byte-oversized-but-otherwise-valid workflow name (see `delete()`'s own doc for why
    *  `_skillRoot()`'s strict `isValidBareName` check is wrong for this call site). `undefined`
    *  means "this workflow string is not safely joinable at all" (empty, a path separator, `..`,
-   *  NUL, a reserved prefix) — `delete()` refuses BEFORE calling the catalog for that case. */
+   *  NUL) — `delete()` refuses BEFORE calling the catalog for that case.
+   *
+   *  Advisor-caught defect (r5-a, pre-report): `lexicalVerdict` ALSO rejects a `RESERVED_PREFIX`
+   *  (case-insensitive, post the #154 B4 follow-up), but `isValidBareName` is deliberately
+   *  prefix-blind (path-verdict.ts's own comment on it) — a legacy `RWE-*`-named workflow,
+   *  perfectly valid under the check `_skillRoot()` used to run here, would otherwise regress
+   *  the EXACT same way the byte ceiling did: a real, previously-deletable skill tree becomes
+   *  undeletable through `workspace_delete`. The reserved prefix is a registration-time naming
+   *  POLICY, not a path-safety rule — on a delete site, with the row already catalog-confirmed,
+   *  it protects nothing, so a `RESERVED_PREFIX` verdict is tolerated here same as the byte/char
+   *  ceilings are; every OTHER lexical rejection (`ESCAPE`, `ABSOLUTE`, `NUL`, `EMPTY`) still
+   *  refuses. `deleteWorkflowTree` (the sibling used by `workflow_deregister`) keeps its own
+   *  pre-existing `RESERVED_PREFIX` refusal unchanged — out of scope here; see residual risk. */
   private _skillRootLenient(scope: AssetScope, workflow: string | undefined, name: string): string | undefined {
     if (scope !== 'workflow') return join(this._globalRoot, 'skill', name);
     if (workflow === undefined) return undefined;
     const verdict = lexicalVerdict('asset-tree', workflow);
-    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return undefined;
+    if ((verdict.kind !== 'ok' && verdict.reason !== 'RESERVED_PREFIX') || workflow.includes('/') || workflow.includes('\\')) return undefined;
     return join(this._workRoot, workflow, 'skill', name);
   }
 }
