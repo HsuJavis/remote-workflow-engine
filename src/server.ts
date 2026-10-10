@@ -1436,7 +1436,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         store
           .listRuns()
           .then((runs) => {
-            // Issue #116 (owner decision): age from the run's own recorded end time
+            // Issue #121 (owner decision): age from the run's own recorded end time
             // (`RunSummary.terminalAt` — the first terminal transition, the run store's
             // authoritative field), not the workspace directory's mtime — via the ONE mapping
             // `gcStatusFromSummary` (workspace-gc.ts), so this wiring is unit-tested directly.

@@ -4,7 +4,7 @@
 // (a snapshot lookup miss => keep). `statusOf`/`nowMs` are injected so this is unit-testable without
 // wall-clock or a live store.
 //
-// Issue #116 (owner decision, 2026-10-10): the TTL ages from the run's own END time — its first
+// Issue #121 (owner decision, 2026-10-10): the TTL ages from the run's own END time — its first
 // terminal transition (`RunSummary.terminalAt`/`RunStatusView.terminalAt`, the run store's
 // authoritative field, NOT `AgentRecord.endedAt`, which is per-agent) — not the workspace
 // directory's mtime. A long-running run (days in flight) must not be reclaimed the moment it
@@ -24,7 +24,7 @@ import type { RunStatus, RunSummary } from './types.js';
 
 const TERMINAL = new Set<RunStatus>(['stopped', 'completed', 'failed']);
 
-/** Issue #116: what `reclaimStaleWorkspaces` needs to know about a run to age it — its current
+/** Issue #121: what `reclaimStaleWorkspaces` needs to know about a run to age it — its current
  *  status, and (when known) its end time as epoch ms. `endedAt` absent/`null` means "no recorded
  *  terminal transition" (a legacy pre-this-feature row), which the TTL loop falls back to the
  *  workspace directory's mtime for. */
@@ -33,7 +33,7 @@ export interface RunStatusInfo {
   endedAt?: number | null;
 }
 
-/** Issue #116: the ONE `RunSummary` -> `RunStatusInfo` mapping — `server.ts`'s sweep builds its
+/** Issue #121: the ONE `RunSummary` -> `RunStatusInfo` mapping — `server.ts`'s sweep builds its
  *  `statusOf` lookup from this, never re-deriving the `terminalAt` parse inline, so the wiring
  *  can be unit-tested directly (no real server boot, no real timer) instead of only through a
  *  real sweep tick racing the TTL itself. `terminalAt` is an ISO string (`RunSummary`'s own
@@ -113,7 +113,7 @@ export function reclaimStaleWorkspaces(
       }
       const info = statusOf(runId);
       if (info === null || !TERMINAL.has(info.status)) continue; // active/suspended/unknown -> keep
-      // Issue #116: age from the run's own recorded end time; a legacy row with none falls back to
+      // Issue #121: age from the run's own recorded end time; a legacy row with none falls back to
       // the directory's mtime (`endedAt` absent/null -> `mtimeMs`). `Number.isFinite` (not `??`)
       // guards the destructive branch below against `NaN` too — a malformed `terminalAt` (an
       // unparseable string past `Date.parse`) must fall back to mtime exactly like "no `terminalAt`

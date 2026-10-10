@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { reclaimStaleWorkspaces, gcStatusFromSummary, type RunStatusInfo } from '../../src/workspace-gc.js';
 import type { RunStatus } from '../../src/types.js';
 
-/** Issue #116: `statusOf` now returns `{status, endedAt}` — this helper builds the common
- *  no-recorded-end-time case (every pre-#116 test below), which `reclaimStaleWorkspaces` falls
+/** Issue #121: `statusOf` now returns `{status, endedAt}` — this helper builds the common
+ *  no-recorded-end-time case (every pre-endedAt test below), which `reclaimStaleWorkspaces` falls
  *  back to the directory's mtime for, preserving this file's existing mtime-based scenarios. */
 const st = (status: RunStatus): RunStatusInfo => ({ status });
 
@@ -198,13 +198,13 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
     });
   });
 
-  // Issue #116 (owner decision, 2026-10-10): the TTL ages from the run's own recorded END time
+  // Issue #121 (owner decision, 2026-10-10): the TTL ages from the run's own recorded END time
   // (`endedAt`, the run store's `terminalAt`), NOT the workspace directory's mtime. A directory's
   // mtime can disagree with when the run actually finished in either direction — a long run whose
   // workspace was seeded (and therefore mtime'd) days before it finished, or a terminal run whose
   // directory was touched again afterward — and the TTL must track the run's true end, not that
   // incidental filesystem timestamp.
-  describe('TTL ages from endedAt, not directory mtime (issue #116)', () => {
+  describe('TTL ages from endedAt, not directory mtime (issue #121)', () => {
     const TTL = 7 * 24 * 60 * 60 * 1000; // 7 days, the production default (issue #121)
 
     it('a run that was IN FLIGHT for 8 days and ended just now is NOT reclaimed, even though its workspace directory is 8 days old', () => {
@@ -245,12 +245,12 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
     });
   });
 
-  // Issue #116: `server.ts`'s sweep builds its `statusOf` lookup from `gcStatusFromSummary(r)` for
+  // Issue #121: `server.ts`'s sweep builds its `statusOf` lookup from `gcStatusFromSummary(r)` for
   // every `RunSummary` `store.listRuns()` returns — this is the ONE mapping, so a composeConfig-
   // class wiring bug (right unit logic, wrong value forwarded at the one real call site — see
   // CLAUDE.md's "composeConfig 佈線 bug class" note) is caught here directly rather than only by a
   // real sweep tick racing the TTL.
-  describe('gcStatusFromSummary (issue #116): the ONE RunSummary -> {status, endedAt} mapping', () => {
+  describe('gcStatusFromSummary (issue #121): the ONE RunSummary -> {status, endedAt} mapping', () => {
     it('forwards status and parses terminalAt to epoch ms', () => {
       expect(gcStatusFromSummary({ status: 'completed', terminalAt: '2026-10-10T00:00:00.000Z' }))
         .toEqual({ status: 'completed', endedAt: Date.parse('2026-10-10T00:00:00.000Z') });

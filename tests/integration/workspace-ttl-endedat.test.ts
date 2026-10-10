@@ -1,4 +1,4 @@
-// Issue #116 (owner decision, 2026-10-10): the workspace-reclaim TTL sweep (server.ts's `sweep()`,
+// Issue #121 (owner decision, 2026-10-10): the workspace-reclaim TTL sweep (server.ts's `sweep()`,
 // workspace-gc.ts's `reclaimStaleWorkspaces`) ages a terminal run's workspace from the run's OWN
 // recorded end time (`RunSummary.terminalAt`, sourced from the `transitions` table's first
 // completed/failed/stopped row) — never the workspace directory's mtime. This is the end-to-end
@@ -77,7 +77,7 @@ afterAll(async () => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('workspace TTL sweep ages from the run\'s own end time, not directory mtime (issue #116, real server)', () => {
+describe('workspace TTL sweep ages from the run\'s own end time, not directory mtime (issue #121, real server)', () => {
   // ONE test, not two independently-timed ones: polling until `stale-run` is reclaimed IS the
   // observation that a real sweep tick has fired (event-driven — no sleep constant to tune, no
   // margin to lose on a loaded runner). The REMOVING tick is always the first tick after both rows
