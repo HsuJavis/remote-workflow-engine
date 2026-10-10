@@ -1028,3 +1028,46 @@ describe('issue #155/#157 follow-up (2026-10-09 re-verification): stale doc nits
     expect(text).toMatch(/maxRunDurationMs`, 4 HOURS by default/);
   });
 });
+
+// Independent-verifier findings, 2026-10-10 round-3 reverify (issues #160/#162): three places the
+// prior guide unification left a sentence that is still false (or over-broad) in the specific case
+// the tester's repro exercises. Written test-first — RED against the pre-fix text.
+describe('issue #160/#162 reverify-2 (2026-10-10, independent-verifier findings)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('finding 1: the "tracks closely" input/cache claim is scoped to a REPORTED (non-estimated) partial figure — an estimated figure\'s input is a floor, not a close track', () => {
+    const budgetSection = sectionOf(text, 'Budget, concurrency, and how wide a fan-out really runs');
+    // The old, unscoped sentence claimed EVERY partial figure's input/cache columns track the
+    // finalized total closely. That is false the moment `estimated:true` applies (a ceil(chars/4)
+    // floor over the dispatched prompt, never the provider's own total) — the paragraph must no
+    // longer make the unscoped claim.
+    expect(budgetSection).not.toMatch(/`input`\/cache columns track the eventual finalized total closely\. /);
+    expect(budgetSection).toMatch(/track the eventual finalized total closely[^.]*\bestimated\b[^.]*absent/i);
+    // Same contradiction, same fix, in run_status's own tool description.
+    const runStatusSpec = TOOL_SPECS.find((s) => s.name === 'run_status')!;
+    expect(runStatusSpec.description).not.toMatch(/`input`\/`cacheRead`\/`cacheWrite` are not affected the same way and track the eventual finalized total closely\./);
+    expect(runStatusSpec.description).toMatch(/track the eventual finalized total closely[^.]*\bestimated\b/i);
+  });
+
+  it('finding 2: the agent() section names EXACTLY which options need a literal VALUE (allowedTools, bash) — it does not claim every option does', () => {
+    const sandboxSection = sectionOf(text, 'The sandbox API');
+    // The old blanket sentence, restated in different words, still read as "every option must be
+    // a literal" even though `prompt`/`schema`/every other value may be a runtime expression.
+    expect(sandboxSection).not.toMatch(/every key must be written `key: <literal>`/);
+    expect(sandboxSection).toMatch(/rule on the OBJECT'?S SHAPE, not on every key'?s VALUE/i);
+    expect(sandboxSection).toMatch(/only TWO keys additionally require/i);
+    expect(sandboxSection).toMatch(/`allowedTools`/);
+    expect(sandboxSection).toMatch(/`bash`/);
+    // The diagram section's own pointer must name the same two keys, not `allowedTools` alone.
+    const diagramSection = sectionOf(text, 'Canonical diagram');
+    expect(diagramSection).toMatch(/`allowedTools` and `bash`'?s values in particular/);
+  });
+
+  it('finding 4: "WILL eventually trip" is scoped to the TOKEN limit; a USD limit is NOT guaranteed to trip on a pre-onHarness estimate (costUSD:0, unpriced:true)', () => {
+    const budgetSection = sectionOf(text, 'Budget, concurrency, and how wide a fan-out really runs');
+    expect(budgetSection).not.toMatch(/counts toward, and WILL eventually\s+trip, a token or USD limit/);
+    expect(budgetSection).toMatch(/WILL eventually trip,?\s+a TOKEN limit/i);
+    expect(budgetSection).toMatch(/costUSD:0, unpriced:true/);
+    expect(budgetSection).toMatch(/USD limit never trips/i);
+  });
+});

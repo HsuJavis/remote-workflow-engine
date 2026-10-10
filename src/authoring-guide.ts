@@ -862,19 +862,35 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "resolves to THAT call even when it also collides with a different call's cosmetic label; " +
         'pass `agentId` to reach one specific call when several genuinely share the SAME value ' +
         'within the SAME field (agentKey, or failing that, label) — array order then decides. ' +
+        // issue #162(2) reverify-2 (independent-verifier finding, 2026-10-10): the sentence this
+        // replaces — "every key must be written `key: <literal>` so it can be checked statically" —
+        // was read, correctly, as a blanket rule on every option's VALUE. It is not: the scan below
+        // requires every ENTRY to be written `key: value` at the syntax level (so a spread/shorthand
+        // entry, which hides its key, is refused before anything about its value is even looked at)
+        // — a rule on the OBJECT'S SHAPE. Only `allowedTools` and `bash` additionally require their
+        // OWN VALUE to be a literal; `prompt`, `schema`, and every other option may be any runtime
+        // expression, read live at dispatch. Stating this precisely here (not just at the diagram
+        // section's pointer) removes the contradiction the tester kept finding two paragraphs later,
+        // where a non-literal `schema` is shown registering fine.
         '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +
-        'property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be ' +
-        'checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / ' +
-        '`AGENT_OPTS_SHORTHAND` at registration, issue #154). This applies key-by-key, not just to ' +
-        'the object as a whole: `allowedTools: tools` (a variable), `allowedTools: cfg.tools` (a ' +
-        'member expression), or `allowedTools: getTools()` (a call) are refused ' +
-        '`AGENT_OPTS_VALUE_NOT_LITERAL` even though the key itself is written literally — only a ' +
-        '`[...]` array literal of quoted strings is checkable. A literal `schema` that can never be ' +
-        "a valid JSON Schema (a string/number/array/null/template-literal — `schema: 'not-a-schema'`) " +
+        'property (`{allowedTools}`) — every entry must be written `key: value` at the syntax ' +
+        'level so this scan can see each key at all (a spread entry hides every key it carries, ' +
+        'a shorthand entry hides its value; both are refused `AGENT_OPTS_SPREAD` / ' +
+        '`AGENT_OPTS_SHORTHAND` at registration, issue #154). That is a rule on the OBJECT\'S ' +
+        "SHAPE, not on every key's VALUE: `prompt`, `schema`, and every other option may be any " +
+        'runtime expression, read live at dispatch. Only TWO keys additionally require their OWN ' +
+        'value to be a literal, checked key-by-key at registration: `allowedTools` (a `[...]` ' +
+        'array literal of quoted strings only — `allowedTools: tools` (a variable), ' +
+        '`allowedTools: cfg.tools` (a member expression), or `allowedTools: getTools()` (a call) ' +
+        'are all refused `AGENT_OPTS_VALUE_NOT_LITERAL` even though the key itself is written ' +
+        "literally) and `bash` (only the literal string `'readonly'` — any other value, including " +
+        'a variable, is refused `BASH_MODE_INVALID`). A literal `schema` that can never be a ' +
+        "valid JSON Schema (a string/number/array/null/template-literal — `schema: 'not-a-schema'`) " +
         'is refused `AGENT_OPTS_SCHEMA_INVALID` at registration too (issue #162); an object literal ' +
         '(checked for real JSON-Schema validity only at dispatch, via ajv — `INVALID_SCHEMA`) or the ' +
         'literal booleans `true`/`false` (valid JSON Schema on their own) are both accepted here, and ' +
-        'a non-literal `schema` value is left entirely to that same dispatch-time ajv check.\n' +
+        'a NON-literal `schema` value — a variable, a function call building the schema at runtime ' +
+        '— registers successfully and is left entirely to that same dispatch-time ajv check.\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +
@@ -1472,7 +1488,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'On a `partial` figure, treat `output` as the column most likely to be a severe ' +
         'underestimate (the per-turn streamed snapshot it is built from only reaches a turn\'s true ' +
         '`output_tokens` on that turn\'s own final frame, which a cut-short call\'s in-flight turn ' +
-        'never reaches) — `input`/cache columns track the eventual finalized total closely. ' +
+        'never reaches) — `input`/cache columns track the eventual finalized total closely ONLY ' +
+        'when `estimated` (below) is absent; an `estimated:true` figure\'s `input` is a deliberate ' +
+        '`ceil(chars/4)` floor over the text this attempt DISPATCHED, never a measurement of what ' +
+        'the provider actually processed. ' +
         'What "streamed in before the cutoff" means depends on the harness: a cutoff that lands ' +
         'after at least one turn has FULLY completed (a tool call and its result, say) always ' +
         'charges that turn\'s own exact figure; for a cutoff mid-TURN, the sdk-cli harness streams ' +
@@ -1506,10 +1525,27 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'one case that stays an honest zero is an attempt aborted before it was ever dispatched at ' +
         'all (the signal was already set when the executor checked); a TIMEOUT with nothing streamed ' +
         'also still stays an honest, un-estimated zero — this estimate is `run_suspend`/`run_stop` ' +
-        'only. Either figure — real or estimated — is charged exactly like a completed call\'s, so a ' +
+        'only. ' +
+        // issue #160 BUG-4 reverify-2 (independent-verifier finding, 2026-10-10): "WILL eventually
+        // trip ... a token OR USD limit" overstated the USD half. The estimate's `input` floor is
+        // charged against `budget.tokens` and IS always nonzero for a non-empty prompt — the TOKEN
+        // claim holds. The SAME estimate's own `costUSD` is a DIFFERENT story: it is computed before
+        // this attempt's `onHarness` has resolved a provider/model (both still `''` at abort time),
+        // so there is no price-book entry to charge against — it prices at `costUSD:0,
+        // unpriced:true` and never moves the USD arm (and flips `budgetEnforceable.usd` to `false`
+        // for the run, same as any other unpriced call — see "A USD budget counts only calls the
+        // model catalog can price" above). A run suspended early and often enough that every
+        // charged figure is one of these never trips a USD limit at all, however many times it is
+        // resumed.
+        'Either figure — real or estimated — is charged exactly like a completed call\'s, so a ' +
         'repeated suspend/resume cycle of a usage-heavy agent counts toward, and WILL eventually ' +
-        'trip, a token or USD limit, including under a provider (OpenRouter via the pi harness) that ' +
-        'never streams mid-turn usage at all. Separately: resuming a ' +
+        'trip, a TOKEN limit, including under a provider (OpenRouter via the pi harness) that never ' +
+        'streams mid-turn usage at all — the floor is always nonzero for a non-empty prompt. A USD ' +
+        'limit is a DIFFERENT claim: an estimate taken before this attempt\'s own provider/model is ' +
+        'resolved prices at `costUSD:0, unpriced:true` (no price-book entry to charge against) and ' +
+        'does not move the USD arm — a run suspended early and often enough that every charged ' +
+        'figure is one of these sees its USD limit never trips, however many times it is resumed. ' +
+        'Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
         'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
         'attempt never itself resolves anything to the script (only the replacement agentId\'s own ' +
@@ -1608,19 +1644,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'rule 3\'s own paragraph above states. A VARIABLE `allowedTools` (`agent(\'a\', {allowedTools: ' +
         'tools})`, a ternary, a spread, `[...arr]`, …) is not a dynamic-lane carve-out either — it ' +
         'cannot even REGISTER, refused `AGENT_OPTS_VALUE_NOT_LITERAL` at registration time, before ' +
-        // issue #162(2) (owner decision, 2026-10-10): the parenthetical that used to close this
-        // paragraph — "every `agent()` option, in every lane, must be a literal" — overstated the
-        // registration-time scan this guide's own `agent()` section (above) already states more
-        // precisely: the OPTIONS ARGUMENT must be a literal object (no spread/shorthand — every key
-        // written `key: value`), and only `allowedTools`' VALUE is itself checked for literal-ness
-        // this way (`AGENT_OPTS_VALUE_NOT_LITERAL`/`AGENT_OPTS_SPREAD`/`AGENT_OPTS_SHORTHAND`); a
-        // non-literal `schema` registers successfully and is validated only at dispatch (ajv,
-        // `INVALID_SCHEMA`) — dynamic schema is legitimate, by design, not a gap. The sentence this
-        // replaces was read as a blanket rule and reported as self-contradicting the `schema`
-        // carve-out two sections up.
+        // issue #162(2) (owner decision, 2026-10-10; reverify-2, 2026-10-10): the parenthetical
+        // that used to close this paragraph — "every `agent()` option, in every lane, must be a
+        // literal" — overstated the registration-time scan this guide's own `agent()` section
+        // (above) now states precisely: the OPTIONS ARGUMENT must be a literal object (no
+        // spread/shorthand — every ENTRY written `key: value`), and only `allowedTools` AND `bash`
+        // have their VALUE itself checked for literal-ness this way
+        // (`AGENT_OPTS_VALUE_NOT_LITERAL`/`BASH_MODE_INVALID`/`AGENT_OPTS_SPREAD`/
+        // `AGENT_OPTS_SHORTHAND`); a non-literal `schema` registers successfully and is validated
+        // only at dispatch (ajv, `INVALID_SCHEMA`) — dynamic schema is legitimate, by design, not a
+        // gap. The sentence this replaces was read as a blanket rule and reported as
+        // self-contradicting the `schema` carve-out two sections up; naming only `allowedTools` was
+        // itself incomplete once `bash`'s own literal requirement is counted too.
         'the diagram is ever checked — the SAME registration-time literal check this guide\'s ' +
-        '`agent()` section (above) states precisely: `allowedTools`\'s value in particular, never ' +
-        'every option (a non-literal `schema` registers fine and is checked only at dispatch).\n\n' +
+        '`agent()` section (above) states precisely: `allowedTools` and `bash`\'s values in ' +
+        'particular, never every option (a non-literal `schema` registers fine and is checked ' +
+        'only at dispatch).\n\n' +
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +
