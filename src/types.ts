@@ -417,11 +417,15 @@ export interface AgentRecord {
    *  when this is set) is NOT anything a provider or harness reported — real or partial — but a
    *  deterministic, provider-independent floor computed client-side from the exact text this
    *  attempt dispatched (`agent-executor.ts`'s `estimateInputTokens`, `ceil(chars/4)` over the
-   *  composed prompt — never the output columns, always 0). Set ONLY on an `'aborted'` call that
-   *  carried no real usage signal at all from either source `applyAbortEstimate` consults — a
-   *  provider that reports ANYTHING (even a genuine, harness-reported 0) is read as `partial`
-   *  without this flag, never overridden by a guess. Absent — never `false` — on every other
-   *  record, including a `partial` one whose lower bound came from the provider/harness itself. */
+   *  composed prompt — never the output columns, always 0). Set ONLY on a call cut short by
+   *  `run_suspend`/`run_stop` (`failReason:'aborted'`) — NEVER on a timeout, which still reports a
+   *  genuine, un-estimated zero when nothing streamed, unchanged from before this fix — and only
+   *  when `applyAbortEstimate` finds no real usage signal at all from either source it consults.
+   *  `applyAbortEstimate` cannot tell a REAL exact zero apart from "nothing reported" — both read as
+   *  `sumTokens(tokens) === 0` — so an all-zero figure from EITHER source is replaced by the
+   *  estimate; only a NONZERO figure wins and is read as `partial` with no `estimated` field. Absent
+   *  — never `false` — on every other record, including a `partial` one whose lower bound came from
+   *  the provider/harness itself. */
   estimated?: true;
 }
 

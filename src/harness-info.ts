@@ -71,12 +71,16 @@ export function buildHarnessAnnounce(harnessProviders?: readonly Provider[]): Ha
     // don't), that figure is forwarded and folded in as a lower bound at abort/timeout time, same as
     // every completed turn's own exact figure.
     // issue #160 BUG-4 reopen (2026-10-10 owner decision): #152's original "this engine deliberately
-    // never estimates the missing figure client-side" is REVERSED — a provider that reports nothing
-    // at all before an abort/timeout (OpenRouter is the common case under this harness) no longer
+    // never estimates the missing figure client-side" is REVERSED, but ONLY for a call cut short by
+    // run_suspend/run_stop (reason:'aborted') — NOT for a timeout, which still reports a genuine,
+    // un-estimated zero when nothing streamed, unchanged from before this fix. A such-aborted call
+    // that reports nothing at all (OpenRouter is the common case under this harness) no longer
     // yields a bare 0; `AgentExecutor.applyAbortEstimate` (agent-executor.ts) now charges a
     // deterministic `ceil(chars/4)` floor over the exact text that attempt dispatched, marked
     // `estimated:true` beside `partial:true` — the "schema slot marking it not exact" #152 said this
-    // engine did not have now exists and is populated.
-    usage: 'summed over every assistant message_end (pi has no stable per-message id), PLUS whatever the provider itself already reported for a turn still in flight at abort/timeout time (forwarded verbatim); partial:true on abort/timeout, ALWAYS. When NEITHER source has anything for the in-flight turn, the engine charges a deterministic ceil(chars/4) floor over the exact text that attempt dispatched (input only, never output) and marks it estimated:true beside partial:true — distinct from a real, if incomplete, provider/harness figure (partial:true with no estimated field); this estimate is charged against budget exactly like real usage. pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
+    // engine did not have now exists and is populated. The engine cannot tell a REAL exact zero
+    // apart from "nothing reported" (both are all-four-columns-0), so an all-zero figure from EITHER
+    // source is what triggers the estimate — only a genuinely nonzero figure counts as real.
+    usage: 'summed over every assistant message_end (pi has no stable per-message id), PLUS whatever the provider itself already reported for a turn still in flight at abort/timeout time (forwarded verbatim); partial:true on abort/timeout, ALWAYS. On an ABORT (run_suspend/run_stop) specifically — never a timeout — when NEITHER source has anything for the in-flight turn (an all-zero figure from either source, which cannot be told apart from a real exact zero), the engine charges a deterministic ceil(chars/4) floor over the exact text that attempt dispatched (input only, never output) and marks it estimated:true beside partial:true; a genuinely nonzero figure from either source is real and never carries estimated. This estimate is charged against budget exactly like real usage. A timeout with nothing reported still yields an honest, un-estimated 0. pi\'s own advisory cost figure is ignored — the engine prices by provider/model.',
   };
 }

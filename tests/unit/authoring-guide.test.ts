@@ -901,6 +901,8 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
     'MCP_SERVER_NOT_CONNECTED', // issue #106: a non-fatal harness warning (run_agent_log / run_status warnings), not a refusal code
+    'AGENT_STILL_RUNNING', // issue #162(1): a run_result/run_status meta.warnings code, same shape
+    // as AGENT_FAILED (tool-specs.ts) — not a refusal code, no ERROR_CATALOG entry.
     'MODEL_CATALOG_UNVERIFIED', // 2026-09-26: a non-fatal workflow_register/run_start warnings[].code
     // (checkModelRef's live-catalog-unavailable/anthropic-static-table-miss warn arm) — never a
     // refusal code, so it has no ERROR_CATALOG entry.

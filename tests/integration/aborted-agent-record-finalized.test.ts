@@ -106,6 +106,32 @@ describe('an aborted agent record is finalized (#53 root cause B)', () => {
     // literally nothing and stays `unpriced:false`.
     expect(view.agents[0]!.unpriced).toBe(true);
   }, 20000);
+
+  // issue #160 BUG-4 (owner decision, 2026-10-10): the tester's EXACT repro — `budget:{tokens:1}`,
+  // suspend → resume → re-dispatch — must now actually trip the budget, not silently pass every
+  // re-dispatch through because the aborted attempt(s) charged 0. The RunManager-level path this
+  // exercises (`_handleAgentRequest`'s pre-dispatch `guard.assertBudget()`) is a DIFFERENT code path
+  // from the executor-level unit test (`agent-executor-aborted-estimate.test.ts`'s own budget test)
+  // — this is the one the tester actually drove.
+  it('run-level: suspend → resume with budget:{tokens:1} refuses the re-dispatch BUDGET_EXCEEDED once the aborted attempt\'s estimate alone exceeds it', async () => {
+    const { gateway, firstStarted } = gatewayHangingFirstCall();
+    const mgr = new RunManager({ gateway });
+    const runId = await startScript(mgr, SCRIPT, { budget: { tokens: 1 } });
+    await firstStarted;
+    await mgr.suspend(runId);
+    await new Promise((r) => setTimeout(r, 300));
+    await mgr.resume(runId);
+    const view = await pollUntilSettled(mgr, runId);
+
+    // The aborted attempt's own estimate (ceil(chars/4) over the dispatched prompt, certainly > 1
+    // token) already exceeds the 1-token budget, so the resumed re-dispatch is refused before it
+    // ever reaches the fake gateway's second branch — the run ends failed, not completed.
+    expect(view.status).toBe('failed');
+    expect(view.error?.code).toBe('BUDGET_EXCEEDED');
+    const aborted = view.agents.find((a) => a.failReason === 'aborted');
+    expect(aborted?.estimated).toBe(true);
+    expect(aborted?.tokens?.input).toBeGreaterThan(1);
+  }, 20000);
 });
 
 // dash-auth-spec.md section C (2026-09-30): `_finalizeAborted` must keep the RESOLVED provider/

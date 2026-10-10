@@ -1382,8 +1382,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'just because the run around it finished (issue #162, adjudication #9 I-2, a deliberate ' +
         "owner ruling, not a bug). Its usage is folded into `run_result.meta.usage`/`run_list`'s " +
         "totals once it settles, so a figure read AT the terminal moment can be a lower bound until " +
-        'then — poll again a little later for the final number, or `await` every call whose spend ' +
-        "you need counted or whose completion you need to know about.\n\n" +
+        'then. While this is happening, `run_result`/`run_status`\'s own `meta.warnings` carries ' +
+        "`{code:'AGENT_STILL_RUNNING', message}` (issue #162(1)) — that is the signal to poll again " +
+        'rather than trust the figure as final; it disappears once every call has settled. Otherwise ' +
+        '`await` every call whose spend you need counted or whose completion you need to know about.\n\n' +
         'Inside the script, the read-only `budget` object answers each limit with its own accessor: ' +
         '`budget.limits.usd` / `budget.limits.tokens` are the two ceilings (`null` when that limit is ' +
         'unbounded — `null` is `===`-detectable but NOT comparison-safe, `null < 1000` is `true`); ' +
@@ -1490,18 +1492,24 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'format block appended when `schema` is set — never the harness\'s own expanded system ' +
         'prompt or tool definitions, which this layer cannot see), applied ONLY to `input` (`output` ' +
         'stays 0 — nothing was ever observed to estimate it from). The engine reaches for this ' +
-        'estimate only when NEITHER source has anything at all for the aborted attempt: the pi ' +
-        'harness\'s wire protocol (above) reports nothing, AND nothing streamed onto the live record ' +
-        'via the gateway\'s own mid-turn usage callback either. A real figure from either source — ' +
-        'even a real, exact 0 some harness genuinely reports — always wins and is read as `partial` ' +
-        'with no `estimated` field; the two are mutually exclusive, never summed. This means an ' +
-        'attempt that was genuinely dispatched to a gateway and then cut short ALWAYS charges ' +
-        'something nonzero against `budget` now (real or estimated) — the one case that stays an ' +
-        'honest zero is an attempt aborted before it was ever dispatched at all (the signal was ' +
-        'already set when the executor checked). Either figure — real or estimated — is charged ' +
-        'exactly like a completed call\'s, so a repeated suspend/resume cycle of a usage-heavy agent ' +
-        'counts toward, and WILL eventually trip, a token or USD limit, including under a provider ' +
-        '(OpenRouter via the pi harness) that never streams mid-turn usage at all. Separately: resuming a ' +
+        'estimate ONLY on a call cut short by `run_suspend`/`run_stop` (`agentFailures[].reason: ' +
+        '\'aborted\'`) — NEVER on a plain timeout, which still reports a genuine, un-estimated zero ' +
+        'when nothing streamed, unchanged from before this fix — and only when NEITHER source has ' +
+        'anything at all for that aborted attempt: the pi harness\'s wire protocol (above) reports ' +
+        'nothing, AND nothing streamed onto the live record via the gateway\'s own mid-turn usage ' +
+        'callback either. The engine cannot tell a REAL exact zero apart from "nothing reported" — ' +
+        'both read as all four columns being 0 — so an all-zero figure from EITHER source is ' +
+        'replaced by the estimate; only a NONZERO figure, from either source, counts as real, wins, ' +
+        'and is read as `partial` with no `estimated` field — the two are mutually exclusive, never ' +
+        'summed. This means an attempt that was genuinely dispatched to a gateway and then cut short BY `run_suspend`/' +
+        '`run_stop` ALWAYS charges something nonzero against `budget` now (real or estimated) — the ' +
+        'one case that stays an honest zero is an attempt aborted before it was ever dispatched at ' +
+        'all (the signal was already set when the executor checked); a TIMEOUT with nothing streamed ' +
+        'also still stays an honest, un-estimated zero — this estimate is `run_suspend`/`run_stop` ' +
+        'only. Either figure — real or estimated — is charged exactly like a completed call\'s, so a ' +
+        'repeated suspend/resume cycle of a usage-heavy agent counts toward, and WILL eventually ' +
+        'trip, a token or USD limit, including under a provider (OpenRouter via the pi harness) that ' +
+        'never streams mid-turn usage at all. Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
         'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
         'attempt never itself resolves anything to the script (only the replacement agentId\'s own ' +
