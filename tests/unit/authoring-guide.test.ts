@@ -1071,3 +1071,21 @@ describe('issue #160/#162 reverify-2 (2026-10-10, independent-verifier findings)
     expect(budgetSection).toMatch(/USD limit never trips/i);
   });
 });
+
+// Issue #116 reverify round-6 finding 1: NOT_TRIGGER_OWNER is masked to TRIGGER_NOT_FOUND for
+// every non-admin caller (authz.ts's notFoundTemplate) — no caller can receive it on the wire any
+// more. Its ERROR_CATALOG entry must therefore stop pointing `see: 'workflow_authoring_guide'`
+// (errors.ts's own comment already says so), and the guide's "Authoring rules this engine
+// enforces (refused with this code)" section — generated from exactly that `see` field
+// (authoringErrorRows()) — must stop advertising a code no caller can ever be refused with.
+describe('issue #116 reverify round-6 finding 1: NOT_TRIGGER_OWNER is not advertised as a code the engine still returns', () => {
+  it('ERROR_CATALOG.NOT_TRIGGER_OWNER.see is null, matching its NOT_RUN_OWNER/NOT_WORKFLOW_OWNER masked siblings', () => {
+    expect(ERROR_CATALOG.NOT_TRIGGER_OWNER.see).toBeNull();
+  });
+
+  it('the "Authoring rules this engine enforces" section of the guide does not list NOT_TRIGGER_OWNER', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const section = sectionOf(text, 'Authoring rules this engine enforces');
+    expect(section).not.toMatch(/`NOT_TRIGGER_OWNER`/);
+  });
+});

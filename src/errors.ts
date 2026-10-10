@@ -91,7 +91,15 @@ export const ERROR_CATALOG = {
   // wire to ANY caller any more — it survives only as `AuthzVerdict.internalReason` and the
   // refusal audit trail's `realReason` (authz.ts's `notFoundTemplate`; mcp-facade.ts's own masked
   // throw in the trigger-claim loop).
-  NOT_TRIGGER_OWNER: { see: 'workflow_authoring_guide', hint: 'the caller does not own (did not create) this trigger' },
+  // Issue #116 reverify round-6 finding 1: masked to TRIGGER_NOT_FOUND for every non-admin caller
+  // (authz.ts's notFoundTemplate) — this code is never returned on the wire to ANY caller any
+  // more (same as its NOT_RUN_OWNER/NOT_WORKFLOW_OWNER siblings just above), so `see` must NOT
+  // point at workflow_authoring_guide: authoringErrorRows() renders every `see:
+  // 'workflow_authoring_guide'` entry under "Authoring rules this engine enforces (refused with
+  // this code)", and a code no caller can ever receive has no business in that list — a cold
+  // reader would write a dead branch for it. The entry itself stays (it is the `realReason` an
+  // admin sees via audit_refusals_list, and an AuthzErrorCode `satisfies ErrorCode` member).
+  NOT_TRIGGER_OWNER: { see: null, hint: 'the caller does not own (did not create) this trigger' },
   // Service accounts spec (owner decision 2026-10-03): a service account created with a
   // `workflows` allowlist, naming a workflow outside it on a workflow-scoped tool.
   WORKFLOW_NOT_ALLOWED: { see: 'workflow_authoring_guide', hint: 'this service account is restricted to a workflows allowlist (service_account_create/_update) and this workflow is not in it' },
@@ -266,7 +274,10 @@ export const ERROR_CATALOG = {
   // when the two were previously conflated (an invalid IANA zone surfaced as field:'cron').
   INVALID_TZ: { see: null, hint: 'the `tz` value is not a valid IANA time zone name' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
-  // (mcp-facade.ts:308/322) — see NOT_TRIGGER_OWNER above.
+  // (mcp-facade.ts:308/322). Issue #116 reverify round-6 finding 1: the stale cross-reference this
+  // comment used to carry ("see NOT_TRIGGER_OWNER above") is removed — NOT_TRIGGER_OWNER's own
+  // `see` is now `null` (it is masked to THIS code for every non-admin caller), so there is
+  // nothing left to see there any more.
   TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
   TRIGGER_ALREADY_CLAIMED: { see: 'workflow_authoring_guide', hint: 'this trigger id is already claimed by a different workflow' },
   UNCLAIMED: { see: null, hint: 'this trigger has not been claimed by any workflow; it will not fire' },
