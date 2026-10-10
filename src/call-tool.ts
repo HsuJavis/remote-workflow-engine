@@ -142,15 +142,24 @@ const MASKED_RUN_ENVELOPE = new Set(['run_status', 'run_result', 'run_suspend', 
 /** Issue #116: builds the masked refusal in the SAME shape that tool's own genuine `*_NOT_FOUND`
  *  answer uses (mcp-facade.ts's shared `notFound()` for the run family — real `runId`, no
  *  top-level `code`; `run_agent_log`'s own three extra always-present fields; the bare `{error}`
- *  tool-by-tool pass-throughs for issue_report/schedule/webhook). Returns `undefined` for a tool
- *  `refusalEnvelope` already matches byte-for-byte (workflow_deregister/workflow_publish) or that
- *  authz.ts never masks for (notFoundTemplate's own documented scope) — the caller falls back to
- *  the generic `refusalEnvelope` either way, which is correct in both cases. */
+ *  tool-by-tool pass-throughs for issue_report/schedule/webhook; `workflow_publish`'s OWN shape,
+ *  below). Returns `undefined` for a tool `refusalEnvelope` already matches byte-for-byte
+ *  (workflow_deregister only) or that authz.ts never masks for (notFoundTemplate's own documented
+ *  scope) — the caller falls back to the generic `refusalEnvelope`, which is correct there.
+ *
+ *  Verified against the REAL handlers (not just read from source), one call per tool, e.g.:
+ *    workflow_publish: {"runId":"","status":"failed","code":"WORKFLOW_NOT_FOUND","error":
+ *      {"code":"WORKFLOW_NOT_FOUND","message":"Workflow not found in catalog: x","see":null}}
+ *  — `workflow_publish`'s genuine not-found is thrown as a `CatalogNotFoundError` and travels
+ *  through `toErrEnvelope()` (`mcp-facade.ts`'s `workflowPublish` catch arm), which — UNLIKE every
+ *  other tool here — always attaches `error.see` (`null` for this code's catalog entry). Omitting
+ *  it, as the generic `refusalEnvelope` does, would itself be the tell. */
 function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, code: ErrorCode, message: string): Record<string, unknown> | undefined {
   if (MASKED_BARE_ENVELOPE.has(toolName)) return { error: { code, message } };
   const runId = args['runId'];
   if (MASKED_RUN_ENVELOPE.has(toolName)) return { runId, status: 'failed', error: { code, message } };
   if (toolName === 'run_agent_log') return { runId, status: 'failed', error: { code, message }, harness: null, events: [], hasMore: false };
+  if (toolName === 'workflow_publish') return { runId: '', status: 'failed', code, error: { code, message, see: null } };
   return undefined;
 }
 

@@ -61,11 +61,18 @@ describe('callTool — authorize() refusal audit + requestId (issue #116)', () =
     expect(result).toEqual({ error: { code: 'RUN_NOT_FOUND', message: 'Run not found: r1' } });
   });
 
-  it('a MASKED refusal on workflow_deregister/workflow_publish needs NO special envelope — the generic refusalEnvelope shape already matches', async () => {
+  it('a MASKED refusal on workflow_deregister needs NO special envelope — the generic refusalEnvelope shape already matches (verified against the real handler: no error.see key)', async () => {
     const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: 'Unknown workflow: wf1' };
     const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
     const result = await callTool(deps, 'workflow_deregister', { name: 'wf1' }, { kind: 'author', id: 'bob' });
     expect(result).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Unknown workflow: wf1' } });
+  });
+
+  it("a MASKED refusal on workflow_publish DOES need its own envelope: its genuine not-found travels through toErrEnvelope() and carries error.see:null, which the generic refusalEnvelope omits", async () => {
+    const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: 'Workflow not found in catalog: wf1' };
+    const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
+    const result = await callTool(deps, 'workflow_publish', { name: 'wf1', version: 'v1', channel: 'release' }, { kind: 'author', id: 'bob' });
+    expect(result).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Workflow not found in catalog: wf1', see: null } });
   });
 
   it('an audit-write FAILURE still refuses — never a success, never a thrown/crashed request', async () => {
