@@ -234,9 +234,13 @@ function paintHost(state, body) {
   paintCard(state.cards.disk, statCard('disk', sectionState(body.disk), lang));
 
   const sysState = sectionState(body.process.system);
-  state.procSummaryEl.textContent = sysState.kind === 'ok' ? procTotals(sysState.value, lang) : t(lang, 'unavailable');
+  // issue #123: a below-admin caller's `process.topN` is absent — COUNTS (sysState) still paint;
+  // `processDetailNote` (server prose, not localized — same posture as any other server-supplied
+  // refusal detail) is appended so the empty table reads as "redacted", not "broken/empty".
+  const summary = sysState.kind === 'ok' ? procTotals(sysState.value, lang) : t(lang, 'unavailable');
+  state.procSummaryEl.textContent = body.process.processDetailNote ? `${summary} — ${body.process.processDetailNote}` : summary;
 
-  paintProcTable(state, body.process.topN, body.process.self.pid);
+  paintProcTable(state, body.process.topN ?? [], body.process.self.pid);
   paintEngineDl(state.engineDlEl, body.process.self, lang);
 }
 

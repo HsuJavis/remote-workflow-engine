@@ -186,4 +186,43 @@ describe('System tab: four stat cards, process table, engine dl (VAL-214, REQ-13
       await browser.close();
     }
   }, 20000);
+
+  // Issue #123: a below-admin caller's `GET /api/system` now omits `process.topN` and adds
+  // `process.processDetailNote` (server.ts's `redactSystemInfoForRole`). Before the client fix,
+  // `paintProcTable`'s `for (const proc of topN)` threw on `topN === undefined` (uncaught
+  // TypeError, surfaced as a `pageerror`) the moment any poll tick painted this redacted shape —
+  // this intercepts /api/system and REWRITES the real body into exactly that shape, so the
+  // real route is never mocked, only the one response this test cares about.
+  itReal('a redacted /api/system body (no process.topN, a processDetailNote) paints an empty table and the note, with no page error', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname !== '/api/system') { req.continue(); return; }
+        fetch(`${baseUrl}/api/system`)
+          .then((r) => r.json())
+          .then((body: { process: Record<string, unknown> }) => {
+            const { topN: _drop, ...rest } = body.process;
+            const redacted = { ...body, process: { ...rest, processDetailNote: 'process names and per-process detail are admin-only' } };
+            req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(redacted) });
+          })
+          .catch(() => req.continue());
+      });
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await (await page.$('[data-tab="system"]'))!.click();
+      await page.waitForSelector('[data-sys-stat-card]', { timeout: 5000 });
+      await new Promise((r) => setTimeout(r, 500)); // let at least one redacted tick paint
+      const rowCount = await page.$$eval('[data-proc-table] tbody tr', (rs) => rs.length);
+      expect(rowCount, 'the process table must render empty, not throw, when topN is absent').toBe(0);
+      const procSummaryText = await page.$eval('p.meta', (e) => e.textContent ?? '');
+      expect(procSummaryText).toMatch(/admin/i);
+      expect(pageErrors, `unexpected page error(s): ${pageErrors.join('; ')}`).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });
