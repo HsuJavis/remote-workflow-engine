@@ -150,3 +150,20 @@ describe('(c) every UPPER_SNAKE token in a tool\'s hand-written description is a
     });
   }
 });
+
+// DOC-1 (issue #160/#162, independent-verifier finding, 2026-10-10 reverify-3): run_result's
+// description must also document a run_suspend/run_stop-aborted attempt (reason:'aborted') — the
+// prior round's test change only added AGENT_STILL_RUNNING to the allowlist above, pinning
+// nothing about this specific sentence. Without a pin, a later edit that drops it regresses
+// silently (no test goes red), which is exactly what the tester kept re-finding.
+describe('(d) DOC-1 guard: run_result documents the aborted-attempt reason, same as run_status already does (issue #160/#162 reverify finding)', () => {
+  it("run_result's description literally mentions reason:'aborted'", () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_result')!;
+    expect(spec.description).toMatch(/reason:'aborted'/);
+  });
+
+  it("run_status's description literally mentions reason:'aborted' too (regression guard, already true)", () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_status')!;
+    expect(spec.description).toMatch(/reason:'aborted'/);
+  });
+});
