@@ -1268,7 +1268,11 @@ export class RunManager {
         // value-exact match finds neither half).
         const rawMessage = String((err as { message?: string }).message ?? err);
         seedRefFail = { code, message: rawMessage };
-        const failCode = (code === 'SEEDREF_SHA_MISMATCH' || code === 'SEEDREF_TOO_LARGE') ? code : 'SEEDREF_FETCH_FAILED';
+        // issue #125: QUOTA_EXCEEDED/DISK_LOW come from CasStore.putBlob (called mid-fetch, above)
+        // and are real, actionable codes in their own right — folding them into the generic
+        // SEEDREF_FETCH_FAILED hid a quota/disk refusal from anyone polling run_status instead of
+        // run_result (whose resultError.code already carried the real code untouched).
+        const failCode = (code === 'SEEDREF_SHA_MISMATCH' || code === 'SEEDREF_TOO_LARGE' || code === 'QUOTA_EXCEEDED' || code === 'DISK_LOW') ? code : 'SEEDREF_FETCH_FAILED';
         // v36 (DES-241, TASK-239, K2): the unredacted twin dies — `failDetail` now goes through the
         // SAME redact-then-bound path as `resultError` below, at its own 200-byte bound (the two
         // sites never shared one; see DES-241's boundary note).

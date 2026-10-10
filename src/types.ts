@@ -486,7 +486,7 @@ export interface RunStatusView {
     latencyMs: number;
     fetchedAt: string;
     dropped: string[];
-    failCode?: 'SEEDREF_FETCH_FAILED' | 'SEEDREF_SHA_MISMATCH' | 'SEEDREF_TOO_LARGE';
+    failCode?: 'SEEDREF_FETCH_FAILED' | 'SEEDREF_SHA_MISMATCH' | 'SEEDREF_TOO_LARGE' | 'QUOTA_EXCEEDED' | 'DISK_LOW';
     failDetail?: string;
   };
   /** v14 (REQ-082 / DES-087): sha256 of the manifest blob used for this run's seed (client-derivable).

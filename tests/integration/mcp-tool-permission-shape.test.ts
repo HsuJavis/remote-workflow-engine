@@ -16,26 +16,37 @@
 // `{behavior:'allow'}`. After the fix, the SAME call reaches the real stdio MCP server and its
 // actual tool output reaches the model.
 //
-// Skipped (with the reason) when the `claude` CLI binary is not on PATH — this spawns it for real.
+// Issue #118: the gate below used to be `which claude` (PATH) — stale since #106, where the
+// engine switched to the SDK's own BUNDLED native CLI (the SDK never falls back to a `claude` on
+// PATH), so PATH is irrelevant to whether this spawns a real CLI. Gate switched to the same
+// bundled-CLI-presence check `mcp-first-turn-tools.test.ts` uses, so this test is skipped (or run)
+// for the actual reason: whether `@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]/claude`
+// is installed, not whether some unrelated `claude` happens to be on PATH.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
 
-function cliAvailable(): boolean {
-  try {
-    execFileSync('which', ['claude'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+const nodeRequire = createRequire(import.meta.url);
+
+function bundledCliPath(): string | undefined {
+  const base = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+  for (const pkg of [base, `${base}-musl`]) {
+    try {
+      return nodeRequire.resolve(`${pkg}/claude`);
+    } catch {
+      // try the next variant
+    }
   }
+  return undefined;
 }
-const CLI_AVAILABLE = cliAvailable();
-const WHY = CLI_AVAILABLE ? '' : ' [SKIPPED: `claude` CLI not found on PATH]';
+const CLI = bundledCliPath();
+const CLI_AVAILABLE = CLI !== undefined;
+const WHY = CLI_AVAILABLE ? '' : ' [SKIPPED: the SDK\'s bundled native claude binary is not installed]';
 
 // The tiny hermetic stdio MCP server this test spawns as a REAL child process of the CLI — one
 // tool, `echo`, that returns its input's `message` field prefixed. Written as CommonJS resolving

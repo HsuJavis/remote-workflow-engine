@@ -66,7 +66,9 @@ export interface ProcessInfoView {
     threads: number | null;
     fdCount: number | null;
   };
-  /** Top-N processes sorted by cpuPct desc, memBytes tiebreak; null cpuPct sorts last. */
+  /** Top-N processes sorted by cpuPct desc, memBytes tiebreak; null cpuPct sorts last. Always
+   *  present on the pure shaper's own output — `redactSystemInfoForRole` (issue #123) is what
+   *  may later strip it for a non-admin caller; see `RedactedProcessInfoView`. */
   topN: Array<{
     pid: number;
     name: string;
@@ -75,6 +77,16 @@ export interface ProcessInfoView {
   }>;
   system: { total: number; byState: Record<string, number> } | Degraded;
 }
+
+/** issue #123: the shape `redactSystemInfoForRole` returns — `topN` becomes optional (absent for
+ *  a non-admin caller) and `processDetailNote` explains the omission only when it fires. */
+export type RedactedProcessInfoView = Omit<ProcessInfoView, 'topN'> & {
+  topN?: ProcessInfoView['topN'];
+  processDetailNote?: string;
+};
+
+/** issue #123: what the MCP tool and `GET /api/system` actually serve, after redaction. */
+export type RedactedSystemInfoView = Omit<SystemInfoView, 'process'> & { process: RedactedProcessInfoView };
 
 /** Fully shaped system info view returned by the sampler and served on the MCP tool + HTTP route. */
 export interface SystemInfoView {
@@ -232,6 +244,26 @@ export function buildSystemInfo(
     sampledAt: ctx.sampledAt,
     windowMs: ctx.windowMs,
     policy: { mcpEgressAllowlist: opts.mcpEgressAllowlist ?? [] },
+  };
+}
+
+// ──────────────────────────────────────────────
+// Role-based redaction (issue #123)
+// ──────────────────────────────────────────────
+
+/** issue #123: a non-admin caller (authenticated `user`/`author`, or an unauthenticated
+ *  `loopback-exempt` caller) gets CPU/memory/disk and process COUNTS exactly as before, but never
+ *  the top-N process list — each entry's `name` (the OS `comm` string) is process-command detail
+ *  about the shared host, not this caller's own resource usage. `admin` (and single-operator
+ *  `auth-disabled` mode, where no caller is any less trusted than any other) is unchanged.
+ *  ONE function, called identically by the MCP tool (`call-tool.ts`) and `GET /api/system`
+ *  (`server.ts`) — the only way the two surfaces can't drift apart on this. */
+export function redactSystemInfoForRole(view: SystemInfoView, isAdmin: boolean): RedactedSystemInfoView {
+  if (isAdmin) return view;
+  const { topN: _topN, ...rest } = view.process;
+  return {
+    ...view,
+    process: { ...rest, processDetailNote: 'process names and per-process detail are admin-only' },
   };
 }
 
