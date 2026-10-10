@@ -852,6 +852,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'any other indirection is refused `SCRIPT_INVALID` (issue #154).\n\n' +
         "- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string " +
         'identifier (`/^[A-Za-z_][\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; ' +
+        "this positional is the call's real contract key — it selects the label's per-agent " +
+        'model/effort/timeoutMs/skills/mcp and is reported back as `run_status.agents[].agentKey` ' +
+        '(issue #165). `options.label`, if set, is a SEPARATE, purely cosmetic display name — ' +
+        'reported as `agents[].label` (defaulting to the same positional when `options.label` is ' +
+        'absent) — that two different agent() calls may share on purpose; it selects nothing. ' +
+        "run_agent_log's `label` argument matches either field, first match in `agents[]` order " +
+        "wins, so pass `agentId` to reach one specific call when several share a label/agentKey " +
+        'value. ' +
         '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +
         'property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be ' +
         'checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / ' +
