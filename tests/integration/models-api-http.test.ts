@@ -166,6 +166,38 @@ describe('GET /api/models returns enriched model entries (IT-071, DES-075, DES-0
     }
   });
 
+  // Issue #117: `filterCatalog(entries)` (no `filter.limit`) defaults to `DEFAULT_LIMIT` (100,
+  // model-catalog.ts) — fine for the MCP `models_list` tool (which pages, and keeps that documented
+  // default), wrong for the dashboard route, which silently truncated a larger real catalog with no
+  // indication to the operator. The dashboard must see the FULL catalog.
+  it('a catalog with more than 100 entries is NOT truncated to 100 (issue #117)', async () => {
+    const manyTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it071-many-'));
+    const data = Array.from({ length: 150 }, (_, i) => ({
+      id: `many-provider/model-${i}`,
+      description: `Synthetic model #${i}`,
+      context_length: 8000,
+      pricing: { prompt: '0.000001', completion: '0.000002' },
+      architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+      supported_parameters: ['tools'],
+    }));
+    const manyServer = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot: manyTmpDir,
+      modelCatalogFetchers: {
+        ollamaFetch: jsonFetch({ models: [] }),
+        openrouterFetch: jsonFetch({ data }),
+      },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${manyServer.port}/api/models`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as EnrichedEntry[];
+      expect(body.length).toBeGreaterThanOrEqual(150);
+    } finally {
+      await manyServer.close();
+      rmSync(manyTmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('empty catalog (no source reachable) → [] response, no error', async () => {
     // Use a separate server with no catalog sources
     const emptyTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it071-empty-'));

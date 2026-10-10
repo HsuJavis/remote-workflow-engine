@@ -145,7 +145,11 @@ export interface BuildCatalogOptions {
 }
 
 const DEFAULT_LIMIT = 100;
-const HARD_CAP = 500;
+// Issue #117: exported so the dashboard's `/api/models` route (server.ts) can pass it explicitly —
+// the dashboard needs the FULL catalog (no truncation, no indication to the operator that rows were
+// dropped), while the MCP `models_list` tool keeps `filterCatalog`'s own `DEFAULT_LIMIT` unaffected
+// (it never calls `filterCatalog` at all — issue #104's own paging, queryModels, is untouched).
+export const HARD_CAP = 500;
 const DEFAULT_TIMEOUT_MS = 8000;
 
 /** v26 (DES-178, ARCH-116, TASK-178): an all-zero, KNOWN rate (never `null`) — ollama's fixed rate
