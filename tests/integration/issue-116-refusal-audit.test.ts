@@ -245,6 +245,21 @@ describe('issue #116 decision a: non-owner is indistinguishable from missing', (
     expect(typeof missing['error']['detail']['requestId']).toBe('string');
   });
 
+  it("workflow_register triggers:[id]: BOB's masked refusal writes exactly ONE audit row (the foreign id), the bogus id writes NONE, against the REAL store end-to-end", async () => {
+    const before = (await mcp('audit_refusals_list', { tool: 'workflow_register', actor: BOB }, rootToken))['result'] as unknown[];
+    const foreign = await mcp('workflow_register', { name: 'bob-wf-it116-trigger-audit', script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR', triggers: [scheduleId] }, bobToken);
+    const missing = await mcp('workflow_register', { name: 'bob-wf-it116-trigger-audit-2', script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR', triggers: ['00000000-0000-0000-0000-000000000000'] }, bobToken);
+    expect(foreign['error']['code']).toBe('TRIGGER_NOT_FOUND');
+    expect(missing['error']['code']).toBe('TRIGGER_NOT_FOUND');
+    const after = await mcp('audit_refusals_list', { tool: 'workflow_register', actor: BOB }, rootToken);
+    const rows = after['result'] as Array<Record<string, unknown>>;
+    // Exactly +1, not +2: the MASKED refusal (foreign) writes a row; the GENUINE miss (missing)
+    // writes none at all — the same inference rule audit_refusals_list's own description states
+    // (a presented requestId matching a row is the masked case; one matching no row is genuine).
+    expect(rows.length).toBe(before.length + 1);
+    expect(rows[0]).toMatchObject({ actor: BOB, tool: 'workflow_register', targetKind: 'trigger', targetId: scheduleId, realReason: 'NOT_TRIGGER_OWNER', returnedCode: 'TRIGGER_NOT_FOUND', requestId: foreign['error']['detail']['requestId'] });
+  });
+
   it("workflow_register triggers:[id]: ROOT (admin) naming ALICE's schedule gets the PRECISE code, never masked", async () => {
     const result = await mcp('workflow_register', { name: 'root-wf-it116-trigger', script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR', triggers: [scheduleId] }, rootToken);
     // Admin can adopt any trigger — this either succeeds outright, or (if already claimed by WF)
