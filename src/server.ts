@@ -434,21 +434,30 @@ async function handleDashboardRequest(
   // Issue #116 (OWNER DECISIONS a+b): same classification+audit `call-tool.ts` uses for the MCP
   // surface (`src/authz-refusal.ts`), so the masking rule and the audit row's shape cannot drift
   // between the two. A MASKED refusal (decision a) gets the route's OWN not-found status+shape
-  // (404, `{error: message}`, no `code` key — matching every real not-found response on this
-  // dashboard, e.g. `sendJson(res, 404, {error: \`Run not found: ${runId}\`})` below) rather than
-  // the normal role-refusal 403 — a masked 403 would itself be the tell decision a exists to close.
+  // (404, `{error: message, requestId}`, no `code` key — matching every real not-found response on
+  // this dashboard, e.g. `sendJson(res, 404, {error: \`Run not found: ${runId}\`, requestId})`
+  // below) rather than the normal role-refusal 403 — a masked 403 would itself be the tell decision
+  // a exists to close.
   // An UNMASKED refusal keeps 403 `{code, error}` plus a `requestId` for traceability (safe here:
   // there is no sibling not-found response it must stay identical to).
-  const allowed = (tool: string, args: Record<string, unknown>): AuthzVerdict | null => {
+  // Issue #116 reverify round-6 finding 2 (decision b): a MASKED refusal now ALSO carries a
+  // `requestId` (previously none — "left untouched" by design, which meant it could never be
+  // traced back to the audit row `recordRefusal` writes for it) — same stampRequestId-style fix
+  // call-tool.ts already applies on the MCP surface. Stamping only this branch would re-open
+  // decision a's own oracle (requestId PRESENT would mean "this was a refusal"), so every
+  // run-keyed route's GENUINE not-found body must carry one too (see the three call sites below) —
+  // an optional `requestId` lets a caller that already generated one (so its genuine-not-found
+  // sibling can reuse it) pass it in; `allowed()` mints its own otherwise.
+  const allowed = (tool: string, args: Record<string, unknown>, requestId?: string): AuthzVerdict | null => {
     const spec = TOOL_SPECS.find((t) => t.name === tool)!;
     const verdict = authorize(principal, spec, args, viewer.lookup);
     if (verdict.ok) return verdict;
-    const requestId = randomUUID();
-    const { code, reason, masked } = recordRefusal(store, requestId, principal, spec, args, verdict);
+    const rid = requestId ?? randomUUID();
+    const { code, reason, masked } = recordRefusal(store, rid, principal, spec, args, verdict);
     if (masked) {
-      sendJson(res, 404, { error: reason });
+      sendJson(res, 404, { error: reason, requestId: rid });
     } else {
-      sendJson(res, 403, { code, error: reason, requestId });
+      sendJson(res, 403, { code, error: reason, requestId: rid });
     }
     return null;
   };
@@ -644,9 +653,13 @@ async function handleDashboardRequest(
     // v11 Sprint 3 (TASK-067 / DES-064): GraphPayload envelope — kind:'run' + logical layout cells.
     if (dagMatch) {
       const [, runId] = dagMatch as unknown as [string, string];
-      if (!allowed('run_status', { runId })) return;
+      // Issue #116 reverify round-6 finding 2: minted ONCE for this route and shared by both the
+      // masked-refusal arm (`allowed()`) and the genuine-miss arm just below — see `allowed()`'s
+      // own doc for why both sides need a requestId, never only one.
+      const dagRequestId = randomUUID();
+      if (!allowed('run_status', { runId }, dagRequestId)) return;
       const stored = await store.getRun(runId);
-      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}`, requestId: dagRequestId }); return; }
       const view = await runManager.status(runId).catch(() => stored);
       const spec = await store.getSpec(runId);
       // v22 (DES-114, TASK-109): the DAG skeleton derives from the run's PINNED (name, version), not
@@ -757,13 +770,16 @@ async function handleDashboardRequest(
       const offset = offsetParam > 0 ? offsetParam : undefined;
       // Spec §A: run_agent_log's own row — owner or admin; an admin's cross-principal read is
       // AUDITED exactly as the MCP tool audits it (the owner sees it in run_status.adminReads).
-      const verdict = allowed('run_agent_log', { runId });
+      // Issue #116 reverify round-6 finding 2: shared by the masked-refusal arm and the genuine
+      // AGENT_LOG_NOT_FOUND/RUN_NOT_FOUND arm below — see `allowed()`'s own doc.
+      const agentRequestId = randomUUID();
+      const verdict = allowed('run_agent_log', { runId }, agentRequestId);
       if (!verdict) return;
       const actor = principal.kind === 'auth-disabled' || principal.kind === 'loopback-exempt' ? null : principal.id;
       const shaped = await facade.runAgentLog({ runId, agentId, limit, offset }, principal, verdict.crossPrincipalRead === true, actor);
       if (shaped.error) {
         // HTTP: map typed error codes to standard { error: string } 404s (dashboard convention).
-        sendJson(res, 404, { error: shaped.error.message });
+        sendJson(res, 404, { error: shaped.error.message, requestId: agentRequestId });
         return;
       }
       sendJson(res, 200, shaped);
@@ -771,9 +787,11 @@ async function handleDashboardRequest(
     }
     if (runMatch) {
       const [, runId] = runMatch as unknown as [string, string];
-      if (!allowed('run_status', { runId })) return;
+      // Issue #116 reverify round-6 finding 2: shared with the genuine-miss arm below.
+      const runRequestId = randomUUID();
+      if (!allowed('run_status', { runId }, runRequestId)) return;
       const stored = await store.getRun(runId);
-      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}`, requestId: runRequestId }); return; }
       const view = await runManager.status(runId).catch(() => stored);
       // v24 (DES-162): `/api/runs/:id` is ungated — no identity field leaves on this route.
       sendJson(res, 200, buildDashboardModel([], toPublicRunView(view)).selected);

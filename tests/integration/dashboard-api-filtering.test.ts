@@ -160,6 +160,27 @@ describe('the parity table: every run-keyed /api route refuses exactly what its 
       expect(missing.body.error).toBe('Run not found: 00000000-0000-0000-0000-000000000000');
     });
 
+    // Issue #116 reverify round-6 finding 2 (decision b): a masked dashboard refusal's audit row
+    // must be traceable back to the SAME response the caller received — a requestId on the body.
+    // But stamping ONLY the masked branch would re-open decision a's own oracle (requestId
+    // PRESENT would mean "this was a refusal"), so the route's genuine not-found producer must
+    // carry one too (audit_refusals_list's own description already promises this: "the response
+    // body's own `requestId` key, for a dashboard 403/404"). The inference is in whether the
+    // requestId matches a row, not in whether the key is present at all.
+    it(`${row.route(':runId')}: both the masked refusal and the genuine miss carry a requestId; only the masked one has a matching audit_refusals_list row`, async () => {
+      const before = ((await mcp('audit_refusals_list', { tool: row.tool, actor: BOB }, ROOT))['result'] as unknown[]).length;
+      const nonOwner = await api(row.route(aliceRun), BOB);
+      const missing = await api(row.route('00000000-0000-0000-0000-000000000000'), BOB);
+      expect(typeof nonOwner.body.requestId).toBe('string');
+      expect(typeof missing.body.requestId).toBe('string');
+      expect(nonOwner.body.requestId).not.toBe(missing.body.requestId);
+      const after = (await mcp('audit_refusals_list', { tool: row.tool, actor: BOB }, ROOT))['result'] as Array<Record<string, unknown>>;
+      expect(after.length).toBe(before + 1); // the masked refusal wrote one row; the genuine miss wrote none
+      const matchingNonOwner = after.filter((r) => r['requestId'] === nonOwner.body.requestId);
+      expect(matchingNonOwner.length).toBe(1);
+      expect(after.some((r) => r['requestId'] === missing.body.requestId)).toBe(false);
+    });
+
     it(`${row.route(':runId')}: admin root reads alice's run`, async () => {
       const r = await api(row.route(aliceRun), ROOT);
       expect(r.status).not.toBe(403);
