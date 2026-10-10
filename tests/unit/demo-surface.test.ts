@@ -47,7 +47,11 @@ const DATASET_FILE = join(CLIENT_ROOT, 'demo', 'dataset.js');
 // new `tick.source === 'demo'` branch lands in that file next. GREEN BY CONSTRUCTION today, same as
 // the other two: measured — `ui/system.js` does not mention "demo" yet, so half 2 passes without
 // this growth either; added test-first so it does not go red the moment TASK-226 lands there.
-const PRODUCTION_ALLOWLIST = new Set(['demo/dataset.js', 'lib/connection.js', 'lib/strings.js', 'ui/app.js', 'ui/poll.js', 'ui/workflow.js', 'ui/issues.js', 'ui/system.js', 'dashboard.css']);
+//
+// [issue #117, 2026-10-10] `ui/admin.js` joins for the same designed reason: its one-time
+// refresh-on-return (`tick.fresh`) skips a `tick.source === 'demo'` tick, because the demo fiction
+// has no `/api/principals` and a reload would paint an error over the fictional rows.
+const PRODUCTION_ALLOWLIST = new Set(['demo/dataset.js', 'lib/connection.js', 'lib/strings.js', 'ui/app.js', 'ui/poll.js', 'ui/workflow.js', 'ui/issues.js', 'ui/system.js', 'ui/admin.js', 'dashboard.css']);
 
 function listAllFiles(dir: string): string[] {
   const out: string[] = [];

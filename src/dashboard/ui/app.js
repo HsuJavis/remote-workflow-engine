@@ -573,8 +573,8 @@ function runPoll(action) {
   const gen = ++viewGeneration;
   stampPoll('active');
   // `fresh` (issue #117) defaults to `false` — only THIS function's own first call (below, for
-  // the 'fire' action that started this chain) ever passes `true`; `setTimeout(loop, 3000)`
-  // invokes it with no argument, so every ambient continuation is `fresh:false` by construction.
+  // the 'fire' action that started this chain) ever passes `true`; the 3s timer continuation
+  // below invokes it with no argument, so every ambient continuation is `fresh:false` by construction.
   const loop = (fresh = false) => {
     if (gen !== viewGeneration) return; // a newer route/mount superseded this poll loop.
     tick(fresh).finally(() => {
