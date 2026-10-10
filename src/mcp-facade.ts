@@ -1100,9 +1100,12 @@ export class McpFacade {
    *  `warnings` (dash-auth-spec.md section C, 2026-09-30): `view` here is the RAW `store.getRun()`
    *  read — it never carries `failedAgentCount`/`agentFailures` (those are `RunManager.status()`'s
    *  own overlay, DES-234) — so this computes fresh via the SAME `summarizeAgentFailures` predicate
-   *  `status()`/`listSummaries()` use, directly off `view.agents`. `run_result` only ever answers
-   *  for a TERMINAL run (`RunManager.result()`'s own `RUN_NOT_TERMINAL` gate), so `view.agents` here
-   *  is already the settled, final list — no live overlay needed. */
+   *  `status()`/`listSummaries()` use, directly off `view.agents`. Called from BOTH of `runResult`'s
+   *  exits — the `o.ok` one (always terminal, `RunManager.result()`'s own `RUN_NOT_TERMINAL` gate)
+   *  AND its error path, which also attaches `meta` to a `RUN_NOT_TERMINAL` (non-terminal `view`)
+   *  response — so `view.status` is NOT always terminal here, and `view.agents` is NOT always the
+   *  settled, final list either: `agentStillRunningWarning` (below) is what makes that distinction
+   *  safe, gating on `TERMINAL.has(view.status)` rather than assuming it. */
   private async _resultMeta(runId: string, view: RunStatusView, seedConfigStripped?: string[]): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] }; warnings?: Array<{ code: 'AGENT_FAILED' | 'AGENT_STILL_RUNNING'; message: string }>; seedConfigStripped?: string[] }> {
     const usage = view.usage ?? { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpricedCalls: 0, unmappedMessages: {} };
     const priceBook = await this.store.getPriceBook(runId);
