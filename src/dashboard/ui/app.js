@@ -501,7 +501,14 @@ function visibility() {
 // PRIMARY transport results — a demo tick discards the extras' (fictional) statuses at the seam,
 // DES-210's rule (R) exception; (7) the ONE `connectionState` assignment, from the SAME state step
 // 2 read.
-async function tick() {
+// Issue #117 ("重新整理"): `fresh` is true for exactly the ONE tick a `runPoll('fire')` fires
+// immediately (a browser-tab visibility resume, or re-activating an in-app tab — `scheduleTick`'s
+// own 'view-changed' event), never for the self-perpetuating 3s continuations after it (those call
+// this same function with no argument, defaulting `fresh` to `false`). Folded into the 4th
+// `onTick` arg so a view that must not repaint on every ambient tick (`admin.js`'s own header
+// comment: a selector mid-edit) can still do a one-time catch-up on return, without the shared
+// timer growing a second code path.
+async function tick(fresh = false) {
   const view = currentView;
   if (!view) return;
   const urls = endpointsFor(view.name, view.ctx);
@@ -539,7 +546,7 @@ async function tick() {
   currentSource = source;
   let extra;
   if (view.onTick && view.container) {
-    extra = await view.onTick(view.container, bodies, view.ctx, { results: viewResults, source });
+    extra = await view.onTick(view.container, bodies, view.ctx, { results: viewResults, source, fresh });
   }
   const merged = demoTick ? transportResults : { ...transportResults, ...extra };
   if (Object.keys(merged).length > 0) {
@@ -565,9 +572,12 @@ function runPoll(action) {
   }
   const gen = ++viewGeneration;
   stampPoll('active');
-  const loop = () => {
+  // `fresh` (issue #117) defaults to `false` — only THIS function's own first call (below, for
+  // the 'fire' action that started this chain) ever passes `true`; `setTimeout(loop, 3000)`
+  // invokes it with no argument, so every ambient continuation is `fresh:false` by construction.
+  const loop = (fresh = false) => {
     if (gen !== viewGeneration) return; // a newer route/mount superseded this poll loop.
-    tick().finally(() => {
+    tick(fresh).finally(() => {
       if (gen !== viewGeneration) return;
       // [DES-211's named race] `hidden` may have arrived while this tick was in flight — consult
       // the CURRENT pollState, not the state at the moment this loop iteration was fired.
@@ -581,7 +591,7 @@ function runPoll(action) {
       }
     });
   };
-  loop();
+  loop(true);
 }
 
 function scheduleTick() {

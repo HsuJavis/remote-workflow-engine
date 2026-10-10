@@ -4,8 +4,11 @@
 // Reads GET /api/principals and writes POST /api/principals/role and (owner decision 2026-10-02)
 // POST /api/principals/quota — the SAME backend as the MCP tools principals_list /
 // principal_set_role / principal_set_quota, so this page can never grant what a tool refuses.
-// Loads on mount and after each change only (never on the 3s poll: a repaint would reset a
-// selector mid-edit). Every string is `textContent` — ids are user-controlled emails.
+// Loads on mount, after each change, and (issue #117) once on a "resume" — a browser-tab
+// visibility resume or returning to this in-app tab, `onTick`'s own `tick.fresh` below — but
+// NEVER on the ambient 3s poll itself: that repaint-on-every-tick is what would reset a selector
+// mid-edit, the one case `onTick` still declines to repaint over (a focused, non-empty quota
+// input). Every string is `textContent` — ids are user-controlled emails.
 //
 // Service accounts spec (owner decision 2026-10-03): a SECOND section on this same page ("Service
 // accounts"), reading/writing GET/POST /api/service-accounts* — the SAME 6 admin-only tools an MCP
@@ -387,12 +390,33 @@ async function loadServiceAccounts(state) {
   paintServiceAccounts(state, r.body);
 }
 
+// Issue #117 ("重新整理" — distinct from the 401/"過期" clause fixed above): keyed by container
+// (`ui/home.js`'s own pattern) so `onTick` can reach the SAME state `render` built, across a
+// language-toggle remount (a fresh container, a fresh WeakMap entry — never a stale one).
+const stateByContainer = new WeakMap();
+
 export function render(container) {
   const state = buildShell(container, currentLang());
+  stateByContainer.set(container, state);
   load(state);
 }
 
-/** No per-tick work: this view refreshes on mount and after each change only (see the header). */
-export function onTick() {
+/** Issue #117: this view still refreshes on mount and after each change only w.r.t. the AMBIENT
+ *  3s poll (`poll.js`'s `admin: () => []` is deliberate — repainting on that cadence would reset
+ *  a selector mid-edit, see this file's header). But nothing refreshed it on RETURN either: not a
+ *  browser-tab visibility resume, not re-activating the in-app Admin tab after visiting another
+ *  one — both replay the exact same stale paint forever. `app.js`'s `tick.fresh` is true for
+ *  exactly the one immediate tick a resume/tab-activation fires (never the ambient continuations
+ *  after it), so reloading here on `fresh` is a one-time catch-up, not the forbidden continuous
+ *  repaint. Skipped during a demo tick (no `/api/principals` in the demo fiction — a reload would
+ *  paint `admError` over the fictional rows) and while the viewer has an unsaved quota figure
+ *  typed (a focused, non-empty quota `<input>` inside this container) — the role `<select>`s need
+ *  no such guard, since a change fires its own confirm() immediately and is never left half-set. */
+export function onTick(container, bodies, ctx, tick) {
+  const state = stateByContainer.get(container);
+  if (!state || !tick || !tick.fresh || tick.source === 'demo') return undefined;
+  const active = document.activeElement;
+  if (active && active.tagName === 'INPUT' && active.value && container.contains(active)) return undefined;
+  load(state);
   return undefined;
 }
