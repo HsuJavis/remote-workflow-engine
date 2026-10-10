@@ -146,9 +146,18 @@ describe('the parity table: every run-keyed /api route refuses exactly what its 
       expect(r.status).not.toBe(403);
     });
 
-    it(`${row.route(':runId')}: an unknown run is 404, not 403 (no existence leak through authz)`, async () => {
-      const r = await api(row.route('00000000-0000-0000-0000-000000000000'), BOB);
-      expect(r.status).toBe(404);
+    // Issue #116 (decision a): not just "both 404" (checked above) — the BODY itself must be
+    // byte-identical (apart from the runId each response names), on THIS route's own genuine
+    // not-found producer (each of the three routes below builds its 404 body differently —
+    // `sendJson(res,404,{error:...})` inline for `/dag`/the bare route, `shaped.error.message` for
+    // `/agents/:id` — so this is checked per-route, not assumed from one of them).
+    it(`${row.route(':runId')}: an unknown run's body is byte-identical to bob's non-owner body on alice's run (apart from the runId)`, async () => {
+      const nonOwner = await api(row.route(aliceRun), BOB);
+      const missing = await api(row.route('00000000-0000-0000-0000-000000000000'), BOB);
+      expect(missing.status).toBe(404);
+      expect(Object.keys(nonOwner.body).sort()).toEqual(Object.keys(missing.body).sort());
+      expect(nonOwner.body.error).toBe(`Run not found: ${aliceRun}`);
+      expect(missing.body.error).toBe('Run not found: 00000000-0000-0000-0000-000000000000');
     });
 
     it(`${row.route(':runId')}: admin root reads alice's run`, async () => {
