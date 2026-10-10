@@ -80,7 +80,7 @@
 // dod item for real (`agent-panel.js`'s own banner covers its side of the fix).
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath, laneX } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
-import { t, warningText, stateLabel, triggerLabel, agentFailuresBadgeText } from '../lib/strings.js';
+import { t, warningText, stateLabel, triggerLabel, agentFailuresBadgeText, agentWarningText } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
 import { endpointsFor, getViewJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
@@ -424,6 +424,19 @@ export function renderLegend(legendEl, payload, view, lang) {
     legendEl.appendChild(span);
   }
   if (!view) return;
+  // Issue #117 (independent-verifier finding, 2026-10-10): `view.warnings`
+  // (`RunStatusView.warnings`, `AgentWarningSummary[]` — a COMPLETELY different stream from
+  // `payload.warnings` above, which is only the DAG route's own LAYOUT-derivation notes) rolls up
+  // every agent's non-fatal harness warnings (e.g. `MCP_SERVER_NOT_CONNECTED`). `/api/runs/:id`
+  // already serves it unredacted (`toPublicRunView` strips only `principal`); nothing under
+  // `ui/` ever read it before this pass. `data-agent-warning` distinguishes these spans from the
+  // DAG-layout ones above (which carry no attribute) for an acceptance test to target.
+  for (const w of (view.warnings || [])) {
+    const span = document.createElement('span');
+    span.setAttribute('data-agent-warning', w.code);
+    span.textContent = agentWarningText(lang, w);
+    legendEl.appendChild(span);
+  }
   const nodeCount = (payload.cells || []).filter((c) => c.kind === 'agent' && c.agentId !== undefined).length;
   const usage = view.usage;
   const tok = usage ? sumTokens(usage.tokens) : undefined;

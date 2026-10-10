@@ -102,6 +102,11 @@ export const STR = {
     // [v35, DES-240, TASK-238, REQ-205] the failure-reason label rendered next to a failed run's
     // status (detail view + list row), beside error.code/error.message.
     failureReason: '失敗原因',
+    // Issue #117: `run_status.warnings` (AgentWarningSummary[], rolled up from
+    // AgentRecord.warnings) rendered by `ui/run.js`'s `renderLegend`, via `agentWarningText`
+    // below — the only known code today is MCP_SERVER_NOT_CONNECTED. {agent}/{server}/{status}
+    // interpolated by `agentWarningText`.
+    agentWarningMcpNotConnected: 'Agent {agent}:MCP 伺服器 {server} 未連線({status})',
     // dash-auth-spec.md section C (2026-09-30): the run-detail badge for a run with >=1 failed
     // agent — `{n}` is replaced by `agentFailuresBadgeText`, never a hardcoded count baked in here.
     agentFailuresBadge: '{n} 個 agent 失敗',
@@ -164,6 +169,7 @@ export const STR = {
     kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
     kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',
     failureReason: 'Failure reason',
+    agentWarningMcpNotConnected: 'Agent {agent}: MCP server {server} not connected ({status})',
     agentFailuresBadge: '{n} agent(s) failed',
   },
 };
@@ -206,6 +212,26 @@ export function warningText(lang, raw) {
     return t(lang, key).replace('{resolved}', kv.resolved.replace(/^v/, ''));
   }
   return t(lang, key);
+}
+
+// Issue #117 (independent-verifier finding, 2026-10-10): `AgentWarningSummary` (run-manager.ts
+// `summarizeAgentWarnings`, rolled up from `AgentRecord.warnings` — today only
+// `MCP_SERVER_NOT_CONNECTED`) is a COMPLETELY different stream from the DAG layout warnings
+// `warningText` above maps — it carries a typed `code`/`server`/`status`/`message` object, never
+// a `TOKEN: DETAIL` string, so it is never fed through `warningText` (whose `raw.indexOf` would
+// throw on an object). A pure decision function (ADR-049, same split as `warningText`/
+// `agentFailuresBadgeText`): the one known `code` renders via the string table, naming the agent
+// (`w.label`, falling back to `w.agentId` when no label was declared) and the server; an unknown
+// future code passes `w.message` through UNCHANGED, the same never-render-a-guess rule
+// `warningText` already follows for an unrecognized TOKEN.
+export function agentWarningText(lang, w) {
+  if (w.code === 'MCP_SERVER_NOT_CONNECTED') {
+    return t(lang, 'agentWarningMcpNotConnected')
+      .replace('{agent}', w.label ?? w.agentId)
+      .replace('{server}', w.server)
+      .replace('{status}', w.status);
+  }
+  return w.message;
 }
 
 // dash-auth-spec.md section C (2026-09-30): the "completed with N failed agents" run-detail badge
