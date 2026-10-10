@@ -49,22 +49,25 @@ export const ERROR_CATALOG = {
   PROBE_ERROR: { see: null, hint: 'system_info could not collect one or more host diagnostics; detail.rawCode carries the original signal when known' },
 
   // Ownership
-  // Issue #116 (OWNER DECISION a, 2026-10-10): on workflow_deregister/workflow_publish, a
-  // non-admin caller now receives WORKFLOW_NOT_FOUND instead (masked — indistinguishable from the
-  // name not existing at all); this code is still returned as-is by every OTHER
-  // `ownership:'workflow'`/`'asset'` tool (workspace_push's workflow/asset modes, and
-  // workspace_list/_delete's own `workflow` mode — residual risk, documented) — see authz.ts's
-  // `notFoundTemplate` for the exact, documented scope. Also still returned as-is, unmasked and
-  // now audited (review round 6 finding 2), by workflow-catalog.ts's OWN pre-insert ownership gate
-  // on a TAKEN name (validateRegistration/insertVersion) — that check has no `*_NOT_FOUND` sibling
-  // to mask toward at all for a brand-new name, so decision a's masking does not apply there.
+  // Issue #116 (OWNER DECISION a, 2026-10-10): on workflow_deregister/workflow_publish AND
+  // (reverify round-6 finding 5, 4th repair round) EVERY other `ownership:'workflow'`/`'asset'`
+  // tool too — workspace_list/_delete's own `workflow` mode, and workspace_push's own `asset`
+  // mode — a non-admin caller now receives WORKFLOW_NOT_FOUND instead (masked — indistinguishable
+  // from the name not existing at all); see authz.ts's `notFoundTemplate` for the exact,
+  // documented scope (it is now total over every `ownership:'workflow'`/`'asset'` row). The ONE
+  // remaining place this code still reaches the wire as-is, unmasked and audited (review round 6
+  // finding 2), is workflow-catalog.ts's OWN pre-insert ownership gate on a TAKEN name
+  // (validateRegistration/insertVersion) — that check has no `*_NOT_FOUND` sibling to mask toward
+  // at all for a brand-new name, so decision a's masking does not apply there.
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
   // Issue #116 (OWNER DECISION a): on run_status/run_result/run_suspend/run_resume/run_stop/
   // run_agent_log/issue_report AND (review round 6 finding 1) workspace_pull, workspace_purge,
-  // and workspace_list/workspace_delete's own `run` mode, a non-admin caller now receives
-  // RUN_NOT_FOUND instead (masked — indistinguishable from the run not existing at all); still
-  // returned as-is by workspace_push/_list/_delete's `workflow`/`asset` modes (authz.ts's
-  // `notFoundTemplate` documents the exact scope).
+  // and workspace_list/workspace_delete's own `run` mode — every `ownership:'run'` tool/mode this
+  // engine has — a non-admin caller now receives RUN_NOT_FOUND instead (masked —
+  // indistinguishable from the run not existing at all). No residual gap: authz.ts's
+  // `notFoundTemplate` is total over `ownership:'run'`, so this code never reaches the wire to any
+  // non-admin caller any more (it survives only as `AuthzVerdict.internalReason` and the refusal
+  // audit trail's `realReason`, same as its NOT_WORKFLOW_OWNER/NOT_TRIGGER_OWNER siblings).
   NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
   // v24 Gate 8 (AF-3, TASK-162): `authz.ts`'s loopback-exempt refusal — a caller reaching a tool
   // that needs an identity over a connection that carries none. It was DECLARED in

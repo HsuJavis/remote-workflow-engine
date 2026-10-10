@@ -108,6 +108,12 @@ export class SqliteRunStore implements RunStore {
     this._db.exec('CREATE INDEX IF NOT EXISTS runs_status ON runs(status)');
     // v24 (DES-151, TASK-140): admin cross-owner read audit trail — synchronous append (better-
     // sqlite3), `seq` (autoincrement rowid) orders reads within a runId for auditFor's newest-first cap.
+    // 4th repair round (issue #116 defect 5, residual risk — documented, not silently accepted):
+    // neither this table nor `authz_refusals` below has any retention/pruning policy — every row
+    // ever written (one per admin cross-owner read here; one per refused call there) stays
+    // forever, so both grow without bound for the lifetime of a deployment. See DEPLOY.md's
+    // operations section for the operator-facing note (how to prune safely with sqlite3 while the
+    // engine is stopped).
     this._db.exec(`
       CREATE TABLE IF NOT EXISTS audit_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +129,9 @@ export class SqliteRunStore implements RunStore {
     // above — `runId`/`owner` there are NOT NULL (an admin cross-owner READ of an existing run),
     // which a role/pending-approval refusal naming no run at all does not fit. `actor` IS nullable
     // here (NOT NULL in `audit_events`): `auth-disabled`/`loopback-exempt` carry no actor id.
+    // No retention policy (see the comment on `audit_events` just above — same residual risk,
+    // same operator-facing note in DEPLOY.md): this table gains exactly one row per refused call
+    // and nothing ever removes one.
     this._db.exec(`
       CREATE TABLE IF NOT EXISTS authz_refusals (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,

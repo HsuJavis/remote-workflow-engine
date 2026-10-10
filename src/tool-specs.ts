@@ -1750,19 +1750,36 @@ export const TOOL_SPECS = [
       // itself; the INFERENCE is in whether it matches a row here.
       'Each row: ts, requestId (matches `detail.requestId` on the refused caller\'s OWN response — or the response body\'s own `requestId` key, for a dashboard 403/404 or a bearer-layer 401/403). ' +
       'On a TEMPLATED tool (one authz.ts\'s `notFoundTemplate` masks — e.g. run_status, workspace_pull), a non-owner refusal\'s response is byte-identical to a genuinely-missing id\'s, INCLUDING a requestId on both (issue #116 decision a) — so a requestId alone does not prove which one happened; a row HERE matching that requestId does: the masked refusal always gets exactly one row, the genuine miss never does (it is not an authorization refusal at all). ' +
-      'actor (null for auth-disabled/loopback-exempt), authMethod ("service-account" when the actor authenticated as one, absent otherwise), tool (for a tool-dispatched refusal, the BACKING MCP tool name — e.g. a dashboard GET /api/runs/:id records as "run_status", never the HTTP route; for a bearer-layer refusal with no tool behind it at all — SERVICE_ACCOUNT_DISABLED/ACCOUNT_PENDING_APPROVAL on the raw upload routes and /mcp — the HTTP route itself, e.g. "POST /mcp"), targetKind ("run"|"workflow"|"trigger"|"none"), targetId (the id the REFUSED CALLER supplied — never the resource\'s real owner), realReason (the true internal reason, e.g. NOT_RUN_OWNER, even when the caller was shown RUN_NOT_FOUND), returnedCode (what the caller actually received). ' +
-      'All filters optional: actor, tool (exact match — a route string for a bearer-layer row, a tool name otherwise; the two never collide), since (ISO-8601, inclusive), limit (default/cap same as the rest of this engine\'s audit reads).',
+      // 4th repair round (issue #116 defect 3): `tool` has a THIRD shape beyond the two already
+      // documented below (a backing MCP tool name, or a bare HTTP route for a bearer-layer
+      // refusal) — a trigger (schedule/webhook) firing, or a nested `workflow()` call from inside
+      // a running script, that is refused by a service account's own admission check
+      // (run-manager.ts's `_assertServiceAccountAdmission`) has NO MCP call behind it at all (no
+      // tools/call request, no HTTP route either — the firing/nested call is purely internal), so
+      // neither of the other two shapes fits; this row is recorded with `tool:'run_start'`, naming
+      // the OPERATION being attempted (admission for a new run) rather than any literal transport.
+      'actor (null for auth-disabled/loopback-exempt), authMethod ("service-account" when the actor authenticated as one, absent otherwise), tool (for a tool-dispatched refusal, the BACKING MCP tool name — e.g. a dashboard GET /api/runs/:id records as "run_status", never the HTTP route; for a bearer-layer refusal with no tool behind it at all — SERVICE_ACCOUNT_DISABLED/ACCOUNT_PENDING_APPROVAL on the raw upload routes and /mcp — the HTTP route itself, e.g. "POST /mcp"; for a service account\'s own trigger-firing or nested workflow() admission refusal, which has neither an MCP call nor an HTTP route behind it at all, "run_start" — the OPERATION being attempted, not a literal transport), targetKind ("run"|"workflow"|"trigger"|"none"), targetId (the id the REFUSED CALLER supplied — never the resource\'s real owner), realReason (the true internal reason, e.g. NOT_RUN_OWNER, even when the caller was shown RUN_NOT_FOUND), returnedCode (what the caller actually received). ' +
+      // 4th repair round (issue #116 defect 3): `since` is compared lexicographically against
+      // Z-suffixed `toISOString()` rows (call-tool.ts) — any offset-form value supplied here is
+      // normalized to UTC Z-form BEFORE the store ever sees it, so `+08:00`/`-05:00`/etc. all
+      // compare correctly against same-instant Z rows (an un-normalized offset-form value would
+      // otherwise sort lexicographically after a same-instant Z row and silently miss it).
+      'All filters optional: actor, tool (exact match — a route string for a bearer-layer row, a tool name otherwise; the two never collide), since (ISO-8601, inclusive — any UTC-offset form is normalized to Z-form before querying), limit (default/cap same as the rest of this engine\'s audit reads).',
     inputSchema: {
       ...schema({
         actor: { type: 'string', description: 'Exact match on the refused caller\'s own id.' },
-        tool: { type: 'string', description: 'Exact match on the backing MCP tool name this refusal happened through (a dashboard route records as its backing tool, e.g. "run_status" — never the route), OR the bare HTTP route for a bearer-layer refusal with no tool behind it at all (e.g. "POST /mcp").' },
-        since: { type: 'string', description: 'ISO-8601 timestamp — only rows at or after this instant.' },
+        tool: { type: 'string', description: 'Exact match on the backing MCP tool name this refusal happened through (a dashboard route records as its backing tool, e.g. "run_status" — never the route), OR the bare HTTP route for a bearer-layer refusal with no tool behind it at all (e.g. "POST /mcp"), OR "run_start" for a service account\'s own trigger-firing/nested workflow() admission refusal (neither an MCP call nor an HTTP route).' },
+        since: { type: 'string', description: 'ISO-8601 timestamp — only rows at or after this instant. Any UTC-offset form (e.g. +08:00) is normalized to Z-form before querying.' },
         limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Max rows to return (default 200).' },
       }),
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['FORBIDDEN_ROLE'] as ErrorCode[],
+    // 4th repair round (issue #116 defect 3): `audit_refusals_list`'s own handler (call-tool.ts)
+    // can answer both of these — INVALID_ARGUMENT when `since` is not a parseable ISO-8601
+    // timestamp, INTERNAL_ERROR when the refusal audit store is not wired on this engine — neither
+    // was advertised, so a cold caller had no way to learn either was even possible.
+    errors: ['FORBIDDEN_ROLE', 'INVALID_ARGUMENT', 'INTERNAL_ERROR'] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: { happy: {}, errors: {} },

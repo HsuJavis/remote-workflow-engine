@@ -1880,6 +1880,8 @@ npm run start
 
 **目前已知、會影響操作判斷的限制**（每一條都在真機上實測過）：
 
+- **`authz_refusals`／`audit_events`（SQLite，`$workRoot/store` 底下的索引資料庫）沒有保留策略，只會增長，不會自動清理。** `authz_refusals` 每一次授權被拒（非擁有者、角色不足、待審核帳號、workflow 不在允許清單…）寫一列；`audit_events` 每一次 admin 跨擁有者讀取寫一列。兩張表都沒有 TTL、沒有輪替、沒有封存——流量輕的部署可能幾個月都不明顯，但長期（數月到數年）持續運作的部署會持續累積，值得排進日常維運檢查。**要清理（必須先停引擎，避免清理動作與正在寫入的請求競態）：** 停止引擎 → 對 `store/index.db` 跑一次性 SQL，例如只保留最近 90 天：`sqlite3 store/index.db "DELETE FROM authz_refusals WHERE ts < strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 days'); DELETE FROM audit_events WHERE ts < strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 days'); VACUUM;"` → 重新啟動引擎。這兩張表只給人工稽核/追蹤用，不是任何 run/workflow 功能性狀態的依賴，刪除舊列是安全的；`VACUUM` 會把刪除後騰出的磁碟空間還給檔案系統（耗時隨資料庫大小增加，建議在維護窗口做）。
+
 - **`effort` 對 OpenRouter 模型沒有作用。** 引擎會把 `effort` 換算成 thinking 預算交給 CLI，但這個值
   到不了 OpenRouter：實測攔下真正送出的請求，`low` 與 `high` 兩次的內容完全相同、也沒有
   `reasoning_effort` 欄位（CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter
