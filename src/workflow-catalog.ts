@@ -1292,6 +1292,11 @@ export class WorkflowCatalog {
    *  `validateScriptEntry` even runs) for the same "the cheapest, most fundamental check answers
    *  first" reason `validateRegistration` checks it before anything else.
    *
+   *  Issue #154 B4 residual (2026-10-10): the case-insensitive reserved-prefix rule
+   *  (`isReservedPrefixed`) is re-checked too, ahead of name validity — a row registered as
+   *  `RWE-x` before v0.37.9 made that rule case-insensitive is refused NOT_RUNNABLE
+   *  (`violation:'RESERVED_PREFIX'`) instead of staying runnable.
+   *
    *  Deliberately NOT re-checked (both documented here, not merely by omission):
    *    - Mermaid/diagram-grammar (`checkMermaid`'s v2 rules) — `diagramContract:'v1'` rows are
    *      EXPLICITLY grandfathered (ADR-025/DES-184); retroactively imposing v26's diagram grammar
@@ -1350,7 +1355,8 @@ export class WorkflowCatalog {
     return result;
   }
 
-  /** The four re-run checks (name validity, then the SAME three PINNED to the relative order
+  /** The re-run checks (the reserved `rwe-` prefix in any letter case — issue #154, checked first,
+   *  same order as `validateRegistration` — then name validity, then the SAME three PINNED to the relative order
    *  `validateRegistration` uses for them: `validateScriptEntry` → `scanAgentCalls` →
    *  `parseMetaParams`), stopping at the first failure — same "first error wins, the rest never
    *  run" convention every other registration-time check in this file already follows.
