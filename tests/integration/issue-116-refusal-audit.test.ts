@@ -18,6 +18,8 @@ import Database from 'better-sqlite3';
 import { createServer, type Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
 import { startFakeGoogle, fakeJwksFetch, dashboardLogin, type FakeGoogle } from '../helpers/fake-google.js';
+import { notFoundTemplate, type AuthzErrorCode } from '../../src/authz.js';
+import { TOOL_SPECS } from '../../src/tool-specs.js';
 
 const CID = 'it116-cid';
 const ROOT = 'root@it116.test';
@@ -202,6 +204,33 @@ describe('issue #116 decision a: non-owner is indistinguishable from missing', (
     expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', code: 'RUN_NOT_FOUND', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', see: null, detail: { requestId: missing['error']['detail']['requestId'] } } });
   });
 
+  // 4th repair round (issue #116 defect 1+2), against a REAL booted server: `workspace_list`/
+  // `workspace_delete`'s own `workflow` mode and `workspace_push`'s own `asset` mode, found by the
+  // unit-level fix above to have been building the WRONG masked shape (a missing `runId` key, or a
+  // missing `error.see`) — reproduced here end-to-end, through the real HTTP/MCP surface, against
+  // the real genuine-not-found handler (never a hand-assumed shape).
+  it('workspace_list workflow mode: non-owner vs missing-workflow are byte-identical (apart from the workflow name and the requestId)', async () => {
+    const nonOwner = await mcp('workspace_list', { workflow: WF, kind: 'skill' }, bobToken);
+    const missing = await mcp('workspace_list', { workflow: 'no-such-workflow-it116-wl', kind: 'skill' }, bobToken);
+    expect(nonOwner).toEqual({ runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${WF}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Unknown workflow: no-such-workflow-it116-wl', detail: { requestId: missing['error']['detail']['requestId'] } } });
+    expect(nonOwner['error']['detail']['requestId']).not.toBe(missing['error']['detail']['requestId']);
+  });
+
+  it("workspace_delete workflow mode: non-owner vs missing-workflow are byte-identical (apart from the workflow name and the requestId), including error.see", async () => {
+    const nonOwner = await mcp('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken);
+    const missing = await mcp('workspace_delete', { workflow: 'no-such-workflow-it116-wd', kind: 'skill', name: 'n' }, bobToken);
+    expect(nonOwner).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `WORKFLOW_NOT_FOUND: unknown workflow '${WF}'`, see: null, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: "WORKFLOW_NOT_FOUND: unknown workflow 'no-such-workflow-it116-wd'", see: null, detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
+  it("workspace_push asset mode: non-owner vs missing-workflow are byte-identical (apart from the workflow name and the requestId), including error.see", async () => {
+    const nonOwner = await mcp('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken);
+    const missing = await mcp('workspace_push', { workflow: 'no-such-workflow-it116-wp', kind: 'skill', name: 'n', files: [] }, bobToken);
+    expect(nonOwner).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `WORKFLOW_NOT_FOUND: unknown workflow '${WF}' — register it first (workflow_register), then push its assets`, see: null, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: "WORKFLOW_NOT_FOUND: unknown workflow 'no-such-workflow-it116-wp' — register it first (workflow_register), then push its assets", see: null, detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
   // Review round 6 finding 1: tool-specs.ts no longer advertises NOT_RUN_OWNER on these four tools
   // (it can never arrive) — confirms the fix landed on the advertised surface too, not just the
   // runtime envelope.
@@ -366,5 +395,101 @@ describe('issue #116 decision b (review round 6 finding 5): bearer-layer refusal
     const rows = after['result'] as Array<Record<string, unknown>>;
     expect(rows.length).toBe(beforeCount + 1);
     expect(rows[0]).toMatchObject({ actor: pendingEmail, tool: 'POST /assets/manifest', targetKind: 'none', targetId: null, realReason: 'ACCOUNT_PENDING_APPROVAL', returnedCode: 'ACCOUNT_PENDING_APPROVAL', requestId: body.requestId });
+  });
+});
+
+// 4th repair round (issue #116 defect 2): a generic guard over the WHOLE masked-tool/mode set —
+// every (tool, ownerCode) pair `authz.ts`'s own `notFoundTemplate` masks, derived the SAME way
+// `call-tool.ts`'s `NOT_FOUND_STAMP_CODES` derives its own stamp set (so this test's coverage can
+// never drift from the production set it is guarding), each checked against the REAL server for
+// structural byte-identity between a non-owner refusal and a genuinely-missing id. Earlier tests in
+// this file already check several of these against their own hand-verified exact wording; this one
+// is deliberately generic instead — it normalizes away the one legitimate difference (the id itself
+// and the requestId VALUE) and then asserts full deep equality, so a FUTURE tool/mode added to
+// notFoundTemplate without a matching row here fails the coverage assertion, and a future SHAPE
+// regression on any already-covered tool/mode fails the byte-identity assertion — neither can slip
+// through silently.
+describe('issue #116 decision a (4th repair round, defect 2): a generic guard over every masked tool/mode', () => {
+  const OWNER_CODES: readonly AuthzErrorCode[] = ['NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'NOT_TRIGGER_OWNER'];
+
+  /** The exact (tool, ownerCode) pairs `notFoundTemplate` masks, right now — same derivation
+   *  `call-tool.ts`'s own `NOT_FOUND_STAMP_CODES` uses (one call per TOOL_SPECS row per ownerCode). */
+  function templatedPairs(): Set<string> {
+    const out = new Set<string>();
+    for (const spec of TOOL_SPECS) {
+      for (const ownerCode of OWNER_CODES) {
+        if (notFoundTemplate(spec.name, 'x', ownerCode)) out.add(`${spec.name}:${ownerCode}`);
+      }
+    }
+    return out;
+  }
+
+  const MISSING_RUN = '00000000-0000-0000-0000-000000000000';
+  // `nonOwnerArgs`/`missingArgs` are BUILDER functions, not plain values: this table is built at
+  // `describe()`-COLLECTION time, before `beforeAll` above has assigned `runId`/`scheduleId`/
+  // `webhookId` (still `undefined` at that point) — a first attempt that captured those variables'
+  // values directly here read `undefined` for every one of them (RED: every case failed with
+  // "Cannot read properties of undefined", not a real assertion failure). Deferring the read to a
+  // closure invoked INSIDE the `it.each` callback (after `beforeAll` has run) fixes it.
+  const GENERIC_CASES: ReadonlyArray<{
+    tool: string; ownerCode: AuthzErrorCode;
+    nonOwnerArgs: () => Record<string, unknown>; nonOwnerId: () => string;
+    missingArgs: () => Record<string, unknown>; missingId: () => string;
+  }> = [
+    { tool: 'run_status', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'run_result', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'run_suspend', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'run_resume', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'run_stop', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'run_agent_log', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId, agentId: 'a1' }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN, agentId: 'a1' }), missingId: () => MISSING_RUN },
+    { tool: 'issue_report', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ title: 't', body: 'b', reproSteps: 's', analysis: 'a', runId }), nonOwnerId: () => runId, missingArgs: () => ({ title: 't', body: 'b', reproSteps: 's', analysis: 'a', runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'workspace_pull', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId, path: 'a.txt' }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN, path: 'a.txt' }), missingId: () => MISSING_RUN },
+    { tool: 'workspace_purge', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'workspace_list', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN }), missingId: () => MISSING_RUN },
+    { tool: 'workspace_delete', ownerCode: 'NOT_RUN_OWNER', nonOwnerArgs: () => ({ runId, paths: ['a.txt'] }), nonOwnerId: () => runId, missingArgs: () => ({ runId: MISSING_RUN, paths: ['a.txt'] }), missingId: () => MISSING_RUN },
+    { tool: 'workflow_deregister', ownerCode: 'NOT_WORKFLOW_OWNER', nonOwnerArgs: () => ({ name: WF }), nonOwnerId: () => WF, missingArgs: () => ({ name: 'no-such-workflow-it116-generic-wd' }), missingId: () => 'no-such-workflow-it116-generic-wd' },
+    { tool: 'workflow_publish', ownerCode: 'NOT_WORKFLOW_OWNER', nonOwnerArgs: () => ({ name: WF, version: 'v1', channel: 'release' }), nonOwnerId: () => WF, missingArgs: () => ({ name: 'no-such-workflow-it116-generic-wp', version: 'v1', channel: 'release' }), missingId: () => 'no-such-workflow-it116-generic-wp' },
+    { tool: 'workspace_list', ownerCode: 'NOT_WORKFLOW_OWNER', nonOwnerArgs: () => ({ workflow: WF, kind: 'skill' }), nonOwnerId: () => WF, missingArgs: () => ({ workflow: 'no-such-workflow-it116-generic-wl', kind: 'skill' }), missingId: () => 'no-such-workflow-it116-generic-wl' },
+    { tool: 'workspace_delete', ownerCode: 'NOT_WORKFLOW_OWNER', nonOwnerArgs: () => ({ workflow: WF, kind: 'skill', name: 'n' }), nonOwnerId: () => WF, missingArgs: () => ({ workflow: 'no-such-workflow-it116-generic-wdd', kind: 'skill', name: 'n' }), missingId: () => 'no-such-workflow-it116-generic-wdd' },
+    { tool: 'workspace_push', ownerCode: 'NOT_WORKFLOW_OWNER', nonOwnerArgs: () => ({ workflow: WF, kind: 'skill', name: 'n', files: [] }), nonOwnerId: () => WF, missingArgs: () => ({ workflow: 'no-such-workflow-it116-generic-wpu', kind: 'skill', name: 'n', files: [] }), missingId: () => 'no-such-workflow-it116-generic-wpu' },
+    { tool: 'schedule_delete', ownerCode: 'NOT_TRIGGER_OWNER', nonOwnerArgs: () => ({ id: scheduleId }), nonOwnerId: () => scheduleId, missingArgs: () => ({ id: 'no-such-trigger-it116-generic-sd' }), missingId: () => 'no-such-trigger-it116-generic-sd' },
+    { tool: 'schedule_setEnabled', ownerCode: 'NOT_TRIGGER_OWNER', nonOwnerArgs: () => ({ id: scheduleId, enabled: false }), nonOwnerId: () => scheduleId, missingArgs: () => ({ id: 'no-such-trigger-it116-generic-se', enabled: false }), missingId: () => 'no-such-trigger-it116-generic-se' },
+    { tool: 'webhook_delete', ownerCode: 'NOT_TRIGGER_OWNER', nonOwnerArgs: () => ({ id: webhookId }), nonOwnerId: () => webhookId, missingArgs: () => ({ id: 'no-such-trigger-it116-generic-wh' }), missingId: () => 'no-such-trigger-it116-generic-wh' },
+  ];
+
+  it('GENERIC_CASES covers every (tool, ownerCode) pair notFoundTemplate masks right now — a future tool/mode added there without a matching row here fails this assertion', () => {
+    const fromSource = [...templatedPairs()].sort();
+    const fromTestTable = [...new Set(GENERIC_CASES.map((c) => `${c.tool}:${c.ownerCode}`))].sort();
+    expect(fromTestTable).toEqual(fromSource);
+  });
+
+  /** Strips the one legitimate difference between a non-owner and a missing-id response (the id
+   *  itself, and the requestId's VALUE — both present on both sides, by decision b) so the REST can
+   *  be compared for true byte-identical equality — key sets AND every other value. */
+  function normalizeIdAndRequestId(value: unknown, id: string): unknown {
+    if (typeof value === 'string') return id.length > 0 ? value.split(id).join('<ID>') : value;
+    if (Array.isArray(value)) return value.map((v) => normalizeIdAndRequestId(v, id));
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = k === 'requestId' && typeof v === 'string' ? '<REQUEST_ID>' : normalizeIdAndRequestId(v, id);
+      }
+      return out;
+    }
+    return value;
+  }
+
+  // Array-of-ARRAYS (not array-of-objects): vitest/jest's `it.each` spreads an array row's values
+  // positionally into the callback's parameters — this is built once, at collection time, but every
+  // element is a FUNCTION (see the table's own doc above), so nothing is actually READ until the
+  // callback below invokes them, well after `beforeAll` has run.
+  const GENERIC_ROWS = GENERIC_CASES.map((c) => [`${c.tool} (${c.ownerCode})`, c.tool, c.nonOwnerArgs, c.nonOwnerId, c.missingArgs, c.missingId] as const);
+
+  it.each(GENERIC_ROWS)('%s: non-owner vs missing are structurally byte-identical modulo the id and the requestId value', async (_label, tool, nonOwnerArgsFn, nonOwnerIdFn, missingArgsFn, missingIdFn) => {
+    const nonOwner = await mcp(tool, nonOwnerArgsFn(), bobToken);
+    const missing = await mcp(tool, missingArgsFn(), bobToken);
+    expect(nonOwner['error']).toBeTruthy();
+    expect(missing['error']).toBeTruthy();
+    expect(normalizeIdAndRequestId(nonOwner, nonOwnerIdFn())).toEqual(normalizeIdAndRequestId(missing, missingIdFn()));
   });
 });

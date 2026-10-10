@@ -145,7 +145,12 @@ const MASKED_RUN_ENVELOPE = new Set(['run_status', 'run_result', 'run_suspend', 
 // `codedError`/caught by the handler's own try/catch and travels through `toErrEnvelope()` — the
 // SAME family `workflow_publish` is in (both attach `error.see` and a top-level `code`, which the
 // generic `refusalEnvelope` does not).
-const MASKED_ERR_ENVELOPE = new Set(['workspace_delete', 'workflow_publish']);
+// 4th repair round (issue #116 defect 1): `workspace_push` joins this set — its genuine asset-mode
+// WORKFLOW_NOT_FOUND is thrown via `codedError`/caught by its own try/catch and travels through
+// `toErrEnvelope()` too (mcp-facade.ts's `workspacePush` catch arm), carrying `error.see:null` the
+// same way `workflow_publish`/`workspace_delete` do — this masked envelope used to fall all the way
+// through to the generic `refusalEnvelope`, which never attaches `see` at all.
+const MASKED_ERR_ENVELOPE = new Set(['workspace_delete', 'workflow_publish', 'workspace_push']);
 
 /** Issue #116: builds the masked refusal in the SAME shape that tool's own genuine `*_NOT_FOUND`
  *  answer uses (mcp-facade.ts's shared `notFound()` for the run family — real `runId`, no
@@ -166,7 +171,16 @@ const MASKED_ERR_ENVELOPE = new Set(['workspace_delete', 'workflow_publish']);
  *  silently reopen the tell `workspace_delete`/`workspace_purge` join the same way for. */
 function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, code: ErrorCode, message: string): Record<string, unknown> | undefined {
   if (MASKED_BARE_ENVELOPE.has(toolName)) return { error: { code, message } };
-  const runId = args['runId'];
+  // 4th repair round (issue #116 defect 1): `workspace_list`/`workspace_delete`'s own `workflow`
+  // mode (and `workspace_push`'s own `asset` mode) have NO `runId` in `args` at all — a bare
+  // `args['runId']` left this `undefined`, which JSON.stringify DROPS the key for entirely, while
+  // every genuine not-found arm for these tools always sets the literal `''` (mcp-facade.ts: `{
+  // runId: '' }` directly, or `{ runId: a.runId ?? '' }` in the catch-arm family below) — an
+  // existence oracle (a masked workflow-mode refusal was missing a `runId` key the genuine answer
+  // always carries). `?? ''` here matches that convention for every tool in this function,
+  // including the run-mode ones (whose `runId` is always a required, present argument, so this is
+  // a no-op for them).
+  const runId = (args['runId'] as string | undefined) ?? '';
   if (MASKED_RUN_ENVELOPE.has(toolName)) return { runId, status: 'failed', error: { code, message } };
   if (toolName === 'run_agent_log') return { runId, status: 'failed', error: { code, message }, harness: null, events: [], hasMore: false };
   // `workspace_purge`'s own catch arm (mcp-facade.ts) carries `error.see` via `toErrEnvelope()`
@@ -174,7 +188,11 @@ function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, 
   if (toolName === 'workspace_purge') return { runId, status: 'failed', error: toErrEnvelope(codedError(code, message)) };
   if (MASKED_ERR_ENVELOPE.has(toolName)) {
     const e = toErrEnvelope(codedError(code, message));
-    const envelopeRunId = toolName === 'workflow_publish' ? '' : runId;
+    // `workspace_delete`'s genuine catch arm is `{ runId: a.runId ?? '' }` — the REAL runId in run
+    // mode, `''` in workflow mode (`a.runId` is `undefined` there). `workflow_publish`/
+    // `workspace_push` never carry a real runId at all in ANY mode — their genuine catch arm is
+    // always `{ runId: '' }` outright.
+    const envelopeRunId = toolName === 'workspace_delete' ? runId : '';
     return { runId: envelopeRunId, status: 'failed', code: e.code, error: e };
   }
   return undefined;

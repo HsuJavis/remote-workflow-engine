@@ -130,36 +130,43 @@ describe('callTool — authorize() refusal audit + requestId (issue #116)', () =
   // now has TWO templated ownerCodes (NOT_RUN_OWNER->RUN_NOT_FOUND, NOT_WORKFLOW_OWNER->
   // WORKFLOW_NOT_FOUND) — a first-match-wins `Map<string, ErrorCode>` would only ever stamp ONE of
   // them; both must get a requestId.
-  it("workspace_list's WORKFLOW-mode refusal is NOW masked to WORKFLOW_NOT_FOUND, plus a requestId", async () => {
+  //
+  // 4th repair round (issue #116 defect 1): the three tests below were previously a bare
+  // `result.error.code` check — too weak to catch that `maskedRefusalEnvelope` (call-tool.ts)
+  // built the WRONG shape for these three workflow/asset-mode masked refusals (an `undefined`
+  // `args['runId']` silently dropping the `runId` KEY entirely on JSON.stringify, instead of the
+  // real `''` the genuine handler always sets; `workspace_push` fell all the way through to the
+  // generic `refusalEnvelope`, missing `error.see:null`). Upgraded to full `toEqual` comparisons
+  // against the real handler's own genuine shape (verified against mcp-facade.ts), so a shape
+  // regression on these three now fails here, not only in the real-server integration test.
+  it("workspace_list's WORKFLOW-mode refusal is masked to mcp-facade.ts's own WORKFLOW_NOT_FOUND shape byte-for-byte (runId:'', NO top-level code), plus a requestId", async () => {
     const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: 'Unknown workflow: wf1' };
     const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
-    const result = await callTool(deps, 'workspace_list', { workflow: 'wf1', kind: 'skill' }, { kind: 'author', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
-    expect(result.error.code).toBe('WORKFLOW_NOT_FOUND');
+    const result = await callTool(deps, 'workspace_list', { workflow: 'wf1', kind: 'skill' }, { kind: 'author', id: 'bob' }) as { error: { detail?: { requestId?: string } } };
+    expect(result).toEqual({ runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Unknown workflow: wf1', detail: { requestId: result.error.detail!.requestId } } });
     expect(typeof result.error.detail?.requestId).toBe('string');
   });
 
-  it("workspace_list's RUN-mode masking still gets its OWN stamp, unaffected by the workflow-mode template above (mode trap guard — Set, not a single ErrorCode)", async () => {
+  it("workspace_list's RUN-mode masking still gets its OWN stamp (notFound()'s bare shape, real runId), unaffected by the workflow-mode template above (mode trap guard — Set, not a single ErrorCode)", async () => {
     const verdict: AuthzVerdict = { ok: false, code: 'RUN_NOT_FOUND', internalReason: 'NOT_RUN_OWNER', reason: 'Run not found: r1' };
     const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
-    const result = await callTool(deps, 'workspace_list', { runId: 'r1' }, { kind: 'user', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
-    expect(result.error.code).toBe('RUN_NOT_FOUND');
+    const result = await callTool(deps, 'workspace_list', { runId: 'r1' }, { kind: 'user', id: 'bob' }) as { error: { detail?: { requestId?: string } } };
+    expect(result).toEqual({ runId: 'r1', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: r1', detail: { requestId: result.error.detail!.requestId } } });
     expect(typeof result.error.detail?.requestId).toBe('string');
   });
 
-  it("workspace_delete's WORKFLOW-mode refusal is masked to WORKFLOW_NOT_FOUND, plus a requestId", async () => {
+  it("workspace_delete's WORKFLOW-mode refusal is masked to its own toErrEnvelope() catch-arm shape byte-for-byte (top-level code, error.see:null, runId:''), plus a requestId", async () => {
     const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: "WORKFLOW_NOT_FOUND: unknown workflow 'wf1'" };
     const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
-    const result = await callTool(deps, 'workspace_delete', { workflow: 'wf1', kind: 'skill', name: 'n' }, { kind: 'author', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
-    expect(result.error.code).toBe('WORKFLOW_NOT_FOUND');
-    expect(typeof result.error.detail?.requestId).toBe('string');
+    const result = await callTool(deps, 'workspace_delete', { workflow: 'wf1', kind: 'skill', name: 'n' }, { kind: 'author', id: 'bob' }) as { error: { detail?: { requestId?: string } } };
+    expect(result).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: "WORKFLOW_NOT_FOUND: unknown workflow 'wf1'", see: null, detail: { requestId: result.error.detail!.requestId } } });
   });
 
-  it("workspace_push's ASSET-mode refusal is masked to WORKFLOW_NOT_FOUND, plus a requestId", async () => {
+  it("workspace_push's ASSET-mode refusal is masked to its own toErrEnvelope() catch-arm shape byte-for-byte (top-level code, error.see:null, runId:''), plus a requestId", async () => {
     const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: "WORKFLOW_NOT_FOUND: unknown workflow 'wf1' — register it first (workflow_register), then push its assets" };
     const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
-    const result = await callTool(deps, 'workspace_push', { workflow: 'wf1', kind: 'skill', name: 'n', files: [] }, { kind: 'author', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
-    expect(result.error.code).toBe('WORKFLOW_NOT_FOUND');
-    expect(typeof result.error.detail?.requestId).toBe('string');
+    const result = await callTool(deps, 'workspace_push', { workflow: 'wf1', kind: 'skill', name: 'n', files: [] }, { kind: 'author', id: 'bob' }) as { error: { detail?: { requestId?: string } } };
+    expect(result).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: "WORKFLOW_NOT_FOUND: unknown workflow 'wf1' — register it first (workflow_register), then push its assets", see: null, detail: { requestId: result.error.detail!.requestId } } });
   });
 
   it('a MASKED refusal on workspace_delete (run mode) matches the toErrEnvelope() shape (top-level code, error.see:null), plus a requestId', async () => {
