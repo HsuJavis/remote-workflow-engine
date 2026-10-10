@@ -1401,7 +1401,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'then. While this is happening, `run_result`/`run_status`\'s own `meta.warnings` carries ' +
         "`{code:'AGENT_STILL_RUNNING', message}` (issue #162(1)) — that is the signal to poll again " +
         'rather than trust the figure as final; it disappears once every call has settled. This ' +
-        'tracks the engine PROCESS that owns the call, not a persisted fact (issue #165 ' +
+        'tracks the engine PROCESS that owns the call, not a persisted fact (issue #162(1) ' +
         'reverify-2): across an engine restart the warning stops appearing for a call that process ' +
         'owned — there is nothing left for any process to observe settling — and that call\'s ' +
         'usage, if any, is whatever had already been captured before the restart, final. Otherwise ' +

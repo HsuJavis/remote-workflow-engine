@@ -352,7 +352,7 @@ export function viewerWorkflowVersions(
  *  first agent() call. `undefined` when the run is not terminal, or nothing is `queued`/`running`,
  *  so both callers' own `warnings` array stays absent rather than `[]` on every healthy run.
  *
- *  issue #165 reverify-2 (independent-verifier finding, 2026-10-10): `inflightAgentCount` is read
+ *  issue #162(1) reverify-2 (independent-verifier finding, 2026-10-10): `inflightAgentCount` is read
  *  from `RunManager.inflightAgentCount(runId)` — THIS process's own live records — never from
  *  `agents.filter(...)` over a persisted snapshot (the prior shape). Counting off the snapshot made
  *  this warning PERMANENT once the process that owned an in-flight fire-and-forget call restarted:
@@ -1067,7 +1067,7 @@ export class McpFacade {
     // `_resultMeta` computes for `run_result` (below) — never the heavier usage/budgetEnforceable
     // machinery `run_result`'s own `meta` carries, which nothing here needs. `warnings` here is
     // the ONLY populated key, matching `ResultEnvelope.meta`'s own doc ("`run_status` populates
-    // ONLY `warnings`"). issue #165 reverify-2: the COUNT comes from `runManager.inflightAgentCount`
+    // ONLY `warnings`"). issue #162(1) reverify-2: the COUNT comes from `runManager.inflightAgentCount`
     // (this process's own live records), not from `merged.agents` (see that accessor's own doc
     // for why a persisted snapshot cannot tell a restart-orphaned call apart from a live one).
     const stillRunning = agentStillRunningWarning(merged.status, this.runManager.inflightAgentCount(a.runId));
@@ -1128,7 +1128,7 @@ export class McpFacade {
     const { failedAgentCount } = summarizeAgentFailures(view.agents);
     // issue #162(1) (owner decision): a fire-and-forget call still in flight the moment this run
     // went terminal is exactly what `agent_live_at_terminal` (run-manager.ts) also observes at that
-    // same moment. issue #165 reverify-2: the COUNT here is `runManager.inflightAgentCount(runId)`
+    // same moment. issue #162(1) reverify-2: the COUNT here is `runManager.inflightAgentCount(runId)`
     // — this process's own live records — never `view.agents` (the persisted snapshot
     // `_transition` wrote). A snapshot-only read cannot tell a call that genuinely is still
     // settling apart from one whose owning process restarted and will NEVER settle it again; see

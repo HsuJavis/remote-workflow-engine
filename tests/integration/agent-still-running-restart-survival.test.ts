@@ -1,4 +1,4 @@
-// issue #165 reverify-2 (independent-verifier finding, 2026-10-10): AGENT_STILL_RUNNING
+// issue #162(1) reverify-2 (independent-verifier finding, 2026-10-10): AGENT_STILL_RUNNING
 // (agent-still-running-warning.test.ts, issue #162(1)) can become PERMANENT after an engine
 // restart. `agentStillRunningWarning` used to count `queued`/`running` entries straight off
 // `view.agents`/`merged.agents` — the run's PERSISTED terminal snapshot. That snapshot can
@@ -54,7 +54,7 @@ async function settled(mgr: RunManager, runId: string) {
   return v;
 }
 
-describe('issue #165 reverify-2: AGENT_STILL_RUNNING does not survive an engine restart as a permanent warning', () => {
+describe('issue #162(1) reverify-2: AGENT_STILL_RUNNING does not survive an engine restart as a permanent warning', () => {
   it('a terminal run with a still-in-flight fire-and-forget agent shows the warning in-process, but NOT after a restart', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-orphan-restart-'));
     try {

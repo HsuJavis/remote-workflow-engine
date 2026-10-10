@@ -1580,7 +1580,7 @@ export class RunManager {
     await this._transition(runId, entry, 'stopped');
   }
 
-  /** issue #165 reverify-2 (independent-verifier finding, 2026-10-10): the number of this run's
+  /** issue #162(1) reverify-2 (independent-verifier finding, 2026-10-10): the number of this run's
    *  agent() calls genuinely still in flight IN THIS PROCESS right now — i.e. this process still
    *  holds a live `RunEntry` for `runId` whose spawner is a real `AgentExecutor`, and that
    *  executor's own live records (the SAME source `_mergeLive` reads) show `queued`/`running`.
