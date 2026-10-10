@@ -214,7 +214,7 @@ describe('RunManager service-account admission refusals are audited (issue #116 
     const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
     expect(rows.length).toBe(1);
     expect(rows[0]).toMatchObject({
-      actor: 'sa:ci-bot', authMethod: 'service-account', targetKind: 'workflow', targetId: 'demo',
+      actor: 'sa:ci-bot', authMethod: 'service-account', tool: 'run_start', targetKind: 'workflow', targetId: 'demo',
       realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED',
       requestId: thrown?.detail?.requestId,
     });
@@ -231,7 +231,7 @@ describe('RunManager service-account admission refusals are audited (issue #116 
     await expect(mgr.start({ name: 'demo', origin: 'local', principal: 'sa:ci-bot' })).rejects.toMatchObject({ code: 'WORKFLOW_NOT_ALLOWED' });
     const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
     expect(rows.length).toBe(1);
-    expect(rows[0]).toMatchObject({ targetKind: 'workflow', targetId: 'demo', realReason: 'WORKFLOW_NOT_ALLOWED', returnedCode: 'WORKFLOW_NOT_ALLOWED' });
+    expect(rows[0]).toMatchObject({ tool: 'run_start', targetKind: 'workflow', targetId: 'demo', realReason: 'WORKFLOW_NOT_ALLOWED', returnedCode: 'WORKFLOW_NOT_ALLOWED' });
   });
 
   it('resume(): the disabled-mid-flight refusal (the one real MCP-reachable chokepoint — run_resume skips authorize()\'s allowlist) also writes a row', async () => {
@@ -249,7 +249,7 @@ describe('RunManager service-account admission refusals are audited (issue #116 
     await expect(mgr.resume(runId)).rejects.toMatchObject({ code: 'SERVICE_ACCOUNT_DISABLED' });
     const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
     expect(rows.length).toBe(before + 1);
-    expect(rows[0]).toMatchObject({ targetKind: 'workflow', targetId: 'demo', realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED' });
+    expect(rows[0]).toMatchObject({ tool: 'run_resume', targetKind: 'workflow', targetId: 'demo', realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED' });
   });
 
   it('an audit-write FAILURE still refuses with the real code — never a success, never an unrelated crash', async () => {
@@ -271,5 +271,29 @@ describe('RunManager service-account admission refusals are audited (issue #116 
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner() });
     await mgr.start({ name: 'demo', origin: 'local', principal: 'alice@example.com' });
     expect(store.queryRefusals().length).toBe(0);
+  });
+
+  // The THIRD call site (_handleWorkflowRequest, a nested workflow() frame): the refusal is thrown
+  // INSIDE the sandboxed script (caught by its own try/catch, same pattern
+  // nested-workflow-service-account-allowlist.test.ts uses), never a rejected start()/resume()
+  // promise — but the audit row must still be written exactly like the other two call sites.
+  it('the nested workflow() frame also writes a row (WORKFLOW_NOT_ALLOWED, outside the allowlist)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'leaf', `return 'L';`);
+    const store = new InMemoryRunStore(CLOCK);
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: (p) => (p === 'sa:ci-bot' ? { live: true, workflows: ['top'] } : undefined),
+    });
+    const runId = await startScript(
+      mgr,
+      `try { await workflow('leaf', {}); return 'unreachable'; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+      { name: 'top', principal: 'sa:ci-bot' },
+    );
+    const view = await pollUntilSettled(mgr, runId);
+    expect(view.status).toBe('completed');
+    const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ tool: 'run_start', targetKind: 'workflow', targetId: 'leaf', realReason: 'WORKFLOW_NOT_ALLOWED', returnedCode: 'WORKFLOW_NOT_ALLOWED' });
   });
 });

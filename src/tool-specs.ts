@@ -1013,7 +1013,11 @@ export const TOOL_SPECS = [
     // file through `pathVerdict`'s own CLAUDE_HOOKS strip, not through this code. Advertising a
     // code the tool cannot answer teaches a cold model to branch on something that never arrives —
     // the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
-    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW', 'UNKNOWN_RUN_PLACEHOLDER'],
+    // REMOVED (reverify round-6 finding 5): `NOT_WORKFLOW_OWNER` — this asset-mode row's ownership
+    // mismatch is now masked to WORKFLOW_NOT_FOUND for a non-admin (its sibling, same as
+    // workflow_deregister already does), and admin bypasses the check entirely, so this code can
+    // no longer reach ANY caller from here.
+    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW', 'UNKNOWN_RUN_PLACEHOLDER'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
@@ -1094,9 +1098,9 @@ export const TOOL_SPECS = [
     outputSchema: OUT,
     // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
     // for a non-admin in `run` mode — never advertised, same reason as workspace_pull above.
-    // NOT_WORKFLOW_OWNER is NOT masked in `workflow` mode (residual risk, documented in authz.ts's
-    // `notFoundTemplate`) — it stays advertised.
-    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT'],
+    // Reverify round-6 finding 5: `workflow` mode's NOT_WORKFLOW_OWNER is now ALSO masked to
+    // WORKFLOW_NOT_FOUND — never advertised either, same reason.
+    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'INVALID_ARGUMENT'],
     seeAlso: [] as string[],
     authz: {
       mode: listMode,
@@ -1135,10 +1139,9 @@ export const TOOL_SPECS = [
     // throws RUN_NOT_TERMINAL on a live run and this row never said so, so a cold model could not
     // anticipate a refusal it is certain to meet. `INVALID_ARGUMENT` is the no-mode-matched branch.
     // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
-    // for a non-admin in `run` mode — never advertised. NOT_WORKFLOW_OWNER is NOT masked in
-    // `workflow` mode (residual risk, documented in authz.ts's `notFoundTemplate`) — it stays
-    // advertised.
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
+    // for a non-admin in `run` mode — never advertised. Reverify round-6 finding 5: `workflow`
+    // mode's NOT_WORKFLOW_OWNER is now ALSO masked to WORKFLOW_NOT_FOUND — never advertised either.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: {
       mode: deleteMode,

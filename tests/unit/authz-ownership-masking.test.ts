@@ -4,6 +4,7 @@
 // change, `authorize()` never masked anything and carried no `internalReason`.
 import { describe, it, expect } from 'vitest';
 import { authorize, type OwnerLookup, type Principal } from '../../src/authz.js';
+import { TOOL_SPECS } from '../../src/tool-specs.js';
 
 const NOOP_LOOKUP: OwnerLookup = { runOwner: () => undefined, workflowOwner: () => undefined, triggerOwner: () => undefined };
 const BOB: Principal = { kind: 'user', id: 'bob' };
@@ -148,5 +149,18 @@ describe('authz ownership masking (issue #116 decision a)', () => {
     const verdict = authorize({ kind: 'none', id: 'bob' }, { name: 'run_status', key: 'runId', authz: { minRole: 'user', ownership: 'run' } }, { runId: 'r1' }, NOOP_LOOKUP);
     expect(verdict.code).toBe('ACCOUNT_PENDING_APPROVAL');
     expect(verdict.internalReason).toBe('ACCOUNT_PENDING_APPROVAL');
+  });
+});
+
+// Reverify round-6 finding 5 (same convention as schedule_delete/schedule_setEnabled/webhook_delete
+// dropping NOT_TRIGGER_OWNER, tool-specs.ts): now that workspace_push/workspace_list/
+// workspace_delete's workflow/asset-mode NOT_WORKFLOW_OWNER is masked to WORKFLOW_NOT_FOUND for
+// every non-admin AND admin bypasses the ownership check entirely, no caller can ever receive
+// NOT_WORKFLOW_OWNER from these three tools any more — advertising it in `errors[]` would teach a
+// cold model to branch on a code that never arrives.
+describe('reverify round-6 finding 5: NOT_WORKFLOW_OWNER is not advertised on the three newly-masked tools', () => {
+  it.each(['workspace_push', 'workspace_list', 'workspace_delete'])('%s\'s errors[] does not list NOT_WORKFLOW_OWNER', (toolName) => {
+    const spec = TOOL_SPECS.find((s) => s.name === toolName)!;
+    expect(spec.errors).not.toContain('NOT_WORKFLOW_OWNER');
   });
 });

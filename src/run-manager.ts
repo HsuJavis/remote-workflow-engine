@@ -801,8 +801,20 @@ export class RunManager {
    *  can be traced back to it. `workflowName` is the target this engine's own
    *  `authzTarget`/`workflowNameSubject` would resolve for a workflow-scoped tool — recorded as
    *  `targetKind:'workflow'` even when absent (`targetId: null`), never `'none'`, since the caller
-   *  always named (or was already running as) a workflow by the time this gate can fire. */
-  private _assertServiceAccountAdmission(principal: string | null | undefined, workflowName: string | undefined): void {
+   *  always named (or was already running as) a workflow by the time this gate can fire.
+   *
+   *  `tool` (advisor review, same call): `audit_refusals_list`'s own description promises the
+   *  `tool` column is "the BACKING MCP tool name" for a tool-dispatched refusal — a generic
+   *  `'run-manager'` label would contradict that for `run_resume`, which genuinely IS tool-
+   *  dispatched (just not through `authorize()`), so an admin filtering `tool:'run_resume'` would
+   *  find nothing. Each call site below passes its own real tool name: `start()` -> `'run_start'`
+   *  (true for the MCP-dispatched case; for a bearer-less trigger firing there is no MCP tool at
+   *  all, but `'run_start'` still names the OPERATION being attempted, consistent with how a
+   *  bearer-layer refusal with no tool behind it at all instead uses the HTTP route — this path
+   *  has neither, so the closest-OPERATION name is used), `resume()` -> `'run_resume'`, and the
+   *  nested `workflow()` frame -> `'run_start'` too (it is, mechanically, admission for a NEW run
+   *  composed inside the parent's sandbox). */
+  private _assertServiceAccountAdmission(principal: string | null | undefined, workflowName: string | undefined, tool: 'run_start' | 'run_resume'): void {
     if (!principal) return;
     const status = this._serviceAccountStatus?.(principal);
     if (!status) return;
@@ -811,11 +823,11 @@ export class RunManager {
       try {
         this._store.appendRefusal({
           ts: this._clock.isoNow(), requestId, actor: principal, authMethod: 'service-account',
-          tool: 'run-manager', targetKind: 'workflow', targetId: workflowName ?? null,
+          tool, targetKind: 'workflow', targetId: workflowName ?? null,
           realReason: code, returnedCode: code,
         });
       } catch (err) {
-        console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: 'run-manager', error: err instanceof Error ? err.message : String(err) }));
+        console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool, error: err instanceof Error ? err.message : String(err) }));
       }
       throw codedError(code, message, { requestId });
     };
@@ -939,7 +951,7 @@ export class RunManager {
     // this is the ONLY admission chokepoint a bearer-less trigger firing (schedule/webhook) ever
     // reaches; a bearer-carrying run_start is ALSO checked here (redundant with authorize()'s own
     // pre-check, but cheap and keeps this one rule in one place for every caller).
-    this._assertServiceAccountAdmission(spec.principal, spec.name);
+    this._assertServiceAccountAdmission(spec.principal, spec.name, 'run_start');
     const resolvedActor = actor ?? actorFromPrincipal(spec.principal ?? null);
     // issue #93 item 2 (2026-09-26, amends ADR-086's third owner ruling 2026-09-25): the
     // confinement door is now a DEFERRED refusal, not an immediate one. It used to throw here, as
@@ -1489,7 +1501,7 @@ export class RunManager {
     // exclude this run's own workflow, cannot resume it — re-checked on every resume, not only at
     // the admission that started it. A stopped run above already took priority (ILLEGAL_TRANSITION
     // is a run-state fact, not an authz one, and must not be masked by this).
-    this._assertServiceAccountAdmission(entry.principal, entry.name);
+    this._assertServiceAccountAdmission(entry.principal, entry.name, 'run_resume');
     // v37 P1 (Gate 8 round-5 finding R5-F1; ADR-086's third owner ruling, DES-263 第四次修訂):
     // `resume()`'s ONE admission stage. `_requireLive()` only RECORDS that it had to substitute the
     // current `release` for a pin that no longer exists, and whether that substituted version was
@@ -2494,7 +2506,7 @@ export class RunManager {
     // otherwise be silently bypassed by its own workflow() calls. Checked before any resolve/side
     // effect, same as the depth/cycle doors above. Shared with start()/resume() — see that helper's
     // own doc for the full liveness+allowlist contract.
-    this._assertServiceAccountAdmission(entry.principal, name);
+    this._assertServiceAccountAdmission(entry.principal, name, 'run_start');
     // LOW-3 (owner decision 2026-10-02, verify-k): the disk-floor check runs BEFORE the descendant
     // slot is counted — a nested frame is a NEW admission, refused DISK_LOW below the disk floor
     // (the script sees the throw; the parent run itself is not stopped), and a refusal that never
