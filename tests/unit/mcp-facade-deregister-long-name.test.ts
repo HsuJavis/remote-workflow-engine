@@ -10,7 +10,7 @@
 // directly) + a REAL AssetSyncService on a real tmp dir, so the ENAMETOOLONG this test needs is a
 // genuine kernel error, not a mock.
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -159,6 +159,47 @@ describe('McpFacade.workflowDeregister — a byte-oversized legacy name succeeds
       expect(result.error).toBeUndefined();
       expect((result.result as { removed?: boolean })?.removed).toBe(true);
       expect(await catalog.exists(name)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Round-3 reverify (medium): a REAL `WorkflowCatalog`, seeded by raw INSERT with a
+  // RESERVED_PREFIX name (`RWE-x` — registration always rejects this; raw INSERT is the only way
+  // this row shape can exist, same simulation-of-legacy technique as the >255-byte test above),
+  // deregistered through the REAL `McpFacade.workflowDeregister`, with a REAL on-disk skill tree
+  // pushed under it first. Pre-fix, `deleteWorkflowTree`'s plain `lexicalVerdict` check refused the
+  // RESERVED_PREFIX name outright (`{removed:false}`, no warning) even though the catalog row was
+  // already gone — the facade still answered `removed:true` (it only forwards `deleteWorkflowTree`
+  // if the DB-side `removed` was true) with the tree silently orphaned on disk forever.
+  it('a REAL WorkflowCatalog, seeded by raw INSERT with a RESERVED_PREFIX name (RWE-x): removed:true through the REAL facade, and its real on-disk tree is actually gone', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-facade-dereg-reservedprefix-'));
+    try {
+      const name = 'RWE-x';
+      const catalog = new WorkflowCatalog(dir);
+      seedRawVersion(dir, name, 'v1', "export const meta = { phases: [] };\nreturn 1;");
+      expect(await catalog.exists(name)).toBe(true);
+
+      mkdirSync(join(dir, 'assets'), { recursive: true });
+      const assetSync = realAssetSync(join(dir, 'assets'));
+      const treeDir = join(dir, 'assets', name, 'skill', 'declared-skill');
+      mkdirSync(treeDir, { recursive: true });
+
+      const facade = new McpFacade({
+        runManager: { catalog },
+        assetSync,
+        schedulerClaims: { release: vi.fn(), disable: vi.fn(), claimedIdsFor: () => [] } as never,
+        webhookClaims: { release: vi.fn(), disable: vi.fn(), claimedIdsFor: () => [] } as never,
+      } as never);
+
+      const result = await facade.workflowDeregister({ name }, PRINCIPAL);
+
+      expect(result.status).toBe('completed');
+      expect(result.error).toBeUndefined();
+      expect((result.result as { removed?: boolean; warning?: string })?.removed).toBe(true);
+      expect((result.result as { warning?: string })?.warning).toBeUndefined();
+      expect(await catalog.exists(name)).toBe(false);
+      expect(existsSync(join(dir, 'assets', name))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

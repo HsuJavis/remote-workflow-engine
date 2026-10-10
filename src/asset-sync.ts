@@ -786,10 +786,20 @@ export class AssetSyncService {
    *  is caught too, for the same "the DB delete already happened" reason, logged server-side
    *  (never shipped to the MCP caller — see `errors.ts`'s `toErrEnvelope`, #166 decision 3) and
    *  surfaced as a `warning` on the otherwise-successful `{removed:true}` result rather than a
-   *  thrown `INTERNAL_ERROR` that would misreport a completed delete as a failure. */
+   *  thrown `INTERNAL_ERROR` that would misreport a completed delete as a failure.
+   *
+   *  reverify-r5-a round 3 (medium): used to run a STRICT `lexicalVerdict` that also rejects a
+   *  `RESERVED_PREFIX` name (case-insensitive, #154 B4 follow-up) — a legacy `RWE-*`/`rwe-*`-named
+   *  workflow (valid at registration before that follow-up, and whose pushed skill tree was itself
+   *  materialized through the prefix-blind `isValidBareName`) got `{removed:false}` with NO
+   *  warning: the DB row was already gone (same as any other name) but the tree was silently
+   *  orphaned, permanently out of reach (the freed name can't be re-registered to retry, and
+   *  `workspace_delete` needs `catalog.exists`, which is also now false). Routed through the SAME
+   *  `_lenientWorkflowSegmentOk` helper `_skillRootLenient` (below) already used for `delete()`'s
+   *  own pre-commit check, for the identical reason: the reserved prefix is a REGISTRATION-time
+   *  naming policy, not a path-safety rule, and protects nothing once the row is already gone. */
   deleteWorkflowTree(workflow: string): { removed: boolean; warning?: string } {
-    const verdict = lexicalVerdict('asset-tree', workflow);
-    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return { removed: false };
+    if (!this._lenientWorkflowSegmentOk(workflow)) return { removed: false };
     try {
       rmSync(join(this._workRoot, workflow), { recursive: true, force: true });
       return { removed: true };
@@ -851,7 +861,7 @@ export class AssetSyncService {
    *  byte-oversized-but-otherwise-valid workflow name (see `delete()`'s own doc for why
    *  `_skillRoot()`'s strict `isValidBareName` check is wrong for this call site). `undefined`
    *  means "this workflow string is not safely joinable at all" (empty, a path separator, `..`,
-   *  NUL) — `delete()` refuses BEFORE calling the catalog for that case.
+   *  NUL, or a bare `.`/`..` name) — `delete()` refuses BEFORE calling the catalog for that case.
    *
    *  Advisor-caught defect (r5-a, pre-report): `lexicalVerdict` ALSO rejects a `RESERVED_PREFIX`
    *  (case-insensitive, post the #154 B4 follow-up), but `isValidBareName` is deliberately
@@ -860,15 +870,39 @@ export class AssetSyncService {
    *  the EXACT same way the byte ceiling did: a real, previously-deletable skill tree becomes
    *  undeletable through `workspace_delete`. The reserved prefix is a registration-time naming
    *  POLICY, not a path-safety rule — on a delete site, with the row already catalog-confirmed,
-   *  it protects nothing, so a `RESERVED_PREFIX` verdict is tolerated here same as the byte/char
-   *  ceilings are; every OTHER lexical rejection (`ESCAPE`, `ABSOLUTE`, `NUL`, `EMPTY`) still
-   *  refuses. `deleteWorkflowTree` (the sibling used by `workflow_deregister`) keeps its own
-   *  pre-existing `RESERVED_PREFIX` refusal unchanged — out of scope here; see residual risk. */
+   *  it protects nothing, so a `RESERVED_PREFIX` verdict is tolerated (`_lenientWorkflowSegmentOk`,
+   *  below); every OTHER lexical rejection (`ESCAPE`, `ABSOLUTE`, `NUL`, `EMPTY`) still refuses.
+   *  `deleteWorkflowTree` (the sibling used by `workflow_deregister`) now shares this exact same
+   *  helper, for the identical reason — see round-3 reverify note on that method's own doc. */
   private _skillRootLenient(scope: AssetScope, workflow: string | undefined, name: string): string | undefined {
     if (scope !== 'workflow') return join(this._globalRoot, 'skill', name);
     if (workflow === undefined) return undefined;
-    const verdict = lexicalVerdict('asset-tree', workflow);
-    if ((verdict.kind !== 'ok' && verdict.reason !== 'RESERVED_PREFIX') || workflow.includes('/') || workflow.includes('\\')) return undefined;
+    if (!this._lenientWorkflowSegmentOk(workflow)) return undefined;
     return join(this._workRoot, workflow, 'skill', name);
+  }
+
+  /** Shared by `deleteWorkflowTree` and `_skillRootLenient` — both are POST-commit (DB row already
+   *  gone) cleanup-site checks, so neither needs `isValidBareName`'s registration-time POLICY
+   *  ceilings (byte/char length) or its `RESERVED_PREFIX` naming convention: tolerating them here
+   *  protects nothing once the row is confirmed gone, and refusing them is exactly what orphans a
+   *  real, previously-deletable tree (round-3 reverify finding on `deleteWorkflowTree`; the
+   *  `RESERVED_PREFIX` half of this was already fixed on `_skillRootLenient` alone, round 2).
+   *
+   *  Still refuses every GENUINE path escape: `/`, `\`, NUL, `..`, EMPTY, ABSOLUTE — all via
+   *  `lexicalVerdict` — plus, explicitly, the literal name `.`. `lexicalVerdict` drops a bare `.`
+   *  PATH SEGMENT before deciding (so a MULTI-segment relative path like `foo/.` still correctly
+   *  resolves to `foo`), but that same rule makes a workflow NAME of EXACTLY `.` come back
+   *  `kind:'ok'` with an EMPTY segment list — joined as `join(root, '.')`, that resolves to `root`
+   *  ITSELF. For `deleteWorkflowTree`, a legacy `.`-named catalog row would `rmSync` the WHOLE
+   *  asset root (every workflow's tree); for `_skillRootLenient`, it resolves to
+   *  `<root>/skill/<name>` — inside a (real) sibling workflow literally named `skill`. A bare
+   *  workflow name is never multi-segment, so refusing the literal `.`/`..` strings here closes
+   *  the gap `lexicalVerdict`'s segment-dropping leaves open for this call shape, with no effect
+   *  on any other caller of `lexicalVerdict`. */
+  private _lenientWorkflowSegmentOk(workflow: string): boolean {
+    if (workflow === '.' || workflow === '..') return false;
+    if (workflow.includes('/') || workflow.includes('\\')) return false;
+    const verdict = lexicalVerdict('asset-tree', workflow);
+    return verdict.kind === 'ok' || verdict.reason === 'RESERVED_PREFIX';
   }
 }

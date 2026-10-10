@@ -165,4 +165,34 @@ describe('AssetSyncService.delete() — a legacy byte-oversized workflow name mu
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Round-3 reverify (low): the LENIENT pre-check this file's own RWE-prefix test (above) added
+  // must not be LESS STRICT than the STRICT `_skillRoot()`/`isValidBareName` it replaced on any
+  // OTHER axis. `isValidBareName` explicitly refuses the literal `.`/`..` (path-verdict.ts:148),
+  // but `lexicalVerdict` — which the lenient check is built on — drops a bare `.` PATH SEGMENT
+  // before deciding, so a workflow NAME of exactly `.` comes back `kind:'ok'` with an EMPTY
+  // segment list and resolves (pre-fix) to `<workRoot>/skill/<name>` — INSIDE a real sibling
+  // workflow literally named `skill`, not a no-op. Refused here BEFORE any catalog call, same
+  // convention as the escape-string case just above.
+  it('workflow:"." on delete is refused INVALID_NAME BEFORE any catalog call — the lenient pre-check is not less strict than the old one on "."', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-delete-legacy-dot-'));
+    try {
+      const { svc, catalog } = makeServiceWithCatalog(dir, true);
+      const siblingSkillDir = join(dir, 'skill', 'x');
+      mkdirSync(siblingSkillDir, { recursive: true });
+      writeFileSync(join(siblingSkillDir, 'SKILL.md'), '# a real sibling workflow literally named "skill"');
+
+      let threw: unknown;
+      try {
+        await svc.delete({ scope: 'workflow', workflow: '.', kind: 'skill', name: 'x' });
+      } catch (err) {
+        threw = err;
+      }
+      expect((threw as { code?: string } | undefined)?.code).toBe('INVALID_NAME');
+      expect(catalog.deleteAsset).not.toHaveBeenCalled();
+      expect(existsSync(siblingSkillDir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

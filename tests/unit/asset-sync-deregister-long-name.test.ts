@@ -104,4 +104,55 @@ describe('AssetSyncService.deleteWorkflowTree — ENAMETOOLONG/ENOENT tolerance 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Round-3 reverify (medium): a legacy `RWE-*`/`rwe-*`-named workflow — valid at registration
+  // before the #154 B4 follow-up made the reserved-prefix check case-insensitive, and whose
+  // pushed skill tree was itself materialized through the prefix-blind `isValidBareName` — used to
+  // get `{removed:false}` from the plain `lexicalVerdict('asset-tree', workflow)` check
+  // (RESERVED_PREFIX is a lexical rejection too), silently orphaning the tree forever: the DB row
+  // is already gone by the time this runs, the freed name can't be re-registered to retry, and
+  // `workspace_delete` needs `catalog.exists`, which is also now false. This mirrors the tolerance
+  // `_skillRootLenient` already had for `delete()` (round 2) — `deleteWorkflowTree` must have it
+  // too.
+  it('a legacy RESERVED_PREFIX (RWE-x) workflow name with a real on-disk asset tree is fully removed — the reserved prefix is a registration-time policy, not a cleanup-site refusal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-del-reserved-prefix-'));
+    try {
+      const svc = makeService(dir);
+      const treeDir = join(dir, 'RWE-x', 'skill', 'declared-skill');
+      mkdirSync(treeDir, { recursive: true });
+      writeFileSync(join(treeDir, 'SKILL.md'), '# x');
+      expect(existsSync(treeDir)).toBe(true);
+      const result = svc.deleteWorkflowTree('RWE-x');
+      expect(result).toEqual({ removed: true });
+      expect(existsSync(join(dir, 'RWE-x'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Round-3 reverify (low): `lexicalVerdict` drops a bare `.` PATH SEGMENT before deciding, so a
+  // workflow NAME of EXACTLY `.` comes back `kind:'ok'` with an EMPTY segment list — joined as
+  // `join(workRoot, '.')`, which resolves to `workRoot` itself. A legacy `.`-named catalog row
+  // (only reachable from before the #154 B4 name-validation fix existed) would therefore wipe
+  // EVERY workflow's asset tree, not just its own. `..` is already caught by `lexicalVerdict`'s
+  // own ESCAPE check (segments.some(s => s === '..')) — asserted here too as a belt-and-braces
+  // regression guard on the same literal-name family.
+  it('"." and ".." are refused outright (removed:false) and never touch any OTHER workflow\'s tree, even though "." alone is otherwise lexically "ok"', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-del-dot-'));
+    try {
+      const svc = makeService(dir);
+      const siblingDir = join(dir, 'other-workflow', 'skill', 'declared-skill');
+      mkdirSync(siblingDir, { recursive: true });
+      writeFileSync(join(siblingDir, 'SKILL.md'), '# x');
+
+      expect(svc.deleteWorkflowTree('.')).toEqual({ removed: false });
+      expect(existsSync(siblingDir)).toBe(true);
+      expect(existsSync(dir)).toBe(true);
+
+      expect(svc.deleteWorkflowTree('..')).toEqual({ removed: false });
+      expect(existsSync(siblingDir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
