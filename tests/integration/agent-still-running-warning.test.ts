@@ -95,6 +95,46 @@ describe('issue #162(1): AGENT_STILL_RUNNING meta.warnings while a fire-and-forg
     );
   });
 
+  it('a run that is itself still RUNNING (an ordinary, AWAITED in-flight agent() call) carries NO AGENT_STILL_RUNNING warning — the gate is on the RUN\'s own terminal status, never bare agent state', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const blockingGateway: GatewayClient = {
+      invoke: async () => {
+        await gate;
+        return { ok: true, provider: 'fake', model: 'm', tokens: { input: 1, output: 1 }, content: 'done' };
+      },
+    };
+    const store = new InMemoryRunStore(new SystemClock());
+    const mgr = new RunManager({ gateway: blockingGateway, store });
+    const runId = await startScript(mgr, `return await agent('slow', {});`);
+    const facade = new McpFacade({ runManager: mgr, store, confinementPosture: 'unconfined' } as never);
+
+    // Poll until the agent itself is genuinely dispatched (state running) while the RUN is still
+    // running too — the exact state an ordinary, fully-awaited agent() call passes through on every
+    // call, not a fire-and-forget gap.
+    let status = await mgr.status(runId);
+    for (let i = 0; i < 100 && !status.agents.some((a) => a.state === 'running'); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      status = await mgr.status(runId);
+    }
+    expect(status.status).toBe('running');
+    expect(status.agents.some((a) => a.state === 'running')).toBe(true);
+
+    const runStatusResult = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
+    expect(runStatusResult.meta?.warnings ?? []).not.toContainEqual(
+      expect.objectContaining({ code: 'AGENT_STILL_RUNNING' }),
+    );
+    const runResultResult = await facade.runResult({ runId }, AUTH_DISABLED, false, null);
+    expect(runResultResult.error?.code).toBe('RUN_NOT_TERMINAL');
+    expect(runResultResult.meta?.warnings ?? []).not.toContainEqual(
+      expect.objectContaining({ code: 'AGENT_STILL_RUNNING' }),
+    );
+
+    release();
+    const terminal = await pollUntilTerminal(mgr, runId);
+    expect(terminal.status).toBe('completed');
+  });
+
   it('a run with nothing still in flight carries no AGENT_STILL_RUNNING warning at all (positive control)', async () => {
     const store = new InMemoryRunStore(new SystemClock());
     const mgr = new RunManager({ gateway: lateGateway(), store });

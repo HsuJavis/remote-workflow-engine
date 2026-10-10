@@ -17,7 +17,7 @@ import { SubmissionValidator } from './submission-validator.js';
 // called the local one, the catalog's `see:'workflow_authoring_guide'` pointer never reached the
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView, AgentRecord } from './types.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView, AgentRecord, RunStatus } from './types.js';
 import { parseMeta, resolvePhases, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import type { Provider } from './providers.js';
@@ -345,9 +345,14 @@ export function viewerWorkflowVersions(
  *  never aborts in-flight work just because the run around it finished; issue #162 D already fixes
  *  its usage eventually back-filling into `meta.usage`/`run_list` once it settles). Before this, a
  *  caller reading right at the terminal moment had no way to tell that was happening at all — the
- *  response looked complete. `undefined` when nothing is `queued`/`running`, so both callers' own
- *  `warnings` array stays absent rather than `[]` on every healthy run. */
-function agentStillRunningWarning(agents: AgentRecord[]): { code: 'AGENT_STILL_RUNNING'; message: string } | undefined {
+ *  response looked complete. GATED on `status` being terminal (`TERMINAL.has`) — a `queued`/
+ *  `running` agent on a run that is ITSELF still `running` is the normal, unremarkable case (every
+ *  agent passes through exactly those two states on the way to settling), not a warning; without
+ *  this gate every poll of an ordinary in-progress run would carry a spurious warning on its very
+ *  first agent() call. `undefined` when the run is not terminal, or nothing is `queued`/`running`,
+ *  so both callers' own `warnings` array stays absent rather than `[]` on every healthy run. */
+function agentStillRunningWarning(status: RunStatus, agents: AgentRecord[]): { code: 'AGENT_STILL_RUNNING'; message: string } | undefined {
+  if (!TERMINAL.has(status)) return undefined;
   const n = agents.filter((a) => a.state === 'queued' || a.state === 'running').length;
   if (n === 0) return undefined;
   return { code: 'AGENT_STILL_RUNNING', message: `${n} agent() call(s) still in flight; usage will be back-filled once they settle — poll again` };
@@ -1057,7 +1062,7 @@ export class McpFacade {
     // resolved — never the heavier usage/budgetEnforceable machinery `run_result`'s own `meta`
     // carries, which nothing here needs. `warnings` here is the ONLY populated key, matching
     // `ResultEnvelope.meta`'s own doc ("`run_status` populates ONLY `warnings`").
-    const stillRunning = agentStillRunningWarning(merged.agents);
+    const stillRunning = agentStillRunningWarning(merged.status, merged.agents);
     return {
       runId: merged.runId, status: merged.status,
       ...(merged.principal ? { principal: merged.principal } : {}),
@@ -1114,7 +1119,7 @@ export class McpFacade {
     // the SAME array `agent_live_at_terminal` (run-manager.ts) checks for a `queued`/`running` entry
     // at the exact moment this run went terminal; a fire-and-forget call still in flight then shows
     // up here exactly like it does there, no live overlay needed (`_resultMeta`'s own doc, above).
-    const stillRunning = agentStillRunningWarning(view.agents);
+    const stillRunning = agentStillRunningWarning(view.status, view.agents);
     const warnings = [
       ...(failedAgentCount !== undefined && failedAgentCount > 0
         ? [{ code: 'AGENT_FAILED' as const, message: `${failedAgentCount} agent(s) failed; see run_status.agentFailures for detail` }]
