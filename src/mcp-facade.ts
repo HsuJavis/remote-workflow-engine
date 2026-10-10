@@ -1152,9 +1152,19 @@ export class McpFacade {
     // label column DES-161 added to `AgentRecord` had no reader until here. `agentId` stays
     // accepted for the pre-v24 callers that already had one (val-019 reads it off `run_status`).
     const requested = a.agentId ?? a.label ?? '';
+    // issue #165: `label` now matches EITHER `AgentRecord.label` (the cosmetic display name,
+    // `opts.label ?? positional`) OR `AgentRecord.agentKey` (the positional itself) — before this,
+    // `agent('a', {label:'b'})` had NOTHING on its record equal to 'a', so `run_agent_log({label:
+    // 'a'})` fell all the way through to AGENT_LOG_NOT_FOUND even though 'a' is exactly the
+    // `meta.params.agents.<label>` contract key the script declared and this call dispatched
+    // under. Duplicate-match semantics are UNCHANGED: still one `.find()` over `view.agents` in
+    // array order, now testing two fields per candidate instead of one — the first agent whose
+    // label OR agentKey equals the query wins, same "first match, never disambiguated" rule issue
+    // #158 NEW already documents (use `agentId` to reach a specific one when several candidates
+    // match, by either field).
     const agent = a.agentId !== undefined
       ? view.agents.find((ag) => ag.agentId === a.agentId)
-      : view.agents.find((ag) => ag.label === a.label) ?? view.agents.find((ag) => ag.agentId === a.label);
+      : view.agents.find((ag) => ag.label === a.label || ag.agentKey === a.label) ?? view.agents.find((ag) => ag.agentId === a.label);
     if (!agent) {
       // issue #103(e): same failed-refusal envelope as workspace_pull's fix — never the run's own
       // (here possibly 'completed') status beside an error; the real status travels in

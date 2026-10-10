@@ -253,6 +253,20 @@ export interface AgentOpts {
 export interface AgentRecord {
   agentId: string;
   label?: string;
+  /** issue #165: this dispatch's agent() call's POSITIONAL label (the literal first argument,
+   *  `/^[A-Za-z_][\w-]*$/`, the `meta.params.agents.<key>` contract key `scanAgentCalls`/
+   *  `_handleAgentRequest` actually key everything by) — distinct from `label` above, which is
+   *  `opts.label ?? positional` and purely a cosmetic, caller-chosen run-tracking name (see
+   *  `run-manager.ts:_handleAgentRequest`'s own comment on the decoupling, first explained for
+   *  #154). Before this field, `agent('a', {label:'b'})` recorded ONLY `label:'b'` — nothing on the
+   *  record named the 'a' contract this call actually dispatched under, so `run_agent_log({label:
+   *  'a'})` found nothing and a second call shaped `agent('b', {...})` (whose own `label` also
+   *  defaults to its positional 'b') collided with it under the same display name. NEVER used as
+   *  the resume/replay key (`CallKey` stays `{prompt, opts}` with no positional component — see
+   *  that type's own doc and `_handleAgentRequest`'s comment at the `key: CallKey = …` line for why
+   *  changing it would break resume of an in-flight run). Absent on every pre-#165 record (a
+   *  restart-reconstructed record from an old journal has no positional to recover). */
+  agentKey?: string;
   phase?: string;
   /** v26 (DES-175, ARCH-114, TASK-186): the phase lane's ordinal (0-based), snapshotted at IPC
    *  receipt alongside `phase` — `layoutGraph` (DES-176) joins by this ordinal rather than by
@@ -622,6 +636,11 @@ export interface ManifestEntry {
 export interface CallKey {
   prompt: string;
   opts: AgentOpts;
+  /** issue #165: deliberately NO positional/`agentKey` field here. `ResumeCache.replay()` matches a
+   *  call by `{prompt, opts}` alone (`sameKey`) — adding the positional would change which calls a
+   *  resumed run treats as a cache hit vs. a miss, breaking resume of any run already in flight when
+   *  this field shipped. `AgentRecord.agentKey`/`HarnessDescriptor.agentKey` carry the positional for
+   *  DISPLAY/lookup only, entirely outside this replay key. */
 }
 
 export interface JournalEntry {
@@ -696,6 +715,11 @@ export interface HarnessDescriptor {
    *  source `deriveAgentRecords` reads (DES-161); absent for a call with no `opts.label` and for
    *  every pre-v24 record. */
   label?: string;
+  /** issue #165: mirrors `AgentRecord.agentKey` — the dispatch's POSITIONAL label, carried onto
+   *  this DURABLE descriptor for the same reason `label` is (so `deriveAgentRecords` can rebuild it
+   *  after a restart with no snapshot). Absent for a pre-#165 record and for a call with no
+   *  `req.agentKey` set (test fixtures that construct `AgentReq` directly without it). */
+  agentKey?: string;
   /** v26 integration (DES-176 cohort (i), REQ-124): the phase lane this call was RECEIVED in —
    *  `markQueued`'s receipt-time snapshot, carried onto the descriptor at the one decoration site.
    *  DES-176 says a v26 record's lane is "exact from the live stamp OR the harness event"; only the

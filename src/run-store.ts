@@ -56,11 +56,13 @@ export function deriveAgentRecords(
     // source on every branch that reads it — a finished/failed/queued agent must not lose the name
     // (or, for a failed call, the model) its harness event carried.
     const harnessAny = reversed.find((e) => e.kind === 'harness');
-    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string; phase?: string; phaseIndex?: number; warnings?: HarnessWarning[] } } | undefined)?.descriptor;
+    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string; agentKey?: string; phase?: string; phaseIndex?: number; warnings?: HarnessWarning[] } } | undefined)?.descriptor;
     // v26 integration (DES-176 cohort (i)): the lane is read from the harness event on EVERY branch
     // that reads that event at all — DES-176's own "exact from the live stamp OR the harness event".
     const harnessCommon = {
       label: harnessDescriptor?.label,
+      // issue #165: mirrors `label` immediately above — the SAME restart-reconstruction source.
+      agentKey: harnessDescriptor?.agentKey,
       phase: harnessDescriptor?.phase,
       phaseIndex: harnessDescriptor?.phaseIndex,
       // Issue #106: the latest harness event's warnings — what `markHarness` stamps live.
@@ -72,11 +74,12 @@ export function deriveAgentRecords(
     // v26 (DES-188): ONE local helper — every branch's shared, optional fields (label/phase/
     // phaseIndex/frame) go through here, never defaulted, so no branch can forget one and no branch
     // can silently invent one (UT-162's "absent, never defaulted" contract extends to the new
-    // fields).
-    const withCommon = (rec: AgentRecord, common: { label?: string; phase?: string; phaseIndex?: number; frame?: string; warnings?: HarnessWarning[] }): AgentRecord => ({
+    // fields). issue #165: `agentKey` joins the same set, for the same reason.
+    const withCommon = (rec: AgentRecord, common: { label?: string; agentKey?: string; phase?: string; phaseIndex?: number; frame?: string; warnings?: HarnessWarning[] }): AgentRecord => ({
       ...rec,
       ...(common.warnings !== undefined && common.warnings.length > 0 ? { warnings: common.warnings } : {}),
       ...(common.label !== undefined ? { label: common.label } : {}),
+      ...(common.agentKey !== undefined ? { agentKey: common.agentKey } : {}),
       ...(common.phase !== undefined ? { phase: common.phase } : {}),
       ...(common.phaseIndex !== undefined ? { phaseIndex: common.phaseIndex } : {}),
       ...(common.frame !== undefined ? { frame: common.frame } : {}),
@@ -168,14 +171,15 @@ export function deriveAgentRecords(
     if (refused) {
       // v26 (DES-188): a refused call never reaches a gateway and never has a harness event of its
       // own — label/frame/phase/phaseIndex come from the refused event's OWN data (markRefused
-      // journals them from the live record markQueued created).
-      const data = refused.data as { reasonCode?: ErrorCode; label?: string; frame?: string; phase?: string; phaseIndex?: number };
+      // journals them from the live record markQueued created). issue #165: `agentKey` too, same
+      // source.
+      const data = refused.data as { reasonCode?: ErrorCode; label?: string; agentKey?: string; frame?: string; phase?: string; phaseIndex?: number };
       records.push(withCommon({
         agentId, state: 'refused', provider: '', model: '',
         tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
         ...(data.reasonCode !== undefined ? { reasonCode: data.reasonCode } : {}),
         ...(refused.ts !== undefined ? { endedAt: refused.ts } : {}),
-      }, { label: data.label, phase: data.phase, phaseIndex: data.phaseIndex, frame: data.frame }));
+      }, { label: data.label, agentKey: data.agentKey, phase: data.phase, phaseIndex: data.phaseIndex, frame: data.frame }));
       continue;
     }
 
