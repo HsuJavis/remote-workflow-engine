@@ -1156,9 +1156,38 @@ export class McpFacade {
     // label column DES-161 added to `AgentRecord` had no reader until here. `agentId` stays
     // accepted for the pre-v24 callers that already had one (val-019 reads it off `run_status`).
     const requested = a.agentId ?? a.label ?? '';
+    // issue #165: `label` now matches EITHER `AgentRecord.label` (the cosmetic display name,
+    // `opts.label ?? positional`) OR `AgentRecord.agentKey` (the positional itself) — before this,
+    // `agent('a', {label:'b'})` had NOTHING on its record equal to 'a', so `run_agent_log({label:
+    // 'a'})` fell all the way through to AGENT_LOG_NOT_FOUND even though 'a' is exactly the
+    // `meta.params.agents.<label>` contract key the script declared and this call dispatched
+    // under.
+    //
+    // TIERED, not a single two-field `.find()` (review send-back, issue #165 reverify-1): a query
+    // value is checked against `agentKey` across the WHOLE array FIRST, and only falls through to
+    // `label` when nothing's `agentKey` matches. A single combined `.find()` (array order, either
+    // field) silently resurrects the exact bug this fix exists to close whenever the query value is
+    // ANOTHER record's `agentKey` but THIS record's (colliding) display `label`: with
+    // `agent('a',{label:'b'})` queued before `agent('b')`, `run_agent_log({label:'b'})` would match
+    // 'a''s record on its `label` (array order puts it first) before ever reaching 'b''s own
+    // `agentKey:'b'` — i.e. the caller asking for the 'b' contract key gets the 'a' call's
+    // model/skills/log, the EXACT symptom #165 reports. Checking `agentKey` first means a query that
+    // IS a positional contract key always resolves to the call dispatched under it, however many
+    // other records' cosmetic `label` happens to collide with that value.
+    // Duplicate-match semantics WITHIN one tier are UNCHANGED from before this fix: still a plain
+    // `.find()` in `view.agents` array order — the first record whose `agentKey` (tier 1) or, failing
+    // that, `label` (tier 2) equals the query wins, same "first match, never disambiguated" rule
+    // issue #158 NEW already documents. This only matters for a GENUINE duplicate (two `agent()`
+    // calls sharing the same positional name, or two sharing the same `opts.label` override) — for
+    // the plain case `agent()` always put its own positional into BOTH `label` and `agentKey` when
+    // no `opts.label` override is given, so tier 1 alone reproduces the old single-field behaviour
+    // byte for byte. `agentId` (tier 3, pre-#165 callers) is the only reliable way to reach ONE
+    // specific agent() call site when several candidates match the SAME value in the same tier.
     const agent = a.agentId !== undefined
       ? view.agents.find((ag) => ag.agentId === a.agentId)
-      : view.agents.find((ag) => ag.label === a.label) ?? view.agents.find((ag) => ag.agentId === a.label);
+      : view.agents.find((ag) => ag.agentKey === a.label)
+        ?? view.agents.find((ag) => ag.label === a.label)
+        ?? view.agents.find((ag) => ag.agentId === a.label);
     if (!agent) {
       // issue #103(e): same failed-refusal envelope as workspace_pull's fix — never the run's own
       // (here possibly 'completed') status beside an error; the real status travels in

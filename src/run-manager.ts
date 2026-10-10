@@ -2661,6 +2661,11 @@ export class RunManager {
     const rawOpts = (opts ?? {}) as AgentOpts & { prompt?: unknown };
     const label = typeof rawOpts.label === 'string' && rawOpts.label !== '' ? rawOpts.label : positional;
     const prompt = typeof rawOpts.prompt === 'string' ? rawOpts.prompt : positional;
+    // issue #165: `key` is the RESUME/REPLAY key (`ResumeCache.replay`'s `sameKey`) — it deliberately
+    // carries `label` (cosmetic) but NEVER `positional`/`agentKey`. Adding the positional here would
+    // change which calls a resumed run treats as a cache hit vs. a miss, breaking resume of any run
+    // already in flight the moment this field shipped. `agentKey` is recorded separately, below, on
+    // `markQueued`/`spawner.run` — entirely outside this key.
     const key: CallKey = { prompt, opts: { ...rawOpts, label } };
     if (entry.cachePlan) {
       const cached = entry.cachePlan.replay(callSeq, key);
@@ -2677,7 +2682,11 @@ export class RunManager {
       // v26 (DES-175, ARCH-114, TASK-186, INV-V26-1): `phase` is the receipt-time snapshot threaded
       // in above — NEVER `key.opts.phase` (the script's own unrelated, unused per-call opt; reading
       // it into the replay key's neighbourhood is exactly the mistake INV-V26-1 forbids).
-      entry.spawner.markQueued(agentId, { label: key.opts.label, phase, frame: framePath });
+      // issue #165: `agentKey: positional` — the literal first `agent()` argument, NEVER
+      // `key.opts.label` (that's the cosmetic display name, already passed as `label` above — see
+      // this function's own header comment on the label/positional decoupling, and
+      // `AgentRecord.agentKey`'s doc for why both are recorded).
+      entry.spawner.markQueued(agentId, { label: key.opts.label, agentKey: positional, phase, frame: framePath });
     }
     const release = await entry.guard.acquireSlot();
     try {
@@ -2821,6 +2830,10 @@ export class RunManager {
         entry.spawner.run({
           runId,
           agentId,
+          // issue #165: the positional, threaded through to AgentExecutor so `capture()`/`onHarness`
+          // can stamp it onto the terminal record/durable descriptor — same label-vs-positional
+          // decoupling as the `markQueued` call above.
+          agentKey: positional,
           prompt,
           opts: key.opts,
           workspace: entry.workspace,

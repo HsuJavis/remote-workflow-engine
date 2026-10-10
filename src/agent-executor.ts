@@ -154,6 +154,14 @@ function parseJsonContent(content: unknown): unknown {
 export interface AgentReq {
   runId: string;
   agentId: string;
+  /** issue #165: this call's POSITIONAL label (the literal first `agent()` argument) — distinct
+   *  from `opts.label`, which is a purely cosmetic display name (absent here when the caller never
+   *  set one; see `AgentRecord.agentKey`'s own doc for why the two are kept apart). The one
+   *  production caller (`run-manager.ts:_handleAgentRequest`) always sets it; optional so the ~30
+   *  existing test fixtures that construct `AgentReq` directly without it still compile — such a
+   *  call simply gets no `agentKey` on its record, the same "absent, never defaulted" convention
+   *  every other optional field on this type already follows. */
+  agentKey?: string;
   prompt: string;
   opts: AgentOpts;
   workspace: string;
@@ -252,9 +260,9 @@ export class AgentTranscriptSink {
    *  DES-175 calls out by name. `opts.phase` is the receipt-time `{title,index}` snapshot
    *  (SandboxHostConfig.currentPhase, threaded through RunManager._handleAgentRequest) — never the
    *  script's own (unrelated, unused) `AgentOpts.phase` per-call option. */
-  markQueued(agentId: string, opts?: { label?: string; frame?: string; phase?: { title: string; index: number } }): void {
+  markQueued(agentId: string, opts?: { label?: string; agentKey?: string; frame?: string; phase?: { title: string; index: number } }): void {
     this._records.set(agentId, {
-      agentId, label: opts?.label, phase: opts?.phase?.title, phaseIndex: opts?.phase?.index, frame: opts?.frame,
+      agentId, label: opts?.label, agentKey: opts?.agentKey, phase: opts?.phase?.title, phaseIndex: opts?.phase?.index, frame: opts?.frame,
       // v26 (DES-180, DES-188): a queued call never dispatched — the SAME three zeros
       // `deriveAgentRecords`'s harness-only/refused branches derive, so a restart-reconstructed
       // record is byte-identical to this live one (DES-188's own boundary).
@@ -295,6 +303,7 @@ export class AgentTranscriptSink {
       data: {
         reasonCode,
         ...(merged.label !== undefined ? { label: merged.label } : {}),
+        ...(merged.agentKey !== undefined ? { agentKey: merged.agentKey } : {}),
         ...(merged.frame !== undefined ? { frame: merged.frame } : {}),
         ...(merged.phase !== undefined ? { phase: merged.phase } : {}),
         ...(merged.phaseIndex !== undefined ? { phaseIndex: merged.phaseIndex } : {}),
@@ -384,7 +393,10 @@ export class AgentTranscriptSink {
    *  one cumulative usage event. */
   async capture(
     runId: string,
-    req: { agentId: string; label?: string },
+    // issue #165: `agentKey` (the positional) rides this same req shape — see `AgentReq.agentKey`'s
+    // own doc. Every call site below passes `req.agentKey`/`effectiveOpts`'s caller-supplied value
+    // (never re-derived here).
+    req: { agentId: string; label?: string; agentKey?: string },
     result: GatewayResult,
     ts: string,
     // issue #162 (owner-approved): `schemaExhausted`/`reaskCount` are set ONLY by the schema-retry
@@ -482,7 +494,7 @@ export class AgentTranscriptSink {
         // attempts was unpriced, slightly ahead of settlement — the same "live total, not final" the
         // rest of this fix intentionally exposes for `tokens`/`costUSD`, not a new inconsistency.
         this._records.set(req.agentId, {
-          agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt,
+          agentId: req.agentId, label: req.label, agentKey: req.agentKey, phase, phaseIndex, frame, startedAt, lastActivityAt,
           state: 'running', provider, model, tokens: totalTokens, costUSD: totalCostUSD, unpriced: totalUnpriced, ...warnings,
           ...(totalPartial ? { partial: true as const } : {}),
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
@@ -497,7 +509,7 @@ export class AgentTranscriptSink {
         return;
       }
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
+        agentId: req.agentId, label: req.label, agentKey: req.agentKey, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         state: 'done', provider, model, tokens: totalTokens, costUSD: totalCostUSD, unpriced: totalUnpriced, ...warnings,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
@@ -635,7 +647,7 @@ export class AgentTranscriptSink {
             return { tokens, costUSD, unpriced, partial };
           })();
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
+        agentId: req.agentId, label: req.label, agentKey: req.agentKey, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
         // carries no model of its own, and post-mortem (after the operator stops the run) is exactly
         // when "which model failed" matters most. Don't wipe it back to ''.
@@ -802,7 +814,7 @@ export class AgentExecutor implements AgentSpawner {
     const liveAttempt = this._sink.getLiveAttemptUsage(req.agentId);
     await this._sink.capture(
       req.runId,
-      { agentId: req.agentId, label: req.opts.label },
+      { agentId: req.agentId, label: req.opts.label, agentKey: req.agentKey },
       {
         ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
         tokens: liveAttempt ?? ZERO_TOKENS, partial: true as const,
@@ -866,7 +878,7 @@ export class AgentExecutor implements AgentSpawner {
       const detail = `PARAM_OUT_OF_RANGE: effort '${String(req.opts.effort)}' is not a recognized effort level`;
       await this._sink.capture(
         req.runId,
-        { agentId: req.agentId, label: req.opts.label },
+        { agentId: req.agentId, label: req.opts.label, agentKey: req.agentKey },
         { ok: false, provider: '', reason: 'terminal', detail },
         this._clock.isoNow(),
       );
@@ -888,7 +900,7 @@ export class AgentExecutor implements AgentSpawner {
         + "See workflow_authoring_guide, 'prompt layering'.";
       await this._sink.capture(
         req.runId,
-        { agentId: req.agentId, label: req.opts.label },
+        { agentId: req.agentId, label: req.opts.label, agentKey: req.agentKey },
         { ok: false, provider: '', reason: 'terminal', detail },
         this._clock.isoNow(),
       );
@@ -937,7 +949,7 @@ export class AgentExecutor implements AgentSpawner {
         const detail = `INVALID_SCHEMA: agent()'s schema option is not a valid JSON Schema: ${e instanceof Error ? e.message : String(e)}`;
         await this._sink.capture(
           req.runId,
-          { agentId: req.agentId, label: req.opts.label },
+          { agentId: req.agentId, label: req.opts.label, agentKey: req.agentKey },
           { ok: false, provider: '', reason: 'terminal', detail },
           this._clock.isoNow(),
         );
@@ -968,11 +980,11 @@ export class AgentExecutor implements AgentSpawner {
         // A genuine gateway failure always ends the loop — `capture()`'s default `final:true` is
         // correct here unchanged (it also folds in any earlier re-ask attempt's committed total —
         // see `capture()`'s own doc).
-        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
+        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label, agentKey: req.agentKey }, result, this._clock.isoNow());
         return { kind: 'null' };
       }
       if (!validate) {
-        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
+        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label, agentKey: req.agentKey }, result, this._clock.isoNow());
         return { kind: 'text', value: String(result.content) };
       }
 
@@ -991,7 +1003,7 @@ export class AgentExecutor implements AgentSpawner {
       // which `schemaExhausted` can never be: SCHEMA_RETRY_ATTEMPTS is always > 1).
       const schemaExhausted = !conforms && isLastAttempt;
       await this._sink.capture(
-        req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow(),
+        req.runId, { agentId: req.agentId, label: effectiveOpts.label, agentKey: req.agentKey }, result, this._clock.isoNow(),
         {
           final: conforms || isLastAttempt,
           ...(schemaExhausted ? { schemaExhausted: true as const } : {}),
@@ -1047,6 +1059,10 @@ export class AgentExecutor implements AgentSpawner {
         timeoutMs: eff.timeoutMs,
         provenance: eff.provenance,
         ...(req.opts.label !== undefined ? { label: req.opts.label } : {}),
+        // issue #165: mirrors `label` immediately above, for the SAME restart-reconstruction reason
+        // (`deriveAgentRecords` reads this descriptor, never the in-process live record, after a
+        // restart with no snapshot).
+        ...(req.agentKey !== undefined ? { agentKey: req.agentKey } : {}),
         ...(queued?.phase !== undefined ? { phase: queued.phase } : {}),
         ...(queued?.phaseIndex !== undefined ? { phaseIndex: queued.phaseIndex } : {}),
         materialized: descriptor.materialized ?? { skills: [], mcp: [], missing: declaredNames },
@@ -1126,7 +1142,7 @@ export class AgentExecutor implements AgentSpawner {
 
   /** D-F12: RunManager calls this the moment it allocates an agentId (before acquireSlot()
    *  resolves) so the in-flight agent is observable via workflow_status as "queued", not absent. */
-  markQueued(agentId: string, opts?: { label?: string; frame?: string; phase?: { title: string; index: number } }): void {
+  markQueued(agentId: string, opts?: { label?: string; agentKey?: string; frame?: string; phase?: { title: string; index: number } }): void {
     this._sink.markQueued(agentId, opts);
   }
 

@@ -124,4 +124,51 @@ describe('deriveAgentRecords — four branches, one base() helper (UT-202, DES-1
     expect('detail' in record).toBe(false);
     expect('unmapped' in record).toBe(false);
   });
+
+  // issue #165: `agentKey` (the dispatch's POSITIONAL label) rides the harness descriptor exactly
+  // like `label` already does, through the SAME `harnessCommon`/`withCommon` seam — so a run/done
+  // record rebuilt from a fresh store (no snapshot) after a restart still carries it, not only the
+  // in-process live record `capture()` built.
+  it('a harness descriptor\'s agentKey survives into a done record reconstructed from a usage event', () => {
+    const transcripts = new Map([
+      ['a8', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a8', descriptor: { model: 'm', provider: 'anthropic', label: 'b', agentKey: 'a' } } },
+        { ts: 't1', kind: 'usage' as const, data: { tokens: { input: 1, output: 1 }, provider: 'anthropic', model: 'm' } },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a8') as any;
+    expect(record.label).toBe('b');
+    expect(record.agentKey).toBe('a');
+  });
+
+  // issue #165: a harness-only (still running/queued) restart-reconstructed record must ALSO carry
+  // agentKey — the same branch `label`/`phase`/`frame` already flow through (harnessCommon).
+  it('a harness-only record (no usage yet) carries agentKey from the descriptor', () => {
+    const transcripts = new Map([
+      ['a9', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a9', descriptor: { model: 'm', provider: 'anthropic', label: 'b', agentKey: 'a' } } },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'running');
+    const record = records.find((r) => r.agentId === 'a9') as any;
+    expect(record.state).toBe('running');
+    expect(record.agentKey).toBe('a');
+  });
+
+  // issue #165: a refused call never reaches a gateway/harness event — agentKey must come from the
+  // `kind:'refused'` event's OWN data (markRefused journals it from the live markQueued record),
+  // mirroring label/frame/phase/phaseIndex's existing convention on this exact branch.
+  it('a refused event carries agentKey from its own data (no harness event exists)', () => {
+    const transcripts = new Map([
+      ['a10', [
+        { ts: 't0', kind: 'refused' as const, data: { reasonCode: 'BUDGET_EXCEEDED', label: 'b', agentKey: 'a', phase: 'one', phaseIndex: 0, frame: '' } },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a10') as any;
+    expect(record.state).toBe('refused');
+    expect(record.label).toBe('b');
+    expect(record.agentKey).toBe('a');
+  });
 });
