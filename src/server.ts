@@ -35,7 +35,7 @@ import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGloba
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
-import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, HARD_CAP as MODEL_CATALOG_HARD_CAP, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { buildCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry } from './models/model-catalog.js';
 import { ModelBook, toModelCatalogSnapshot } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION, redactSystemInfoForRole } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
@@ -506,13 +506,14 @@ async function handleDashboardRequest(
         (e) => harnessProviders === undefined || (harnessProviders as readonly string[]).includes(e.provider),
       );
       const observed = observedStats?.getAll(); // issue #104: one snapshot per request, joined by ref
-      // Issue #117: the dashboard reads the FULL catalog — `filterCatalog`'s own `DEFAULT_LIMIT`
-      // (100) silently truncated a larger real catalog with no indication to the operator (the
-      // "M / N" models-tab counter was never wrong, it was just counting against a pre-truncated
-      // N). Pass the catalog's own documented hard ceiling explicitly; the MCP `models_list` tool
-      // never calls `filterCatalog` at all (it pages via `queryModels` instead) and keeps its own
-      // documented default untouched.
-      sendJson(res, 200, filterCatalog(entries, { limit: MODEL_CATALOG_HARD_CAP }).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`), harnessProviders)));
+      // Issue #117: the dashboard gets the FULL catalog, unbounded — no `filterCatalog` call here
+      // at all (that function exists for a FILTERED query; this route applies no filter, so calling
+      // it only to pass a limit was truncation with extra steps). `filterCatalog`'s own
+      // `DEFAULT_LIMIT` (100) used to silently truncate a larger real catalog with no indication to
+      // the operator — the "M / N" models-tab counter was never wrong, it was just counting against
+      // a pre-truncated N. The MCP `models_list` tool is untouched: it never called `filterCatalog`
+      // at all (it pages via its own `queryModels`) and keeps its own documented default.
+      sendJson(res, 200, entries.map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`), harnessProviders)));
       return;
     }
     if (path === '/api/runs') {

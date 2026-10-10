@@ -153,7 +153,7 @@ describe('Models tab .bench-row, offline (issue #117: the "restore with offline 
       const gridRow = PARKED_SPEC_ROWS.find((r) => r.prop === 'grid-template-columns')!;
       const failures = await specRowFailuresAcrossThemeAndHue(page, [gridRow]);
       expect(failures.length, 'this row must fail (computed-style fr-resolution), confirming the row itself — not this file\'s data — is the remaining blocker').toBeGreaterThan(0);
-      for (const f of failures) expect(f).toMatch(/expected literal "140px 1fr 48px", got "140px \d+px 48px"/);
+      for (const f of failures) expect(f).toMatch(/expected literal "140px 1fr 48px", got "140px \d+(\.\d+)?px 48px"/);
     } finally {
       await browser.close();
     }

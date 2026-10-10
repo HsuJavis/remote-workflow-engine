@@ -41,7 +41,12 @@ export interface RunStatusInfo {
  *  recorded terminal transition — mapped to `endedAt: null`, which `reclaimStaleWorkspaces`
  *  falls back to the directory's mtime for. */
 export function gcStatusFromSummary(r: Pick<RunSummary, 'status' | 'terminalAt'>): RunStatusInfo {
-  return { status: r.status, endedAt: r.terminalAt ? Date.parse(r.terminalAt) : null };
+  if (!r.terminalAt) return { status: r.status, endedAt: null };
+  const parsed = Date.parse(r.terminalAt);
+  // A malformed `terminalAt` (should never happen — it is engine-written ISO — but "uncertain" must
+  // resolve to "fall back to mtime", never to a `NaN` that could slip through an unguarded `??`
+  // downstream) normalises to `null` here too, at the one source of this value.
+  return { status: r.status, endedAt: Number.isFinite(parsed) ? parsed : null };
 }
 
 export function reclaimStaleWorkspaces(
@@ -109,8 +114,14 @@ export function reclaimStaleWorkspaces(
       const info = statusOf(runId);
       if (info === null || !TERMINAL.has(info.status)) continue; // active/suspended/unknown -> keep
       // Issue #116: age from the run's own recorded end time; a legacy row with none falls back to
-      // the directory's mtime (`endedAt` absent/null -> `mtimeMs`).
-      const endedAtMs = info.endedAt ?? mtimeMs;
+      // the directory's mtime (`endedAt` absent/null -> `mtimeMs`). `Number.isFinite` (not `??`)
+      // guards the destructive branch below against `NaN` too — a malformed `terminalAt` (an
+      // unparseable string past `Date.parse`) must fall back to mtime exactly like "no `terminalAt`
+      // at all", never pass `NaN` through: `nowMs - NaN < ttlMs` is `false`, which would otherwise
+      // skip the retention-window `continue` and reach the `rmSync` below on ANY malformed row,
+      // regardless of its actual age — this is the one branch in this file where "uncertain" must
+      // resolve to "keep", not "delete".
+      const endedAtMs = Number.isFinite(info.endedAt) ? (info.endedAt as number) : mtimeMs;
       if (nowMs - endedAtMs < ttlMs) continue; // still within retention window
       try {
         rmSync(dir, { recursive: true, force: true });

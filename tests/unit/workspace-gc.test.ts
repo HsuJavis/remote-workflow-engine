@@ -230,6 +230,19 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
       expect(existsSync(oldDir)).toBe(false);
       expect(existsSync(youngDir)).toBe(true);
     });
+
+    // A `NaN` `endedAt` (a malformed `terminalAt`, should never happen in practice — it is
+    // engine-written ISO — but this is the one branch where "uncertain" must resolve to "fall back
+    // to mtime", never to "delete regardless of age": `nowMs - NaN < ttlMs` is `false` under a bare
+    // `??` fallback, which skips the retention-window `continue` and reaches `rmSync` unconditionally.
+    it('a NaN endedAt (malformed terminalAt) falls back to the directory mtime, exactly like null — never deletes regardless of age', () => {
+      const oldDir = mkRun('wf', 'nan-old', 10_000);
+      const youngDir = mkRun('wf', 'nan-young', 1_000);
+      const reclaimed = reclaimStaleWorkspaces(root, 5_000, () => ({ status: 'completed', endedAt: NaN }), NOW);
+      expect(reclaimed).toEqual(['nan-old']);
+      expect(existsSync(oldDir)).toBe(false);
+      expect(existsSync(youngDir)).toBe(true);
+    });
   });
 
   // Issue #116: `server.ts`'s sweep builds its `statusOf` lookup from `gcStatusFromSummary(r)` for
@@ -245,6 +258,11 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
 
     it('an ABSENT terminalAt (legacy row, never terminal-transitioned) maps to endedAt: null', () => {
       expect(gcStatusFromSummary({ status: 'completed', terminalAt: undefined }))
+        .toEqual({ status: 'completed', endedAt: null });
+    });
+
+    it('a MALFORMED terminalAt (Date.parse -> NaN) also maps to endedAt: null, never NaN', () => {
+      expect(gcStatusFromSummary({ status: 'completed', terminalAt: 'garbage' }))
         .toEqual({ status: 'completed', endedAt: null });
     });
 

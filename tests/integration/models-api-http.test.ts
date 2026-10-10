@@ -166,13 +166,16 @@ describe('GET /api/models returns enriched model entries (IT-071, DES-075, DES-0
     }
   });
 
-  // Issue #117: `filterCatalog(entries)` (no `filter.limit`) defaults to `DEFAULT_LIMIT` (100,
-  // model-catalog.ts) — fine for the MCP `models_list` tool (which pages, and keeps that documented
-  // default), wrong for the dashboard route, which silently truncated a larger real catalog with no
-  // indication to the operator. The dashboard must see the FULL catalog.
-  it('a catalog with more than 100 entries is NOT truncated to 100 (issue #117)', async () => {
+  // Issue #117: the dashboard route used to run every catalog entry through `filterCatalog`, which
+  // (with no `filter.limit` passed) defaults to `DEFAULT_LIMIT` (100, model-catalog.ts) — fine for
+  // the MCP `models_list` tool (which pages, and keeps that documented default), wrong here: the
+  // dashboard route applies no filter at all, so calling `filterCatalog` only to impose SOME limit
+  // was truncation with extra steps. The dashboard must see the catalog UNBOUNDED — 600 rows
+  // (comfortably over the model-catalog module's own internal 500 "hard cap" constant, which no
+  // longer applies to this route at all) proves that, rather than merely proving "more than 100".
+  it('a catalog with 600 entries is returned in full, unbounded (issue #117)', async () => {
     const manyTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it071-many-'));
-    const data = Array.from({ length: 150 }, (_, i) => ({
+    const data = Array.from({ length: 600 }, (_, i) => ({
       id: `many-provider/model-${i}`,
       description: `Synthetic model #${i}`,
       context_length: 8000,
@@ -191,7 +194,7 @@ describe('GET /api/models returns enriched model entries (IT-071, DES-075, DES-0
       const res = await fetch(`http://127.0.0.1:${manyServer.port}/api/models`);
       expect(res.status).toBe(200);
       const body = await res.json() as EnrichedEntry[];
-      expect(body.length).toBeGreaterThanOrEqual(150);
+      expect(body.length).toBeGreaterThanOrEqual(600);
     } finally {
       await manyServer.close();
       rmSync(manyTmpDir, { recursive: true, force: true });

@@ -78,23 +78,26 @@ afterAll(async () => {
 });
 
 describe('workspace TTL sweep ages from the run\'s own end time, not directory mtime (issue #116, real server)', () => {
-  it('a run that ended just now is KEPT even though its workspace directory mtime is 8 days old', async () => {
-    const dir = join(tmpDir, 'workflows', 'wf', 'runs', 'long-run');
-    // Checked inside the window after the tick that correctly finds it still young (fires ~TTL_MS
-    // after boot) and before the NEXT tick (one more TTL_MS later) that would correctly reclaim it
-    // once it has genuinely aged past the TTL — see the timing note at the top of this file.
-    await new Promise((r) => setTimeout(r, TTL_MS * 1.5));
-    expect(existsSync(dir), 'a run that ended just now must not be reclaimed merely because its workspace directory is old').toBe(true);
-  });
-
-  it('a run that ended well past the TTL IS reclaimed even though its workspace directory mtime is fresh', async () => {
-    const dir = join(tmpDir, 'workflows', 'wf', 'runs', 'stale-run');
+  // ONE test, not two independently-timed ones: polling until `stale-run` is reclaimed IS the
+  // observation that a real sweep tick has fired (event-driven — no sleep constant to tune, no
+  // margin to lose on a loaded runner). The REMOVING tick is always the first tick after both rows
+  // were seeded (both seeded together, right after boot — see the timing note above), so at that
+  // exact moment `long-run`'s age is `< TTL` for ANY boot/seed delay (it is seeded no later than
+  // `stale-run`, and `stale-run` was already `TTL_MS * 5` old at seed time, so the TTL loop reaches
+  // `long-run` — alphabetically and by iteration order, whichever runs first — well within the SAME
+  // tick, long before a second tick (one more full TTL away) could possibly find `long-run` aged
+  // out too). Checking `long-run` immediately after observing `stale-run`'s removal, rather than on
+  // a fixed sleep, is what makes this robust regardless of how long `createServer()` itself took.
+  it('a run that ended just now is KEPT, and one that ended well past the TTL IS reclaimed, even though their workspace directory mtimes say the opposite', async () => {
+    const staleDir = join(tmpDir, 'workflows', 'wf', 'runs', 'stale-run');
+    const longDir = join(tmpDir, 'workflows', 'wf', 'runs', 'long-run');
     const deadline = Date.now() + 10_000;
-    let gone = false;
+    let staleGone = false;
     while (Date.now() < deadline) {
-      if (!existsSync(dir)) { gone = true; break; }
+      if (!existsSync(staleDir)) { staleGone = true; break; }
       await new Promise((r) => setTimeout(r, 50));
     }
-    expect(gone, 'a run that genuinely ended past the TTL must be reclaimed even though its workspace directory mtime looks fresh').toBe(true);
+    expect(staleGone, 'a run that genuinely ended past the TTL must be reclaimed even though its workspace directory mtime looks fresh').toBe(true);
+    expect(existsSync(longDir), 'a run that ended just now must not be reclaimed merely because its workspace directory is old').toBe(true);
   });
 });
