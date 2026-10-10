@@ -376,10 +376,14 @@ export const TOOL_SPECS = [
     // PARAM_CONTRACT_INVALID / DEFAULTS_RETIRED), `workflow-catalog.ts` (SCAN_VIOLATION /
     // MERMAID_REQUIRED / MERMAID_INVALID / DIAGRAM_MISMATCH / VERSION_CEILING_EXCEEDED /
     // NOT_WORKFLOW_OWNER / REGISTRATION_CONFLICT) and the facade's trigger-claim step
-    // (TRIGGER_NOT_FOUND / NOT_TRIGGER_OWNER / TRIGGER_ALREADY_CLAIMED / INVALID_ARGUMENT).
+    // (TRIGGER_NOT_FOUND / TRIGGER_ALREADY_CLAIMED / INVALID_ARGUMENT).
     // REMOVED: `WORKFLOW_ALREADY_EXISTS` — re-registering an existing name is how a NEW VERSION is
     // created; the refusal for someone else's name is NOT_WORKFLOW_OWNER, and advertising a code
     // the tool cannot answer teaches a cold model to branch on something that never arrives.
+    // REMOVED (review round 6 finding 2): `NOT_TRIGGER_OWNER` — the trigger-claim step now masks a
+    // non-admin's ownership mismatch to TRIGGER_NOT_FOUND (its sibling, same as schedule_delete/
+    // schedule_setEnabled/webhook_delete already do), and admin bypasses the check entirely, so
+    // this code can no longer reach ANY caller from here (errors.ts documents the full scope).
     // `SCRIPT_INVALID` stays: it is the sandbox structural refusal `validateScriptEntry` raises.
     errors: [
       'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_MODEL', 'SCAN_VIOLATION',
@@ -404,7 +408,7 @@ export const TOOL_SPECS = [
       'AGENT_BEFORE_PHASE',
       'DIAGRAM_DIRECTION', 'LANE_MISMATCH', 'TOOLS_MISMATCH', 'EDGE_MISMATCH',
       'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
-      'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',
+      'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'TRIGGER_ALREADY_CLAIMED',
       'FORBIDDEN_ROLE',
       // Issue #91: `name` starting with the engine-reserved 'rwe-' prefix — checked before every
       // other registration step (workflow-catalog.ts's validateRegistration), for every caller.
@@ -1042,7 +1046,10 @@ export const TOOL_SPECS = [
     description: "Read a byte range from a file in a run's workspace; a cross-principal read of another principal's run is audited.",
     inputSchema: schema({ runId: { type: 'string' }, path: { type: 'string' }, offset: { type: 'number' }, length: { type: 'number' } }, ['runId', 'path']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'WORKSPACE_ESCAPE', 'NOT_FOUND', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin here (and admin bypasses ownership) — never advertised because it can never
+    // actually arrive.
+    errors: ['RUN_NOT_FOUND', 'WORKSPACE_ESCAPE', 'NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run', adminCrossRead: true } as AuthzRow,
     fixture: {
@@ -1085,7 +1092,11 @@ export const TOOL_SPECS = [
     // the handler and answer an empty list rather than INVALID_ARGUMENT).
     inputSchema: schema({ runId: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string', enum: ['skill', 'mcp'] }, scope: { type: 'string', enum: ['workflow', 'global'] }, includeBody: { type: 'boolean' } }),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin in `run` mode — never advertised, same reason as workspace_pull above.
+    // NOT_WORKFLOW_OWNER is NOT masked in `workflow` mode (residual risk, documented in authz.ts's
+    // `notFoundTemplate`) — it stays advertised.
+    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT'],
     seeAlso: [] as string[],
     authz: {
       mode: listMode,
@@ -1123,7 +1134,11 @@ export const TOOL_SPECS = [
     // v24 (integrator; adjudication #4 C-6 [21] — the found example): `withTerminalRun` really
     // throws RUN_NOT_TERMINAL on a live run and this row never said so, so a cold model could not
     // anticipate a refusal it is certain to meet. `INVALID_ARGUMENT` is the no-mode-matched branch.
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin in `run` mode — never advertised. NOT_WORKFLOW_OWNER is NOT masked in
+    // `workflow` mode (residual risk, documented in authz.ts's `notFoundTemplate`) — it stays
+    // advertised.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: {
       mode: deleteMode,
@@ -1147,7 +1162,9 @@ export const TOOL_SPECS = [
     description: "Purge a terminated run's workspace from disk.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin here — never advertised, same reason as workspace_pull above.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: { happy: { runId: ref('terminalRunId') }, errors: { RUN_NOT_FOUND: { runId: ABSENT_ID } } },
@@ -1715,21 +1732,27 @@ export const TOOL_SPECS = [
   },
   // Issue #116 (OWNER DECISION b): the admin-only read path over the refusal audit trail every
   // `authorize()` refusal now writes (call-tool.ts's `recordRefusal`, server.ts's dashboard
-  // `allowed()`). Minimal by design (owner decision text: "keep it minimal and documented") — a
-  // flat filter over one table, the same shape `auditFor`/`queryRefusals` already return, no new
-  // aggregation. `targetId` is always what the REFUSED CALLER itself named (authz.ts/call-tool.ts's
-  // existing non-disclosure convention), never the resource's actual owner.
+  // `allowed()`, plus the bearer-layer routes — review round 6 finding 5 — that refuse ahead of
+  // any tool dispatch at all). Minimal by design (owner decision text: "keep it minimal and
+  // documented") — a flat filter over one table, the same shape `auditFor`/`queryRefusals` already
+  // return, no new aggregation. `targetId` is always what the REFUSED CALLER itself named
+  // (authz.ts/call-tool.ts's existing non-disclosure convention), never the resource's actual owner.
   {
     name: 'audit_refusals_list', entity: 'audit', key: null,
     description:
-      'Admin only. Query the authorization-refusal audit trail — every non-owner/insufficient-role/pending-account/disabled-principal/workflow-not-allowed refusal any MCP tool or dashboard API route has returned, newest first. ' +
-      'Each row: ts, requestId (matches `detail.requestId` on the refused caller\'s OWN response, UNLESS that response was masked to look like a *_NOT_FOUND answer — issue #116 decision a — in which case trace by actor+tool+targetId+ts instead, since a requestId on a masked response would itself be a new oracle), ' +
-      'actor (null for auth-disabled/loopback-exempt), authMethod ("service-account" when the actor authenticated as one, absent otherwise), tool (the MCP tool name or dashboard route), targetKind ("run"|"workflow"|"trigger"|"none"), targetId (the id the REFUSED CALLER supplied — never the resource\'s real owner), realReason (the true internal reason, e.g. NOT_RUN_OWNER, even when the caller was shown RUN_NOT_FOUND), returnedCode (what the caller actually received). ' +
-      'All filters optional: actor, tool (exact match), since (ISO-8601, inclusive), limit (default/cap same as the rest of this engine\'s audit reads).',
+      'Admin only. Query the authorization-refusal audit trail — every non-owner/insufficient-role/pending-account/disabled-principal/workflow-not-allowed refusal any MCP tool, dashboard API route, or bearer-layer upload/connect gate has returned, newest first. ' +
+      // Issue #116 (review round 6 finding 3): a templated tool's MASKED refusal now carries a
+      // requestId too (previously it carried none at all, "left untouched" by design) — so a
+      // presented requestId can no longer be read as proof the response was genuine-not-found by
+      // itself; the INFERENCE is in whether it matches a row here.
+      'Each row: ts, requestId (matches `detail.requestId` on the refused caller\'s OWN response — or the response body\'s own `requestId` key, for a dashboard 403/404 or a bearer-layer 401/403). ' +
+      'On a TEMPLATED tool (one authz.ts\'s `notFoundTemplate` masks — e.g. run_status, workspace_pull), a non-owner refusal\'s response is byte-identical to a genuinely-missing id\'s, INCLUDING a requestId on both (issue #116 decision a) — so a requestId alone does not prove which one happened; a row HERE matching that requestId does: the masked refusal always gets exactly one row, the genuine miss never does (it is not an authorization refusal at all). ' +
+      'actor (null for auth-disabled/loopback-exempt), authMethod ("service-account" when the actor authenticated as one, absent otherwise), tool (for a tool-dispatched refusal, the BACKING MCP tool name — e.g. a dashboard GET /api/runs/:id records as "run_status", never the HTTP route; for a bearer-layer refusal with no tool behind it at all — SERVICE_ACCOUNT_DISABLED/ACCOUNT_PENDING_APPROVAL on the raw upload routes and /mcp — the HTTP route itself, e.g. "POST /mcp"), targetKind ("run"|"workflow"|"trigger"|"none"), targetId (the id the REFUSED CALLER supplied — never the resource\'s real owner), realReason (the true internal reason, e.g. NOT_RUN_OWNER, even when the caller was shown RUN_NOT_FOUND), returnedCode (what the caller actually received). ' +
+      'All filters optional: actor, tool (exact match — a route string for a bearer-layer row, a tool name otherwise; the two never collide), since (ISO-8601, inclusive), limit (default/cap same as the rest of this engine\'s audit reads).',
     inputSchema: {
       ...schema({
         actor: { type: 'string', description: 'Exact match on the refused caller\'s own id.' },
-        tool: { type: 'string', description: 'Exact match on the MCP tool name or dashboard route this refusal happened on.' },
+        tool: { type: 'string', description: 'Exact match on the backing MCP tool name this refusal happened through (a dashboard route records as its backing tool, e.g. "run_status" — never the route), OR the bare HTTP route for a bearer-layer refusal with no tool behind it at all (e.g. "POST /mcp").' },
         since: { type: 'string', description: 'ISO-8601 timestamp — only rows at or after this instant.' },
         limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Max rows to return (default 200).' },
       }),

@@ -592,15 +592,24 @@ export interface AuditEvent {
 }
 
 /** Issue #116 OWNER DECISION b: every authorization refusal (non-owner, insufficient role, pending
- *  account, disabled principal, workflow-not-allowed — whatever `authorize()`/a dashboard route
- *  refuses) is appended here, separate from `AuditEvent` above (which is scoped to an admin's
- *  cross-owner READ of an existing, owned resource — a refusal has no `owner` in that sense, and
- *  its `runId`/`owner` NOT-NULL columns would not fit a role refusal that names no run at all).
- *  `targetId`/`targetKind` are the caller's OWN argument (never the resource's actual owner — same
- *  non-disclosure rule `authz.ts`'s existing refusal messages already follow). `realReason` is the
- *  TRUE internal reason (e.g. `NOT_RUN_OWNER`, `NOT_FOUND` for a genuinely absent resource recorded
- *  the same way, `ACCOUNT_PENDING_APPROVAL`) even when `returnedCode` was masked to look like a
- *  `*_NOT_FOUND` code for a non-admin caller (issue #116 decision a). */
+ *  account, disabled principal, workflow-not-allowed — whatever `authorize()`/a dashboard route/a
+ *  bearer-layer gate refuses) is appended here, separate from `AuditEvent` above (which is scoped
+ *  to an admin's cross-owner READ of an existing, owned resource — a refusal has no `owner` in
+ *  that sense, and its `runId`/`owner` NOT-NULL columns would not fit a role refusal that names no
+ *  run at all). `targetId`/`targetKind` are the caller's OWN argument (never the resource's actual
+ *  owner — same non-disclosure rule `authz.ts`'s existing refusal messages already follow).
+ *  `realReason` is the TRUE internal reason (e.g. `NOT_RUN_OWNER`, `ACCOUNT_PENDING_APPROVAL`) even
+ *  when `returnedCode` was masked to look like a `*_NOT_FOUND` code for a non-admin caller (issue
+ *  #116 decision a).
+ *
+ *  Review round 6 finding 3 (correction): a GENUINELY absent resource is NEVER recorded here —
+ *  decision b scopes this table to what `authorize()` ITSELF refuses, and a handler answering its
+ *  own genuine `*_NOT_FOUND` (the resource truly does not exist) is not an authorization refusal at
+ *  all; writing a row per missing-id lookup would also be the unbounded-growth-from-probing flood
+ *  decision b's own text warns against inventing. The two cases are told apart on the WIRE by
+ *  `audit_refusals_list` instead: a templated tool's masked refusal and its genuine not-found now
+ *  carry an IDENTICALLY-SHAPED requestId (call-tool.ts's `stampRequestId`) — a requestId an admin
+ *  finds a matching row for here is the masked case; one that matches no row is the genuine miss. */
 export interface RefusalAuditEvent {
   ts: string;
   requestId: string;

@@ -444,7 +444,7 @@ async function handleDashboardRequest(
     const verdict = authorize(principal, spec, args, viewer.lookup);
     if (verdict.ok) return verdict;
     const requestId = randomUUID();
-    const { code, reason, masked } = recordRefusal(store, requestId, principal, tool, args, verdict);
+    const { code, reason, masked } = recordRefusal(store, requestId, principal, spec, args, verdict);
     if (masked) {
       sendJson(res, 404, { error: reason });
     } else {
@@ -1209,9 +1209,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     if (!principalId.startsWith('sa:')) return false;
     return !serviceAccounts.isLive(principalId.slice('sa:'.length)).live;
   }
-  function sendServiceAccountDisabled(res: ServerResponse): void {
+  // Issue #116 (decision b, finding 5): this refusal happens at the BEARER layer, ahead of
+  // `callTool`'s own `authorize()`/`recordRefusal` (there is no MCP tool dispatch for a raw
+  // upload route at all) — so it backs NO tool; `route` (e.g. `'POST /mcp'`) is what the audit
+  // row's `tool` column records instead (`audit_refusals_list`'s own description states this).
+  // The same requestId goes on the 401 body, same convention as every other refusal surface.
+  function sendServiceAccountDisabled(res: ServerResponse, principalId: string, route: string): void {
+    const requestId = randomUUID();
+    try {
+      store.appendRefusal({
+        ts: clock.isoNow(), requestId, actor: principalId, authMethod: 'service-account',
+        tool: route, targetKind: 'none', targetId: null,
+        realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED',
+      });
+    } catch (err) {
+      console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: route, error: err instanceof Error ? err.message : String(err) }));
+    }
     res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
-    sendJson(res, 401, { code: 'SERVICE_ACCOUNT_DISABLED', error: ERROR_CATALOG.SERVICE_ACCOUNT_DISABLED.hint });
+    sendJson(res, 401, { code: 'SERVICE_ACCOUNT_DISABLED', error: ERROR_CATALOG.SERVICE_ACCOUNT_DISABLED.hint, requestId });
   }
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
@@ -1638,14 +1653,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return originValue === `http://${host}`;
     };
     const sendToolOutcome = (out: unknown): void => {
-      const r = out as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
+      const r = out as { status?: string; code?: string; error?: { code?: string; message?: string; detail?: { requestId?: unknown } }; result?: unknown };
       if (r.status === 'failed') {
         const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
         const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' || code === 'ACCOUNT_PENDING_APPROVAL' ? 403
           : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' || code === 'SERVICE_ACCOUNT_EXISTS' || code === 'SERVICE_ACCOUNT_NAME_RETIRED' || code === 'TOO_MANY_SECRETS' ? 409
           : code === 'SERVICE_ACCOUNT_NOT_FOUND' || code === 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' ? 404
           : code === 'INVALID_ARGUMENT' ? 400 : 500;
-        sendJson(res, http, { code, error: r.error?.message ?? code });
+        // Issue #116 (decision b, finding 4): `callTool`'s own refusal envelope puts the requestId
+        // at `error.detail.requestId` — this function used to forward only `{code, error: message}`,
+        // dropping `.detail` entirely, so the dashboard admin routes' 403 carried no way to trace
+        // back to the audit row `recordRefusal` already wrote for the SAME call.
+        const requestId = typeof r.error?.detail?.requestId === 'string' ? r.error.detail.requestId : undefined;
+        sendJson(res, http, { code, error: r.error?.message ?? code, ...(requestId !== undefined ? { requestId } : {}) });
         return;
       }
       sendJson(res, 200, r.result);
@@ -1890,10 +1910,22 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // verify-j MEDIUM: the raw upload routes authenticate by bearer alone (no callTool), so they apply
       // the pending-approval rule themselves — BEFORE the body is read. The request body is left
       // unread; the connection closes after the 403 rather than draining an arbitrarily large upload.
-      const refusePending = (id: string): boolean => {
+      // Issue #116 (decision b, finding 5): same bearer-layer gap as `sendServiceAccountDisabled`
+      // — no MCP tool backs this refusal (it is ahead of `callTool` entirely), so the audit row's
+      // `tool` column holds the HTTP route, and the SAME requestId goes on the 403 body.
+      const refusePending = (id: string, route: string): boolean => {
         if (principalFor(id).kind !== 'none') return false;
+        const requestId = randomUUID();
+        try {
+          store.appendRefusal({
+            ts: clock.isoNow(), requestId, actor: id, tool: route, targetKind: 'none', targetId: null,
+            realReason: 'ACCOUNT_PENDING_APPROVAL', returnedCode: 'ACCOUNT_PENDING_APPROVAL',
+          });
+        } catch (err) {
+          console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: route, error: err instanceof Error ? err.message : String(err) }));
+        }
         res.setHeader('Connection', 'close');
-        sendJson(res, 403, { code: 'ACCOUNT_PENDING_APPROVAL', error: 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)' });
+        sendJson(res, 403, { code: 'ACCOUNT_PENDING_APPROVAL', error: 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)', requestId });
         return true;
       };
       // Owner decision 2026-10-02: refuse a quota/disk-floor violation from the DECLARED size
@@ -1907,8 +1939,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && blobMatchAuth) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
-          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
-          if (refusePending(p.principal)) return;
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /assets/blob'); return; }
+          if (refusePending(p.principal, 'POST /assets/blob')) return;
           const sha = decodeURIComponent(blobMatchAuth[1]!);
           // DES-096: principal is the namespace for authenticated uploads (server-derived, not echoed from client).
           const ns = p.principal;
@@ -1930,8 +1962,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then(async (p) => {
           if ('status' in p) { send401(); return; }
-          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
-          if (refusePending(p.principal)) return;
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /assets/manifest'); return; }
+          if (refusePending(p.principal, 'POST /assets/manifest')) return;
           // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
           const ns = p.principal;
           if (refuseNamespaceParam(req, res)) return;
@@ -1978,7 +2010,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
-          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /mcp'); return; }
           return readBodyDecoded(req).then(async (raw) => {
             let rpc: JsonRpcRequest;
             try {

@@ -86,35 +86,43 @@ afterAll(async () => {
 });
 
 describe('issue #116 decision a: non-owner is indistinguishable from missing', () => {
-  it('run_status: BOB (non-owner) on the real run vs a random missing runId get byte-identical envelopes', async () => {
+  // Review round 6 finding 3: a masked refusal now carries a requestId too (previously it carried
+  // none, "left untouched" by design — the fix the independent verifier asked for), so the two
+  // sides are no longer LITERALLY equal; they are equal in every field EXCEPT the requestId VALUE
+  // (which differs between any two calls, same as it would for two distinct genuine misses).
+  it('run_status: BOB (non-owner) on the real run vs a random missing runId get byte-identical envelopes (same shape, each its own requestId)', async () => {
     const nonOwner = await mcp('run_status', { runId }, bobToken);
     const missing = await mcp('run_status', { runId: '00000000-0000-0000-0000-000000000000' }, bobToken);
-    expect(nonOwner['error']).toEqual({ code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` });
-    expect(missing['error']).toEqual({ code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000' });
-    // Same shape modulo the id itself: neither carries any extra key the other lacks.
+    expect(nonOwner['error']).toMatchObject({ code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` });
+    expect(missing['error']).toMatchObject({ code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000' });
+    expect(typeof nonOwner['error']['detail']['requestId']).toBe('string');
+    expect(typeof missing['error']['detail']['requestId']).toBe('string');
+    expect(nonOwner['error']['detail']['requestId']).not.toBe(missing['error']['detail']['requestId']);
+    // Same shape modulo the id itself and the requestId VALUE: neither carries any extra key the other lacks.
     expect(Object.keys(nonOwner).sort()).toEqual(Object.keys(missing).sort());
     expect(Object.keys(nonOwner['error']).sort()).toEqual(Object.keys(missing['error']).sort());
   });
 
-  it('workflow_deregister: non-owner vs missing-name are byte-identical (apart from the name)', async () => {
+  it('workflow_deregister: non-owner vs missing-name are byte-identical (apart from the name and the requestId)', async () => {
     const nonOwner = await mcp('workflow_deregister', { name: WF }, bobToken);
     const missing = await mcp('workflow_deregister', { name: 'no-such-workflow-it116' }, bobToken);
-    expect(nonOwner).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${WF}` } });
-    expect(missing).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Unknown workflow: no-such-workflow-it116' } });
+    expect(nonOwner).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${WF}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Unknown workflow: no-such-workflow-it116', detail: { requestId: missing['error']['detail']['requestId'] } } });
+    expect(nonOwner['error']['detail']['requestId']).not.toBe(missing['error']['detail']['requestId']);
   });
 
-  it('schedule_delete: non-owner vs missing-id are byte-identical (apart from the id)', async () => {
+  it('schedule_delete: non-owner vs missing-id are byte-identical (apart from the id and the requestId)', async () => {
     const nonOwner = await mcp('schedule_delete', { id: scheduleId }, bobToken);
     const missing = await mcp('schedule_delete', { id: 'no-such-schedule-it116' }, bobToken);
-    expect(nonOwner).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${scheduleId}` } });
-    expect(missing).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: 'Unknown schedule: no-such-schedule-it116' } });
+    expect(nonOwner).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${scheduleId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: 'Unknown schedule: no-such-schedule-it116', detail: { requestId: missing['error']['detail']['requestId'] } } });
   });
 
-  it('webhook_delete: non-owner vs missing-id are byte-identical (apart from the id)', async () => {
+  it('webhook_delete: non-owner vs missing-id are byte-identical (apart from the id and the requestId)', async () => {
     const nonOwner = await mcp('webhook_delete', { id: webhookId }, bobToken);
     const missing = await mcp('webhook_delete', { id: 'no-such-webhook-it116' }, bobToken);
-    expect(nonOwner).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown webhook: ${webhookId}` } });
-    expect(missing).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: 'Unknown webhook: no-such-webhook-it116' } });
+    expect(nonOwner).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown webhook: ${webhookId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: 'Unknown webhook: no-such-webhook-it116', detail: { requestId: missing['error']['detail']['requestId'] } } });
   });
 
   // The remaining templated tools, each checked against the REAL handler's own genuine-not-found
@@ -131,36 +139,83 @@ describe('issue #116 decision a: non-owner is indistinguishable from missing', (
     expect(nonOwner['error']['message']).toBe(`Run not found: ${runId}`);
   });
 
-  it('run_agent_log: non-owner vs missing are byte-identical (apart from the runId)', async () => {
+  it('run_agent_log: non-owner vs missing are byte-identical (apart from the runId and the requestId)', async () => {
     const nonOwner = await mcp('run_agent_log', { runId, agentId: 'a1' }, bobToken);
     const missing = await mcp('run_agent_log', { runId: '00000000-0000-0000-0000-000000000000', agentId: 'a1' }, bobToken);
-    expect(nonOwner).toEqual({ runId, status: 'failed', error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` }, harness: null, events: [], hasMore: false });
-    expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000' }, harness: null, events: [], hasMore: false });
+    expect(nonOwner).toEqual({ runId, status: 'failed', error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } }, harness: null, events: [], hasMore: false });
+    expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', detail: { requestId: missing['error']['detail']['requestId'] } }, harness: null, events: [], hasMore: false });
   });
 
-  it('issue_report: non-owner vs missing-run are byte-identical (apart from the runId)', async () => {
+  it('issue_report: non-owner vs missing-run are byte-identical (apart from the runId and the requestId)', async () => {
     const args = (id: string) => ({ title: 't', body: 'b', reproSteps: 's', analysis: 'a', runId: id });
     const nonOwner = await mcp('issue_report', args(runId), bobToken);
     const missing = await mcp('issue_report', args('00000000-0000-0000-0000-000000000000'), bobToken);
-    expect(nonOwner).toEqual({ error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` } });
-    expect(missing).toEqual({ error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000' } });
+    expect(nonOwner).toEqual({ error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', detail: { requestId: missing['error']['detail']['requestId'] } } });
   });
 
   // workflow_publish's genuine not-found travels through toErrEnvelope() and carries `error.see:
   // null` — unlike every other templated tool — so this is checked separately, against the real
   // handler, not assumed from workflow_deregister's shape.
-  it('workflow_publish: non-owner vs missing-name are byte-identical (apart from the name), including error.see', async () => {
+  it('workflow_publish: non-owner vs missing-name are byte-identical (apart from the name and the requestId), including error.see', async () => {
     const nonOwner = await mcp('workflow_publish', { name: WF, version: 'v1', channel: 'release' }, bobToken);
     const missing = await mcp('workflow_publish', { name: 'no-such-workflow-it116-publish', version: 'v1', channel: 'release' }, bobToken);
-    expect(nonOwner).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Workflow not found in catalog: ${WF}`, see: null } });
-    expect(missing).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Workflow not found in catalog: no-such-workflow-it116-publish', see: null } });
+    expect(nonOwner).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Workflow not found in catalog: ${WF}`, see: null, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: 'Workflow not found in catalog: no-such-workflow-it116-publish', see: null, detail: { requestId: missing['error']['detail']['requestId'] } } });
   });
 
-  it('schedule_setEnabled: non-owner vs missing-id are byte-identical (apart from the id)', async () => {
+  it('schedule_setEnabled: non-owner vs missing-id are byte-identical (apart from the id and the requestId)', async () => {
     const nonOwner = await mcp('schedule_setEnabled', { id: scheduleId, enabled: false }, bobToken);
     const missing = await mcp('schedule_setEnabled', { id: 'no-such-schedule-it116-enable', enabled: false }, bobToken);
-    expect(nonOwner).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${scheduleId}` } });
-    expect(missing).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: 'Unknown schedule: no-such-schedule-it116-enable' } });
+    expect(nonOwner).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${scheduleId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ error: { code: 'TRIGGER_NOT_FOUND', message: 'Unknown schedule: no-such-schedule-it116-enable', detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
+  // Review round 6 finding 1: workspace_pull, workspace_purge, and workspace_list/workspace_delete's
+  // own `run` mode join the templated set — masked the same way run_status etc. are, verified
+  // against the REAL handler (not assumed from another tool's shape).
+  it('workspace_pull: non-owner vs missing-run are byte-identical (apart from the runId and the requestId)', async () => {
+    const nonOwner = await mcp('workspace_pull', { runId, path: 'a.txt' }, bobToken);
+    const missing = await mcp('workspace_pull', { runId: '00000000-0000-0000-0000-000000000000', path: 'a.txt' }, bobToken);
+    expect(nonOwner).toEqual({ runId, status: 'failed', error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
+  it('workspace_purge: non-owner vs missing-run are byte-identical (apart from the runId and the requestId)', async () => {
+    const nonOwner = await mcp('workspace_purge', { runId }, bobToken);
+    const missing = await mcp('workspace_purge', { runId: '00000000-0000-0000-0000-000000000000' }, bobToken);
+    expect(nonOwner).toEqual({ runId, status: 'failed', error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}`, see: null, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', see: null, detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
+  it("workspace_list run mode: non-owner vs missing-run are byte-identical (apart from the runId and the requestId)", async () => {
+    const nonOwner = await mcp('workspace_list', { runId }, bobToken);
+    const missing = await mcp('workspace_list', { runId: '00000000-0000-0000-0000-000000000000' }, bobToken);
+    expect(nonOwner).toEqual({ runId, status: 'failed', error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}`, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
+  it("workspace_delete run mode: non-owner vs missing-run are byte-identical (apart from the runId and the requestId)", async () => {
+    const nonOwner = await mcp('workspace_delete', { runId, paths: ['a.txt'] }, bobToken);
+    const missing = await mcp('workspace_delete', { runId: '00000000-0000-0000-0000-000000000000', paths: ['a.txt'] }, bobToken);
+    expect(nonOwner).toEqual({ runId, status: 'failed', code: 'RUN_NOT_FOUND', error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}`, see: null, detail: { requestId: nonOwner['error']['detail']['requestId'] } } });
+    expect(missing).toEqual({ runId: '00000000-0000-0000-0000-000000000000', status: 'failed', code: 'RUN_NOT_FOUND', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: 00000000-0000-0000-0000-000000000000', see: null, detail: { requestId: missing['error']['detail']['requestId'] } } });
+  });
+
+  // Review round 6 finding 1: tool-specs.ts no longer advertises NOT_RUN_OWNER on these four tools
+  // (it can never arrive) — confirms the fix landed on the advertised surface too, not just the
+  // runtime envelope.
+  it('workspace_pull/workspace_purge/workspace_list/workspace_delete no longer advertise NOT_RUN_OWNER', async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aliceToken}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    const body = await res.json() as { result: { tools: Array<{ name: string; errors?: string[] }> } };
+    for (const name of ['workspace_pull', 'workspace_purge', 'workspace_list', 'workspace_delete']) {
+      const tool = body.result.tools.find((t) => t.name === name);
+      expect(tool?.errors ?? []).not.toContain('NOT_RUN_OWNER');
+    }
   });
 
   it('admin is NEVER masked — root sees the real run, not a RUN_NOT_FOUND refusal', async () => {
@@ -172,6 +227,41 @@ describe('issue #116 decision a: non-owner is indistinguishable from missing', (
   it('a role refusal (user-role tool gate) is NEVER masked — a non-author calling an author-only tool still sees FORBIDDEN_ROLE, not a *_NOT_FOUND code', async () => {
     const result = await mcp('workflow_deregister', { name: WF }, mintBearer(PLAIN_USER));
     expect(result['code']).toBe('FORBIDDEN_ROLE');
+  });
+
+  // Review round 6 finding 2: workflow_register's own trigger-claim ownership check (a schedule or
+  // webhook id named in `triggers:[]`) used to tell "foreign trigger" apart from "missing trigger"
+  // via NOT_TRIGGER_OWNER vs TRIGGER_NOT_FOUND — the exact existence oracle decision a closes
+  // elsewhere, on the SAME schedule/webhook ids schedule_delete/webhook_delete now mask.
+  it("workflow_register triggers:[id]: BOB naming ALICE's schedule vs a bogus id are byte-identical (apart from the id and the requestId)", async () => {
+    const foreign = await mcp('workflow_register', { name: 'bob-wf-it116-trigger', script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR', triggers: [scheduleId] }, bobToken);
+    const missing = await mcp('workflow_register', { name: 'bob-wf-it116-trigger-2', script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR', triggers: ['00000000-0000-0000-0000-000000000000'] }, bobToken);
+    expect(foreign['error']['code']).toBe('TRIGGER_NOT_FOUND');
+    expect(missing['error']['code']).toBe('TRIGGER_NOT_FOUND');
+    expect(foreign['error']['message']).toBe(`TRIGGER_NOT_FOUND: ${scheduleId}`);
+    expect(missing['error']['message']).toBe('TRIGGER_NOT_FOUND: 00000000-0000-0000-0000-000000000000');
+    expect(Object.keys(foreign['error']).sort()).toEqual(Object.keys(missing['error']).sort());
+    expect(typeof foreign['error']['detail']['requestId']).toBe('string');
+    expect(typeof missing['error']['detail']['requestId']).toBe('string');
+  });
+
+  it("workflow_register triggers:[id]: ROOT (admin) naming ALICE's schedule gets the PRECISE code, never masked", async () => {
+    const result = await mcp('workflow_register', { name: 'root-wf-it116-trigger', script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR', triggers: [scheduleId] }, rootToken);
+    // Admin can adopt any trigger — this either succeeds outright, or (if already claimed by WF)
+    // fails with something OTHER than the non-admin's masked TRIGGER_NOT_FOUND.
+    if (result['error']) expect(result['error']['code']).not.toBe('TRIGGER_NOT_FOUND');
+  });
+
+  it("workflow_register NOT_WORKFLOW_OWNER (BOB registers ALICE's taken workflow name) is reachable, unmasked, and now audited with a requestId", async () => {
+    const before = await mcp('audit_refusals_list', { tool: 'workflow_register', actor: BOB }, rootToken);
+    const beforeCount = (before['result'] as unknown[]).length;
+    const result = await mcp('workflow_register', { name: WF, script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR' }, bobToken);
+    expect(result['error']['code']).toBe('NOT_WORKFLOW_OWNER');
+    expect(typeof result['error']['detail']['requestId']).toBe('string');
+    const after = await mcp('audit_refusals_list', { tool: 'workflow_register', actor: BOB }, rootToken);
+    const rows = after['result'] as Array<Record<string, unknown>>;
+    expect(rows.length).toBe(beforeCount + 1);
+    expect(rows[0]).toMatchObject({ actor: BOB, tool: 'workflow_register', targetKind: 'workflow', targetId: WF, realReason: 'NOT_WORKFLOW_OWNER', returnedCode: 'NOT_WORKFLOW_OWNER', requestId: result['error']['detail']['requestId'] });
   });
 
   it('the dashboard API masks run_status the same way (404, no top-level code) — identical to a genuinely missing run', async () => {
@@ -201,17 +291,60 @@ describe('issue #116 decision b: every refusal is audited + traceable', () => {
     expect(typeof rows[0]!['requestId']).toBe('string');
   });
 
-  it('an UNMASKED refusal (FORBIDDEN_ROLE) echoes requestId on the response, matching the audit row', async () => {
+  it('an UNMASKED refusal (FORBIDDEN_ROLE) echoes requestId on the response, matching the audit row — and (review round 6 finding 5) the audit row NAMES the workflow the caller asked for, not "none"', async () => {
     const refused = await mcp('workflow_deregister', { name: WF }, mintBearer(PLAIN_USER));
     const requestId = refused['error']['detail']['requestId'];
     expect(typeof requestId).toBe('string');
     const rows = (await mcp('audit_refusals_list', { tool: 'workflow_deregister', actor: PLAIN_USER }, rootToken))['result'] as Array<Record<string, unknown>>;
     const match = rows.find((r) => r['requestId'] === requestId);
-    expect(match).toMatchObject({ realReason: 'FORBIDDEN_ROLE', returnedCode: 'FORBIDDEN_ROLE' });
+    expect(match).toMatchObject({ realReason: 'FORBIDDEN_ROLE', returnedCode: 'FORBIDDEN_ROLE', targetKind: 'workflow', targetId: WF });
   });
 
   it('a non-admin cannot query the refusal audit trail', async () => {
     const result = await mcp('audit_refusals_list', {}, bobToken);
     expect(result['code']).toBe('FORBIDDEN_ROLE');
+  });
+});
+
+describe('issue #116 decision b (review round 6 finding 4): dashboard admin routes forward the requestId', () => {
+  // `sendToolOutcome` (server.ts) used to forward only `{code, error: message}`, dropping
+  // `error.detail` entirely — the audit row still got a requestId, but the 403 response had no way
+  // to be traced back to it.
+  it('BOB (author, non-admin) on GET /api/principals gets 403 with a requestId that matches the audit row', async () => {
+    const bobSession = await dashboardLogin(base, BOB);
+    const res = await fetch(`${base}/api/principals`, { headers: { Cookie: bobSession.cookie } });
+    expect(res.status).toBe(403);
+    const body = await res.json() as { code?: string; requestId?: string };
+    expect(body.code).toBe('FORBIDDEN_ROLE');
+    expect(typeof body.requestId).toBe('string');
+    const rows = (await mcp('audit_refusals_list', { tool: 'principals_list', actor: BOB }, rootToken))['result'] as Array<Record<string, unknown>>;
+    const match = rows.find((r) => r['requestId'] === body.requestId);
+    expect(match).toMatchObject({ realReason: 'FORBIDDEN_ROLE', returnedCode: 'FORBIDDEN_ROLE' });
+  });
+});
+
+describe('issue #116 decision b (review round 6 finding 5): bearer-layer refusals are audited too', () => {
+  // These happen entirely ahead of `callTool`'s own `authorize()` (no MCP tool dispatch at all —
+  // the raw upload routes authenticate by bearer alone), so decision b's "whatever authz refuses"
+  // is satisfied at the BEARER layer instead: the audit row's `tool` column holds the HTTP route.
+  it('a pending (role "none") human account refused on POST /assets/manifest writes one audit row keyed by the route, with a requestId on the 403 body matching it', async () => {
+    const pendingEmail = 'pending-it116@it116.test';
+    const before = await mcp('audit_refusals_list', { tool: 'POST /assets/manifest', actor: pendingEmail }, rootToken);
+    const beforeCount = (before['result'] as unknown[]).length;
+
+    const res = await fetch(`${base}/assets/manifest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mintBearer(pendingEmail)}` },
+      body: JSON.stringify([]),
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json() as { code?: string; requestId?: string };
+    expect(body.code).toBe('ACCOUNT_PENDING_APPROVAL');
+    expect(typeof body.requestId).toBe('string');
+
+    const after = await mcp('audit_refusals_list', { tool: 'POST /assets/manifest', actor: pendingEmail }, rootToken);
+    const rows = after['result'] as Array<Record<string, unknown>>;
+    expect(rows.length).toBe(beforeCount + 1);
+    expect(rows[0]).toMatchObject({ actor: pendingEmail, tool: 'POST /assets/manifest', targetKind: 'none', targetId: null, realReason: 'ACCOUNT_PENDING_APPROVAL', returnedCode: 'ACCOUNT_PENDING_APPROVAL', requestId: body.requestId });
   });
 });

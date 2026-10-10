@@ -3,6 +3,7 @@
 // as before (never throws across the tool boundary) plus three v24 additions: the register→claim→
 // insert→compensate trigger sequence, the six workspace_* modes, and the audited admin cross-read.
 import { existsSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { readArtifactChunk, type ArtifactEntry, type ChunkResult } from './workspace-artifacts.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
@@ -26,6 +27,7 @@ import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView
 import { scanAgentCalls } from './scan-agent-calls.js';
 import { predictedLanes } from './dashboard.js';
 import type { Principal } from './authz.js';
+import { authMethodFor } from './authz-refusal.js';
 import { pathVerdict } from './path-verdict.js';
 import { auditedWorkspaceRead } from './audited-read.js';
 import type { CasStore } from './cas-store.js';
@@ -462,7 +464,12 @@ export class McpFacade {
   // an already-claimed trigger taints the VERSION rather than laundering/upgrading the TRIGGER.
   // Defaults to `false` (local) so the pre-existing call sites that omit it keep compiling and keep
   // their prior behaviour.
-  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[]; seedManifestRef?: string }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
+  // Issue #116 (decision b, finding 2): `requestId` is a TRAILING optional param, defaulting to a
+  // fresh `randomUUID()` — every existing call site (tests included) keeps compiling unmodified;
+  // `call-tool.ts`'s real dispatch passes the SAME id it generates once per call, so the masked
+  // trigger-claim refusal below echoes the one request id that also tags every other refusal or
+  // success this call could have produced.
+  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[]; seedManifestRef?: string }, principal: Principal, isRemoteSubmission = false, requestId: string = randomUUID()): Promise<Record<string, unknown>> {
     const claimedThisCall: string[] = [];
     try {
       // v24 Gate 7.5 (D-2, REQ-110's last clause + adjudication #2 A-2): the pre-v24 workflow-wide
@@ -501,12 +508,36 @@ export class McpFacade {
       const actorId = principal.kind === 'loopback-exempt' ? undefined : (principal as { id: string }).id;
       for (const id of triggers) {
         const owner = this._triggerOwner(id);
-        if (owner === undefined) throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`);
+        // Issue #116 (decision a, review round 6 finding 2): `detail:{requestId}` on BOTH this
+        // throw and the masked one below — on only one it would itself be the tell. Both share
+        // the SAME `codedError`->`toErrEnvelope` conversion path (the outer `catch` below), so
+        // they are byte-identical by construction once the code/message match too.
+        if (owner === undefined) throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`, { requestId });
         // DES-139's stated operator consequence, matching `authorize()`'s own ownerless rule: an
         // OWNERLESS trigger (`createdBy NULL`, a migrated pre-v24 row) is ADMIN-ONLY — including a
         // re-registration naming a legacy trigger id. The removed `owner !== null` escape let any
         // caller adopt one (Gate 6.5+7 round 2; the arm was reached by no test at all).
-        if (!isAdmin && owner !== actorId) throw codedError('NOT_TRIGGER_OWNER', `NOT_TRIGGER_OWNER: ${id}`);
+        //
+        // Issue #116 (decision a, finding 2): masked for a non-admin — SAME code/message as a
+        // genuinely-missing id (TRIGGER_NOT_FOUND is the sibling HERE, unlike the workflow NAME
+        // check below, which has none for a brand-new name) — closing the existence oracle this
+        // registration step would otherwise create for the schedule/webhook ids
+        // `schedule_delete`/`schedule_setEnabled`/`webhook_delete` already mask (authz.ts).
+        // Audited (decision b) BEFORE the throw — admin is never audited here (never reaches this
+        // branch at all: `isAdmin` short-circuits it, same as `authorize()`'s own admin bypass).
+        if (!isAdmin && owner !== actorId) {
+          try {
+            this.store.appendRefusal({
+              ts: this._clock.isoNow(), requestId, actor: actorId ?? null,
+              ...(actorId !== undefined ? { authMethod: authMethodFor(principal) } : {}),
+              tool: 'workflow_register', targetKind: 'trigger', targetId: id,
+              realReason: 'NOT_TRIGGER_OWNER', returnedCode: 'TRIGGER_NOT_FOUND',
+            });
+          } catch (err) {
+            console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: 'workflow_register', error: err instanceof Error ? err.message : String(err) }));
+          }
+          throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`, { requestId });
+        }
       }
       const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
       const actor = actorFor(principal, a, 'attribution');
@@ -523,7 +554,11 @@ export class McpFacade {
         // this engine (codedError's convention throughout workflow-catalog.ts/mcp-facade.ts) — not
         // with `outcome`, the bare `'NOT_FOUND' | 'ALREADY_CLAIMED'` string `claim()` itself answers.
         const code = outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED';
-        throw codedError(code, `${code}: ${id}`);
+        // Issue #116 (review round 6 finding 2, advisor follow-up): same `detail:{requestId}` as
+        // the ownership pre-check's own TRIGGER_NOT_FOUND throws above — a TOCTOU race (the id is
+        // claimed/removed between that pre-check and this `claim()` call) must not make this
+        // facade answer the SAME code in TWO different shapes depending on which arm fired.
+        throw codedError(code, `${code}: ${id}`, { requestId });
       }
       let version: string;
       try {

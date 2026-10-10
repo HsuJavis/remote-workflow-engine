@@ -52,13 +52,19 @@ export const ERROR_CATALOG = {
   // Issue #116 (OWNER DECISION a, 2026-10-10): on workflow_deregister/workflow_publish, a
   // non-admin caller now receives WORKFLOW_NOT_FOUND instead (masked — indistinguishable from the
   // name not existing at all); this code is still returned as-is by every OTHER
-  // `ownership:'workflow'`/`'asset'` tool (workspace_push/_pull/_list/_delete's workflow/asset
-  // modes) — see authz.ts's `notFoundTemplate` for the exact, documented scope.
+  // `ownership:'workflow'`/`'asset'` tool (workspace_push's workflow/asset modes, and
+  // workspace_list/_delete's own `workflow` mode — residual risk, documented) — see authz.ts's
+  // `notFoundTemplate` for the exact, documented scope. Also still returned as-is, unmasked and
+  // now audited (review round 6 finding 2), by workflow-catalog.ts's OWN pre-insert ownership gate
+  // on a TAKEN name (validateRegistration/insertVersion) — that check has no `*_NOT_FOUND` sibling
+  // to mask toward at all for a brand-new name, so decision a's masking does not apply there.
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
   // Issue #116 (OWNER DECISION a): on run_status/run_result/run_suspend/run_resume/run_stop/
-  // run_agent_log/issue_report, a non-admin caller now receives RUN_NOT_FOUND instead (masked —
-  // indistinguishable from the run not existing at all); still returned as-is by workspace_pull/
-  // _list/_delete's run mode (authz.ts's `notFoundTemplate` documents the exact scope).
+  // run_agent_log/issue_report AND (review round 6 finding 1) workspace_pull, workspace_purge,
+  // and workspace_list/workspace_delete's own `run` mode, a non-admin caller now receives
+  // RUN_NOT_FOUND instead (masked — indistinguishable from the run not existing at all); still
+  // returned as-is by workspace_push/_list/_delete's `workflow`/`asset` modes (authz.ts's
+  // `notFoundTemplate` documents the exact scope).
   NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
   // v24 Gate 8 (AF-3, TASK-162): `authz.ts`'s loopback-exempt refusal — a caller reaching a tool
   // that needs an identity over a connection that carries none. It was DECLARED in
@@ -77,10 +83,14 @@ export const ERROR_CATALOG = {
   // when a registration declares a trigger someone else created. REQ-116 requires a registration
   // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
   // the guide is where the create-then-claim lifecycle is explained.
-  // Issue #116 (OWNER DECISION a): on schedule_delete/schedule_setEnabled/webhook_delete, a
-  // non-admin caller now receives TRIGGER_NOT_FOUND instead (masked — indistinguishable from the
-  // id not existing at all); still returned as-is from the workflow_register trigger-claim step
-  // (mcp-facade.ts), which has no sibling *_NOT_FOUND to mask toward for a brand-new name.
+  // Issue #116 (OWNER DECISION a): on schedule_delete/schedule_setEnabled/webhook_delete AND
+  // (review round 6 finding 2) workflow_register's own trigger-claim step, a non-admin caller now
+  // receives TRIGGER_NOT_FOUND instead (masked — indistinguishable from the id not existing at
+  // all; TRIGGER_NOT_FOUND IS the sibling here, unlike a brand-new WORKFLOW name, which has none).
+  // Admin bypasses the ownership check entirely on all four, so this code is never returned on the
+  // wire to ANY caller any more — it survives only as `AuthzVerdict.internalReason` and the
+  // refusal audit trail's `realReason` (authz.ts's `notFoundTemplate`; mcp-facade.ts's own masked
+  // throw in the trigger-claim loop).
   NOT_TRIGGER_OWNER: { see: 'workflow_authoring_guide', hint: 'the caller does not own (did not create) this trigger' },
   // Service accounts spec (owner decision 2026-10-03): a service account created with a
   // `workflows` allowlist, naming a workflow outside it on a workflow-scoped tool.

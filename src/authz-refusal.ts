@@ -5,26 +5,28 @@
 // row's field set cannot drift between the two surfaces.
 import type { Principal } from './authz.js';
 import type { AuthzVerdict } from './authz.js';
+import { authzTarget } from './authz.js';
 import type { ErrorCode } from './errors.js';
 import type { RefusalAuditEvent } from './types.js';
+import type { ToolSpec, ToolAuthz } from './tool-specs.js';
 
 export interface RefusalAuditWriter {
   appendRefusal(ev: RefusalAuditEvent): void;
 }
 
-/** The target the caller NAMED (never the resource's real owner — same non-disclosure convention
- *  `authz.ts`'s own refusal messages already follow), derived from the TRUE internal reason so it
- *  is meaningful even when the response was masked. `'none'` for a role/account refusal that names
- *  no specific run/workflow/trigger. */
-export function refusalTarget(args: Record<string, unknown>, internalReason: string | undefined): { targetKind: RefusalAuditEvent['targetKind']; targetId: string | null } {
-  const str = (k: string): string | undefined => (typeof args[k] === 'string' ? (args[k] as string) : undefined);
-  switch (internalReason) {
-    case 'NOT_RUN_OWNER': return { targetKind: 'run', targetId: str('runId') ?? null };
-    case 'NOT_WORKFLOW_OWNER': return { targetKind: 'workflow', targetId: str('workflow') ?? str('name') ?? null };
-    case 'NOT_TRIGGER_OWNER': return { targetKind: 'trigger', targetId: str('id') ?? null };
-    case 'WORKFLOW_NOT_ALLOWED': return { targetKind: 'workflow', targetId: str('workflow') ?? str('name') ?? null };
-    default: return { targetKind: 'none', targetId: null };
-  }
+/** Issue #116 (decision b, review round 6 finding 5): the target the caller NAMED (never the
+ *  resource's real owner — same non-disclosure convention `authz.ts`'s own refusal messages
+ *  already follow), derived from the TOOL'S OWN row (`authz.ts`'s `authzTarget` — the SAME
+ *  resolution `authorize()` itself performs) rather than from the refusal's reason. Re-exported
+ *  here, not called directly at each site, so `recordRefusal`'s own signature stays this module's
+ *  contract. Previously kyed off `internalReason` alone, which answered `'none'` for every
+ *  role/pending/workflow-not-allowed refusal even when the caller plainly named a run/workflow/
+ *  trigger — see `authzTarget`'s own doc for why spec-based resolution fixes that. */
+export function refusalTarget(
+  spec: { key: ToolSpec['key']; authz: ToolAuthz },
+  args: Record<string, unknown>,
+): { targetKind: RefusalAuditEvent['targetKind']; targetId: string | null } {
+  return authzTarget(spec, args);
 }
 
 /** `'service-account'` when the caller's id is a service account's own `sa:<name>` client id (the
@@ -53,7 +55,7 @@ export function recordRefusal(
   writer: RefusalAuditWriter | undefined,
   requestId: string,
   principal: Principal,
-  toolName: string,
+  spec: { name: string; key: ToolSpec['key']; authz: ToolAuthz },
   args: Record<string, unknown>,
   verdict: AuthzVerdict,
 ): RefusalClassification {
@@ -62,15 +64,18 @@ export function recordRefusal(
   const internalReason = verdict.internalReason ?? code;
   const masked = internalReason !== code;
   const actor = principal.kind === 'auth-disabled' || principal.kind === 'loopback-exempt' ? null : principal.id;
-  const { targetKind, targetId } = refusalTarget(args, internalReason);
+  // Issue #116 (finding 5): derived from the TOOL'S OWN row (`authzTarget`), not from
+  // `internalReason` — so a role/pending/workflow-not-allowed refusal still names what the caller
+  // asked for, instead of always recording `'none'`.
+  const { targetKind, targetId } = refusalTarget(spec, args);
   if (writer) {
     try {
       writer.appendRefusal({
         ts: new Date().toISOString(), requestId, actor, ...(actor !== null ? { authMethod: authMethodFor(principal) } : {}),
-        tool: toolName, targetKind, targetId, realReason: internalReason, returnedCode: code,
+        tool: spec.name, targetKind, targetId, realReason: internalReason, returnedCode: code,
       });
     } catch (err) {
-      console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: toolName, error: err instanceof Error ? err.message : String(err) }));
+      console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: spec.name, error: err instanceof Error ? err.message : String(err) }));
     }
   }
   return { code, reason, masked };

@@ -125,8 +125,10 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(typeof runId).toBe('string');
 
     // `key: null` + `ownership:'run'` used to resolve to subject `undefined` ⇒ "does not exist" ⇒ OK.
-    expect(codeOf(await callTool('workspace_list', { runId }, bobToken))).toBe('NOT_RUN_OWNER');
-    expect(codeOf(await callTool('workspace_delete', { runId, paths: ['a.txt'] }, bobToken))).toBe('NOT_RUN_OWNER');
+    // Issue #116 (decision a, review round 6 finding 1): both now join the templated set — masked
+    // to RUN_NOT_FOUND for a non-admin, same as run_status etc.
+    expect(codeOf(await callTool('workspace_list', { runId }, bobToken))).toBe('RUN_NOT_FOUND');
+    expect(codeOf(await callTool('workspace_delete', { runId, paths: ['a.txt'] }, bobToken))).toBe('RUN_NOT_FOUND');
     // ...and the workflow-scope mode keys off `workflow`, refusing a non-owner of the WORKFLOW.
     expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
     expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
