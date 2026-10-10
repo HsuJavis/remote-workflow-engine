@@ -26,7 +26,7 @@ import { describe, it, expect } from 'vitest';
 // importer itself goes through the TS-aware transform (a `.ts` test file); a plain `.js` file is
 // resolved by Vite's own loader map, which needs the real extension (measured: `.js` here 404s).
 import { DAG_WARNING_EXAMPLES } from '../fixtures/dashboard-wire.ts';
-import { STR, t, warningText, agentFailuresBadgeText } from '../../src/dashboard/lib/strings.js';
+import { STR, t, warningText, agentFailuresBadgeText, agentWarningText } from '../../src/dashboard/lib/strings.js';
 
 describe('lib/strings.js (UT-244, DES-201)', () => {
   it('zh and en share the exact same key set', () => {
@@ -151,5 +151,47 @@ describe('lib/strings.js: agentFailuresBadgeText (dash-auth-spec section C)', ()
   it('both languages define agentFailuresBadge with a {n} placeholder', () => {
     expect(STR.zh.agentFailuresBadge).toMatch(/\{n\}/);
     expect(STR.en.agentFailuresBadge).toMatch(/\{n\}/);
+  });
+});
+
+// Issue #117 (independent-verifier finding, 2026-10-10): `run_status.warnings`
+// (`AgentWarningSummary[]`, run-manager.ts `summarizeAgentWarnings` — rolled up from
+// `AgentRecord.warnings`, e.g. `MCP_SERVER_NOT_CONNECTED`) reaches `/api/runs/:id` unredacted
+// but no `ui/*.js` module ever reads or renders it — `ui/run.js`'s `renderLegend` only renders
+// the DAG route's own LAYOUT warnings (`payload.warnings`, a different stream entirely). A pure
+// decision function here (ADR-049: no `ui/*.js` module is unit-testable), consumed by
+// `renderLegend`'s own DOM append, same split as `warningText`/`agentFailuresBadgeText` above.
+//
+// Red reason (measured): `agentWarningText` is not exported by `lib/strings.js` (named-import
+// failure).
+describe('lib/strings.js: agentWarningText(lang, w) (issue #117)', () => {
+  const mcpWarning = { code: 'MCP_SERVER_NOT_CONNECTED', server: 'search-mcp', status: 'timeout', message: 'raw message fallback', label: 'researcher', agentId: 'a1' };
+
+  it('the known MCP_SERVER_NOT_CONNECTED code renders via the string table, naming the agent and the server, in both languages', () => {
+    for (const lang of ['zh', 'en']) {
+      const out = agentWarningText(lang, mcpWarning);
+      expect(out).not.toBe(mcpWarning.message); // mapped, not passed through
+      expect(out).toContain('researcher'); // label preferred over agentId
+      expect(out).toContain('search-mcp');
+      expect(/skeleton/i.test(out)).toBe(false);
+    }
+  });
+
+  it('falls back to agentId when label is absent', () => {
+    const noLabel = { ...mcpWarning, label: undefined };
+    expect(agentWarningText('en', noLabel)).toContain('a1');
+  });
+
+  it('an unknown code passes through the raw message UNCHANGED — never undefined', () => {
+    const unknown = { code: 'SOME_FUTURE_WARNING', message: 'a brand new harness warning', agentId: 'a2' };
+    expect(agentWarningText('en', unknown)).toBe('a brand new harness warning');
+    expect(agentWarningText('zh', unknown)).toBe('a brand new harness warning');
+  });
+
+  it('both languages define the MCP_SERVER_NOT_CONNECTED template, through t()', () => {
+    expect(typeof STR.zh.agentWarningMcpNotConnected).toBe('string');
+    expect(typeof STR.en.agentWarningMcpNotConnected).toBe('string');
+    expect(t('zh', 'agentWarningMcpNotConnected')).toBe(STR.zh.agentWarningMcpNotConnected);
+    expect(t('en', 'agentWarningMcpNotConnected')).toBe(STR.en.agentWarningMcpNotConnected);
   });
 });

@@ -14,7 +14,7 @@ import { runListScope, McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
 import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
-import { reclaimStaleWorkspaces } from './workspace-gc.js';
+import { reclaimStaleWorkspaces, gcStatusFromSummary } from './workspace-gc.js';
 import { SubmissionValidator } from './submission-validator.js';
 import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
@@ -35,7 +35,7 @@ import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGloba
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
-import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { buildCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry } from './models/model-catalog.js';
 import { ModelBook, toModelCatalogSnapshot } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION, redactSystemInfoForRole } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
@@ -506,7 +506,14 @@ async function handleDashboardRequest(
         (e) => harnessProviders === undefined || (harnessProviders as readonly string[]).includes(e.provider),
       );
       const observed = observedStats?.getAll(); // issue #104: one snapshot per request, joined by ref
-      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`), harnessProviders)));
+      // Issue #117: the dashboard gets the FULL catalog, unbounded — no `filterCatalog` call here
+      // at all (that function exists for a FILTERED query; this route applies no filter, so calling
+      // it only to pass a limit was truncation with extra steps). `filterCatalog`'s own
+      // `DEFAULT_LIMIT` (100) used to silently truncate a larger real catalog with no indication to
+      // the operator — the "M / N" models-tab counter was never wrong, it was just counting against
+      // a pre-truncated N. The MCP `models_list` tool is untouched: it never called `filterCatalog`
+      // at all (it pages via its own `queryModels`) and keeps its own documented default.
+      sendJson(res, 200, entries.map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`), harnessProviders)));
       return;
     }
     if (path === '/api/runs') {
@@ -1445,7 +1452,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         store
           .listRuns()
           .then((runs) => {
-            const statusByRun = new Map(runs.map((r) => [r.runId, r.status]));
+            // Issue #121 (owner decision): age from the run's own recorded end time
+            // (`RunSummary.terminalAt` — the first terminal transition, the run store's
+            // authoritative field), not the workspace directory's mtime — via the ONE mapping
+            // `gcStatusFromSummary` (workspace-gc.ts), so this wiring is unit-tested directly.
+            const statusByRun = new Map(runs.map((r) => [r.runId, gcStatusFromSummary(r)]));
             // v24 (integrator, adjudication #4 C-7 [12]): `hasWorkflow` + the resolved `assetRoot`
             // are supplied — without them the orphan asset-tree branch was dead code in production
             // (IT-110 only ever exercised it through a hand-built fixture).

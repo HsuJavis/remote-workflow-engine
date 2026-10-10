@@ -72,6 +72,47 @@ export async function getJSON(url) {
   }
 }
 
+// Issue #117: the dashboard's admin page POSTs (role/quota changes, service-account management)
+// used a bare `fetch` each with their own copy-pasted try/catch — none of them checked for a 401,
+// so a session that expired mid-edit just showed a generic "unavailable" error instead of sending
+// the browser back to sign in (the SAME 401 -> login-redirect rule `getJSON` above already applies
+// to every GET poll). `postJSON(url, body)` is the ONE POST-with-401-redirect helper every admin.js
+// write now goes through — same redirect call as `getJSON`'s, same `typeof location !== 'undefined'`
+// guard (so this is still safe to import under a test runner with no `location` global). Never
+// throws: a network failure (fetch itself rejects) resolves `{httpStatus: 0, ok: false, body: null}`,
+// matching `getJSON`'s own never-throws contract above. `body` is the parsed JSON reply, or `null`
+// when the response was not JSON (or the fetch failed outright) — the caller reads `body.error`/
+// `body.code` for its own error text exactly as it already did when the fetch was inline.
+//
+// Defect fix (independent-verifier review, 2026-10-10): this result's numeric field is named
+// `httpStatus`, deliberately NOT `status` — `getJSON` above also returns a field named `status`,
+// but that one is `classifyResponse`'s classified string ('ok'/'degraded'/'fail'), a different kind
+// of value under the same name. Reusing the `getJSON` idiom (`r.status === 'ok'`) against a
+// `postJSON` result would silently always take the false branch, since `httpStatus` is a raw HTTP
+// code (200, 401, 0 on network failure) and never the string 'ok'. `httpStatus` makes the two
+// shapes impossible to confuse by field name alone.
+export async function postJSON(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401 && typeof location !== 'undefined') {
+      location.assign(loginUrlFor(location.pathname, location.search));
+    }
+    let parsed = null;
+    try {
+      parsed = await res.json();
+    } catch {
+      parsed = null;
+    }
+    return { httpStatus: res.status, ok: res.ok, body: parsed };
+  } catch {
+    return { httpStatus: 0, ok: false, body: null };
+  }
+}
+
 // [v28, DES-210, TASK-217] `demoBodies` is the ONE installer's state: `null` (the default) makes
 // `getViewJSON` behave exactly like `getJSON`; a `Map` installed via `setDemoBodies` makes it
 // answer from the map with NO network call.

@@ -351,6 +351,28 @@ export const PARKED_SPEC_ROWS: ReadonlyArray<SpecRow> = [
 // SPEC_ROWS case built on that would be red offline. Restoring them needs a decision on how val-203
 // selects a benchmarked row (owner call, reported with #104), not a rewrite to assert absence.
 // Re-armed: this now trips the day `benchmarks` stops being nullable (every row guaranteed scores).
+//
+// Issue #117 (2026-10-10, owner decision — "restore with offline data"): val-203b-benchmarks-
+// offline.test.ts gives two of these three rows (the `.stat-track`/`.stat-bar` HEIGHT rows) a real,
+// passing, OFFLINE exercise — a real createServer() with an injected OpenRouter TRANSPORT (the
+// captured fixture other suites already replay for this file, never a mocked catalog) serving a row
+// with a real non-null `artificial_analysis` score, so `.bench-row` paints deterministically without
+// live network. Still NOT moved back into SPEC_ROWS here: SPEC_ROWS is val-203's OWN set, and
+// val-203 itself still has no injected transport (its OpenRouter fetch is still live) — moving these
+// rows there would still be red (or flaky) exactly as this comment already warns, just for a
+// different proximate reason. That file's own fetch would need the same offline-transport treatment
+// first, which is a separate, larger change this issue did not ask for.
+//
+// The THIRD row (`.bench-row` `grid-template-columns: '140px 1fr 48px'`) is a SEPARATE, genuinely
+// unfixable-as-written defect val-203b's own investigation found: a real browser's
+// `getComputedStyle(...).gridTemplateColumns` always resolves an authored `1fr` track to its
+// computed PIXEL width, never echoes the literal "1fr" back — so this exact `literal` comparison
+// cannot pass in ANY browser, offline or live, regardless of data. That is independent of the data-
+// availability reason this whole block was originally parked for, and needs either a new SpecRow
+// expect kind (a mixed px/fr comparison with the `fr` track unconstrained) or a rewritten row (e.g.
+// asserting only the two FIXED-width tracks) — an authoring decision for this file's own owner, out
+// of scope for #117. val-203b asserts this row keeps failing for exactly that reason, so a future fix
+// (or a future accidental pass) is caught rather than silently forgotten.
 type _D2StillHolds = null extends EnrichedModelEntry['benchmarks'] ? true : never;
 const _d2Guard: _D2StillHolds = true;
 void _d2Guard;

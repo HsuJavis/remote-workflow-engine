@@ -3,18 +3,56 @@
 // AND older than the TTL — never an active/suspended/queued run, never a runId unknown to the store
 // (a snapshot lookup miss => keep). `statusOf`/`nowMs` are injected so this is unit-testable without
 // wall-clock or a live store.
+//
+// Issue #121 (owner decision, 2026-10-10): the TTL ages from the run's own END time — its first
+// terminal transition (`RunSummary.terminalAt`/`RunStatusView.terminalAt`, the run store's
+// authoritative field, NOT `AgentRecord.endedAt`, which is per-agent) — not the workspace
+// directory's mtime. A long-running run (days in flight) must not be reclaimed the moment it
+// finishes merely because its workspace directory is old; conversely a run that finished long ago
+// but whose directory mtime was bumped recently (a stray write, a `workspace_pull`, a filesystem
+// touch) must still be reclaimed. `statusOf` therefore returns `{status, endedAt}` — `endedAt` is
+// the run's terminal-transition time in epoch ms, or `null`/absent for a LEGACY row with no
+// recorded terminal transition, which falls back to the directory's own mtime (documented in
+// DEPLOY.md). The mcp-state branches below use the identical `{status, endedAt}` shape for
+// consistency, though the orphan mcp-state sweep (review v035 M-1 part 2, further down) has no age
+// check of its own — there is nothing left to age out once the sibling workspace is already gone.
 import { readdirSync, statSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultAssetRoot } from './asset-sync.js';
 import { mcpStateRunDir } from './mcp-run-state.js';
-import type { RunStatus } from './types.js';
+import type { RunStatus, RunSummary } from './types.js';
 
 const TERMINAL = new Set<RunStatus>(['stopped', 'completed', 'failed']);
+
+/** Issue #121: what `reclaimStaleWorkspaces` needs to know about a run to age it — its current
+ *  status, and (when known) its end time as epoch ms. `endedAt` absent/`null` means "no recorded
+ *  terminal transition" (a legacy pre-this-feature row), which the TTL loop falls back to the
+ *  workspace directory's mtime for. */
+export interface RunStatusInfo {
+  status: RunStatus;
+  endedAt?: number | null;
+}
+
+/** Issue #121: the ONE `RunSummary` -> `RunStatusInfo` mapping — `server.ts`'s sweep builds its
+ *  `statusOf` lookup from this, never re-deriving the `terminalAt` parse inline, so the wiring
+ *  can be unit-tested directly (no real server boot, no real timer) instead of only through a
+ *  real sweep tick racing the TTL itself. `terminalAt` is an ISO string (`RunSummary`'s own
+ *  "first terminal transition" field, sqlite-run-store.ts) absent on a legacy row with no
+ *  recorded terminal transition — mapped to `endedAt: null`, which `reclaimStaleWorkspaces`
+ *  falls back to the directory's mtime for. */
+export function gcStatusFromSummary(r: Pick<RunSummary, 'status' | 'terminalAt'>): RunStatusInfo {
+  if (!r.terminalAt) return { status: r.status, endedAt: null };
+  const parsed = Date.parse(r.terminalAt);
+  // A malformed `terminalAt` (should never happen — it is engine-written ISO — but "uncertain" must
+  // resolve to "fall back to mtime", never to a `NaN` that could slip through an unguarded `??`
+  // downstream) normalises to `null` here too, at the one source of this value.
+  return { status: r.status, endedAt: Number.isFinite(parsed) ? parsed : null };
+}
 
 export function reclaimStaleWorkspaces(
   workRoot: string,
   ttlMs: number,
-  statusOf: (runId: string) => RunStatus | null,
+  statusOf: (runId: string) => RunStatusInfo | null,
   nowMs: number,
   // v24 (ARCH-098, DES-148, TASK-143): optional — when supplied, ALSO sweeps `<assetRoot>/<name>/`
   // for a workflow name `hasWorkflow` reports as gone. `deregister()`'s FS removal is an after-hook
@@ -73,9 +111,18 @@ export function reclaimStaleWorkspaces(
       } catch {
         continue;
       }
-      const status = statusOf(runId);
-      if (status === null || !TERMINAL.has(status)) continue; // active/suspended/unknown -> keep
-      if (nowMs - mtimeMs < ttlMs) continue; // still within retention window
+      const info = statusOf(runId);
+      if (info === null || !TERMINAL.has(info.status)) continue; // active/suspended/unknown -> keep
+      // Issue #121: age from the run's own recorded end time; a legacy row with none falls back to
+      // the directory's mtime (`endedAt` absent/null -> `mtimeMs`). `Number.isFinite` (not `??`)
+      // guards the destructive branch below against `NaN` too — a malformed `terminalAt` (an
+      // unparseable string past `Date.parse`) must fall back to mtime exactly like "no `terminalAt`
+      // at all", never pass `NaN` through: `nowMs - NaN < ttlMs` is `false`, which would otherwise
+      // skip the retention-window `continue` and reach the `rmSync` below on ANY malformed row,
+      // regardless of its actual age — this is the one branch in this file where "uncertain" must
+      // resolve to "keep", not "delete".
+      const endedAtMs = Number.isFinite(info.endedAt) ? (info.endedAt as number) : mtimeMs;
+      if (nowMs - endedAtMs < ttlMs) continue; // still within retention window
       try {
         rmSync(dir, { recursive: true, force: true });
         reclaimed.push(runId);
@@ -113,8 +160,8 @@ export function reclaimStaleWorkspaces(
     for (const runId of stateRunIds) {
       if (atCap()) break; // cap hit — the rest wait for the next sweep tick
       if (existsSync(join(runsDir, runId))) continue; // still has a runs/<runId> sibling — the TTL loop above owns it
-      const status = statusOf(runId);
-      if (status !== null && !TERMINAL.has(status)) continue; // defense-in-depth: never touch a live run
+      const info = statusOf(runId);
+      if (info !== null && !TERMINAL.has(info.status)) continue; // defense-in-depth: never touch a live run
       try {
         rmSync(join(mcpStateDirPath, runId), { recursive: true, force: true });
         reclaimed.push(`mcp-state/${runId}`);

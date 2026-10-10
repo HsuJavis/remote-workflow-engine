@@ -4,8 +4,11 @@
 // Reads GET /api/principals and writes POST /api/principals/role and (owner decision 2026-10-02)
 // POST /api/principals/quota — the SAME backend as the MCP tools principals_list /
 // principal_set_role / principal_set_quota, so this page can never grant what a tool refuses.
-// Loads on mount and after each change only (never on the 3s poll: a repaint would reset a
-// selector mid-edit). Every string is `textContent` — ids are user-controlled emails.
+// Loads on mount, after each change, and (issue #117) once on a "resume" — a browser-tab
+// visibility resume or returning to this in-app tab, `onTick`'s own `tick.fresh` below — but
+// NEVER on the ambient 3s poll itself: that repaint-on-every-tick is what would reset a selector
+// mid-edit, the one case `onTick` still declines to repaint over (a focused, non-empty quota
+// input). Every string is `textContent` — ids are user-controlled emails.
 //
 // Service accounts spec (owner decision 2026-10-03): a SECOND section on this same page ("Service
 // accounts"), reading/writing GET/POST /api/service-accounts* — the SAME 6 admin-only tools an MCP
@@ -15,7 +18,7 @@
 
 import { el, currentLang } from './dom.js';
 import { t } from '../lib/strings.js';
-import { getViewJSON } from './poll.js';
+import { getViewJSON, postJSON } from './poll.js';
 import { principalRows, roleChangeValue, quotaLimitValue } from '../lib/principals.js';
 import { serviceAccountRows, parseWorkflowsInput, parseExpiresAtInput, curlSnippet } from '../lib/service-accounts.js';
 
@@ -59,21 +62,15 @@ async function changeRole(state, id, value, select, previous) {
     return;
   }
   showError(state, '');
-  try {
-    const res = await fetch('/api/principals/role', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
-      body: JSON.stringify({ id, role }),
-    });
-    if (!res.ok) {
-      let body = null;
-      try { body = await res.json(); } catch { body = null; }
-      showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(res.status)));
-      select.value = previous;
-      return;
-    }
-  } catch {
-    showError(state, t(state.lang, 'admError') + 'network');
+  // Issue #117: a 401 here (an expired/signed-out session) is handled INSIDE postJSON, exactly
+  // like every GET poll — it redirects to the login page itself, so there is nothing left for
+  // this call site to show; falling through to the generic error path below would paint a
+  // confusing "unavailable" message on a page the browser is already about to navigate away from.
+  const r = await postJSON('/api/principals/role', { id, role });
+  if (r.httpStatus === 401) return;
+  if (!r.ok) {
+    const body = r.body;
+    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.httpStatus || 'network')));
     select.value = previous;
     return;
   }
@@ -85,20 +82,12 @@ async function changeQuota(state, id, limit) {
   const label = limit === null ? t(state.lang, 'admQuotaClear') : String(limit);
   if (!window.confirm(t(state.lang, 'admQuotaConfirm').replace('{id}', id).replace('{limit}', label))) return;
   showError(state, '');
-  try {
-    const res = await fetch('/api/principals/quota', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
-      body: JSON.stringify({ id, limit }),
-    });
-    if (!res.ok) {
-      let body = null;
-      try { body = await res.json(); } catch { body = null; }
-      showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(res.status)));
-      return;
-    }
-  } catch {
-    showError(state, t(state.lang, 'admError') + 'network');
+  // Issue #117: see changeRole's comment just above — a 401 redirects inside postJSON itself.
+  const r = await postJSON('/api/principals/quota', { id, limit });
+  if (r.httpStatus === 401) return;
+  if (!r.ok) {
+    const body = r.body;
+    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.httpStatus || 'network')));
     return;
   }
   await load(state);
@@ -176,14 +165,26 @@ function paint(state, body) {
   }
 }
 
+// Issue #117: guards against the one overlap the new `onTick` resume-reload (below) introduces —
+// `render()`'s own mount-time `load()` and the `scheduleTick()` that follows it both land a
+// `fresh:true` tick before the cold-import/cached-remount paths' first paint ever settles, which
+// would otherwise fire `/api/principals` (+ service-accounts) TWICE on every single mount. Same
+// in-flight guard shape as `createServiceAccount`/`changeRole`'s own `showError`-then-await
+// pattern, just hoisted to cover re-entry rather than a single call's own error path.
 async function load(state) {
-  const r = await getViewJSON('/api/principals');
-  if (r.status !== 'ok' || !r.body) {
-    showError(state, t(state.lang, 'admError') + ((r.body && (r.body.error || r.body.code)) || 'unavailable'));
-    return;
+  if (state.loading) return;
+  state.loading = true;
+  try {
+    const r = await getViewJSON('/api/principals');
+    if (r.status !== 'ok' || !r.body) {
+      showError(state, t(state.lang, 'admError') + ((r.body && (r.body.error || r.body.code)) || 'unavailable'));
+      return;
+    }
+    paint(state, r.body);
+    await loadServiceAccounts(state.sa);
+  } finally {
+    state.loading = false;
   }
-  paint(state, r.body);
-  await loadServiceAccounts(state.sa);
 }
 
 // ── Service accounts section (service accounts spec, owner decision 2026-10-03) ─────────────────
@@ -282,23 +283,14 @@ function showSecretBanner(state, clientId, clientSecret) {
 
 async function postServiceAccounts(state, path, body) {
   showSaError(state, '');
-  try {
-    const res = await fetch(`/api/service-accounts${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
-      body: JSON.stringify(body),
-    });
-    let parsed = null;
-    try { parsed = await res.json(); } catch { parsed = null; }
-    if (!res.ok) {
-      showSaError(state, t(state.lang, 'saError') + ((parsed && (parsed.error || parsed.code)) || String(res.status)));
-      return null;
-    }
-    return parsed;
-  } catch {
-    showSaError(state, t(state.lang, 'saError') + 'network');
+  // Issue #117: same 401 -> login-redirect rule as changeRole/changeQuota above, via postJSON.
+  const r = await postJSON(`/api/service-accounts${path}`, body);
+  if (r.httpStatus === 401) return null;
+  if (!r.ok) {
+    showSaError(state, t(state.lang, 'saError') + ((r.body && (r.body.error || r.body.code)) || String(r.httpStatus || 'network')));
     return null;
   }
+  return r.body;
 }
 
 async function createServiceAccount(state) {
@@ -410,12 +402,33 @@ async function loadServiceAccounts(state) {
   paintServiceAccounts(state, r.body);
 }
 
+// Issue #117 ("重新整理" — distinct from the 401/"過期" clause fixed above): keyed by container
+// (`ui/home.js`'s own pattern) so `onTick` can reach the SAME state `render` built, across a
+// language-toggle remount (a fresh container, a fresh WeakMap entry — never a stale one).
+const stateByContainer = new WeakMap();
+
 export function render(container) {
   const state = buildShell(container, currentLang());
+  stateByContainer.set(container, state);
   load(state);
 }
 
-/** No per-tick work: this view refreshes on mount and after each change only (see the header). */
-export function onTick() {
+/** Issue #117: this view still refreshes on mount and after each change only w.r.t. the AMBIENT
+ *  3s poll (`poll.js`'s `admin: () => []` is deliberate — repainting on that cadence would reset
+ *  a selector mid-edit, see this file's header). But nothing refreshed it on RETURN either: not a
+ *  browser-tab visibility resume, not re-activating the in-app Admin tab after visiting another
+ *  one — both replay the exact same stale paint forever. `app.js`'s `tick.fresh` is true for
+ *  exactly the one immediate tick a resume/tab-activation fires (never the ambient continuations
+ *  after it), so reloading here on `fresh` is a one-time catch-up, not the forbidden continuous
+ *  repaint. Skipped during a demo tick (no `/api/principals` in the demo fiction — a reload would
+ *  paint `admError` over the fictional rows) and while the viewer has an unsaved quota figure
+ *  typed (a focused, non-empty quota `<input>` inside this container) — the role `<select>`s need
+ *  no such guard, since a change fires its own confirm() immediately and is never left half-set. */
+export function onTick(container, bodies, ctx, tick) {
+  const state = stateByContainer.get(container);
+  if (!state || !tick || !tick.fresh || tick.source === 'demo') return undefined;
+  const active = document.activeElement;
+  if (active && active.tagName === 'INPUT' && active.value && container.contains(active)) return undefined;
+  load(state);
   return undefined;
 }

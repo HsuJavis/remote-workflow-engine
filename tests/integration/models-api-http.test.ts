@@ -166,6 +166,41 @@ describe('GET /api/models returns enriched model entries (IT-071, DES-075, DES-0
     }
   });
 
+  // Issue #117: the dashboard route used to run every catalog entry through `filterCatalog`, which
+  // (with no `filter.limit` passed) defaults to `DEFAULT_LIMIT` (100, model-catalog.ts) — fine for
+  // the MCP `models_list` tool (which pages, and keeps that documented default), wrong here: the
+  // dashboard route applies no filter at all, so calling `filterCatalog` only to impose SOME limit
+  // was truncation with extra steps. The dashboard must see the catalog UNBOUNDED — 600 rows
+  // (comfortably over the model-catalog module's own internal 500 "hard cap" constant, which no
+  // longer applies to this route at all) proves that, rather than merely proving "more than 100".
+  it('a catalog with 600 entries is returned in full, unbounded (issue #117)', async () => {
+    const manyTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it071-many-'));
+    const data = Array.from({ length: 600 }, (_, i) => ({
+      id: `many-provider/model-${i}`,
+      description: `Synthetic model #${i}`,
+      context_length: 8000,
+      pricing: { prompt: '0.000001', completion: '0.000002' },
+      architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+      supported_parameters: ['tools'],
+    }));
+    const manyServer = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot: manyTmpDir,
+      modelCatalogFetchers: {
+        ollamaFetch: jsonFetch({ models: [] }),
+        openrouterFetch: jsonFetch({ data }),
+      },
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${manyServer.port}/api/models`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as EnrichedEntry[];
+      expect(body.length).toBeGreaterThanOrEqual(600);
+    } finally {
+      await manyServer.close();
+      rmSync(manyTmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('empty catalog (no source reachable) → [] response, no error', async () => {
     // Use a separate server with no catalog sources
     const emptyTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it071-empty-'));
