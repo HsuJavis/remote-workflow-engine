@@ -1600,7 +1600,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'rule 3\'s own paragraph above states. A VARIABLE `allowedTools` (`agent(\'a\', {allowedTools: ' +
         'tools})`, a ternary, a spread, `[...arr]`, …) is not a dynamic-lane carve-out either — it ' +
         'cannot even REGISTER, refused `AGENT_OPTS_VALUE_NOT_LITERAL` at registration time, before ' +
-        'the diagram is ever checked (every `agent()` option, in every lane, must be a literal).\n\n' +
+        // issue #162(2) (owner decision, 2026-10-10): the parenthetical that used to close this
+        // paragraph — "every `agent()` option, in every lane, must be a literal" — overstated the
+        // registration-time scan this guide's own `agent()` section (above) already states more
+        // precisely: the OPTIONS ARGUMENT must be a literal object (no spread/shorthand — every key
+        // written `key: value`), and only `allowedTools`' VALUE is itself checked for literal-ness
+        // this way (`AGENT_OPTS_VALUE_NOT_LITERAL`/`AGENT_OPTS_SPREAD`/`AGENT_OPTS_SHORTHAND`); a
+        // non-literal `schema` registers successfully and is validated only at dispatch (ajv,
+        // `INVALID_SCHEMA`) — dynamic schema is legitimate, by design, not a gap. The sentence this
+        // replaces was read as a blanket rule and reported as self-contradicting the `schema`
+        // carve-out two sections up.
+        'the diagram is ever checked — the SAME registration-time literal check this guide\'s ' +
+        '`agent()` section (above) states precisely: `allowedTools`\'s value in particular, never ' +
+        'every option (a non-literal `schema` registers fine and is checked only at dispatch).\n\n' +
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +
