@@ -1109,6 +1109,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'letting a declared default fill in behind your back. Pass only plain JSON-shaped data: ' +
         'objects, arrays, strings, numbers, booleans, `null`, and — at the top level only — an ' +
         'explicit `undefined`.\n\n' +
+        // Issue #161 (round-3 INFO): the refusal above only catches function/symbol VALUES and a
+        // nested `undefined` — three shapes that cannot survive the IPC hop AT ALL and so are
+        // refused outright. The shapes below instead cross the SAME hop lossily and silently
+        // (no error, no warning): verified empirically (tests/integration/nested-workflow-args-
+        // validation.test.ts, real forked sandbox child, not merely JSON.stringify in isolation)
+        // rather than documented from memory of how JSON serialization generally behaves.
+        'A nested `workflow()` call\'s args are **structured-clone/JSON-like, not a true structured ' +
+        'clone** — crossing that same IPC hop can silently LOSE data no error is ever raised for, ' +
+        'distinct from the refused shapes just above: a `Map` or `Set` value arrives as `{}` (JSON ' +
+        'serialization keeps neither type\'s internal entries, only its own enumerable string-keyed ' +
+        'properties, which neither type has any of by default); a nested `NaN` arrives as `null` ' +
+        '(`JSON.stringify(NaN) === \'null\'`, same as a top-level one would); and a symbol-keyed own ' +
+        'property is dropped entirely, invisible to `Object.keys`/JSON serialization alike — none ' +
+        'of these three is refused, because the unsendable-value scan above only looks for function/ ' +
+        'symbol VALUES and a nested `undefined`, never a Map/Set/NaN/symbol KEY. Avoid all four in ' +
+        'nested `workflow()` args.\n\n' +
         // issue #161 B6 (owner-approved): a workflow with NO `meta.params.args` keys at all (or no
         // `params.args` block) used to skip the top-level shape check entirely, so `run_start`/a
         // nested `workflow(name, args)` call could pass an array or a bare string straight through

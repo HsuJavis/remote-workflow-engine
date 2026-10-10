@@ -102,3 +102,19 @@ export function findUnsendableArgValue(args: unknown): UnsendableArgValue | null
   }
   return null;
 }
+
+// Issue #161 (round-3): the caller (child-entry.ts's `workflow()`) used to hand-build this message
+// inline with a hardcoded "a ${unsendable.kind}" — correct English for 'function'/'symbol' but
+// "a undefined value" for the one `kind` that starts with a vowel sound. Pulled out as its own
+// pure, directly-testable function (one canonical message, not re-typed at the one call site that
+// builds it) rather than patched in place, so a future `kind` added to `UnsendableArgValue` gets
+// the right article for free instead of needing the same fix applied again by hand.
+const VOWEL_SOUND = /^[aeiou]/i;
+
+/** The refusal message for an unsendable `workflow()` args value — grammatically correct for every
+ *  current and future `UnsendableArgValue.kind` ('an undefined value', 'a function value', 'a
+ *  symbol value'), not a single hardcoded article. */
+export function unsendableArgMessage(unsendable: UnsendableArgValue): string {
+  const article = VOWEL_SOUND.test(unsendable.kind) ? 'an' : 'a';
+  return `workflow() args.${unsendable.path} is ${article} ${unsendable.kind} value, which cannot cross the sandbox IPC boundary — pass only plain JSON-shaped data (objects, arrays, strings, numbers, booleans, null, and a top-level explicit undefined)`;
+}

@@ -34,8 +34,17 @@ export function reclaimStaleWorkspaces(
   // by tests/integration/legacy-asset-migration.test.ts, not by this comment.
   hasWorkflow?: (name: string) => boolean,
   assetRoot: string = defaultAssetRoot(workRoot),
+  // Issue #121: caps how many entries ONE call reclaims (workspaces + mcp-state dirs + orphaned
+  // asset trees combined, counted off the same `reclaimed` array every branch below pushes onto),
+  // so a large already-expired backlog (the first sweep after `workspaceTtlMs` goes from "off" to
+  // a 7-day default with months of accumulated terminal workspaces behind it) cannot block the
+  // event loop draining it all in one synchronous call — server.ts re-arms a follow-up sweep soon
+  // when the cap was hit, so the backlog still drains, just across several ticks instead of one.
+  // Infinity (every existing call site) -> unbounded, unchanged behavior.
+  maxReclaim: number = Infinity,
 ): string[] {
   const reclaimed: string[] = [];
+  const atCap = (): boolean => reclaimed.length >= maxReclaim;
   const wfRoot = join(workRoot, 'workflows');
   let names: string[] = [];
   try {
@@ -44,6 +53,7 @@ export function reclaimStaleWorkspaces(
     names = []; // no workflows dir yet — fall through to the asset sweep below regardless
   }
   for (const name of names) {
+    if (atCap()) break;
     const runsDir = join(wfRoot, name, 'runs');
     const mcpStateDirPath = join(wfRoot, name, 'mcp-state');
     let runIds: string[] = [];
@@ -53,6 +63,7 @@ export function reclaimStaleWorkspaces(
       runIds = []; // no runs/ dir for this workflow — fall through to the orphan mcp-state sweep below
     }
     for (const runId of runIds) {
+      if (atCap()) break; // cap hit — the rest of this workflow's runs wait for the next sweep tick
       const dir = join(runsDir, runId);
       let mtimeMs: number;
       try {
@@ -100,6 +111,7 @@ export function reclaimStaleWorkspaces(
       continue; // no mcp-state dir for this workflow at all
     }
     for (const runId of stateRunIds) {
+      if (atCap()) break; // cap hit — the rest wait for the next sweep tick
       if (existsSync(join(runsDir, runId))) continue; // still has a runs/<runId> sibling — the TTL loop above owns it
       const status = statusOf(runId);
       if (status !== null && !TERMINAL.has(status)) continue; // defense-in-depth: never touch a live run
@@ -111,7 +123,7 @@ export function reclaimStaleWorkspaces(
       }
     }
   }
-  if (hasWorkflow) {
+  if (hasWorkflow && !atCap()) {
     const assetsRoot = assetRoot;
     let wfNames: string[];
     try {
@@ -120,6 +132,7 @@ export function reclaimStaleWorkspaces(
       wfNames = [];
     }
     for (const name of wfNames) {
+      if (atCap()) break; // cap hit — the rest wait for the next sweep tick
       if (hasWorkflow(name)) continue; // live workflow — never touched
       const dir = join(assetsRoot, name);
       try {

@@ -1334,6 +1334,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
 
   // gcTimer declared here; sweep block follows after authTokenStore init (MED-2 v16: gcExpired wired).
   let gcTimer: ReturnType<typeof setInterval> | undefined;
+  // Issue #121: a one-shot follow-up sweep, armed only when a sweep call hit GC_SWEEP_BATCH_CAP
+  // (reclaimStaleWorkspaces's own `maxReclaim` doc comment has the full "why cap at all" story) —
+  // drains a large backlog across several short-interval ticks instead of stalling the event loop
+  // once per the (now up to 7-day-interval) regular sweep. `gcFollowUpTimer` guards against
+  // stacking: a sweep already scheduled for 30s from now is never re-armed by a LATER sweep tick
+  // finding the SAME still-draining backlog still over the cap.
+  let gcFollowUpTimer: ReturnType<typeof setTimeout> | undefined;
 
   // v15 (REQ-012/086, DES-095, TASK-086): auth AS — token-store + route handlers.
   // When auth disabled/absent, pre-v15 open behavior is preserved byte-for-byte.
@@ -1391,6 +1398,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // REQ-026 (v2, v16): periodic maintenance sweep — workspace GC (when TTL set) + auth-table GC
   // (when auth enabled, MED-2 v16). Created when workspaceTtlMs>0 OR auth enabled; capped hourly.
   const _gcTtl = config?.workspaceTtlMs ?? 0;
+  // Issue #121: `workspaceTtlMs` now defaults to 7 days (composeConfig, main.ts) instead of "off",
+  // so a deployment's FIRST sweep after upgrading (or after first enabling it) can face a large
+  // backlog of already-expired terminal-run workspaces accumulated over months with GC previously
+  // off. `reclaimStaleWorkspaces` is fully synchronous (readdirSync/statSync/rmSync, no await) —
+  // draining an unbounded backlog in one call blocks the event loop (every MCP call, dashboard
+  // request, live agent IPC) for however long that many `rmSync(recursive:true)` calls take. Capped
+  // per call; `gcFollowUpTimer` below re-arms a short-interval follow-up while the backlog is still
+  // over the cap, so it drains in a handful of 30s ticks instead of one multi-second (or worse)
+  // stall on the regular (now up to hourly, same as before) sweep tick.
+  const GC_SWEEP_BATCH_CAP = 200;
   if (_gcTtl > 0 || authCfg) {
     const sweep = (): void => {
       // MED-2 (v16): prune expired auth rows — runs iff auth wired, never throws into scheduler
@@ -1413,7 +1430,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
               .list()
               .then((workflows) => {
                 const live = new Set(workflows.map((w) => w.name));
-                reclaimStaleWorkspaces(workRoot, _gcTtl, (id) => statusByRun.get(id) ?? null, Date.now(), (name) => live.has(name), assetRoot); // det:allow — GC sweep, not a workflow decision
+                // det:allow — GC sweep, not a workflow decision
+                const reclaimed = reclaimStaleWorkspaces(workRoot, _gcTtl, (id) => statusByRun.get(id) ?? null, Date.now(), (name) => live.has(name), assetRoot, GC_SWEEP_BATCH_CAP);
+                // Issue #121: the cap was hit — there is more backlog than this call drained.
+                // Re-arm a near-term follow-up rather than waiting for the regular (possibly
+                // hourly) interval; `gcFollowUpTimer` prevents stacking a second one while this
+                // one is still pending.
+                if (reclaimed.length >= GC_SWEEP_BATCH_CAP && gcFollowUpTimer === undefined) {
+                  gcFollowUpTimer = setTimeout(() => { gcFollowUpTimer = undefined; sweep(); }, 30_000);
+                  gcFollowUpTimer.unref?.();
+                }
               })
               .catch(() => { /* a catalog read failure must never crash the sweep — retry next interval */ });
           })
@@ -2331,6 +2357,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // D-V2I-2: stop the firing-engine ticker so a closed server never fires another schedule.
       ticker.stop();
       if (gcTimer) clearInterval(gcTimer); // REQ-026: stop the workspace GC sweep on shutdown
+      if (gcFollowUpTimer) clearTimeout(gcFollowUpTimer); // issue #121: stop a pending backlog-drain follow-up too
       modelProber?.stop(); // issue #73: stop the periodic model probe
       observedStats.stop(); // issue #104: stop the periodic observed-stats refresh
       // issue #162 (orphan sandbox children): before this, NOTHING on this process's shutdown

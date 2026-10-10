@@ -9,7 +9,7 @@
   "maxConcurrentRuns": 64,
   "agentSlots": 32,
   "runConcurrency": 24,
-  "workspaceTtlMs": 0,
+  "workspaceTtlMs": 604800000,
   "maxTimeoutMs": 600000,
   "maxAppendPromptBytes": 1024,
   "maxEffort": "high",

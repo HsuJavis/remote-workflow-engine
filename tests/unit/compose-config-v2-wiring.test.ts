@@ -21,7 +21,7 @@ import { attemptsFor } from '../../src/gateway/client.js';
 // Neutralize main.ts's boot side-effects (same pattern as IT-021/IT-022).
 vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ on: vi.fn(), kill: vi.fn(), pid: 99 })) }));
 process.exit = vi.fn() as unknown as typeof process.exit;
-import { composeConfig, KNOWN_FILE_CONFIG_KEYS, RETIRED_CONFIG_KEYS } from '../../src/main.js';
+import { composeConfig, KNOWN_FILE_CONFIG_KEYS, RETIRED_CONFIG_KEYS, WORKSPACE_TTL_DEFAULT_MS } from '../../src/main.js';
 
 // Fake deps that neutralize all real subprocess/network boundaries.
 // queryImpl is typed against the REAL seam (ClaudeAgentSdkGatewayConfig['queryImpl'] = typeof
@@ -541,6 +541,25 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
     expect((cfg as Record<string, unknown>)['confinementPosture']).toBe('confined');
     const gwConfig = (cfg.gateway as unknown as { _config: { confinementPosture?: string } })._config;
     expect(gwConfig.confinementPosture).toBe('confined');
+  });
+
+  // Issue #121 (owner decision 2026-10-10): workRoot's own doc comment / DEPLOY.md used to say
+  // "omitted -> no auto-GC" — the owner has now decided the DEFAULT retention is 7 days so it takes
+  // effect on deploy without an operator editing rwe.config.json; an EXPLICIT `0` must still mean
+  // disabled (never silently promoted to the default — same "0 is a real value, not an absence"
+  // rule DEFAULT_RUN_CONCURRENCY-style ceilings in this file already follow). The PROBES sweep above
+  // already pins "an explicit non-zero value survives unchanged" (workspaceTtlMs: 7200000); these
+  // two cases pin the two edges that sweep cannot (it never passes an ABSENT key, and never passes
+  // literal `0`, for any key).
+  it('issue #121: workspaceTtlMs defaults to 7 days (604800000ms) when the key is OMITTED from rwe.config.json', async () => {
+    const cfg = await composeConfig({ gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['workspaceTtlMs']).toBe(WORKSPACE_TTL_DEFAULT_MS);
+    expect(WORKSPACE_TTL_DEFAULT_MS).toBe(604800000);
+  });
+
+  it('issue #121: an EXPLICIT workspaceTtlMs: 0 in rwe.config.json still means disabled, never promoted to the default', async () => {
+    const cfg = await composeConfig({ gateway: 'direct-fetch', workspaceTtlMs: 0 } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['workspaceTtlMs']).toBe(0);
   });
 });
 

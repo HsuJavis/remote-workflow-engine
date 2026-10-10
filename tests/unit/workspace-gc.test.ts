@@ -152,4 +152,44 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
       });
     });
   });
+
+  // Issue #121: with workspaceTtlMs now defaulting to 7 days instead of "no auto-GC at all"
+  // (composeConfig, main.ts), a deployment's FIRST sweep after upgrading can face a large backlog
+  // of already-expired terminal-run workspaces that accumulated over months with GC previously off
+  // — this loop is fully synchronous (readdirSync/statSync/rmSync, no await), so draining an
+  // unbounded backlog in one call blocks the event loop (every MCP call, dashboard request, and
+  // live agent's own IPC) for however long that many `rmSync(recursive:true)` calls take. An
+  // optional trailing `maxReclaim` caps how many entries ONE call reclaims (across workspaces,
+  // mcp-state, and asset trees combined — the same `reclaimed` array every one of them pushes
+  // onto) and returns as soon as the cap is hit, leaving the rest for the next sweep tick (never
+  // thrown, never skipped — just deferred) rather than draining an unbounded backlog in one
+  // blocking call. Omitted (every existing call site above) -> Infinity, unchanged behavior.
+  describe('maxReclaim (issue #121: bounds one sweep call against a large backlog)', () => {
+    it('reclaims at most maxReclaim entries in one call, leaving the rest for next time', () => {
+      mkRun('wf', 'old-1', 10_000);
+      mkRun('wf', 'old-2', 10_000);
+      mkRun('wf', 'old-3', 10_000);
+      const reclaimed = reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW, undefined, undefined, 2);
+      expect(reclaimed.length).toBe(2);
+      // The sweep stopped at the cap — exactly one of the three old runs is still on disk, ready
+      // for the next sweep tick to pick up (never silently lost, never force-drained past the cap).
+      const remaining = ['old-1', 'old-2', 'old-3'].filter((id) => existsSync(join(root, 'workflows', 'wf', 'runs', id)));
+      expect(remaining.length).toBe(1);
+    });
+
+    it('omitted maxReclaim reclaims everything eligible in one call (unchanged default behavior)', () => {
+      mkRun('wf', 'old-1', 10_000);
+      mkRun('wf', 'old-2', 10_000);
+      mkRun('wf', 'old-3', 10_000);
+      const reclaimed = reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW);
+      expect(reclaimed.sort()).toEqual(['old-1', 'old-2', 'old-3']);
+    });
+
+    it('a cap of 0 reclaims nothing (every workspace stays, for a caller choosing to defer entirely)', () => {
+      const d = mkRun('wf', 'old-1', 10_000);
+      const reclaimed = reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW, undefined, undefined, 0);
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(d)).toBe(true);
+    });
+  });
 });

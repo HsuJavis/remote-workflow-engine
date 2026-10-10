@@ -28,9 +28,37 @@ import { PROJECT_CONFIG_MOUNT_TARGETS, READONLY_MOUNT_TARGETS } from './gateway/
 // this exact path) is hidden from workspace_list/workspace_pull; a file the agent actually wrote
 // content to is no longer 0 bytes and stays listed/pullable normally. The two lists overlap on no
 // path in practice, but the Set naturally unions either way.
+//
+// Issue #159 (round-3): this used to filter BOTH lists down to `kind === 'file'` entries only —
+// right for THIS engine's own two pre-creation paths (`createMountTargets`'s `kind` branch really
+// does `mkdirSync` for a 'dir' entry, `writeFileSync` for a 'file' one), but wrong for a SEPARATE,
+// unrelated placeholder source neither pre-creation path controls: pi's vendored
+// `@anthropic-ai/sandbox-runtime` (0.0.78, the only srt copy pi loads — see
+// bash-confinement.ts's `HOME_CONVENIENCE_WRITE_DIRS` doc comment for the "bundled CLI embeds its
+// own compiled copy, pi loads the npm package" split this reuses) hardcodes `.vscode`/`.idea`
+// (`READONLY_MOUNT_TARGETS`'s two `kind:'dir'` entries) into its OWN mandatory write-deny set for
+// EVERY sandboxed Bash call, unconditional on bashMode (`getDangerousDirectories()` /
+// `linuxGetCwdMandatoryDenyPaths`, sandbox-utils.js) — neither gateway's dispatch-prep ever
+// pre-creates `.vscode`/`.idea` for pi (`prepareDispatchMountTargets` only covers
+// `PROJECT_CONFIG_MOUNT_TARGETS`, which has no such entry; `prepareReadonlyMountTargets`, the call
+// that WOULD, is only ever reached from the SDK gateway's `bashMode:'readonly'` branch — pi's own
+// dispatch path never calls it). So when the workspace lacks them, bwrap's own deny-path handling
+// (linux-sandbox-utils.js: "Handle non-existent paths by mounting /dev/null to block creation")
+// mounts `/dev/null` directly onto the absent leaf target — and because `/dev/null` is a file,
+// bwrap creates the destination AS A REAL 0-BYTE FILE on the host, for the live duration of that
+// sandboxed child process (removed by its own `cleanupBwrapMountPoints()` once the process exits —
+// exactly why this is visible to `workspace_list` only while the run is RUNNING, and gone once it
+// completes). The on-disk node this race leaves behind is therefore a FILE even for a path this
+// engine's OWN code only ever creates as a directory, so the hiding rule must key off the REL PATH
+// alone, not the declared `kind` — every entry of both lists is now a candidate, regardless of
+// 'file' or 'dir', and the existing "0 bytes at this exact path" test below still only hides a
+// genuinely untouched placeholder: a 0-byte file an agent itself wrote (not pi's own sandbox
+// machinery) is indistinguishable from this case by design, same as every other entry here, and a
+// non-empty directory (real content under `.idea/`, say) is unaffected — `listArtifacts` never
+// lists a directory node itself, only the files inside it.
 const MOUNT_PLACEHOLDER_FILES: ReadonlySet<string> = new Set([
-  ...PROJECT_CONFIG_MOUNT_TARGETS.filter((t) => t.kind === 'file').map((t): string => t.rel),
-  ...READONLY_MOUNT_TARGETS.filter((t) => t.kind === 'file').map((t): string => t.rel),
+  ...PROJECT_CONFIG_MOUNT_TARGETS.map((t): string => t.rel),
+  ...READONLY_MOUNT_TARGETS.map((t): string => t.rel),
 ]);
 
 /** Default max bytes returned by a single artifact_get chunk (a client pages by advancing offset). */
