@@ -14,7 +14,7 @@ import { runListScope, McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
 import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
-import { reclaimStaleWorkspaces } from './workspace-gc.js';
+import { reclaimStaleWorkspaces, gcStatusFromSummary } from './workspace-gc.js';
 import { SubmissionValidator } from './submission-validator.js';
 import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
@@ -1429,7 +1429,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         store
           .listRuns()
           .then((runs) => {
-            const statusByRun = new Map(runs.map((r) => [r.runId, r.status]));
+            // Issue #116 (owner decision): age from the run's own recorded end time
+            // (`RunSummary.terminalAt` — the first terminal transition, the run store's
+            // authoritative field), not the workspace directory's mtime — via the ONE mapping
+            // `gcStatusFromSummary` (workspace-gc.ts), so this wiring is unit-tested directly.
+            const statusByRun = new Map(runs.map((r) => [r.runId, gcStatusFromSummary(r)]));
             // v24 (integrator, adjudication #4 C-7 [12]): `hasWorkflow` + the resolved `assetRoot`
             // are supplied — without them the orphan asset-tree branch was dead code in production
             // (IT-110 only ever exercised it through a hand-built fixture).
