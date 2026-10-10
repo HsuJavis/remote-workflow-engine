@@ -64,10 +64,10 @@ async function changeRole(state, id, value, select, previous) {
   // this call site to show; falling through to the generic error path below would paint a
   // confusing "unavailable" message on a page the browser is already about to navigate away from.
   const r = await postJSON('/api/principals/role', { id, role });
-  if (r.status === 401) return;
+  if (r.httpStatus === 401) return;
   if (!r.ok) {
     const body = r.body;
-    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.status || 'network')));
+    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.httpStatus || 'network')));
     select.value = previous;
     return;
   }
@@ -81,10 +81,10 @@ async function changeQuota(state, id, limit) {
   showError(state, '');
   // Issue #117: see changeRole's comment just above — a 401 redirects inside postJSON itself.
   const r = await postJSON('/api/principals/quota', { id, limit });
-  if (r.status === 401) return;
+  if (r.httpStatus === 401) return;
   if (!r.ok) {
     const body = r.body;
-    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.status || 'network')));
+    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.httpStatus || 'network')));
     return;
   }
   await load(state);
@@ -270,9 +270,9 @@ async function postServiceAccounts(state, path, body) {
   showSaError(state, '');
   // Issue #117: same 401 -> login-redirect rule as changeRole/changeQuota above, via postJSON.
   const r = await postJSON(`/api/service-accounts${path}`, body);
-  if (r.status === 401) return null;
+  if (r.httpStatus === 401) return null;
   if (!r.ok) {
-    showSaError(state, t(state.lang, 'saError') + ((r.body && (r.body.error || r.body.code)) || String(r.status || 'network')));
+    showSaError(state, t(state.lang, 'saError') + ((r.body && (r.body.error || r.body.code)) || String(r.httpStatus || 'network')));
     return null;
   }
   return r.body;

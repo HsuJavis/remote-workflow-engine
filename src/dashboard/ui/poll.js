@@ -79,10 +79,18 @@ export async function getJSON(url) {
 // to every GET poll). `postJSON(url, body)` is the ONE POST-with-401-redirect helper every admin.js
 // write now goes through — same redirect call as `getJSON`'s, same `typeof location !== 'undefined'`
 // guard (so this is still safe to import under a test runner with no `location` global). Never
-// throws: a network failure (fetch itself rejects) resolves `{status: 0, ok: false, body: null}`,
+// throws: a network failure (fetch itself rejects) resolves `{httpStatus: 0, ok: false, body: null}`,
 // matching `getJSON`'s own never-throws contract above. `body` is the parsed JSON reply, or `null`
 // when the response was not JSON (or the fetch failed outright) — the caller reads `body.error`/
 // `body.code` for its own error text exactly as it already did when the fetch was inline.
+//
+// Defect fix (independent-verifier review, 2026-10-10): this result's numeric field is named
+// `httpStatus`, deliberately NOT `status` — `getJSON` above also returns a field named `status`,
+// but that one is `classifyResponse`'s classified string ('ok'/'degraded'/'fail'), a different kind
+// of value under the same name. Reusing the `getJSON` idiom (`r.status === 'ok'`) against a
+// `postJSON` result would silently always take the false branch, since `httpStatus` is a raw HTTP
+// code (200, 401, 0 on network failure) and never the string 'ok'. `httpStatus` makes the two
+// shapes impossible to confuse by field name alone.
 export async function postJSON(url, body) {
   try {
     const res = await fetch(url, {
@@ -99,9 +107,9 @@ export async function postJSON(url, body) {
     } catch {
       parsed = null;
     }
-    return { status: res.status, ok: res.ok, body: parsed };
+    return { httpStatus: res.status, ok: res.ok, body: parsed };
   } catch {
-    return { status: 0, ok: false, body: null };
+    return { httpStatus: 0, ok: false, body: null };
   }
 }
 

@@ -114,17 +114,17 @@ describe('poll.js postJSON: a 401 sends the browser to the login page, same as g
     const { postJSON } = await import('../../src/dashboard/ui/poll.js');
     const r = await postJSON('/api/principals/role', { id: 'a@x', role: 'author' });
     expect(assign).toHaveBeenCalledWith('/dashboard/login?next=%2Fdashboard');
-    expect(r).toEqual({ status: 401, ok: false, body: { error: 'unauthorized' } });
+    expect(r).toEqual({ httpStatus: 401, ok: false, body: { error: 'unauthorized' } });
   });
 
-  it('a 200 does not redirect and resolves {status, ok:true, body}', async () => {
+  it('a 200 does not redirect and resolves {httpStatus, ok:true, body}', async () => {
     const assign = vi.fn();
     globalThis.location = { pathname: '/dashboard', search: '', assign };
     globalThis.fetch = async () => ({ status: 200, ok: true, json: async () => ({ ok: true }) });
     const { postJSON } = await import('../../src/dashboard/ui/poll.js');
     const r = await postJSON('/api/principals/role', { id: 'a@x', role: 'author' });
     expect(assign).not.toHaveBeenCalled();
-    expect(r).toEqual({ status: 200, ok: true, body: { ok: true } });
+    expect(r).toEqual({ httpStatus: 200, ok: true, body: { ok: true } });
   });
 
   it('a non-401 error status (e.g. 400) does not redirect, and body is readable for the error message', async () => {
@@ -134,14 +134,29 @@ describe('poll.js postJSON: a 401 sends the browser to the login page, same as g
     const { postJSON } = await import('../../src/dashboard/ui/poll.js');
     const r = await postJSON('/api/principals/role', {});
     expect(assign).not.toHaveBeenCalled();
-    expect(r).toEqual({ status: 400, ok: false, body: { code: 'INVALID' } });
+    expect(r).toEqual({ httpStatus: 400, ok: false, body: { code: 'INVALID' } });
   });
 
-  it('a network failure (fetch rejects) never throws — resolves {status:0, ok:false, body:null}', async () => {
+  it('a network failure (fetch rejects) never throws — resolves {httpStatus:0, ok:false, body:null}', async () => {
     globalThis.fetch = async () => { throw new Error('network down'); };
     const { postJSON } = await import('../../src/dashboard/ui/poll.js');
     const r = await postJSON('/api/principals/role', {});
-    expect(r).toEqual({ status: 0, ok: false, body: null });
+    expect(r).toEqual({ httpStatus: 0, ok: false, body: null });
+  });
+
+  // Defect fix (independent-verifier review, 2026-10-10): `postJSON`'s old `status` field collided
+  // in name with `getJSON`'s `status`, but held a totally different kind of value — a raw numeric
+  // HTTP code (200, 401, 0 on network failure) versus `getJSON`'s classified string ('ok' /
+  // 'degraded' / 'fail' from `classifyResponse`). A caller that reused the `getJSON` idiom
+  // (`r.status === 'ok'`) against a `postJSON` result would silently always take the false branch.
+  // Renamed to `httpStatus` so the two can never be confused by name; this pins that the string
+  // `'status'` key itself is gone from `postJSON`'s result, not just that `httpStatus` is present.
+  it('never resolves a field literally named "status" (that name is getJSON\'s classified string, not a raw HTTP code)', async () => {
+    globalThis.fetch = async () => ({ status: 200, ok: true, json: async () => ({ ok: true }) });
+    const { postJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await postJSON('/api/principals/role', {});
+    expect(Object.prototype.hasOwnProperty.call(r, 'status')).toBe(false);
+    expect(r.httpStatus).toBe(200);
   });
 });
 
