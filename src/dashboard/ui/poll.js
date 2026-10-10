@@ -72,6 +72,39 @@ export async function getJSON(url) {
   }
 }
 
+// Issue #117: the dashboard's admin page POSTs (role/quota changes, service-account management)
+// used a bare `fetch` each with their own copy-pasted try/catch — none of them checked for a 401,
+// so a session that expired mid-edit just showed a generic "unavailable" error instead of sending
+// the browser back to sign in (the SAME 401 -> login-redirect rule `getJSON` above already applies
+// to every GET poll). `postJSON(url, body)` is the ONE POST-with-401-redirect helper every admin.js
+// write now goes through — same redirect call as `getJSON`'s, same `typeof location !== 'undefined'`
+// guard (so this is still safe to import under a test runner with no `location` global). Never
+// throws: a network failure (fetch itself rejects) resolves `{status: 0, ok: false, body: null}`,
+// matching `getJSON`'s own never-throws contract above. `body` is the parsed JSON reply, or `null`
+// when the response was not JSON (or the fetch failed outright) — the caller reads `body.error`/
+// `body.code` for its own error text exactly as it already did when the fetch was inline.
+export async function postJSON(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401 && typeof location !== 'undefined') {
+      location.assign(loginUrlFor(location.pathname, location.search));
+    }
+    let parsed = null;
+    try {
+      parsed = await res.json();
+    } catch {
+      parsed = null;
+    }
+    return { status: res.status, ok: res.ok, body: parsed };
+  } catch {
+    return { status: 0, ok: false, body: null };
+  }
+}
+
 // [v28, DES-210, TASK-217] `demoBodies` is the ONE installer's state: `null` (the default) makes
 // `getViewJSON` behave exactly like `getJSON`; a `Map` installed via `setDemoBodies` makes it
 // answer from the map with NO network call.

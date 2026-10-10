@@ -15,7 +15,7 @@
 
 import { el, currentLang } from './dom.js';
 import { t } from '../lib/strings.js';
-import { getViewJSON } from './poll.js';
+import { getViewJSON, postJSON } from './poll.js';
 import { principalRows, roleChangeValue, quotaLimitValue } from '../lib/principals.js';
 import { serviceAccountRows, parseWorkflowsInput, parseExpiresAtInput, curlSnippet } from '../lib/service-accounts.js';
 
@@ -59,21 +59,15 @@ async function changeRole(state, id, value, select, previous) {
     return;
   }
   showError(state, '');
-  try {
-    const res = await fetch('/api/principals/role', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
-      body: JSON.stringify({ id, role }),
-    });
-    if (!res.ok) {
-      let body = null;
-      try { body = await res.json(); } catch { body = null; }
-      showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(res.status)));
-      select.value = previous;
-      return;
-    }
-  } catch {
-    showError(state, t(state.lang, 'admError') + 'network');
+  // Issue #117: a 401 here (an expired/signed-out session) is handled INSIDE postJSON, exactly
+  // like every GET poll — it redirects to the login page itself, so there is nothing left for
+  // this call site to show; falling through to the generic error path below would paint a
+  // confusing "unavailable" message on a page the browser is already about to navigate away from.
+  const r = await postJSON('/api/principals/role', { id, role });
+  if (r.status === 401) return;
+  if (!r.ok) {
+    const body = r.body;
+    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.status || 'network')));
     select.value = previous;
     return;
   }
@@ -85,20 +79,12 @@ async function changeQuota(state, id, limit) {
   const label = limit === null ? t(state.lang, 'admQuotaClear') : String(limit);
   if (!window.confirm(t(state.lang, 'admQuotaConfirm').replace('{id}', id).replace('{limit}', label))) return;
   showError(state, '');
-  try {
-    const res = await fetch('/api/principals/quota', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
-      body: JSON.stringify({ id, limit }),
-    });
-    if (!res.ok) {
-      let body = null;
-      try { body = await res.json(); } catch { body = null; }
-      showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(res.status)));
-      return;
-    }
-  } catch {
-    showError(state, t(state.lang, 'admError') + 'network');
+  // Issue #117: see changeRole's comment just above — a 401 redirects inside postJSON itself.
+  const r = await postJSON('/api/principals/quota', { id, limit });
+  if (r.status === 401) return;
+  if (!r.ok) {
+    const body = r.body;
+    showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(r.status || 'network')));
     return;
   }
   await load(state);
@@ -282,23 +268,14 @@ function showSecretBanner(state, clientId, clientSecret) {
 
 async function postServiceAccounts(state, path, body) {
   showSaError(state, '');
-  try {
-    const res = await fetch(`/api/service-accounts${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
-      body: JSON.stringify(body),
-    });
-    let parsed = null;
-    try { parsed = await res.json(); } catch { parsed = null; }
-    if (!res.ok) {
-      showSaError(state, t(state.lang, 'saError') + ((parsed && (parsed.error || parsed.code)) || String(res.status)));
-      return null;
-    }
-    return parsed;
-  } catch {
-    showSaError(state, t(state.lang, 'saError') + 'network');
+  // Issue #117: same 401 -> login-redirect rule as changeRole/changeQuota above, via postJSON.
+  const r = await postJSON(`/api/service-accounts${path}`, body);
+  if (r.status === 401) return null;
+  if (!r.ok) {
+    showSaError(state, t(state.lang, 'saError') + ((r.body && (r.body.error || r.body.code)) || String(r.status || 'network')));
     return null;
   }
+  return r.body;
 }
 
 async function createServiceAccount(state) {

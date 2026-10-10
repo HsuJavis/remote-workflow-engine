@@ -99,6 +99,52 @@ describe('poll.js getJSON: a 401 sends the browser to the login page', () => {
   });
 });
 
+// Issue #117: the admin page's role/quota POSTs (and service-account management) used a bare
+// `fetch` each, none of which checked for a 401 — a session that expired mid-edit just showed a
+// generic error instead of redirecting to sign in, unlike every GET poll (above). `postJSON` is the
+// ONE POST-with-401-redirect helper admin.js now goes through for every write.
+describe('poll.js postJSON: a 401 sends the browser to the login page, same as getJSON', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; delete globalThis.location; });
+
+  it('calls location.assign(login?next=...) and resolves a non-throwing result', async () => {
+    const assign = vi.fn();
+    globalThis.location = { pathname: '/dashboard', search: '', assign };
+    globalThis.fetch = async () => ({ status: 401, ok: false, json: async () => ({ error: 'unauthorized' }) });
+    const { postJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await postJSON('/api/principals/role', { id: 'a@x', role: 'author' });
+    expect(assign).toHaveBeenCalledWith('/dashboard/login?next=%2Fdashboard');
+    expect(r).toEqual({ status: 401, ok: false, body: { error: 'unauthorized' } });
+  });
+
+  it('a 200 does not redirect and resolves {status, ok:true, body}', async () => {
+    const assign = vi.fn();
+    globalThis.location = { pathname: '/dashboard', search: '', assign };
+    globalThis.fetch = async () => ({ status: 200, ok: true, json: async () => ({ ok: true }) });
+    const { postJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await postJSON('/api/principals/role', { id: 'a@x', role: 'author' });
+    expect(assign).not.toHaveBeenCalled();
+    expect(r).toEqual({ status: 200, ok: true, body: { ok: true } });
+  });
+
+  it('a non-401 error status (e.g. 400) does not redirect, and body is readable for the error message', async () => {
+    const assign = vi.fn();
+    globalThis.location = { pathname: '/dashboard', search: '', assign };
+    globalThis.fetch = async () => ({ status: 400, ok: false, json: async () => ({ code: 'INVALID' }) });
+    const { postJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await postJSON('/api/principals/role', {});
+    expect(assign).not.toHaveBeenCalled();
+    expect(r).toEqual({ status: 400, ok: false, body: { code: 'INVALID' } });
+  });
+
+  it('a network failure (fetch rejects) never throws — resolves {status:0, ok:false, body:null}', async () => {
+    globalThis.fetch = async () => { throw new Error('network down'); };
+    const { postJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await postJSON('/api/principals/role', {});
+    expect(r).toEqual({ status: 0, ok: false, body: null });
+  });
+});
+
 // Owner decision 2026-09-30 (verify-i MEDIUM-1): a signed-in principal with role 'none' is pending.
 describe("pending approval ('none')", () => {
   it('isPending is true only for a signed-in none principal', () => {
