@@ -634,7 +634,11 @@ export interface RefusalAuditEvent {
 export interface RefusalAuditFilter {
   actor?: string;
   tool?: string;
-  /** ISO timestamp — only rows at or after this instant. */
+  /** ISO timestamp — only rows at or after this instant. Both store implementations compare this
+   *  LEXICOGRAPHICALLY against the stored (Z-suffixed `toISOString()`) `ts` column, so a caller
+   *  passing an offset-form timestamp must have it normalized to Z-form first — `call-tool.ts`'s
+   *  `audit_refusals_list` case does this once, at the tool boundary, before reaching either store;
+   *  a direct store caller (tests, another facade) must do the same. */
   since?: string;
   limit?: number;
 }

@@ -659,10 +659,21 @@ export async function callTool(
     // Issue #116 (OWNER DECISION b): admin-only query over the refusal audit trail.
     case 'audit_refusals_list': {
       if (!deps.refusalAudit) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the refusal audit store is not wired on this engine');
+      // Independent-verifier finding (2026-10-10, reverify-r6-b): both RunStore implementations'
+      // `queryRefusals` compare `since` LEXICOGRAPHICALLY against Z-suffixed `toISOString()` rows
+      // — an offset-form timestamp (e.g. `+08:00`) sorts after a same-instant `Z` row and silently
+      // drops it. Normalized HERE, once, at the tool boundary, to the Z-form every stored row
+      // already uses — never a second lexicographic convention invented in either store.
+      let sinceNormalized: string | undefined;
+      if (typeof a['since'] === 'string') {
+        const t = Date.parse(a['since'] as string);
+        if (Number.isNaN(t)) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: since is not a parseable ISO-8601 timestamp: ${a['since'] as string}`);
+        sinceNormalized = new Date(t).toISOString();
+      }
       const filter = {
         ...(typeof a['actor'] === 'string' ? { actor: a['actor'] as string } : {}),
         ...(typeof a['tool'] === 'string' ? { tool: a['tool'] as string } : {}),
-        ...(typeof a['since'] === 'string' ? { since: a['since'] as string } : {}),
+        ...(sinceNormalized !== undefined ? { since: sinceNormalized } : {}),
         ...(typeof a['limit'] === 'number' ? { limit: a['limit'] as number } : {}),
       };
       return { runId: '', status: 'completed', result: deps.refusalAudit.queryRefusals(filter) };

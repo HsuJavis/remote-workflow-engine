@@ -194,4 +194,27 @@ describe('callTool — authorize() refusal audit + requestId (issue #116)', () =
     await callTool(deps, 'workflow_register', { name: 'wf1', script: 's', mermaid: 'graph LR' }, { kind: 'author', id: 'bob' });
     expect(audit.appendRefusal).not.toHaveBeenCalled();
   });
+
+  // Independent-verifier finding (2026-10-10, reverify-r6-b): `queryRefusals`'s `since` filter is a
+  // LEXICOGRAPHIC `ts >= ?` string comparison against Z-suffixed `toISOString()` rows (both
+  // RunStore implementations). The tool advertises `since` as any ISO-8601 timestamp, so an
+  // offset-form value (e.g. `+08:00`) must be normalized to Z-form BEFORE it reaches the store —
+  // otherwise `'...+08:00'` sorts lexicographically AFTER a same-instant `'...Z'` row and silently
+  // drops it (one instant earlier in wall-clock terms than the string suggests).
+  it("audit_refusals_list normalizes an offset-form `since` to Z-form before querying the store", async () => {
+    const queryRefusals = vi.fn().mockReturnValue([]);
+    const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, refusalAudit: { appendRefusal: vi.fn(), queryRefusals }, authorize: () => ({ ok: true }) });
+    // 2026-10-10T09:00:00+08:00 === 2026-10-10T01:00:00.000Z
+    await callTool(deps, 'audit_refusals_list', { since: '2026-10-10T09:00:00+08:00' }, { kind: 'admin', id: 'root' });
+    expect(queryRefusals).toHaveBeenCalledTimes(1);
+    expect(queryRefusals.mock.calls[0]![0]).toMatchObject({ since: '2026-10-10T01:00:00.000Z' });
+  });
+
+  it('audit_refusals_list refuses INVALID_ARGUMENT on an unparseable `since`, without ever reaching the store', async () => {
+    const queryRefusals = vi.fn().mockReturnValue([]);
+    const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, refusalAudit: { appendRefusal: vi.fn(), queryRefusals }, authorize: () => ({ ok: true }) });
+    const result = await callTool(deps, 'audit_refusals_list', { since: 'not-a-timestamp' }, { kind: 'admin', id: 'root' }) as { error?: { code?: string } };
+    expect(result.error?.code).toBe('INVALID_ARGUMENT');
+    expect(queryRefusals).not.toHaveBeenCalled();
+  });
 });

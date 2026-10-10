@@ -287,9 +287,14 @@ describe('issue #116 decision a: non-owner is indistinguishable from missing', (
     expect(missing.status).toBe(404);
     const nonOwnerBody = await nonOwner.json();
     const missingBody = await missing.json();
-    expect(Object.keys(nonOwnerBody)).toEqual(['error']);
-    expect(Object.keys(missingBody)).toEqual(['error']);
+    // Reverify round-6 finding 2 (decision b): both sides now carry a `requestId` too — stamping
+    // only the masked side would itself be the tell decision a exists to close (requestId PRESENT
+    // would mean "refused"), so the genuine miss carries one as well; see server.ts's `allowed()`.
+    expect(Object.keys(nonOwnerBody).sort()).toEqual(['error', 'requestId']);
+    expect(Object.keys(missingBody).sort()).toEqual(['error', 'requestId']);
     expect(nonOwnerBody.error).toBe(`Run not found: ${runId}`);
+    expect(typeof nonOwnerBody.requestId).toBe('string');
+    expect(typeof missingBody.requestId).toBe('string');
   });
 });
 
