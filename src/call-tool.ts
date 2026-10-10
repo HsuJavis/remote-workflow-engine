@@ -3,9 +3,10 @@
 // parameters plus a name/args/principal/authEnabled tail — the v24 tool surface is entirely new
 // names (TOOL_SPECS, tool-specs.ts) so this is a fresh dispatcher, not an in-place edit.
 import Ajv from 'ajv';
-import { TOOL_SPECS } from './tool-specs.js';
+import { randomUUID } from 'node:crypto';
+import { TOOL_SPECS, type ToolSpec, type ToolAuthz } from './tool-specs.js';
 import { parseBudget } from './run-guard.js';
-import { authorize as realAuthorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
+import { authorize as realAuthorize, notFoundTemplate, type Principal, type OwnerLookup, type AuthzVerdict, type AuthzErrorCode } from './authz.js';
 import type { McpFacade } from './mcp-facade.js';
 import { INLINE_SCRIPT_CLOSED_MESSAGE } from './mcp-facade.js';
 import type { SqliteSchedulerPort, NewSchedule } from './scheduler.js';
@@ -24,6 +25,7 @@ import { checkModelRef, PROVIDERS, type Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
 import { redactSystemInfoForRole, type SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
+import { recordRefusal } from './authz-refusal.js';
 import { codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { PrincipalAdmin } from './auth/principal-admin.js';
 import type { ServiceAccountStore, ServiceAccountRow, ServiceAccountSecretRow } from './auth/service-account-store.js';
@@ -71,6 +73,13 @@ export interface ToolDeps {
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
+  /** Issue #116 (OWNER DECISION b): every `authorize()` refusal, appended BEFORE the refusal is
+   *  returned (never after — a crash writing it must not silently skip the record). Optional for
+   *  the same reason `probeLookup`/`observedStats`/`principals` are: the ~250 existing `ToolDeps`
+   *  fixtures compile unchanged; absent -> refusals are stamped with a requestId but not persisted
+   *  (never a crash, never flips a refusal into a success). `server.ts` always wires it (the same
+   *  `RunStore` `audit` already reads). */
+  refusalAudit?: Pick<RunStore, 'appendRefusal' | 'queryRefusals'>;
   authorize?: (principal: Principal, spec: { name: string; key: string | null; authz: unknown }, args: Record<string, unknown>, lookup: OwnerLookup) => AuthzVerdict;
   /** v37 (DES-262, ARCH-181, REQ-218, ADR-083 owner_decision posture C): this engine's MEASURED
    *  confinement posture (src/gateway/confinement-probe.ts, set once at boot — never a config key).
@@ -119,6 +128,101 @@ const TRIGGER_SEED_KEYS = ['seed', 'seedManifest', 'seedManifestRef', 'seedRef']
 
 function refusalEnvelope(code: ErrorCode, message: string, detail?: Record<string, unknown>): Record<string, unknown> {
   return { runId: '', status: 'failed', code, error: { code, message, ...(detail ? { detail } : {}) } };
+}
+
+// Issue #116 (OWNER DECISION a): the two tool families whose GENUINE `*_NOT_FOUND` answer does
+// NOT use `refusalEnvelope`'s own generic shape (`{runId:'', status:'failed', code, error}`) —
+// `workflow_deregister`/`workflow_publish` DO use that exact shape already (verified against
+// mcp-facade.ts), so a masked verdict for THEM needs no special envelope at all; these two families
+// do, or the masked response would carry a tell (`runId:''` instead of the real id, or an extra
+// top-level `code` key the real handler never sets) that the real not-found answer does not.
+const MASKED_BARE_ENVELOPE = new Set(['issue_report', 'schedule_delete', 'schedule_setEnabled', 'webhook_delete']);
+// Review round 6 finding 1: `workspace_pull` and `workspace_list` (run mode) join this set —
+// their genuine not-found ALSO travels through mcp-facade.ts's shared `notFound()`, the exact same
+// bare `{runId, status:'failed', error:{code,message}}` shape this set already builds.
+const MASKED_RUN_ENVELOPE = new Set(['run_status', 'run_result', 'run_suspend', 'run_resume', 'run_stop', 'workspace_pull', 'workspace_list']);
+// Review round 6 finding 1: `workspace_delete` (run mode)'s genuine not-found is thrown via
+// `codedError`/caught by the handler's own try/catch and travels through `toErrEnvelope()` — the
+// SAME family `workflow_publish` is in (both attach `error.see` and a top-level `code`, which the
+// generic `refusalEnvelope` does not).
+// 4th repair round (issue #116 defect 1): `workspace_push` joins this set — its genuine asset-mode
+// WORKFLOW_NOT_FOUND is thrown via `codedError`/caught by its own try/catch and travels through
+// `toErrEnvelope()` too (mcp-facade.ts's `workspacePush` catch arm), carrying `error.see:null` the
+// same way `workflow_publish`/`workspace_delete` do — this masked envelope used to fall all the way
+// through to the generic `refusalEnvelope`, which never attaches `see` at all.
+const MASKED_ERR_ENVELOPE = new Set(['workspace_delete', 'workflow_publish', 'workspace_push']);
+
+/** Issue #116: builds the masked refusal in the SAME shape that tool's own genuine `*_NOT_FOUND`
+ *  answer uses (mcp-facade.ts's shared `notFound()` for the run family — real `runId`, no
+ *  top-level `code`; `run_agent_log`'s own three extra always-present fields; the bare `{error}`
+ *  tool-by-tool pass-throughs for issue_report/schedule/webhook; the `toErrEnvelope()` family,
+ *  below). Returns `undefined` for a tool `refusalEnvelope` already matches byte-for-byte
+ *  (workflow_deregister only) or that authz.ts never masks for (notFoundTemplate's own documented
+ *  scope) — the caller falls back to the generic `refusalEnvelope`, which is correct there.
+ *
+ *  Verified against the REAL handlers (not just read from source), one call per tool, e.g.:
+ *    workflow_publish: {"runId":"","status":"failed","code":"WORKFLOW_NOT_FOUND","error":
+ *      {"code":"WORKFLOW_NOT_FOUND","message":"Workflow not found in catalog: x","see":null}}
+ *  — `workflow_publish`'s genuine not-found is thrown as a `CatalogNotFoundError` and travels
+ *  through `toErrEnvelope()` (`mcp-facade.ts`'s `workflowPublish` catch arm), which — UNLIKE every
+ *  other tool here — always attaches `error.see` (`null` for this code's catalog entry). Built via
+ *  `toErrEnvelope(codedError(code, message))` itself (not hand-typed `see: null`), so byte-identity
+ *  holds by CONSTRUCTION — a future `ERROR_CATALOG` edit to this code's `see` pointer can never
+ *  silently reopen the tell `workspace_delete`/`workspace_purge`/`workspace_push` join the same
+ *  way for. */
+function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, code: ErrorCode, message: string): Record<string, unknown> | undefined {
+  if (MASKED_BARE_ENVELOPE.has(toolName)) return { error: { code, message } };
+  // 4th repair round (issue #116 defect 1): `workspace_list`/`workspace_delete`'s own `workflow`
+  // mode (and `workspace_push`'s own `asset` mode) have NO `runId` in `args` at all — a bare
+  // `args['runId']` left this `undefined`, which JSON.stringify DROPS the key for entirely, while
+  // every genuine not-found arm for these tools always sets the literal `''` (mcp-facade.ts: `{
+  // runId: '' }` directly, or `{ runId: a.runId ?? '' }` in the catch-arm family below) — an
+  // existence oracle (a masked workflow-mode refusal was missing a `runId` key the genuine answer
+  // always carries). `?? ''` here matches that convention for every tool in this function,
+  // including the run-mode ones (whose `runId` is always a required, present argument, so this is
+  // a no-op for them).
+  const runId = (args['runId'] as string | undefined) ?? '';
+  if (MASKED_RUN_ENVELOPE.has(toolName)) return { runId, status: 'failed', error: { code, message } };
+  if (toolName === 'run_agent_log') return { runId, status: 'failed', error: { code, message }, harness: null, events: [], hasMore: false };
+  // `workspace_purge`'s own catch arm (mcp-facade.ts) carries `error.see` via `toErrEnvelope()`
+  // but — UNLIKE `workspace_delete`/`workflow_publish`/`workspace_push` — NO top-level `code` key.
+  if (toolName === 'workspace_purge') return { runId, status: 'failed', error: toErrEnvelope(codedError(code, message)) };
+  if (MASKED_ERR_ENVELOPE.has(toolName)) {
+    const e = toErrEnvelope(codedError(code, message));
+    // `workspace_delete`'s genuine catch arm is `{ runId: a.runId ?? '' }` — the REAL runId in run
+    // mode, `''` in workflow mode (`a.runId` is `undefined` there). `workflow_publish`/
+    // `workspace_push` never carry a real runId at all in ANY mode — their genuine catch arm is
+    // always `{ runId: '' }` outright.
+    const envelopeRunId = toolName === 'workspace_delete' ? runId : '';
+    return { runId: envelopeRunId, status: 'failed', code: e.code, error: e };
+  }
+  return undefined;
+}
+
+/** Issue #116 (OWNER DECISION b): classifies + audits via the shared `authz-refusal.ts` (server.ts's
+ *  dashboard `allowed()` uses the SAME function, so the masking/audit rule cannot drift between the
+ *  two surfaces), then shapes THIS transport's own envelope: stamps `detail.requestId` on an
+ *  UNMASKED refusal here directly, or (decision a) leaves the body byte-identical to that tool's
+ *  genuine `*_NOT_FOUND` answer on a masked one, unstamped — `callTool`'s own caller stamps a
+ *  requestId on THAT side too, uniformly with the genuine miss, via `stampRequestId` below (review
+ *  round 6 finding 3), so neither side's presence/absence of a requestId is itself a tell. */
+function buildRefusalEnvelope(
+  deps: Pick<ToolDeps, 'refusalAudit'>,
+  requestId: string,
+  principal: Principal,
+  spec: { name: string; key: ToolSpec['key']; authz: ToolAuthz },
+  args: Record<string, unknown>,
+  verdict: AuthzVerdict,
+): Record<string, unknown> {
+  const { code, reason, masked } = recordRefusal(deps.refusalAudit, requestId, principal, spec, args, verdict);
+  if (masked) {
+    // Issue #116 (finding 3): no requestId stamped HERE any more — `callTool`'s own caller now
+    // stamps one uniformly on both the masked and the genuine not-found answer afterward
+    // (`stampRequestId`), so this body stays exactly what it always was: the tool's OWN
+    // genuine-not-found shape, nothing added, nothing yet.
+    return maskedRefusalEnvelope(spec.name, args, code, reason) ?? refusalEnvelope(code, reason, verdict.detail);
+  }
+  return refusalEnvelope(code, reason, { ...verdict.detail, requestId });
 }
 
 /** issue #158 F1: for a property validated with `anyOf` (e.g. `budget`), ajv (even with
@@ -309,19 +413,34 @@ export async function callTool(
   const argErr = validateArgs(spec.inputSchema, a);
   if (argErr !== null) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: ${argErr}`);
 
+  // Issue #116 (finding 3): generated ONCE per call, unconditionally — the refusal branch below
+  // and the post-dispatch stamping after the switch (`stampRequestId`) share this ONE value, so a
+  // masked refusal and the templated tool's own genuine not-found answer can each carry a
+  // requestId without the PRESENCE of one telling the two apart (only the VALUE differs, same as
+  // any two distinct calls to the same tool always would).
+  const requestId = randomUUID();
   const authorize = deps.authorize ?? realAuthorize;
   const verdict = authorize(principal, spec, a, deps.lookup);
   if (!verdict.ok) {
-    return refusalEnvelope(verdict.code ?? 'FORBIDDEN_ROLE', verdict.reason ?? 'refused', verdict.detail);
+    // Issue #116 (OWNER DECISIONS a+b): one audit row + (for an unmasked refusal) a requestId
+    // echoed on the envelope — see buildRefusalEnvelope's own doc for why a MASKED refusal's
+    // envelope needs no requestId added HERE (stampRequestId adds it uniformly below, same as the
+    // genuine not-found path).
+    return stampRequestId(spec.name, buildRefusalEnvelope(deps, requestId, principal, spec, a, verdict), requestId);
   }
   const crossPrincipalRead = verdict.crossPrincipalRead === true;
   // `auth-disabled` carries no actor id — DES-151's audited handlers must never write a row for it.
   const actor = principal.kind === 'auth-disabled' || principal.kind === 'loopback-exempt' ? null : principal.id;
 
   const { facade } = deps;
+  // Issue #116 (finding 3): the switch body is BYTE-IDENTICAL to before — wrapped in one IIFE so
+  // every case's `return` lands in `raw` instead of exiting `callTool` directly, letting the ONE
+  // `stampRequestId` call below cover every tool without editing each case arm (editing 16+ arms
+  // by hand is exactly the kind of parallel-list drift this fix elsewhere avoids).
+  const raw = await (async (): Promise<unknown> => {
   switch (spec.name) {
     // ---- workflow (7) ----
-    case 'workflow_register': return facade.workflowRegister(a as never, principal, deps.isRemoteSubmission === true);
+    case 'workflow_register': return facade.workflowRegister(a as never, principal, deps.isRemoteSubmission === true, requestId);
     case 'workflow_deregister': return facade.workflowDeregister(a as never, principal);
     case 'workflow_publish': return facade.workflowPublish(a as never, principal);
     case 'workflow_describe': return facade.workflowDescribe(a as never, principal, deps.isRemoteSubmission === true);
@@ -557,6 +676,28 @@ export async function callTool(
       if (!out.ok) return refusalEnvelope(out.code, out.reason);
       return { runId: '', status: 'completed', result: out.entry };
     }
+    // Issue #116 (OWNER DECISION b): admin-only query over the refusal audit trail.
+    case 'audit_refusals_list': {
+      if (!deps.refusalAudit) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the refusal audit store is not wired on this engine');
+      // Independent-verifier finding (2026-10-10, reverify-r6-b): both RunStore implementations'
+      // `queryRefusals` compare `since` LEXICOGRAPHICALLY against Z-suffixed `toISOString()` rows
+      // — an offset-form timestamp (e.g. `+08:00`) sorts after a same-instant `Z` row and silently
+      // drops it. Normalized HERE, once, at the tool boundary, to the Z-form every stored row
+      // already uses — never a second lexicographic convention invented in either store.
+      let sinceNormalized: string | undefined;
+      if (typeof a['since'] === 'string') {
+        const t = Date.parse(a['since'] as string);
+        if (Number.isNaN(t)) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: since is not a parseable ISO-8601 timestamp: ${a['since'] as string}`);
+        sinceNormalized = new Date(t).toISOString();
+      }
+      const filter = {
+        ...(typeof a['actor'] === 'string' ? { actor: a['actor'] as string } : {}),
+        ...(typeof a['tool'] === 'string' ? { tool: a['tool'] as string } : {}),
+        ...(sinceNormalized !== undefined ? { since: sinceNormalized } : {}),
+        ...(typeof a['limit'] === 'number' ? { limit: a['limit'] as number } : {}),
+      };
+      return { runId: '', status: 'completed', result: deps.refusalAudit.queryRefusals(filter) };
+    }
 
     // ---- service accounts (6) — owner decision 2026-10-03 ----
     case 'service_account_create': {
@@ -619,4 +760,77 @@ export async function callTool(
       return unknownTool(name);
     }
   }
+  })();
+  // Issue #116 (finding 2 residual): `workflow_register`'s own trigger-claim ownership gate is
+  // masked at ITS throw site (mcp-facade.ts, same `codedError`->`toErrEnvelope` path as a genuine
+  // miss, so no requestId work needed here for that one) — but the catalog's workflow-NAME
+  // ownership gate (workflow-catalog.ts's `validateRegistration`/`insertVersion`) is a SEPARATE
+  // check this tool's own `authorize()` row (`ownership:'none'`) never sees, so it never passed
+  // through `buildRefusalEnvelope`'s audit write at all — reachable over the wire (a taken name)
+  // and, before this, never audited. No masking here: there is no `*_NOT_FOUND` sibling to mask
+  // TOWARD for a brand-new name (decision a's own stated scope) — this is audited UNMASKED, one
+  // row, with the SAME requestId echoed on the response `workflow_deregister`/`workflow_publish`'s
+  // own unmasked refusals already use.
+  if (spec.name === 'workflow_register') {
+    const err = (raw as { error?: { code?: string; message?: string } } | null)?.error;
+    if (err?.code === 'NOT_WORKFLOW_OWNER') {
+      recordRefusal(deps.refusalAudit, requestId, principal, spec, a, { ok: false, code: 'NOT_WORKFLOW_OWNER', internalReason: 'NOT_WORKFLOW_OWNER', reason: err.message ?? 'NOT_WORKFLOW_OWNER' });
+      return withRequestIdOnError(raw as Record<string, unknown>, requestId);
+    }
+  }
+  return stampRequestId(spec.name, raw, requestId);
+}
+
+/** Issue #116 (finding 3): adds `error.detail.requestId` to an envelope that already has an
+ *  `error` key, preserving any `detail` it already carries. Shared by the unconditional
+ *  `workflow_register` NOT_WORKFLOW_OWNER stamp above and `stampRequestId` below. */
+function withRequestIdOnError(result: Record<string, unknown>, requestId: string): Record<string, unknown> {
+  const err = result['error'] as Record<string, unknown> | undefined;
+  if (!err) return result;
+  return { ...result, error: { ...err, detail: { ...(err['detail'] as Record<string, unknown> | undefined), requestId } } };
+}
+
+// Issue #116 (finding 3): derived from `authz.ts`'s OWN `notFoundTemplate` — called once per
+// TOOL_SPECS row per possible ownerCode — so the requestId-stamp set is EXACTLY the masked-response
+// set `notFoundTemplate` itself defines, never a second hand-maintained list that can drift from
+// it. Module-load-time, not per-call: `TOOL_SPECS` is a fixed, already-imported array.
+//
+// Reverify round-6 finding 5's own trap: a tool can now be templated under MORE THAN ONE ownerCode
+// (`workspace_list`/`workspace_delete` are templated under BOTH `NOT_RUN_OWNER` -> `RUN_NOT_FOUND`
+// AND, since that finding, `NOT_WORKFLOW_OWNER` -> `WORKFLOW_NOT_FOUND`). A `Map<string,
+// ErrorCode>` built by "first ownerCode that matches wins" would silently drop every code after
+// the first — `workspace_list`'s workflow-mode masked response would then NEVER get a requestId,
+// a silent decision-b regression nothing else would catch (decision a's byte-identity still holds
+// either way, since both masked and genuine arms would equally lack one — only the TRACE is lost).
+// `Set<ErrorCode>` per tool name closes that: every ownerCode's template is collected, not just
+// the first.
+const NOT_FOUND_STAMP_CODES: ReadonlyMap<string, ReadonlySet<ErrorCode>> = new Map(
+  TOOL_SPECS.map((s): readonly [string, ReadonlySet<ErrorCode>] | undefined => {
+    const codes = new Set<ErrorCode>();
+    for (const ownerCode of ['NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'NOT_TRIGGER_OWNER'] as const satisfies readonly AuthzErrorCode[]) {
+      const t = notFoundTemplate(s.name, '', ownerCode);
+      if (t) codes.add(t.code);
+    }
+    return codes.size > 0 ? [s.name, codes] as const : undefined;
+  }).filter((e): e is readonly [string, ReadonlySet<ErrorCode>] => e !== undefined),
+);
+
+/** Issue #116 (decision a+b, finding 3; reverify round-6 finding 5): stamps `error.detail.requestId`
+ *  on a templated tool's NOT_FOUND-family response — a MASKED refusal or the GENUINE miss alike
+ *  (`NOT_FOUND_STAMP_CODES` is derived from the SAME `notFoundTemplate` decision a's masking
+ *  already uses) — so the two stay byte-identical in SHAPE (both now carry a requestId; the VALUES
+ *  differ per call, same as any two calls to the same tool always would) while the masked side
+ *  gains the trace decision b promises (previously it carried none at all, "left untouched" by
+ *  design, which meant a masked refusal had no way to be traced back to its own audit row). An
+ *  admin tracing a caller's report: a presented requestId that MATCHES a row in
+ *  `audit_refusals_list` is the masked case; a requestId that matches no row is the genuine miss
+ *  (which never gets a row — see `audit_refusals_list`'s own description). Any OTHER error on the
+ *  same tool (e.g. workspace_pull's WORKSPACE_ESCAPE) is untouched; so is a success response. */
+function stampRequestId(toolName: string, result: unknown, requestId: string): unknown {
+  const expected = NOT_FOUND_STAMP_CODES.get(toolName);
+  if (expected === undefined || !result || typeof result !== 'object') return result;
+  const r = result as Record<string, unknown>;
+  const err = r['error'] as { code?: string } | undefined;
+  if (!err || err.code === undefined || !expected.has(err.code as ErrorCode)) return result;
+  return withRequestIdOnError(r, requestId);
 }

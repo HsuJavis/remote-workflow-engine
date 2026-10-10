@@ -832,7 +832,7 @@ claims 檢查與 `auth-service.ts` 的 scope），不是改 `rwe.config.json` �
 
 - 同一個人若未來改用別的身分登入（換 IdP、換公司 email、identity provider 換了 `sub`/UPN 格式），
   他原本名下的每一筆資源都會變成「擁有者是一個再也登入不進來的字串」——非擁有者、非 admin 誰都碰
-  不到（`NOT_WORKFLOW_OWNER`/`NOT_RUN_OWNER` 之類的擁有權拒絕，見「角色」一節），個人配額/角色覆寫
+  不到（非 admin 收到的是和「不存在」相同的 *_NOT_FOUND，見「角色」一節），個人配額/角色覆寫
   也不會跟著生效到新身分上。
 - **搬家（§7）或換身分系統時，必須先做「identity remap」這一步**，二選一：(a) 讓新 IdP 簽出一模
   一樣的 email 字串（issuer 換了沒關係，字串本身不變，既有 refresh token 仍會失效但資料擁有權不受
@@ -1120,8 +1120,11 @@ expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回�
 | `admin` | `principals_list`／`principal_set_role`（查看／執行期變更角色，見下方「執行期角色管理」）、`principal_set_quota`、`service_account_create`／`_list`／`_update`／`_rotate_secret`／`_revoke_secret`／`_delete`、dashboard 的「管理」分頁、`models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
-角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
-`NOT_RUN_OWNER`／`NOT_TRIGGER_OWNER`）：有 `author` 角色不代表能動別人的工作流程。
+角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查：有 `author` 角色不代表能動別人的工作流程。
+非 admin 碰到別人的 run／trigger／workflow 時，回應與「不存在」完全相同（`RUN_NOT_FOUND`／
+`TRIGGER_NOT_FOUND`／`WORKFLOW_NOT_FOUND`，issue #116），無法用錯誤碼探測 id 是否存在；真正的原因
+（例如擁有權不符）只記在稽核表 `authz_refusals`，回應帶的 `requestId` 可對到那一筆，admin 用
+`audit_refusals_list` 查詢。
 
 ⚠ **啟用 auth 卻沒設定 `principals` 的話，沒有人能用任何東西。** 這是刻意的 fail-closed
 （2026-09-30 owner decision，取代 ADR-028 的 `user` 預設）：`auth.enabled:true` 時每個已驗證但未列名
@@ -1184,8 +1187,8 @@ expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回�
   免登入，但身分是「無人」（`loopback-exempt`）——只看得到系統／模型／issues／工作流程（非擁有者視角），
   任何 run 頁面與管理分頁回 `PRINCIPAL_REQUIRED`。`bind:127.0.0.1` 時沒有豁免，本機也要登入（或帶 bearer）。
 - **每位使用者看到的資料＝對應 MCP 工具會給他的**（同一個授權判斷，不可能不一致）：run 列表／首頁卡片／
-  成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則 403
-  `NOT_RUN_OWNER`，admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
+  成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則回與「不存在」
+  相同的 404 並帶 `requestId`，拒絕記進稽核；admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
   （beta／草稿版本不列、describe/diagram 回 404）；系統、模型、issues 任何有角色（`user` 以上）的登入者可看（`none` 待核准者什麼都看不到）。
 - **CSRF**：會改東西的 dashboard 請求（登出、改角色）必須同源——`Origin` 的 host 等於請求的 `Host`
   或引擎自己的公開網址（`publicBaseUrl`／`auth.issuer`，所以隧道改寫 `Host` 也沒關係），或帶
@@ -1879,6 +1882,8 @@ npm run start
 ## 6. 維運注意事項 / 已知限制
 
 **目前已知、會影響操作判斷的限制**（每一條都在真機上實測過）：
+
+- **`authz_refusals`／`audit_events`（SQLite，`$workRoot/store/index.db`）沒有保留策略，只會增長，不會自動清理。** `authz_refusals` 每一次授權被拒（非擁有者、角色不足、待審核帳號、workflow 不在允許清單…）寫一列；`audit_events` 每一次 admin 跨擁有者讀取寫一列。兩張表都沒有 TTL、沒有輪替、沒有封存——流量輕的部署可能幾個月都不明顯，但長期（數月到數年）持續運作的部署會持續累積，值得排進日常維運檢查。**要清理（必須先停引擎，避免清理動作與正在寫入的請求競態；下列 SQL 已在一個獨立的測試資料庫上實測過，兩張表各塞一筆舊列、一筆新列，`DELETE` 後只留新列）：** 停止引擎 → 對 `$workRoot/store/index.db` 跑一次性 SQL，例如只保留最近 90 天：`sqlite3 $workRoot/store/index.db "DELETE FROM authz_refusals WHERE ts < strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 days'); DELETE FROM audit_events WHERE ts < strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 days'); VACUUM;"` → 重新啟動引擎。這兩張表只給人工稽核/追蹤用，不是 run/workflow 本身能不能跑的依賴，刪除舊列是安全的——但 `audit_events` 會回填進 `run_status`／`GET /api/runs/:id` 回應的 `adminReads[]`（run 擁有者看「誰讀過我這個 run」的清單），所以修剪之後，擁有者會看不到被刪掉那段時間之前的 admin 跨擁有者讀取紀錄；這不影響 run 本身的功能性狀態（結果、狀態、workspace 都不受影響），純粹是這份稽核清單變短。`VACUUM` 會把刪除後騰出的磁碟空間還給檔案系統（耗時隨資料庫大小增加，建議在維護窗口做）。
 
 - **`effort` 對 OpenRouter 模型沒有作用。** 引擎會把 `effort` 換算成 thinking 預算交給 CLI，但這個值
   到不了 OpenRouter：實測攔下真正送出的請求，`low` 與 `high` 兩次的內容完全相同、也沒有

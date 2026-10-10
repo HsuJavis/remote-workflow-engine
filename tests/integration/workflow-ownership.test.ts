@@ -210,9 +210,11 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     }
   });
 
-  it('case 4: deregister by bob (non-owner) → NOT_WORKFLOW_OWNER; workflow still present', async () => {
+  // Issue #116 (decision a): workflow_deregister is templated — bob's refusal is masked to
+  // WORKFLOW_NOT_FOUND (byte-identical to an unknown name), never NOT_WORKFLOW_OWNER.
+  it('case 4: deregister by bob (non-owner) → refused, masked to WORKFLOW_NOT_FOUND; workflow still present', async () => {
     const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, bobToken);
-    expect(r.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(r.code).toBe('WORKFLOW_NOT_FOUND');
 
     const check = await callTool('workflow_source', { name: OWNER_WORKFLOW }, aliceToken);
     expect(check.error).toBeUndefined();

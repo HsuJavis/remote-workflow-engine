@@ -112,19 +112,22 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
 
   afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 
-  it('runs.principal — the owner acts, a non-owner is refused NOT_RUN_OWNER (same verdict as the fake)', () => {
+  it('runs.principal — the owner acts, a non-owner is refused RUN_NOT_FOUND (masked, issue #116 decision a) — the fake lookup agrees, and the real internalReason is still NOT_RUN_OWNER', () => {
     expect(lookup.runOwner(aliceRunId)).toBe(ALICE.id);
     expect(authorize(ALICE, RUN_STATUS, { runId: aliceRunId }, lookup).ok).toBe(true);
     const real = authorize(BOB, RUN_STATUS, { runId: aliceRunId }, lookup);
     const fake = authorize(BOB, RUN_STATUS, { runId: aliceRunId }, fakeLookup({ runOwner: () => ALICE.id }));
     expect(real.ok).toBe(false);
-    expect(real.code).toBe('NOT_RUN_OWNER');
+    expect(real.code).toBe('RUN_NOT_FOUND');
+    expect(real.internalReason).toBe('NOT_RUN_OWNER');
     expect(real.code).toBe(fake.code);
   });
 
-  it('runs.principal NULL (pre-v15 row) is admin-only, and an absent runId never leaks existence', () => {
+  it('runs.principal NULL (pre-v15 row) is admin-only (masked to RUN_NOT_FOUND for a non-admin, issue #116), and an absent runId never leaks existence', () => {
     expect(lookup.runOwner(legacyRunId)).toBeNull();
-    expect(authorize(ALICE, RUN_STATUS, { runId: legacyRunId }, lookup).code).toBe('NOT_RUN_OWNER');
+    const refused = authorize(ALICE, RUN_STATUS, { runId: legacyRunId }, lookup);
+    expect(refused.code).toBe('RUN_NOT_FOUND');
+    expect(refused.internalReason).toBe('NOT_RUN_OWNER');
     expect(authorize(ADMIN, RUN_STATUS, { runId: legacyRunId }, lookup).ok).toBe(true);
     expect(lookup.runOwner('00000000-0000-0000-0000-000000000000')).toBeUndefined();
     expect(authorize(BOB, RUN_STATUS, { runId: '00000000-0000-0000-0000-000000000000' }, lookup).ok).toBe(true);
@@ -136,19 +139,21 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
     expect(verdict.crossPrincipalRead).toBe(true);
   });
 
-  it('workflows.owner — the owner acts, a non-owner is refused NOT_WORKFLOW_OWNER', () => {
+  it('workflows.owner — the owner acts, a non-owner is refused WORKFLOW_NOT_FOUND (masked, issue #116 decision a)', () => {
     expect(lookup.workflowOwner('wf-a')).toBe(ALICE.id);
     expect(authorize(ALICE, WORKFLOW_DEREGISTER, { name: 'wf-a' }, lookup).ok).toBe(true);
     const real = authorize(BOB, WORKFLOW_DEREGISTER, { name: 'wf-a' }, lookup);
-    expect(real.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(real.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(real.internalReason).toBe('NOT_WORKFLOW_OWNER');
     expect(real.code).toBe(authorize(BOB, WORKFLOW_DEREGISTER, { name: 'wf-a' }, fakeLookup({ workflowOwner: () => ALICE.id })).code);
   });
 
-  it('schedules.createdBy — the creator of an UNCLAIMED schedule may delete it', () => {
+  it('schedules.createdBy — the creator of an UNCLAIMED schedule may delete it; a non-owner is masked to TRIGGER_NOT_FOUND (issue #116 decision a)', () => {
     expect(lookup.triggerOwner(aliceScheduleId)).toBe(ALICE.id);
     expect(authorize(ALICE, SCHEDULE_DELETE, { id: aliceScheduleId }, lookup).ok).toBe(true);
     const real = authorize(BOB, SCHEDULE_DELETE, { id: aliceScheduleId }, lookup);
-    expect(real.code).toBe('NOT_TRIGGER_OWNER');
+    expect(real.code).toBe('TRIGGER_NOT_FOUND');
+    expect(real.internalReason).toBe('NOT_TRIGGER_OWNER');
     expect(real.code).toBe(authorize(BOB, SCHEDULE_DELETE, { id: aliceScheduleId }, fakeLookup({ triggerOwner: () => ALICE.id })).code);
   });
 
@@ -167,31 +172,41 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
   // against the real store — DES-139's subject rule is `args[spec.key]`.
   const realSpec = (name: string) => TOOL_SPECS.find((s) => s.name === name)! as unknown as { name: string; key: 'runId' | 'name' | 'id' | null; authz: unknown };
 
-  it('workspace_list({runId}) in run mode enforces run ownership against the real store', () => {
+  // Review round 6 finding 1: workspace_list/workspace_delete's own `run` mode now joins
+  // authz.ts's templated set — a non-admin's ownership mismatch is masked to RUN_NOT_FOUND (same
+  // as run_status etc.), with the real reason surviving on `internalReason` for audit.
+  it('workspace_list({runId}) in run mode enforces run ownership against the real store, masked to RUN_NOT_FOUND', () => {
     const verdict = authorize(BOB, realSpec('workspace_list') as never, { runId: aliceRunId }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_RUN_OWNER');
+    expect(verdict.code).toBe('RUN_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_RUN_OWNER');
   });
 
-  it('workspace_delete({runId}) in run mode enforces run ownership against the real store', () => {
+  it('workspace_delete({runId}) in run mode enforces run ownership against the real store, masked to RUN_NOT_FOUND', () => {
     const verdict = authorize(BOB, realSpec('workspace_delete') as never, { runId: aliceRunId }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_RUN_OWNER');
+    expect(verdict.code).toBe('RUN_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_RUN_OWNER');
   });
 
-  it('workspace_push({workflow,kind}) in asset mode enforces workflow ownership against the real store', () => {
+  // Reverify round-6 finding 5: both of workspace_push/workspace_delete's workflow-ownership modes
+  // now join authz.ts's templated set too — masked to WORKFLOW_NOT_FOUND for a non-admin, same as
+  // workflow_deregister/workflow_publish (internalReason keeps the real NOT_WORKFLOW_OWNER for audit).
+  it('workspace_push({workflow,kind}) in asset mode enforces workflow ownership against the real store, masked to WORKFLOW_NOT_FOUND', () => {
     const verdict = authorize(BOB, realSpec('workspace_push') as never, { workflow: 'wf-a', kind: 'skill', name: 'n', files: [] }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
   });
 
   // Issue #92 part B: `workspace_delete`'s asset mode (`{workflow,kind,name}`, `deleteMode` ⇒
   // 'workflow') resolves to the SAME `ownership:'workflow'` row `workspace_push`/`workspace_list`
   // already prove above — confirming the sibling gap named in the issue is not actually open.
-  it('workspace_delete({workflow,kind,name}) in asset mode enforces workflow ownership against the real store', () => {
+  it('workspace_delete({workflow,kind,name}) in asset mode enforces workflow ownership against the real store, masked to WORKFLOW_NOT_FOUND', () => {
     const verdict = authorize(BOB, realSpec('workspace_delete') as never, { workflow: 'wf-a', kind: 'skill', name: 'n' }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
     // ...and the owner is not refused.
     expect(authorize(ALICE, realSpec('workspace_delete') as never, { workflow: 'wf-a', kind: 'skill', name: 'n' }, lookup).ok).toBe(true);
   });

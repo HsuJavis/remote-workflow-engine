@@ -126,12 +126,17 @@ describe('the parity table: every run-keyed /api route refuses exactly what its 
   ];
 
   for (const row of ROUTES) {
-    it(`${row.route(':runId')} vs ${row.tool}: bob on alice's run -> refused with the tool's own code`, async () => {
+    // Issue #116 (decision a): this row IS the oracle the issue names — bob's non-owner refusal
+    // used to come back 403/NOT_RUN_OWNER while an unknown runId came back 404, letting bob learn
+    // "this run exists" just from the status code. Both are now masked to RUN_NOT_FOUND/404,
+    // indistinguishable from each other — see the very next `it` in this file.
+    it(`${row.route(':runId')} vs ${row.tool}: bob on alice's run -> refused, masked to RUN_NOT_FOUND/404 (same as an unknown run)`, async () => {
       const viaMcp = await mcp(row.tool, row.args(aliceRun), BOB);
-      expect(codeOf(viaMcp)).toBe('NOT_RUN_OWNER');
+      expect(viaMcp['code']).toBeUndefined(); // masked envelope carries no top-level `code`
+      expect(codeOf(viaMcp)).toBe('RUN_NOT_FOUND'); // codeOf() falls back to error.code
       const r = await api(row.route(aliceRun), BOB);
-      expect(r.status).toBe(403);
-      expect(r.body.code).toBe('NOT_RUN_OWNER');
+      expect(r.status).toBe(404);
+      expect(r.body.code).toBeUndefined();
       expect(JSON.stringify(r.body)).not.toContain('v1');
     });
 
@@ -141,9 +146,39 @@ describe('the parity table: every run-keyed /api route refuses exactly what its 
       expect(r.status).not.toBe(403);
     });
 
-    it(`${row.route(':runId')}: an unknown run is 404, not 403 (no existence leak through authz)`, async () => {
-      const r = await api(row.route('00000000-0000-0000-0000-000000000000'), BOB);
-      expect(r.status).toBe(404);
+    // Issue #116 (decision a): not just "both 404" (checked above) — the BODY itself must be
+    // byte-identical (apart from the runId each response names), on THIS route's own genuine
+    // not-found producer (each of the three routes below builds its 404 body differently —
+    // `sendJson(res,404,{error:...})` inline for `/dag`/the bare route, `shaped.error.message` for
+    // `/agents/:id` — so this is checked per-route, not assumed from one of them).
+    it(`${row.route(':runId')}: an unknown run's body is byte-identical to bob's non-owner body on alice's run (apart from the runId)`, async () => {
+      const nonOwner = await api(row.route(aliceRun), BOB);
+      const missing = await api(row.route('00000000-0000-0000-0000-000000000000'), BOB);
+      expect(missing.status).toBe(404);
+      expect(Object.keys(nonOwner.body).sort()).toEqual(Object.keys(missing.body).sort());
+      expect(nonOwner.body.error).toBe(`Run not found: ${aliceRun}`);
+      expect(missing.body.error).toBe('Run not found: 00000000-0000-0000-0000-000000000000');
+    });
+
+    // Issue #116 reverify round-6 finding 2 (decision b): a masked dashboard refusal's audit row
+    // must be traceable back to the SAME response the caller received — a requestId on the body.
+    // But stamping ONLY the masked branch would re-open decision a's own oracle (requestId
+    // PRESENT would mean "this was a refusal"), so the route's genuine not-found producer must
+    // carry one too (audit_refusals_list's own description already promises this: "the response
+    // body's own `requestId` key, for a dashboard 403/404"). The inference is in whether the
+    // requestId matches a row, not in whether the key is present at all.
+    it(`${row.route(':runId')}: both the masked refusal and the genuine miss carry a requestId; only the masked one has a matching audit_refusals_list row`, async () => {
+      const before = ((await mcp('audit_refusals_list', { tool: row.tool, actor: BOB }, ROOT))['result'] as unknown[]).length;
+      const nonOwner = await api(row.route(aliceRun), BOB);
+      const missing = await api(row.route('00000000-0000-0000-0000-000000000000'), BOB);
+      expect(typeof nonOwner.body.requestId).toBe('string');
+      expect(typeof missing.body.requestId).toBe('string');
+      expect(nonOwner.body.requestId).not.toBe(missing.body.requestId);
+      const after = (await mcp('audit_refusals_list', { tool: row.tool, actor: BOB }, ROOT))['result'] as Array<Record<string, unknown>>;
+      expect(after.length).toBe(before + 1); // the masked refusal wrote one row; the genuine miss wrote none
+      const matchingNonOwner = after.filter((r) => r['requestId'] === nonOwner.body.requestId);
+      expect(matchingNonOwner.length).toBe(1);
+      expect(after.some((r) => r['requestId'] === missing.body.requestId)).toBe(false);
     });
 
     it(`${row.route(':runId')}: admin root reads alice's run`, async () => {

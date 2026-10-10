@@ -25,6 +25,8 @@ import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { ServiceAccountStore } from '../../src/auth/service-account-store.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
+import { SystemClock } from '../../src/clock.js';
 
 let server: Server;
 let tmpDir: string;
@@ -121,4 +123,29 @@ describe('bearer per-request service-account re-check (service accounts spec)', 
     });
     expect(res.status).toBe(401);
   });
+
+  // Issue #116 (decision b, review round 6 finding 5): a bearer-layer refusal (no MCP tool
+  // dispatch at all — this happens ahead of `callTool`'s own `authorize()`) now writes an audit
+  // row too, keyed by the HTTP route (there is no tool name to key it by), with the SAME requestId
+  // echoed on the response body.
+  it('a disabled SA bearer refused on /mcp writes one audit row keyed by the route, with a requestId on the 401 body matching it', async () => {
+    const created = serviceAccounts.create({ name: 'recheck-audit-sa', role: 'user', createdBy: 'test' });
+    if (!created.ok) throw new Error('setup');
+    const token = await exchangeToken('sa:recheck-audit-sa', created.clientSecret);
+    serviceAccounts.update('recheck-audit-sa', { disabled: true }, 'test');
+
+    const refusalStore = new SqliteRunStore(join(tmpDir, 'store'), new SystemClock());
+    const before = refusalStore.queryRefusals({ tool: 'POST /mcp' }).length;
+
+    const res = await mcpCall(token, 'workflow_list', {});
+    expect(res.status).toBe(401);
+    const body = await res.json() as { code?: string; requestId?: string };
+    expect(body.code).toBe('SERVICE_ACCOUNT_DISABLED');
+    expect(typeof body.requestId).toBe('string');
+
+    const rows = refusalStore.queryRefusals({ tool: 'POST /mcp' });
+    expect(rows.length).toBe(before + 1);
+    expect(rows[0]).toMatchObject({ actor: 'sa:recheck-audit-sa', authMethod: 'service-account', tool: 'POST /mcp', targetKind: 'none', targetId: null, realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED', requestId: body.requestId });
+  });
+
 });

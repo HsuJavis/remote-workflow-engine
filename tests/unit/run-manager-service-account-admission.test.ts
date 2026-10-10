@@ -185,3 +185,115 @@ describe('RunManager.resume() re-checks sa: liveness/allowlist on every resume (
     await expect(mgr.resume(runId)).rejects.toThrow(/Illegal state transition/);
   });
 });
+
+// Independent-verifier finding (2026-10-10, reverify-r6-b): decision b requires EVERY
+// authorization refusal to be audited — this gate's two codes (SERVICE_ACCOUNT_DISABLED,
+// WORKFLOW_NOT_ALLOWED) wrote no row at all, on the TWO paths that never reach authorize() in the
+// first place (a bearer-less schedule/webhook trigger firing calling start() directly, and a
+// resumed run re-checked on every resume) — `audit_refusals_list({actor:'sa:<name>'})` showed
+// nothing for a refusal that, for the SAME account's bearer-carrying POST /mcp, does get a row.
+describe('RunManager service-account admission refusals are audited (issue #116 decision b, reverify-r6-b finding 4)', () => {
+  let workRoot: string;
+  beforeEach(() => { workRoot = mkdtempSync(join(tmpdir(), 'rwe-sa-audit-')); });
+  afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
+
+  it('start(): a disabled account writes exactly one audit row, whose requestId matches the thrown error.detail.requestId', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'demo', `return 1;`);
+    const store = new InMemoryRunStore(CLOCK);
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: () => ({ live: false }),
+    });
+    let thrown: { code?: string; detail?: { requestId?: string } } | undefined;
+    try {
+      await mgr.start({ name: 'demo', origin: 'local', principal: 'sa:ci-bot' });
+    } catch (err) { thrown = err as typeof thrown; }
+    expect(thrown?.code).toBe('SERVICE_ACCOUNT_DISABLED');
+    expect(typeof thrown?.detail?.requestId).toBe('string');
+    const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({
+      actor: 'sa:ci-bot', authMethod: 'service-account', tool: 'run_start', targetKind: 'workflow', targetId: 'demo',
+      realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED',
+      requestId: thrown?.detail?.requestId,
+    });
+  });
+
+  it('start(): a live account outside its allowlist also writes a row (WORKFLOW_NOT_ALLOWED)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'demo', `return 1;`);
+    const store = new InMemoryRunStore(CLOCK);
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: () => ({ live: true, workflows: ['other'] }),
+    });
+    await expect(mgr.start({ name: 'demo', origin: 'local', principal: 'sa:ci-bot' })).rejects.toMatchObject({ code: 'WORKFLOW_NOT_ALLOWED' });
+    const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ tool: 'run_start', targetKind: 'workflow', targetId: 'demo', realReason: 'WORKFLOW_NOT_ALLOWED', returnedCode: 'WORKFLOW_NOT_ALLOWED' });
+  });
+
+  it('resume(): the disabled-mid-flight refusal (the one real MCP-reachable chokepoint — run_resume skips authorize()\'s allowlist) also writes a row', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    let live = true;
+    const store = new InMemoryRunStore(CLOCK);
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: (p) => (p === 'sa:ci-bot' ? { live, workflows: ['demo'] } : undefined),
+    });
+    const runId = await startScript(mgr, `phase('p'); return await agent('a', {});`, { name: 'demo', principal: 'sa:ci-bot' });
+    await mgr.suspend(runId);
+    const before = store.queryRefusals({ actor: 'sa:ci-bot' }).length;
+    live = false;
+    await expect(mgr.resume(runId)).rejects.toMatchObject({ code: 'SERVICE_ACCOUNT_DISABLED' });
+    const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
+    expect(rows.length).toBe(before + 1);
+    expect(rows[0]).toMatchObject({ tool: 'run_resume', targetKind: 'workflow', targetId: 'demo', realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED' });
+  });
+
+  it('an audit-write FAILURE still refuses with the real code — never a success, never an unrelated crash', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'demo', `return 1;`);
+    const store = new InMemoryRunStore(CLOCK);
+    store.appendRefusal = () => { throw new Error('disk full'); };
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: () => ({ live: false }),
+    });
+    await expect(mgr.start({ name: 'demo', origin: 'local', principal: 'sa:ci-bot' })).rejects.toMatchObject({ code: 'SERVICE_ACCOUNT_DISABLED' });
+  });
+
+  it('never writes a row for a human principal or an unwired serviceAccountStatus (nothing to audit)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'demo', `return 1;`);
+    const store = new InMemoryRunStore(CLOCK);
+    const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner() });
+    await mgr.start({ name: 'demo', origin: 'local', principal: 'alice@example.com' });
+    expect(store.queryRefusals().length).toBe(0);
+  });
+
+  // The THIRD call site (_handleWorkflowRequest, a nested workflow() frame): the refusal is thrown
+  // INSIDE the sandboxed script (caught by its own try/catch, same pattern
+  // nested-workflow-service-account-allowlist.test.ts uses), never a rejected start()/resume()
+  // promise — but the audit row must still be written exactly like the other two call sites.
+  it('the nested workflow() frame also writes a row (WORKFLOW_NOT_ALLOWED, outside the allowlist)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'leaf', `return 'L';`);
+    const store = new InMemoryRunStore(CLOCK);
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: (p) => (p === 'sa:ci-bot' ? { live: true, workflows: ['top'] } : undefined),
+    });
+    const runId = await startScript(
+      mgr,
+      `try { await workflow('leaf', {}); return 'unreachable'; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+      { name: 'top', principal: 'sa:ci-bot' },
+    );
+    const view = await pollUntilSettled(mgr, runId);
+    expect(view.status).toBe('completed');
+    const rows = store.queryRefusals({ actor: 'sa:ci-bot' });
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ tool: 'run_start', targetKind: 'workflow', targetId: 'leaf', realReason: 'WORKFLOW_NOT_ALLOWED', returnedCode: 'WORKFLOW_NOT_ALLOWED' });
+  });
+});

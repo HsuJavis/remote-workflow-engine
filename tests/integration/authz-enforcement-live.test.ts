@@ -98,8 +98,10 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect((await callTool('schedule_list', {}, bobToken))['result'] as unknown[]).toHaveLength(0);
 
     // The whole point of round 1's send-back: with auth ON, bob is refused and alice is not.
-    expect(codeOf(await callTool('schedule_delete', { id }, bobToken))).toBe('NOT_TRIGGER_OWNER');
-    expect(codeOf(await callTool('schedule_setEnabled', { id, enabled: false }, bobToken))).toBe('NOT_TRIGGER_OWNER');
+    // Issue #116 (decision a): schedule_delete/schedule_setEnabled are templated tools — bob's
+    // refusal is masked to TRIGGER_NOT_FOUND (byte-identical to an unknown id), never NOT_TRIGGER_OWNER.
+    expect(codeOf(await callTool('schedule_delete', { id }, bobToken))).toBe('TRIGGER_NOT_FOUND');
+    expect(codeOf(await callTool('schedule_setEnabled', { id, enabled: false }, bobToken))).toBe('TRIGGER_NOT_FOUND');
     const mine = await callTool('schedule_delete', { id }, aliceToken);
     expect(codeOf(mine)).toBeUndefined();
     expect((await callTool('schedule_list', {}, aliceToken))['result'] as unknown[]).toHaveLength(0);
@@ -112,7 +114,8 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
 
     expect((await callTool('webhook_list', {}, aliceToken))['result'] as unknown[]).toHaveLength(1);
     expect((await callTool('webhook_list', {}, bobToken))['result'] as unknown[]).toHaveLength(0);
-    expect(codeOf(await callTool('webhook_delete', { id }, bobToken))).toBe('NOT_TRIGGER_OWNER');
+    // Issue #116 (decision a): webhook_delete is templated — masked to TRIGGER_NOT_FOUND.
+    expect(codeOf(await callTool('webhook_delete', { id }, bobToken))).toBe('TRIGGER_NOT_FOUND');
     expect(codeOf(await callTool('webhook_delete', { id }, aliceToken))).toBeUndefined();
   });
 
@@ -122,13 +125,17 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(typeof runId).toBe('string');
 
     // `key: null` + `ownership:'run'` used to resolve to subject `undefined` ⇒ "does not exist" ⇒ OK.
-    expect(codeOf(await callTool('workspace_list', { runId }, bobToken))).toBe('NOT_RUN_OWNER');
-    expect(codeOf(await callTool('workspace_delete', { runId, paths: ['a.txt'] }, bobToken))).toBe('NOT_RUN_OWNER');
+    // Issue #116 (decision a, review round 6 finding 1): both now join the templated set — masked
+    // to RUN_NOT_FOUND for a non-admin, same as run_status etc.
+    expect(codeOf(await callTool('workspace_list', { runId }, bobToken))).toBe('RUN_NOT_FOUND');
+    expect(codeOf(await callTool('workspace_delete', { runId, paths: ['a.txt'] }, bobToken))).toBe('RUN_NOT_FOUND');
     // ...and the workflow-scope mode keys off `workflow`, refusing a non-owner of the WORKFLOW.
-    expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
-    expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
+    // Reverify round-6 finding 5: this mode now ALSO joins the templated set — masked to
+    // WORKFLOW_NOT_FOUND for a non-admin, same as workflow_deregister/workflow_publish.
+    expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('WORKFLOW_NOT_FOUND');
+    expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('WORKFLOW_NOT_FOUND');
     // ...and workspace_delete's own asset mode (issue #92 part B verification) is refused the same way.
-    expect(codeOf(await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
+    expect(codeOf(await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken))).toBe('WORKFLOW_NOT_FOUND');
     // The owner is not refused (the check runs, it does not simply reject everyone) — and the real
     // {deleted} answer (issue #92 part B) comes back through, not a hardcoded true, for a name that
     // was never pushed.
@@ -193,8 +200,9 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
       if (((st['result'] ?? st) as { status?: string }).status === 'completed') break;
       await new Promise((r) => setTimeout(r, 50));
     }
-    // bob (author, not the owner, not admin) is refused outright.
-    expect(codeOf(await callTool('run_result', { runId }, bobToken))).toBe('NOT_RUN_OWNER');
+    // bob (author, not the owner, not admin) is refused outright. Issue #116 (decision a):
+    // run_result is a templated tool — masked to RUN_NOT_FOUND, byte-identical to a missing run.
+    expect(codeOf(await callTool('run_result', { runId }, bobToken))).toBe('RUN_NOT_FOUND');
     // root (admin) is allowed...
     expect(codeOf(await callTool('run_result', { runId }, rootToken))).toBeUndefined();
     // ...and the owner is told about it.
@@ -296,9 +304,9 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
   // return to any author (REQ-100's own non-owner allowlist, proven by the F-4 test right below).
   // This is the refusal CHANNEL specifically: bob is told he does not own alice's workflow, not who
   // does.
-  it('a NOT_WORKFLOW_OWNER refusal over the real wire does not name the owner (issue #90)', async () => {
+  it('a workflow_deregister refusal over the real wire does not name the owner (issue #90) — and, since issue #116 decision a, is masked to WORKFLOW_NOT_FOUND rather than NOT_WORKFLOW_OWNER', async () => {
     const r = await callTool('workflow_deregister', { name: WF }, bobToken);
-    expect(codeOf(r)).toBe('NOT_WORKFLOW_OWNER');
+    expect(codeOf(r)).toBe('WORKFLOW_NOT_FOUND');
     const message = (r['error'] as { message?: string } | undefined)?.message ?? '';
     expect(message).not.toContain(ALICE);
   });

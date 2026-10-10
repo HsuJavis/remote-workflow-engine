@@ -591,6 +591,58 @@ export interface AuditEvent {
   path?: string;
 }
 
+/** Issue #116 OWNER DECISION b: every authorization refusal (non-owner, insufficient role, pending
+ *  account, disabled principal, workflow-not-allowed — whatever `authorize()`/a dashboard route/a
+ *  bearer-layer gate refuses) is appended here, separate from `AuditEvent` above (which is scoped
+ *  to an admin's cross-owner READ of an existing, owned resource — a refusal has no `owner` in
+ *  that sense, and its `runId`/`owner` NOT-NULL columns would not fit a role refusal that names no
+ *  run at all). `targetId`/`targetKind` are the caller's OWN argument (never the resource's actual
+ *  owner — same non-disclosure rule `authz.ts`'s existing refusal messages already follow).
+ *  `realReason` is the TRUE internal reason (e.g. `NOT_RUN_OWNER`, `ACCOUNT_PENDING_APPROVAL`) even
+ *  when `returnedCode` was masked to look like a `*_NOT_FOUND` code for a non-admin caller (issue
+ *  #116 decision a).
+ *
+ *  Review round 6 finding 3 (correction): a GENUINELY absent resource is NEVER recorded here —
+ *  decision b scopes this table to what `authorize()` ITSELF refuses, and a handler answering its
+ *  own genuine `*_NOT_FOUND` (the resource truly does not exist) is not an authorization refusal at
+ *  all; writing a row per missing-id lookup would also be the unbounded-growth-from-probing flood
+ *  decision b's own text warns against inventing. The two cases are told apart on the WIRE by
+ *  `audit_refusals_list` instead: a templated tool's masked refusal and its genuine not-found now
+ *  carry an IDENTICALLY-SHAPED requestId (call-tool.ts's `stampRequestId`) — a requestId an admin
+ *  finds a matching row for here is the masked case; one that matches no row is the genuine miss. */
+export interface RefusalAuditEvent {
+  ts: string;
+  requestId: string;
+  /** `null` only for `auth-disabled`/`loopback-exempt` — both already carry no actor id elsewhere
+   *  (DES-151's same convention) and in practice never reach this table: `auth-disabled` is never
+   *  refused (authz.ts short-circuits to ok:true) and `loopback-exempt` is refused by at most one
+   *  narrow tool shape. Kept nullable rather than narrowed further so a future caller kind that
+   *  genuinely has none is representable without a second migration. */
+  actor: string | null;
+  /** How `actor` authenticated, when known — e.g. `'service-account'` for an `sa:` principal.
+   *  Absent (not `null`) when the caller kind carries no such distinction. */
+  authMethod?: string;
+  tool: string;
+  targetKind: 'run' | 'workflow' | 'trigger' | 'none';
+  targetId: string | null;
+  realReason: string;
+  returnedCode: string;
+}
+
+/** Filter for the admin-only refusal query (`audit_refusals_list`). All optional; `limit` is
+ *  capped by the store (same convention as `auditFor`'s own default/cap). */
+export interface RefusalAuditFilter {
+  actor?: string;
+  tool?: string;
+  /** ISO timestamp — only rows at or after this instant. Both store implementations compare this
+   *  LEXICOGRAPHICALLY against the stored (Z-suffixed `toISOString()`) `ts` column, so a caller
+   *  passing an offset-form timestamp must have it normalized to Z-form first — `call-tool.ts`'s
+   *  `audit_refusals_list` case does this once, at the tool boundary, before reaching either store;
+   *  a direct store caller (tests, another facade) must do the same. */
+  since?: string;
+  limit?: number;
+}
+
 /** v24 (DES-152): RunStore.list()'s filter — `principal` is set by the FACADE from the caller's own
  *  id, never from caller-supplied args (a caller cannot pass `principal` directly). `limit` defaults
  *  to 50, capped at 500 by the store. */

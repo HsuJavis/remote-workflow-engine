@@ -70,19 +70,26 @@ describe('workflowRegister trigger ownership (IT-123, DES-139/DES-149 step 2)', 
     expect(scheduler.ownerOf(id)).toBe(ALICE.id);
   });
 
-  it('a NON-creator declaring someone else\'s trigger is refused NOT_TRIGGER_OWNER, and nothing is claimed', async () => {
+  // Issue #116 (decision a, review round 6 finding 2): a non-admin's ownership mismatch is masked
+  // to TRIGGER_NOT_FOUND (its sibling, same as schedule_delete/webhook_delete already mask) —
+  // closing the existence oracle this registration step would otherwise create for schedule/
+  // webhook ids. The real reason never reaches this facade-level test (it is `internalReason` on
+  // the AuthzVerdict path, not something `workflowRegister`'s own thrown error carries) — asserted
+  // against the AUDIT row instead, in a dedicated test below.
+  it('a NON-creator declaring someone else\'s trigger is refused TRIGGER_NOT_FOUND (masked), and nothing is claimed', async () => {
     const id = await newSchedule(ALICE.id);
     const res = await register('wf-bob', BOB, [id]);
     expect(res['status']).toBe('failed');
-    expect(res['code']).toBe('NOT_TRIGGER_OWNER');
+    expect(res['code']).toBe('TRIGGER_NOT_FOUND');
+    expect((res['error'] as { message?: string } | undefined)?.message).toBe(`TRIGGER_NOT_FOUND: ${id}`);
     expect(scheduler.get(id)?.claimedBy).toBeNull();
   });
 
-  it('an OWNERLESS trigger (a migrated pre-v24 row, createdBy NULL) is admin-only — DES-139\'s stated operator consequence', async () => {
+  it('an OWNERLESS trigger (a migrated pre-v24 row, createdBy NULL) is admin-only — DES-139\'s stated operator consequence; a non-admin is masked to TRIGGER_NOT_FOUND', async () => {
     const id = await newSchedule(); // no createdBy
     expect(scheduler.ownerOf(id)).toBeNull();
     const refused = await register('wf-bob', BOB, [id]);
-    expect(refused['code']).toBe('NOT_TRIGGER_OWNER');
+    expect(refused['code']).toBe('TRIGGER_NOT_FOUND');
     const allowed = await register('wf-admin', ADMIN, [id]);
     expect(allowed['status']).toBe('completed');
     expect(scheduler.get(id)?.claimedBy).toBe('wf-admin');
@@ -109,12 +116,37 @@ describe('workflowRegister trigger ownership (IT-123, DES-139/DES-149 step 2)', 
     expect(res['code']).toBe('TRIGGER_NOT_FOUND');
   });
 
-  it('the ownership check spans BOTH stores — a webhook created by alice is refused to bob', async () => {
+  it('the ownership check spans BOTH stores — a webhook created by alice is refused to bob (masked to TRIGGER_NOT_FOUND)', async () => {
     const w = await webhooks.create({ createdBy: ALICE.id });
     const id = (w as { webhookId: string }).webhookId;
     expect(webhooks.ownerOf(id)).toBe(ALICE.id);
-    expect((await register('wf-bob', BOB, [id]))['code']).toBe('NOT_TRIGGER_OWNER');
+    expect((await register('wf-bob', BOB, [id]))['code']).toBe('TRIGGER_NOT_FOUND');
     expect((await register('wf-alice', ALICE, [id]))['status']).toBe('completed');
     expect(webhooks.get(id)?.workflow).toBe('wf-alice');
+  });
+
+  // Issue #116 (decision b, review round 6 finding 2): the masked refusal above still writes one
+  // audit row with the TRUE reason — verified here against a real RunStore (InMemoryRunStore),
+  // which this file's `facade` fixture does not wire by default (its `{} as never` cast omits
+  // `store` entirely — safe, since the masked throw's `appendRefusal` call is try/catch'd and
+  // never crashes an unwired facade, as the tests above already prove indirectly).
+  it('a masked trigger-claim refusal writes one audit row with realReason NOT_TRIGGER_OWNER, requestId matching the thrown error.detail', async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const auditStore = { appendRefusal: (ev: unknown) => rows.push(ev as Record<string, unknown>), appendAudit: () => {}, auditFor: () => [] };
+    const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
+    const catalog = new WorkflowCatalog(dir, clock);
+    const auditedFacade = new McpFacade({
+      runManager: new RunManager({ clock, workRoot: dir, catalog }),
+      schedulerClaims: scheduler,
+      webhookClaims: webhooks,
+      store: auditStore,
+    } as never);
+    const id = await newSchedule(ALICE.id);
+    const res = await auditedFacade.workflowRegister({ name: 'wf-bob-audited', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, BOB);
+    expect(res['code']).toBe('TRIGGER_NOT_FOUND');
+    const requestId = (res['error'] as { detail?: { requestId?: string } } | undefined)?.detail?.requestId;
+    expect(typeof requestId).toBe('string');
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ actor: BOB.id, tool: 'workflow_register', targetKind: 'trigger', targetId: id, realReason: 'NOT_TRIGGER_OWNER', returnedCode: 'TRIGGER_NOT_FOUND', requestId });
   });
 });

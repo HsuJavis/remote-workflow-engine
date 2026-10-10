@@ -1,7 +1,7 @@
 // MCP Streamable HTTP server bootstrap (DES-001 / ARCH-001 / TASK-001).
 // Owns transport + tool registration only — no business logic (pure delegation to McpFacade).
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { gunzip, inflate } from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -66,6 +66,7 @@ import { callTool, type ToolDeps } from './call-tool.js';
 import { toPublicRunView, toPublicRunSummary } from './run-view.js';
 import { projectToolsList, ENVELOPE_NOTE, TOOL_SPECS } from './tool-specs.js';
 import { authorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
+import { recordRefusal } from './authz-refusal.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, DEFAULT_BOOT_PROBE_GRACE_MS, harnessFilteredProbeLookup, harnessFilteredProbeStore, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
@@ -430,11 +431,34 @@ async function handleDashboardRequest(
   // Spec §A: every route below first applies its MCP tool's OWN authorize() row (role + ownership,
   // tri-state: a resource that does not exist passes here and 404s downstream, exactly as the tool
   // answers *_NOT_FOUND) — a refusal is 403 with the tool's own code.
-  const allowed = (tool: string, args: Record<string, unknown>): AuthzVerdict | null => {
+  // Issue #116 (OWNER DECISIONS a+b): same classification+audit `call-tool.ts` uses for the MCP
+  // surface (`src/authz-refusal.ts`), so the masking rule and the audit row's shape cannot drift
+  // between the two. A MASKED refusal (decision a) gets the route's OWN not-found status+shape
+  // (404, `{error: message, requestId}`, no `code` key — matching every real not-found response on
+  // this dashboard, e.g. `sendJson(res, 404, {error: \`Run not found: ${runId}\`, requestId})`
+  // below) rather than the normal role-refusal 403 — a masked 403 would itself be the tell decision
+  // a exists to close.
+  // An UNMASKED refusal keeps 403 `{code, error}` plus a `requestId` for traceability (safe here:
+  // there is no sibling not-found response it must stay identical to).
+  // Issue #116 reverify round-6 finding 2 (decision b): a MASKED refusal now ALSO carries a
+  // `requestId` (previously none — "left untouched" by design, which meant it could never be
+  // traced back to the audit row `recordRefusal` writes for it) — same stampRequestId-style fix
+  // call-tool.ts already applies on the MCP surface. Stamping only this branch would re-open
+  // decision a's own oracle (requestId PRESENT would mean "this was a refusal"), so every
+  // run-keyed route's GENUINE not-found body must carry one too (see the three call sites below) —
+  // an optional `requestId` lets a caller that already generated one (so its genuine-not-found
+  // sibling can reuse it) pass it in; `allowed()` mints its own otherwise.
+  const allowed = (tool: string, args: Record<string, unknown>, requestId?: string): AuthzVerdict | null => {
     const spec = TOOL_SPECS.find((t) => t.name === tool)!;
     const verdict = authorize(principal, spec, args, viewer.lookup);
     if (verdict.ok) return verdict;
-    sendJson(res, 403, { code: verdict.code, error: verdict.reason });
+    const rid = requestId ?? randomUUID();
+    const { code, reason, masked } = recordRefusal(store, rid, principal, spec, args, verdict);
+    if (masked) {
+      sendJson(res, 404, { error: reason, requestId: rid });
+    } else {
+      sendJson(res, 403, { code, error: reason, requestId: rid });
+    }
     return null;
   };
   // The `run_list` rule (mcp-facade.ts `runListScope`): a non-admin sees only their own runs.
@@ -636,9 +660,13 @@ async function handleDashboardRequest(
     // v11 Sprint 3 (TASK-067 / DES-064): GraphPayload envelope — kind:'run' + logical layout cells.
     if (dagMatch) {
       const [, runId] = dagMatch as unknown as [string, string];
-      if (!allowed('run_status', { runId })) return;
+      // Issue #116 reverify round-6 finding 2: minted ONCE for this route and shared by both the
+      // masked-refusal arm (`allowed()`) and the genuine-miss arm just below — see `allowed()`'s
+      // own doc for why both sides need a requestId, never only one.
+      const dagRequestId = randomUUID();
+      if (!allowed('run_status', { runId }, dagRequestId)) return;
       const stored = await store.getRun(runId);
-      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}`, requestId: dagRequestId }); return; }
       const view = await runManager.status(runId).catch(() => stored);
       const spec = await store.getSpec(runId);
       // v22 (DES-114, TASK-109): the DAG skeleton derives from the run's PINNED (name, version), not
@@ -749,13 +777,16 @@ async function handleDashboardRequest(
       const offset = offsetParam > 0 ? offsetParam : undefined;
       // Spec §A: run_agent_log's own row — owner or admin; an admin's cross-principal read is
       // AUDITED exactly as the MCP tool audits it (the owner sees it in run_status.adminReads).
-      const verdict = allowed('run_agent_log', { runId });
+      // Issue #116 reverify round-6 finding 2: shared by the masked-refusal arm and the genuine
+      // AGENT_LOG_NOT_FOUND/RUN_NOT_FOUND arm below — see `allowed()`'s own doc.
+      const agentRequestId = randomUUID();
+      const verdict = allowed('run_agent_log', { runId }, agentRequestId);
       if (!verdict) return;
       const actor = principal.kind === 'auth-disabled' || principal.kind === 'loopback-exempt' ? null : principal.id;
       const shaped = await facade.runAgentLog({ runId, agentId, limit, offset }, principal, verdict.crossPrincipalRead === true, actor);
       if (shaped.error) {
         // HTTP: map typed error codes to standard { error: string } 404s (dashboard convention).
-        sendJson(res, 404, { error: shaped.error.message });
+        sendJson(res, 404, { error: shaped.error.message, requestId: agentRequestId });
         return;
       }
       sendJson(res, 200, shaped);
@@ -763,9 +794,11 @@ async function handleDashboardRequest(
     }
     if (runMatch) {
       const [, runId] = runMatch as unknown as [string, string];
-      if (!allowed('run_status', { runId })) return;
+      // Issue #116 reverify round-6 finding 2: shared with the genuine-miss arm below.
+      const runRequestId = randomUUID();
+      if (!allowed('run_status', { runId }, runRequestId)) return;
       const stored = await store.getRun(runId);
-      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}`, requestId: runRequestId }); return; }
       const view = await runManager.status(runId).catch(() => stored);
       // v24 (DES-162): `/api/runs/:id` is ungated — no identity field leaves on this route.
       sendJson(res, 200, buildDashboardModel([], toPublicRunView(view)).selected);
@@ -1157,7 +1190,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
     return {
-      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, harnessProviders: config?.harnessProviders, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
+      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, harnessProviders: config?.harnessProviders, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, refusalAudit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
       // Service accounts spec (owner decision 2026-10-03): wired unconditionally — `serviceAccounts`
       // is constructed on every boot, same lifetime as `principalAdmin` just above.
       serviceAccounts, revokeServiceAccountTokens: (principal) => authTokenStore?.revokeAllFor(principal) ?? 0,
@@ -1201,9 +1234,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     if (!principalId.startsWith('sa:')) return false;
     return !serviceAccounts.isLive(principalId.slice('sa:'.length)).live;
   }
-  function sendServiceAccountDisabled(res: ServerResponse): void {
+  // Issue #116 (decision b, finding 5): this refusal happens at the BEARER layer, ahead of
+  // `callTool`'s own `authorize()`/`recordRefusal` (there is no MCP tool dispatch for a raw
+  // upload route at all) — so it backs NO tool; `route` (e.g. `'POST /mcp'`) is what the audit
+  // row's `tool` column records instead (`audit_refusals_list`'s own description states this).
+  // The same requestId goes on the 401 body, same convention as every other refusal surface.
+  function sendServiceAccountDisabled(res: ServerResponse, principalId: string, route: string): void {
+    const requestId = randomUUID();
+    try {
+      store.appendRefusal({
+        ts: clock.isoNow(), requestId, actor: principalId, authMethod: 'service-account',
+        tool: route, targetKind: 'none', targetId: null,
+        realReason: 'SERVICE_ACCOUNT_DISABLED', returnedCode: 'SERVICE_ACCOUNT_DISABLED',
+      });
+    } catch (err) {
+      console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: route, error: err instanceof Error ? err.message : String(err) }));
+    }
     res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
-    sendJson(res, 401, { code: 'SERVICE_ACCOUNT_DISABLED', error: ERROR_CATALOG.SERVICE_ACCOUNT_DISABLED.hint });
+    sendJson(res, 401, { code: 'SERVICE_ACCOUNT_DISABLED', error: ERROR_CATALOG.SERVICE_ACCOUNT_DISABLED.hint, requestId });
   }
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
@@ -1650,14 +1698,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return originValue === `http://${host}`;
     };
     const sendToolOutcome = (out: unknown): void => {
-      const r = out as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
+      const r = out as { status?: string; code?: string; error?: { code?: string; message?: string; detail?: { requestId?: unknown } }; result?: unknown };
       if (r.status === 'failed') {
         const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
         const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' || code === 'ACCOUNT_PENDING_APPROVAL' ? 403
           : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' || code === 'SERVICE_ACCOUNT_EXISTS' || code === 'SERVICE_ACCOUNT_NAME_RETIRED' || code === 'TOO_MANY_SECRETS' ? 409
           : code === 'SERVICE_ACCOUNT_NOT_FOUND' || code === 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' ? 404
           : code === 'INVALID_ARGUMENT' ? 400 : 500;
-        sendJson(res, http, { code, error: r.error?.message ?? code });
+        // Issue #116 (decision b, finding 4): `callTool`'s own refusal envelope puts the requestId
+        // at `error.detail.requestId` — this function used to forward only `{code, error: message}`,
+        // dropping `.detail` entirely, so the dashboard admin routes' 403 carried no way to trace
+        // back to the audit row `recordRefusal` already wrote for the SAME call.
+        const requestId = typeof r.error?.detail?.requestId === 'string' ? r.error.detail.requestId : undefined;
+        sendJson(res, http, { code, error: r.error?.message ?? code, ...(requestId !== undefined ? { requestId } : {}) });
         return;
       }
       sendJson(res, 200, r.result);
@@ -1902,10 +1955,22 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // verify-j MEDIUM: the raw upload routes authenticate by bearer alone (no callTool), so they apply
       // the pending-approval rule themselves — BEFORE the body is read. The request body is left
       // unread; the connection closes after the 403 rather than draining an arbitrarily large upload.
-      const refusePending = (id: string): boolean => {
+      // Issue #116 (decision b, finding 5): same bearer-layer gap as `sendServiceAccountDisabled`
+      // — no MCP tool backs this refusal (it is ahead of `callTool` entirely), so the audit row's
+      // `tool` column holds the HTTP route, and the SAME requestId goes on the 403 body.
+      const refusePending = (id: string, route: string): boolean => {
         if (principalFor(id).kind !== 'none') return false;
+        const requestId = randomUUID();
+        try {
+          store.appendRefusal({
+            ts: clock.isoNow(), requestId, actor: id, tool: route, targetKind: 'none', targetId: null,
+            realReason: 'ACCOUNT_PENDING_APPROVAL', returnedCode: 'ACCOUNT_PENDING_APPROVAL',
+          });
+        } catch (err) {
+          console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: route, error: err instanceof Error ? err.message : String(err) }));
+        }
         res.setHeader('Connection', 'close');
-        sendJson(res, 403, { code: 'ACCOUNT_PENDING_APPROVAL', error: 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)' });
+        sendJson(res, 403, { code: 'ACCOUNT_PENDING_APPROVAL', error: 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)', requestId });
         return true;
       };
       // Owner decision 2026-10-02: refuse a quota/disk-floor violation from the DECLARED size
@@ -1919,8 +1984,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && blobMatchAuth) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
-          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
-          if (refusePending(p.principal)) return;
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /assets/blob'); return; }
+          if (refusePending(p.principal, 'POST /assets/blob')) return;
           const sha = decodeURIComponent(blobMatchAuth[1]!);
           // DES-096: principal is the namespace for authenticated uploads (server-derived, not echoed from client).
           const ns = p.principal;
@@ -1942,8 +2007,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then(async (p) => {
           if ('status' in p) { send401(); return; }
-          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
-          if (refusePending(p.principal)) return;
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /assets/manifest'); return; }
+          if (refusePending(p.principal, 'POST /assets/manifest')) return;
           // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
           const ns = p.principal;
           if (refuseNamespaceParam(req, res)) return;
@@ -1990,7 +2055,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
-          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /mcp'); return; }
           return readBodyDecoded(req).then(async (raw) => {
             let rpc: JsonRpcRequest;
             try {

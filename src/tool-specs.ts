@@ -376,10 +376,14 @@ export const TOOL_SPECS = [
     // PARAM_CONTRACT_INVALID / DEFAULTS_RETIRED), `workflow-catalog.ts` (SCAN_VIOLATION /
     // MERMAID_REQUIRED / MERMAID_INVALID / DIAGRAM_MISMATCH / VERSION_CEILING_EXCEEDED /
     // NOT_WORKFLOW_OWNER / REGISTRATION_CONFLICT) and the facade's trigger-claim step
-    // (TRIGGER_NOT_FOUND / NOT_TRIGGER_OWNER / TRIGGER_ALREADY_CLAIMED / INVALID_ARGUMENT).
+    // (TRIGGER_NOT_FOUND / TRIGGER_ALREADY_CLAIMED / INVALID_ARGUMENT).
     // REMOVED: `WORKFLOW_ALREADY_EXISTS` — re-registering an existing name is how a NEW VERSION is
     // created; the refusal for someone else's name is NOT_WORKFLOW_OWNER, and advertising a code
     // the tool cannot answer teaches a cold model to branch on something that never arrives.
+    // REMOVED (review round 6 finding 2): `NOT_TRIGGER_OWNER` — the trigger-claim step now masks a
+    // non-admin's ownership mismatch to TRIGGER_NOT_FOUND (its sibling, same as schedule_delete/
+    // schedule_setEnabled/webhook_delete already do), and admin bypasses the check entirely, so
+    // this code can no longer reach ANY caller from here (errors.ts documents the full scope).
     // `SCRIPT_INVALID` stays: it is the sandbox structural refusal `validateScriptEntry` raises.
     errors: [
       'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_MODEL', 'SCAN_VIOLATION',
@@ -404,7 +408,7 @@ export const TOOL_SPECS = [
       'AGENT_BEFORE_PHASE',
       'DIAGRAM_DIRECTION', 'LANE_MISMATCH', 'TOOLS_MISMATCH', 'EDGE_MISMATCH',
       'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
-      'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',
+      'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'TRIGGER_ALREADY_CLAIMED',
       'FORBIDDEN_ROLE',
       // Issue #91: `name` starting with the engine-reserved 'rwe-' prefix — checked before every
       // other registration step (workflow-catalog.ts's validateRegistration), for every caller.
@@ -456,7 +460,10 @@ export const TOOL_SPECS = [
     inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "Optional. Delete only this version (e.g. 'v1') instead of the whole workflow." } }, ['name']),
     outputSchema: OUT,
     errors: [
-      'WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE',
+      // Issue #116 (decision a): NOT_WORKFLOW_OWNER is NOT advertised here — authz.ts masks it to
+      // WORKFLOW_NOT_FOUND for a non-admin, and admin bypasses ownership entirely, so no caller ever
+      // receives it from this tool.
+      'WORKFLOW_NOT_FOUND', 'FORBIDDEN_ROLE',
       // v36 (DES-246, TASK-244): only reachable when `version` is supplied.
       'VERSION_NOT_FOUND', 'VERSION_PINNED_BY_CHANNEL', 'VERSION_LAST_REMAINING', 'VERSION_PINNED_BY_RUN',
     ],
@@ -505,7 +512,9 @@ export const TOOL_SPECS = [
       // publish to `beta_version` is what made this tool undriveable from its own advertisement.
     }, ['name', 'version', 'channel']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'INVALID_ARGUMENT', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
+    // Issue #116 (decision a): NOT_WORKFLOW_OWNER is masked to WORKFLOW_NOT_FOUND for a non-admin
+    // here (and admin bypasses ownership) — never advertised because it can never actually arrive.
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
     fixture: {
@@ -773,7 +782,9 @@ export const TOOL_SPECS = [
     description: "Poll a run's status; terminal states carry the final outcome. `agents[].agentKey` (issue #165) is the literal POSITIONAL label the script's `agent()` call declared — the `meta.params.agents.<key>` contract key this call actually dispatched under; `agents[].label` beside it is a SEPARATE, purely cosmetic display name (`opts.label` if the call set one, else the same positional) that two different agent() calls may share on purpose, and that can ALSO equal another call's own agentKey (agent('a',{label:'b'}) sets label='b' while a sibling agent('b', …) sets agentKey='b' too). `agentKey` is present on a LIVE record (stamped at markQueued, before dispatch) and on a restart-rebuilt record whose transcript holds a `kind:'refused'` event (that event carries its own agentKey, durably, regardless of restart) — absent, never a literal null, on a pre-#165 record AND on a restart-rebuilt record whose only event is a `kind:'usage'` one with NO preceding harness event, e.g. a pre-dispatch VALIDATION failure (an invalid `effort`, a retired `agentType`, a schema that fails to compile — these call `capture()`'s own failed branch directly, never a separate refused event) or an abort cut off before onHarness fired; `label` has the identical gap, and always did. run_agent_log's `label` argument matches `agentKey` FIRST across every agent in this array, and only falls back to `label` when no agent's `agentKey` matches — so a value that is one record's `agentKey` always resolves to THAT record even when it also collides with a DIFFERENT record's cosmetic `label` (the exact cross-field collision #165 reports). Only when two candidates match in the SAME field does array order decide: whichever comes first wins (same first-match rule issue #158 NEW documents for a plain label collision, now applied per-field). Pass `agentId` (from this array) when you need one specific agent() call site, not whichever `.find()` happens to surface. `agent()` calls that fail or time out still resolve `null` to the script, which still completes — except `reason:'aborted'` (below): that attempt is cut off by run_suspend/run_stop WHILE in flight and never resolves anything to the script at all; resuming re-dispatches a brand-new agentId from scratch, and only that replacement call's own eventual outcome resolves to the script. The aborted attempt still counts in `failedAgentCount`/`agentFailures` even though it never itself resolved — `failedAgentCount` counts those terminal non-success agents (failed/refused/aborted, PLUS a 'done' agent whose structured-output schema never conformed after every re-ask — see 'schema-exhausted' below) LIVE, before the run itself is terminal; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. When `failedAgentCount` > 0, `agentFailures` names each one: `{label, agentId, reason: 'timeout'|'error'|'aborted'|'refused'|'schema-exhausted', message, reaskCount?}` — `message` is a bounded, redacted summary of that agent's own failure detail, never a runId/principal/prompt; the CLI's stderr diagnostics are left out of it — read them with run_agent_log. `reason:'schema-exhausted'` is the ONE value whose agent record is still `state:'done'` (the gateway call itself succeeded; only the agent()'s own `schema` option never validated across every re-ask attempt, so the script received `null` instead of the parsed object) — `reaskCount` names how many re-asks it made before giving up. A terminal failure's `error.code` alone is not engine-attested — `e.name`, `e.code`, and a plain thrown/returned `{code: '...'}` object are all equally forgeable by the script — only this run's own captured refusal ledger is. The owner's response also lists any cross-principal reads of this run's workspace or logs. `warnings`, present only when non-empty, lists non-fatal per-agent harness warnings `{label, agentId, code, server, status, message}` — today `MCP_SERVER_NOT_CONNECTED`: a declared MCP server was not connected (or exposed no tools) when that agent's session started, so its tools were missing from the model's first turn; run_agent_log's harness.mcpStatus has the detail. A `running` agent's `tokens`/`costUSD` reflect only COMMITTED usage — every already-SETTLED attempt so far (a schema re-ask that failed validation and is retrying, for example) — never the CURRENTLY in-flight attempt's own live, still-streaming figure; for a single-attempt call (no re-ask in progress) that means no `tokens` at all appear until the agent itself goes terminal. The in-flight attempt's own live total is not exposed on this record at all while it is running; poll again once the agent settles, or read run_agent_log for its transcript as it streams. `agents[].tokens`/`costUSD` are populated on a FAILED agent too (not only `done`) when the gateway reported usage before the call ended — e.g. one cut short by run_suspend/run_stop, a timeout, or a terminal provider error that still reported its own total; `agents[].partial:true` marks a figure that is a LOWER BOUND (the deduped sum of streamed usage before the cutoff) rather than the provider's own finalized total — this can appear on a `done` agent too, when a retried call's final successful attempt folds in an earlier failed attempt's own lower-bound spend; either way it is also reflected in this run's own cost/token totals (run_list's usage projection) once the agent settles. On a `partial` figure, `output` specifically can undercount by an order of magnitude or more: each streamed per-turn usage snapshot it is built from is deduped and summed by `message.id`, but a turn's own `output_tokens` only reaches its true count on that turn's OWN final frame, which a cut-short call's in-flight turn never reaches — `input`/`cacheRead`/`cacheWrite` are not affected the same way and track the eventual finalized total closely ONLY when `estimated` (below) is absent — an `estimated:true` figure's `input` is a deliberate `ceil(chars/4)` floor over the dispatched text, never a measurement of what the provider actually processed. A `partial` figure is frozen the moment the agent's own state goes terminal — later provider chatter the harness subprocess emits as it finishes shutting down never revises it upward. `agents[].estimated:true` (issue #160 BUG-4), present only alongside `partial:true` and only when `failReason` is `'aborted'` (NEVER on a `'timeout'`, which still reports a genuine, un-estimated zero when nothing streamed), means this `tokens` is NOT anything a provider or harness reported at all — it is a deterministic `ceil(chars/4)` floor over the exact text that attempt dispatched (input only; `output` stays 0). The engine cannot tell a real, exact zero apart from a 'nothing reported' signal — both read as all four columns being 0 — so ANY nonzero figure from either source (the live-streamed attempt, or the gateway's own aborted result) wins and is read as `partial` with no `estimated` field; an all-zero figure from either source is replaced by the estimate. If a fire-and-forget `agent()` call the script never awaited is still `queued`/`running` the moment this run went terminal, the ENVELOPE's own `meta.warnings` (sibling to this `result`, NOT this per-agent `warnings` array above) carries `{code:'AGENT_STILL_RUNNING', message}` — its usage is not yet folded into this response; poll again once it settles, at which point the warning is gone. This tracks THIS engine process's own live records (issue #162(1) reverify-2), not a persisted fact — across an engine restart the warning simply stops appearing for that call (there is nothing left for any process to observe settling), and its usage is whatever had already been captured before the restart, final. `result.seedConfigStripped` (issue #159), present only when `run_start`'s seed genuinely dropped a `.claude/settings*.json`/`.claude/hooks/**` path before it ever reached disk (never an empty array), names which paths — this is the ONE place a seed-time strip is observable (`plantedConfigRemoved` on the FIRST dispatch's `run_agent_log` reports only paths the DISPATCH-time sweep found already on disk, a different mechanism); persisted with the run's terminal snapshot, so it survives an engine restart once the run has gone terminal.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a): NOT_RUN_OWNER is masked to RUN_NOT_FOUND for a non-admin here (and
+    // admin bypasses ownership) — never advertised because it can never actually arrive.
+    errors: ['RUN_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: { happy: { runId: ref('terminalRunId') }, errors: { RUN_NOT_FOUND: { runId: ABSENT_ID } } },
@@ -794,7 +805,8 @@ export const TOOL_SPECS = [
     // issue #160 BUG-1: RUN_STOPPED joins RUN_NOT_TERMINAL — a stopped run is terminal (unlike a
     // genuinely live one) but carries no script result, so it gets its own typed code rather than
     // either RUN_NOT_TERMINAL (wrong: it IS terminal) or a silent RUN_FAILED.
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'RUN_STOPPED', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
+    // Issue #116 (decision a): same masking as run_status — NOT_RUN_OWNER never reaches the wire.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'RUN_STOPPED', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     // Gate 6.5+7 round 2 (verifier): `adminCrossRead` was MISSING here while DES-151 states in so
     // many words that "`run_result` is added to the audited set" and `AuditAction` names it. Without
@@ -818,7 +830,8 @@ export const TOOL_SPECS = [
     description: 'Suspend a running run, so it can be continued later with run_resume.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a): same masking as run_status — NOT_RUN_OWNER never reaches the wire.
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {
@@ -848,7 +861,8 @@ export const TOOL_SPECS = [
     // rule added after this run's pinned (or legacy-substituted) version was registered is
     // re-checked on every resume, not only at a fresh run_start; see run_start's own errors row for
     // the full NOT_RUNNABLE contract.
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'NOT_RUNNABLE', 'PARAM_SECRET_UNAVAILABLE', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    // Issue #116 (decision a): same masking as run_status — NOT_RUN_OWNER never reaches the wire.
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'NOT_RUNNABLE', 'PARAM_SECRET_UNAVAILABLE', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {
@@ -865,7 +879,8 @@ export const TOOL_SPECS = [
     description: 'Stop a run permanently — a terminal state; the run can never be resumed. To pause a run and continue it later, use run_suspend instead.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a): same masking as run_status — NOT_RUN_OWNER never reaches the wire.
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {
@@ -924,7 +939,8 @@ export const TOOL_SPECS = [
       anyOf: [{ required: ['label'] }, { required: ['agentId'] }],
     },
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a): same masking as run_status — NOT_RUN_OWNER never reaches the wire.
+    errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run', adminCrossRead: true } as AuthzRow,
     fixture: {
@@ -1000,7 +1016,10 @@ export const TOOL_SPECS = [
     // #166 tail (low item 1, owner decision): 'INVALID_NAME' joins the list — an asset name of
     // exactly '.'/'..' now answers this code (matching workspace_delete's own refusal for the
     // identical shape), not the bare 'INVALID_ARGUMENT' it used to answer with no reason attached.
-    errors: ['INVALID_ARGUMENT', 'INVALID_NAME', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW', 'UNKNOWN_RUN_PLACEHOLDER'],
+    // REMOVED (#116 reverify round-6 finding 5): `NOT_WORKFLOW_OWNER` — this asset-mode row's
+    // ownership mismatch is masked to WORKFLOW_NOT_FOUND for a non-admin, and admin bypasses the
+    // check entirely, so this code can no longer reach ANY caller from here.
+    errors: ['INVALID_ARGUMENT', 'INVALID_NAME', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW', 'UNKNOWN_RUN_PLACEHOLDER'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
@@ -1033,7 +1052,10 @@ export const TOOL_SPECS = [
     description: "Read a byte range from a file in a run's workspace; a cross-principal read of another principal's run is audited.",
     inputSchema: schema({ runId: { type: 'string' }, path: { type: 'string' }, offset: { type: 'number' }, length: { type: 'number' } }, ['runId', 'path']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'WORKSPACE_ESCAPE', 'NOT_FOUND', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin here (and admin bypasses ownership) — never advertised because it can never
+    // actually arrive.
+    errors: ['RUN_NOT_FOUND', 'WORKSPACE_ESCAPE', 'NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run', adminCrossRead: true } as AuthzRow,
     fixture: {
@@ -1076,7 +1098,11 @@ export const TOOL_SPECS = [
     // the handler and answer an empty list rather than INVALID_ARGUMENT).
     inputSchema: schema({ runId: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string', enum: ['skill', 'mcp'] }, scope: { type: 'string', enum: ['workflow', 'global'] }, includeBody: { type: 'boolean' } }),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin in `run` mode — never advertised, same reason as workspace_pull above.
+    // Reverify round-6 finding 5: `workflow` mode's NOT_WORKFLOW_OWNER is now ALSO masked to
+    // WORKFLOW_NOT_FOUND — never advertised either, same reason.
+    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'INVALID_ARGUMENT'],
     seeAlso: [] as string[],
     authz: {
       mode: listMode,
@@ -1114,7 +1140,10 @@ export const TOOL_SPECS = [
     // v24 (integrator; adjudication #4 C-6 [21] — the found example): `withTerminalRun` really
     // throws RUN_NOT_TERMINAL on a live run and this row never said so, so a cold model could not
     // anticipate a refusal it is certain to meet. `INVALID_ARGUMENT` is the no-mode-matched branch.
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin in `run` mode — never advertised. Reverify round-6 finding 5: `workflow`
+    // mode's NOT_WORKFLOW_OWNER is now ALSO masked to WORKFLOW_NOT_FOUND — never advertised either.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: {
       mode: deleteMode,
@@ -1138,7 +1167,9 @@ export const TOOL_SPECS = [
     description: "Purge a terminated run's workspace from disk.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER'],
+    // Issue #116 (decision a, review round 6 finding 1): NOT_RUN_OWNER is masked to RUN_NOT_FOUND
+    // for a non-admin here — never advertised, same reason as workspace_pull above.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: { happy: { runId: ref('terminalRunId') }, errors: { RUN_NOT_FOUND: { runId: ABSENT_ID } } },
@@ -1206,7 +1237,9 @@ export const TOOL_SPECS = [
     description: "Delete a schedule and release its claim on the workflow name.",
     inputSchema: schema({ id: { type: 'string' } }, ['id']),
     outputSchema: OUT,
-    errors: ['TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER'],
+    // Issue #116 (decision a): NOT_TRIGGER_OWNER is masked to TRIGGER_NOT_FOUND for a non-admin
+    // (and admin bypasses ownership) — never advertised because it can never actually arrive.
+    errors: ['TRIGGER_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'trigger' } as AuthzRow,
     fixture: { happy: { id: ref('deletableScheduleId') }, errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID } } },
@@ -1216,7 +1249,8 @@ export const TOOL_SPECS = [
     description: "Enable or disable a schedule without releasing its claim.",
     inputSchema: schema({ id: { type: 'string' }, enabled: { type: 'boolean' } }, ['id', 'enabled']),
     outputSchema: OUT,
-    errors: ['TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER'],
+    // Issue #116 (decision a): same masking as schedule_delete — NOT_TRIGGER_OWNER never reaches the wire.
+    errors: ['TRIGGER_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'trigger' } as AuthzRow,
     fixture: {
@@ -1277,7 +1311,8 @@ export const TOOL_SPECS = [
     description: "Delete a webhook and release its claim on the workflow name.",
     inputSchema: schema({ id: { type: 'string' } }, ['id']),
     outputSchema: OUT,
-    errors: ['TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER'],
+    // Issue #116 (decision a): same masking as schedule_delete — NOT_TRIGGER_OWNER never reaches the wire.
+    errors: ['TRIGGER_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'trigger' } as AuthzRow,
     fixture: { happy: { id: ref('webhookId') }, errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID } } },
@@ -1294,10 +1329,11 @@ export const TOOL_SPECS = [
     // fingerprint), was undiscoverable.
     description: 'File a pre-analyzed issue against the engine. Reports are deduplicated by title+component+workflow. ' +
       // Issue #130: the ownership rule is the SAME as run_status's own — a `runId` must be the
-      // caller's own run, or the caller must be admin — refused NOT_RUN_OWNER otherwise, nothing
-      // filed; a nonexistent runId answers RUN_NOT_FOUND, the same as run_status, before any
-      // GitHub call. Omitting `runId` needs no ownership at all.
-      "A `runId` argument is checked for ownership exactly like run_status({runId}) — only the run's owner or an admin may attach it, else the whole report is refused (NOT_RUN_OWNER / RUN_NOT_FOUND) and nothing is filed. An admin attaching another principal's run is recorded in that run's audit trail (action issue_report) before anything is filed.",
+      // caller's own run, or the caller must be admin, else the whole report is refused and
+      // nothing filed. Issue #116 (decision a): a non-admin's refusal — whether the run belongs to
+      // someone else or does not exist at all — is now the SAME RUN_NOT_FOUND, before any GitHub
+      // call. Omitting `runId` needs no ownership at all.
+      "A `runId` argument is checked for ownership exactly like run_status({runId}) — only the run's owner or an admin may attach it, else the whole report is refused RUN_NOT_FOUND (a non-admin cannot tell 'not yours' from 'does not exist') and nothing is filed. An admin attaching another principal's run is recorded in that run's audit trail (action issue_report) before anything is filed.",
     inputSchema: schema({
       title: { type: 'string' },
       reproSteps: { type: 'string', description: 'How to reproduce it — required, non-empty.' },
@@ -1305,12 +1341,13 @@ export const TOOL_SPECS = [
       logs: { type: 'string' },
       severity: { type: 'string' },
       component: { type: 'string' },
-      runId: { type: 'string', description: "The run this was observed on, if any — must be the caller's own run (or caller is admin); refused NOT_RUN_OWNER/RUN_NOT_FOUND otherwise, before anything is filed." },
+      runId: { type: 'string', description: "The run this was observed on, if any — must be the caller's own run (or caller is admin); refused RUN_NOT_FOUND otherwise (issue #116 decision a: a non-admin's refusal never reveals whether the run exists), before anything is filed." },
       workflow: { type: 'string', description: 'Binds the report to a registered workflow name; adds a workflow:<name> label.' },
       version: { type: 'string', description: "The engine version, or (with `workflow`) that workflow's version." },
     }, ['title', 'reproSteps', 'analysis']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'] as ErrorCode[],
+    // Issue #116 (decision a): same masking as run_status — NOT_RUN_OWNER never reaches the wire.
+    errors: ['RUN_NOT_FOUND'] as ErrorCode[],
     seeAlso: ['run_status'],
     authz: {
       mode: issueReportMode,
@@ -1697,6 +1734,57 @@ export const TOOL_SPECS = [
         SERVICE_ACCOUNT_NOT_FOUND: { id: 'sa:no-such-service-account-fixture', limit: '1GiB' },
       },
     },
+  },
+  // Issue #116 (OWNER DECISION b): the admin-only read path over the refusal audit trail every
+  // `authorize()` refusal now writes (call-tool.ts's `recordRefusal`, server.ts's dashboard
+  // `allowed()`, plus the bearer-layer routes — review round 6 finding 5 — that refuse ahead of
+  // any tool dispatch at all). Minimal by design (owner decision text: "keep it minimal and
+  // documented") — a flat filter over one table, the same shape `auditFor`/`queryRefusals` already
+  // return, no new aggregation. `targetId` is always what the REFUSED CALLER itself named
+  // (authz.ts/call-tool.ts's existing non-disclosure convention), never the resource's actual owner.
+  {
+    name: 'audit_refusals_list', entity: 'audit', key: null,
+    description:
+      'Admin only. Query the authorization-refusal audit trail — every non-owner/insufficient-role/pending-account/disabled-principal/workflow-not-allowed refusal any MCP tool, dashboard API route, or bearer-layer upload/connect gate has returned, newest first. ' +
+      // Issue #116 (review round 6 finding 3): a templated tool's MASKED refusal now carries a
+      // requestId too (previously it carried none at all, "left untouched" by design) — so a
+      // presented requestId can no longer be read as proof the response was genuine-not-found by
+      // itself; the INFERENCE is in whether it matches a row here.
+      'Each row: ts, requestId (matches `detail.requestId` on the refused caller\'s OWN response — or the response body\'s own `requestId` key, for a dashboard 403/404 or a bearer-layer 401/403). ' +
+      'On a TEMPLATED tool (one authz.ts\'s `notFoundTemplate` masks — e.g. run_status, workspace_pull), a non-owner refusal\'s response is byte-identical to a genuinely-missing id\'s, INCLUDING a requestId on both (issue #116 decision a) — so a requestId alone does not prove which one happened; a row HERE matching that requestId does: the masked refusal always gets exactly one row, the genuine miss never does (it is not an authorization refusal at all). ' +
+      // 4th repair round (issue #116 defect 3): `tool` has a THIRD shape beyond the two already
+      // documented below (a backing MCP tool name, or a bare HTTP route for a bearer-layer
+      // refusal) — a trigger (schedule/webhook) firing, or a nested `workflow()` call from inside
+      // a running script, that is refused by a service account's own admission check
+      // (run-manager.ts's `_assertServiceAccountAdmission`) has NO MCP call behind it at all (no
+      // tools/call request, no HTTP route either — the firing/nested call is purely internal), so
+      // neither of the other two shapes fits; this row is recorded with `tool:'run_start'`, naming
+      // the OPERATION being attempted (admission for a new run) rather than any literal transport.
+      'actor (null for auth-disabled/loopback-exempt), authMethod ("service-account" when the actor authenticated as one, absent otherwise), tool (for a tool-dispatched refusal, the BACKING MCP tool name — e.g. a dashboard GET /api/runs/:id records as "run_status", never the HTTP route; for a bearer-layer refusal with no tool behind it at all — SERVICE_ACCOUNT_DISABLED/ACCOUNT_PENDING_APPROVAL on the raw upload routes and /mcp — the HTTP route itself, e.g. "POST /mcp"; for a service account\'s own trigger-firing or nested workflow() admission refusal, which has neither an MCP call nor an HTTP route behind it at all, "run_start" — the OPERATION being attempted, not a literal transport), targetKind ("run"|"workflow"|"trigger"|"none"), targetId (the id the REFUSED CALLER supplied — never the resource\'s real owner), realReason (the true internal reason, e.g. NOT_RUN_OWNER, even when the caller was shown RUN_NOT_FOUND), returnedCode (what the caller actually received). ' +
+      // 4th repair round (issue #116 defect 3): `since` is compared lexicographically against
+      // Z-suffixed `toISOString()` rows (call-tool.ts) — any offset-form value supplied here is
+      // normalized to UTC Z-form BEFORE the store ever sees it, so `+08:00`/`-05:00`/etc. all
+      // compare correctly against same-instant Z rows (an un-normalized offset-form value would
+      // otherwise sort lexicographically after a same-instant Z row and silently miss it).
+      'All filters optional: actor, tool (exact match — a route string for a bearer-layer row, a tool name otherwise; the two never collide), since (ISO-8601, inclusive — any UTC-offset form is normalized to Z-form before querying), limit (default/cap same as the rest of this engine\'s audit reads).',
+    inputSchema: {
+      ...schema({
+        actor: { type: 'string', description: 'Exact match on the refused caller\'s own id.' },
+        tool: { type: 'string', description: 'Exact match on the backing MCP tool name this refusal happened through (a dashboard route records as its backing tool, e.g. "run_status" — never the route), OR the bare HTTP route for a bearer-layer refusal with no tool behind it at all (e.g. "POST /mcp"), OR "run_start" for a service account\'s own trigger-firing/nested workflow() admission refusal (neither an MCP call nor an HTTP route).' },
+        since: { type: 'string', description: 'ISO-8601 timestamp — only rows at or after this instant. Any UTC-offset form (e.g. +08:00) is normalized to Z-form before querying.' },
+        limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Max rows to return (default 200).' },
+      }),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    // 4th repair round (issue #116 defect 3): `audit_refusals_list`'s own handler (call-tool.ts)
+    // can answer both of these — INVALID_ARGUMENT when `since` is not a parseable ISO-8601
+    // timestamp, INTERNAL_ERROR when the refusal audit store is not wired on this engine — neither
+    // was advertised, so a cold caller had no way to learn either was even possible.
+    errors: ['FORBIDDEN_ROLE', 'INVALID_ARGUMENT', 'INTERNAL_ERROR'] as ErrorCode[],
+    seeAlso: [] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: { happy: {}, errors: {} },
   },
   // ---- service accounts (6) — owner decision 2026-10-03: non-interactive full-MCP principals.
   // Admin only, ownership:'none' (one admin manages every account centrally — there is no

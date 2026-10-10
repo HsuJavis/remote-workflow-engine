@@ -49,7 +49,25 @@ export const ERROR_CATALOG = {
   PROBE_ERROR: { see: null, hint: 'system_info could not collect one or more host diagnostics; detail.rawCode carries the original signal when known' },
 
   // Ownership
+  // Issue #116 (OWNER DECISION a, 2026-10-10): on workflow_deregister/workflow_publish AND
+  // (reverify round-6 finding 5, 4th repair round) EVERY other `ownership:'workflow'`/`'asset'`
+  // tool too — workspace_list/_delete's own `workflow` mode, and workspace_push's own `asset`
+  // mode — a non-admin caller now receives WORKFLOW_NOT_FOUND instead (masked — indistinguishable
+  // from the name not existing at all); see authz.ts's `notFoundTemplate` for the exact,
+  // documented scope (it is now total over every `ownership:'workflow'`/`'asset'` row). The ONE
+  // remaining place this code still reaches the wire as-is, unmasked and audited (review round 6
+  // finding 2), is workflow-catalog.ts's OWN pre-insert ownership gate on a TAKEN name
+  // (validateRegistration/insertVersion) — that check has no `*_NOT_FOUND` sibling to mask toward
+  // at all for a brand-new name, so decision a's masking does not apply there.
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
+  // Issue #116 (OWNER DECISION a): on run_status/run_result/run_suspend/run_resume/run_stop/
+  // run_agent_log/issue_report AND (review round 6 finding 1) workspace_pull, workspace_purge,
+  // and workspace_list/workspace_delete's own `run` mode — every `ownership:'run'` tool/mode this
+  // engine has — a non-admin caller now receives RUN_NOT_FOUND instead (masked —
+  // indistinguishable from the run not existing at all). No residual gap: authz.ts's
+  // `notFoundTemplate` is total over `ownership:'run'`, so this code never reaches the wire to any
+  // non-admin caller any more (it survives only as `AuthzVerdict.internalReason` and the refusal
+  // audit trail's `realReason`, same as its NOT_WORKFLOW_OWNER/NOT_TRIGGER_OWNER siblings).
   NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
   // v24 Gate 8 (AF-3, TASK-162): `authz.ts`'s loopback-exempt refusal — a caller reaching a tool
   // that needs an identity over a connection that carries none. It was DECLARED in
@@ -68,7 +86,23 @@ export const ERROR_CATALOG = {
   // when a registration declares a trigger someone else created. REQ-116 requires a registration
   // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
   // the guide is where the create-then-claim lifecycle is explained.
-  NOT_TRIGGER_OWNER: { see: 'workflow_authoring_guide', hint: 'the caller does not own (did not create) this trigger' },
+  // Issue #116 (OWNER DECISION a): on schedule_delete/schedule_setEnabled/webhook_delete AND
+  // (review round 6 finding 2) workflow_register's own trigger-claim step, a non-admin caller now
+  // receives TRIGGER_NOT_FOUND instead (masked — indistinguishable from the id not existing at
+  // all; TRIGGER_NOT_FOUND IS the sibling here, unlike a brand-new WORKFLOW name, which has none).
+  // Admin bypasses the ownership check entirely on all four, so this code is never returned on the
+  // wire to ANY caller any more — it survives only as `AuthzVerdict.internalReason` and the
+  // refusal audit trail's `realReason` (authz.ts's `notFoundTemplate`; mcp-facade.ts's own masked
+  // throw in the trigger-claim loop).
+  // Issue #116 reverify round-6 finding 1: masked to TRIGGER_NOT_FOUND for every non-admin caller
+  // (authz.ts's notFoundTemplate) — this code is never returned on the wire to ANY caller any
+  // more (same as its NOT_RUN_OWNER/NOT_WORKFLOW_OWNER siblings just above), so `see` must NOT
+  // point at workflow_authoring_guide: authoringErrorRows() renders every `see:
+  // 'workflow_authoring_guide'` entry under "Authoring rules this engine enforces (refused with
+  // this code)", and a code no caller can ever receive has no business in that list — a cold
+  // reader would write a dead branch for it. The entry itself stays (it is the `realReason` an
+  // admin sees via audit_refusals_list, and an AuthzErrorCode `satisfies ErrorCode` member).
+  NOT_TRIGGER_OWNER: { see: null, hint: 'the caller does not own (did not create) this trigger' },
   // Service accounts spec (owner decision 2026-10-03): a service account created with a
   // `workflows` allowlist, naming a workflow outside it on a workflow-scoped tool.
   WORKFLOW_NOT_ALLOWED: { see: 'workflow_authoring_guide', hint: 'this service account is restricted to a workflows allowlist (service_account_create/_update) and this workflow is not in it' },
@@ -243,7 +277,10 @@ export const ERROR_CATALOG = {
   // when the two were previously conflated (an invalid IANA zone surfaced as field:'cron').
   INVALID_TZ: { see: null, hint: 'the `tz` value is not a valid IANA time zone name' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
-  // (mcp-facade.ts:308/322) — see NOT_TRIGGER_OWNER above.
+  // (mcp-facade.ts:308/322). Issue #116 reverify round-6 finding 1: the stale cross-reference this
+  // comment used to carry ("see NOT_TRIGGER_OWNER above") is removed — NOT_TRIGGER_OWNER's own
+  // `see` is now `null` (it is masked to THIS code for every non-admin caller), so there is
+  // nothing left to see there any more.
   TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
   TRIGGER_ALREADY_CLAIMED: { see: 'workflow_authoring_guide', hint: 'this trigger id is already claimed by a different workflow' },
   UNCLAIMED: { see: null, hint: 'this trigger has not been claimed by any workflow; it will not fire' },

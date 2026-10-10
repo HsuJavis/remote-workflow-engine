@@ -188,10 +188,14 @@ describe('the trigger arm of a registration refusal carries the guide pointer to
     expect(r.error?.see, 'TRIGGER_NOT_FOUND reached the wire with no pointer to the guide').toBe('workflow_authoring_guide');
   });
 
-  it("NOT_TRIGGER_OWNER answers see:'workflow_authoring_guide' (claiming another author's trigger)", async () => {
+  // Issue #116 (decision a, review round 6 finding 2): a non-admin claiming another author's
+  // trigger is now masked to TRIGGER_NOT_FOUND (NOT_TRIGGER_OWNER never reaches the wire any more)
+  // — still carrying the SAME see pointer REQ-116 requires, since it is TRIGGER_NOT_FOUND's own
+  // catalog entry, not a hand-typed one.
+  it("claiming another author's trigger is masked to TRIGGER_NOT_FOUND, which still answers see:'workflow_authoring_guide'", async () => {
     const r = await register('it129b-bobs', [residentId], bobToken);
-    expect(r.error?.code ?? r.code).toBe('NOT_TRIGGER_OWNER');
-    expect(r.error?.see, 'NOT_TRIGGER_OWNER reached the wire with no pointer to the guide').toBe('workflow_authoring_guide');
+    expect(r.error?.code ?? r.code).toBe('TRIGGER_NOT_FOUND');
+    expect(r.error?.see, 'the masked TRIGGER_NOT_FOUND reached the wire with no pointer to the guide').toBe('workflow_authoring_guide');
   });
 
   it("TRIGGER_ALREADY_CLAIMED answers see:'workflow_authoring_guide'", async () => {
