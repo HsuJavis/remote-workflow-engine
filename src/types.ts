@@ -264,12 +264,17 @@ export interface AgentRecord {
    *  defaults to its positional 'b') collided with it under the same display name. NEVER used as
    *  the resume/replay key (`CallKey` stays `{prompt, opts}` with no positional component — see
    *  that type's own doc and `_handleAgentRequest`'s comment at the `key: CallKey = …` line for why
-   *  changing it would break resume of an in-flight run). Absent on every pre-#165 record (a
-   *  restart-reconstructed record from an old journal has no positional to recover) AND on a
-   *  post-#165 record reconstructed with no harness event of its own to read it from (a terminal
-   *  pre-dispatch refusal, or an abort cut off before its harness event's write landed, followed by
-   *  a restart before the terminal snapshot saved) — `deriveAgentRecords`'s usage-only branch has
-   *  nowhere else to source it from either.
+   *  changing it would break resume of an in-flight run). Present on a LIVE record (markQueued
+   *  stamps it before dispatch) and on a restart-reconstructed record whose transcript holds a
+   *  `kind:'refused'` event — that event carries its own agentKey durably, restart or not (see
+   *  `AgentTranscriptSink.markRefused`). Absent on every pre-#165 record (an old journal has no
+   *  positional to recover) AND on a restart-reconstructed record whose ONLY event is a
+   *  `kind:'usage'` one with no preceding harness event to read `agentKey` from — e.g. a
+   *  pre-dispatch VALIDATION failure (an invalid `effort`, a retired `agentType`, a `schema` that
+   *  fails to compile: `_runTracked`'s own guards call `capture()`'s failed branch DIRECTLY,
+   *  never a separate refused event) or an abort cut off before `onHarness` ever fired — followed
+   *  by a restart before the terminal snapshot saved. `deriveAgentRecords`'s usage-only branch has
+   *  nowhere else to source it from either; `label` has had this identical gap all along.
    *  Owner flag: the original #165 ask ("old rows → agentKey null") and an idempotent `ALTER TABLE
    *  ADD COLUMN` migration assumed a SQL column. There is none to migrate — every `AgentRecord` is
    *  reconstructed from the `run_snapshots` JSON blob and the transcript's harness/refused/usage
