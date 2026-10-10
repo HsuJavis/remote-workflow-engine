@@ -1601,7 +1601,13 @@ export const TOOL_SPECS = [
       },
     }),
     outputSchema: OUT,
-    errors: [] as ErrorCode[],
+    // Round-3 reverify: `PROBE_ERROR` is the code the handler's own catch (call-tool.ts) can
+    // answer when a host diagnostics probe throws — not reachable today (every fs read inside
+    // SystemInfo.get() already has its own try/catch), but a real `ERROR_CATALOG` member the
+    // handler CAN return, so it belongs on this row per the v37 Gate-8 C-1 convention (a code a
+    // handler can return is advertised, not just whatever its fixtures happen to exercise — no
+    // `fixture.errors` entry is required, same as every other latent/hard-to-force code here).
+    errors: ['PROBE_ERROR'] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {}, errors: {} },
