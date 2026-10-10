@@ -1240,21 +1240,29 @@ export class PiGatewayClient implements GatewayClient {
     // these two reasons regardless of the figure — "the known spend is a lower bound, possibly 0" is
     // the one honest reading of "the provider almost certainly billed something we never observed".
     //
-    // What is NOT done here, on purpose (owner-approved scope, issue #152 item 3): no input-token
-    // ESTIMATE stands in for the real figure. pi's child->parent protocol reports a COMPLETE,
-    // authoritative usage figure only on `message_end`/`error` (folded into `cumulative` above) —
-    // `liveInFlightUsage` (issue #160 BUG-4) is the one exception, and only when the provider itself
-    // chose to populate `usage` on an intermediate chunk of the turn still in flight when the kill
-    // signal landed (session-runner.ts's `usage_update`, forwarded verbatim, never estimated
-    // client-side); most providers never do, and `liveInFlightUsage` then stays ZERO_TOKENS, same as
-    // before this fix. The kill signal here fires with no grace window for a graceful handoff (see
-    // `killDescendantsBestEffort` above), so `addTokens(cumulative, liveInFlightUsage)` below is the
-    // only honest number available: every turn that fully ended, plus whatever the provider itself
-    // already told this in-progress one. A client-side request-token estimate still has no schema
-    // slot to mark it "estimated, never priced as exact" distinct from a real observed figure, and
-    // the issue's own instruction is to leave THAT out rather than guess silently — see
-    // `harness-info.ts`'s pi `usage` disclosure string for the same decision, stated for every
-    // reader of system_info/the guide.
+    // What this gateway still does NOT do, by design: no input-token ESTIMATE is built HERE. pi's
+    // child->parent protocol reports a COMPLETE, authoritative usage figure only on `message_end`/
+    // `error` (folded into `cumulative` above) — `liveInFlightUsage` (issue #160 BUG-4) is the one
+    // exception, and only when the provider itself chose to populate `usage` on an intermediate
+    // chunk of the turn still in flight when the kill signal landed (session-runner.ts's
+    // `usage_update`, forwarded verbatim, never estimated client-side); most providers never do, and
+    // `liveInFlightUsage` then stays ZERO_TOKENS, same as before the #152 fix. The kill signal here
+    // fires with no grace window for a graceful handoff (see `killDescendantsBestEffort` above), so
+    // `addTokens(cumulative, liveInFlightUsage)` below is still the only honest number THIS gateway
+    // itself can report: every turn that fully ended, plus whatever the provider itself already told
+    // this in-progress one.
+    //
+    // issue #160 BUG-4 reopen (2026-10-10 owner decision): the #152-era reasoning that USED to follow
+    // here — "a client-side estimate has no schema slot to mark it not-exact, so leave it out" — is
+    // REVERSED; that slot now exists (`AgentRecord.estimated`/`GatewayResult.estimated`) and IS
+    // populated, just not by this gateway. `AgentExecutor.applyAbortEstimate` (agent-executor.ts) is
+    // the ONE place that estimate is computed, applied gateway-neutrally to whatever `reason:'aborted'`
+    // result reaches it — including this method's own `tokens: addTokens(cumulative,
+    // liveInFlightUsage)` below, when that sums to zero. Keeping the estimate out of THIS file (vs.
+    // duplicating it per gateway) is what makes the SDK gateway's `'aborted'` result (built by
+    // `AgentExecutor._finalizeAborted`, never by a gateway itself) get the identical treatment for
+    // free — see `GatewayResult`'s own doc (client.ts) and `harness-info.ts`'s pi `usage` disclosure
+    // string, both updated to match.
     const attemptNum = mcpCtx?.attempt ?? 1;
     const totalAttempts = mcpCtx?.attempts ?? 1;
     const modelName = childConfig.model.model;

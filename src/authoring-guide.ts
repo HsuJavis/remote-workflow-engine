@@ -1475,15 +1475,33 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'after at least one turn has FULLY completed (a tool call and its result, say) always ' +
         'charges that turn\'s own exact figure; for a cutoff mid-TURN, the sdk-cli harness streams ' +
         'partial tokens continuously and so almost always has something to charge, while the pi ' +
-        'harness\'s wire protocol normally reports nothing for the in-flight turn at all (0, not an ' +
-        'underestimate) unless the provider itself happens to populate usage on an intermediate ' +
-        'chunk — most do not. `partial:true`/a nonzero figure never means "estimated"; it always ' +
-        'means "a real number the provider or harness actually reported, possibly short of the ' +
-        'true total". This figure is charged against `budget` exactly like a completed call\'s, so ' +
-        'a repeated suspend/resume cycle of a usage-heavy agent counts toward, and can trip, a ' +
-        'token or USD limit to the extent described above — never a guarantee that EVERY ' +
-        'suspend/resume cycle accumulates something, only that whatever was genuinely observed ' +
-        'does. Separately: resuming a ' +
+        'harness\'s wire protocol normally reports nothing for the in-flight turn at all unless the ' +
+        'provider itself happens to populate usage on an intermediate chunk — most do not. ' +
+        // issue #160 BUG-4 reopen (2026-10-10 owner decision): the single statement that replaces
+        // the two self-contradictory ones this guide used to make here — one said partial:true/a
+        // nonzero figure never means "estimated", the other said a repeated suspend/resume cycle
+        // "counts toward, and can trip" a budget while also admitting it is "never a guarantee"
+        // under exactly the harness (pi, no mid-turn usage) the tester's repro used, where the
+        // figure was unconditionally 0. There is now a real estimate to describe instead of a gap.
+        '`estimated:true` is new ON TOP of `partial:true` (both together, never `estimated` alone): ' +
+        'it means this attempt\'s figure is NOT anything a provider or harness reported, not even a ' +
+        'partial one — it is `estimateInputTokens`\'s deterministic `ceil(chars/4)` floor over the ' +
+        'exact text this attempt dispatched (the composed prompt, including the schema/output-' +
+        'format block appended when `schema` is set — never the harness\'s own expanded system ' +
+        'prompt or tool definitions, which this layer cannot see), applied ONLY to `input` (`output` ' +
+        'stays 0 — nothing was ever observed to estimate it from). The engine reaches for this ' +
+        'estimate only when NEITHER source has anything at all for the aborted attempt: the pi ' +
+        'harness\'s wire protocol (above) reports nothing, AND nothing streamed onto the live record ' +
+        'via the gateway\'s own mid-turn usage callback either. A real figure from either source — ' +
+        'even a real, exact 0 some harness genuinely reports — always wins and is read as `partial` ' +
+        'with no `estimated` field; the two are mutually exclusive, never summed. This means an ' +
+        'attempt that was genuinely dispatched to a gateway and then cut short ALWAYS charges ' +
+        'something nonzero against `budget` now (real or estimated) — the one case that stays an ' +
+        'honest zero is an attempt aborted before it was ever dispatched at all (the signal was ' +
+        'already set when the executor checked). Either figure — real or estimated — is charged ' +
+        'exactly like a completed call\'s, so a repeated suspend/resume cycle of a usage-heavy agent ' +
+        'counts toward, and WILL eventually trip, a token or USD limit, including under a provider ' +
+        '(OpenRouter via the pi harness) that never streams mid-turn usage at all. Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
         'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
         'attempt never itself resolves anything to the script (only the replacement agentId\'s own ' +

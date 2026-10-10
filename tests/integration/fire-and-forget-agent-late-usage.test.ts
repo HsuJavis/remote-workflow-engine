@@ -67,14 +67,14 @@ describe('a fire-and-forget agent() call eventually folds its usage into run_res
     // snapshot (taken here) must NOT yet show the late call's usage. This is not the bug; it is the
     // expected shape of the race this fix is about (confirms the test actually models it).
     const immediateResult = await facade.runResult({ runId }, AUTH_DISABLED, false, null);
-    expect(immediateResult.meta?.usage.tokens.input).toBe(0);
+    expect(immediateResult.meta?.usage!.tokens.input).toBe(0);
 
     // Wait past the fake gateway's own delay — the late call has now genuinely settled.
     await new Promise((r) => setTimeout(r, LATE_DELAY_MS + 300));
 
     const lateResult = await facade.runResult({ runId }, AUTH_DISABLED, false, null);
-    expect(lateResult.meta?.usage.tokens.input).toBe(111);
-    expect(lateResult.meta?.usage.tokens.output).toBe(222);
+    expect(lateResult.meta?.usage!.tokens.input).toBe(111);
+    expect(lateResult.meta?.usage!.tokens.output).toBe(222);
 
     // run_list's row for the SAME run must agree — the exact second surface the tester's re-verify
     // found still reporting 0. Read via a SECOND, independent `RunManager` over the SAME store (no
@@ -111,8 +111,8 @@ return 'script done';
     const result = await facade.runResult({ runId }, AUTH_DISABLED, false, null);
     // Both calls' tokens present — never just one (a snapshot write that landed between the two
     // settles, or the all-settled guard skipping a still-partial state, would under-report here).
-    expect(result.meta?.usage.tokens.input).toBe(222); // 111 + 111
-    expect(result.meta?.usage.tokens.output).toBe(444); // 222 + 222
+    expect(result.meta?.usage!.tokens.input).toBe(222); // 111 + 111
+    expect(result.meta?.usage!.tokens.output).toBe(444); // 222 + 222
 
     // The persisted `agents` array itself must show BOTH as 'done' — never 'running' — on an
     // already-terminal run (the exact invariant derived-equals-snapshot.test.ts/

@@ -85,9 +85,22 @@ export interface ResultEnvelope<T = unknown> {
    *  (`agent()` still resolves `null` on failure, the run still completes); this is the ONE
    *  surfaced signal that something inside it didn't work. Absent when no agent failed. */
   meta?: {
-    usage: RunUsage;
-    budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] };
-    warnings?: Array<{ code: 'AGENT_FAILED'; message: string }>;
+    // issue #162(1) (owner decision, 2026-10-10): OPTIONAL as of this change — `run_status`
+    // populates ONLY `warnings` (below), never the usage/pricing machinery `run_result`'s own
+    // `_resultMeta` computes (a different, heavier read `run_status` has no other reason to do);
+    // `run_result` itself is UNCHANGED and always sets both.
+    usage?: RunUsage;
+    budgetEnforceable?: { usd: boolean; tokens: boolean; unpricedModels: string[] };
+    /** `AGENT_FAILED` when this run had at least one failed/refused agent — the script's own
+     *  return value in `result` is untouched (`agent()` still resolves `null` on failure, the run
+     *  still completes); this is the ONE surfaced signal that something inside it didn't work.
+     *  issue #162(1) (owner decision): `AGENT_STILL_RUNNING` — a fire-and-forget `agent()` call the
+     *  script never awaited was still `queued`/`running` the moment this run went terminal
+     *  (adjudication #9 I-2's own gap, dash-auth-spec.md section C): its usage is not yet folded
+     *  into `meta.usage`/`run_list`; poll again once it settles, at which point this warning is
+     *  absent and the usage total is complete. Present on BOTH `run_result` and `run_status`.
+     *  Absent when neither condition applies. */
+    warnings?: Array<{ code: 'AGENT_FAILED' | 'AGENT_STILL_RUNNING'; message: string }>;
     /** issue #159 (4th reverification): the guide (docs/AUTHORING.md:247) documents
      *  `seedConfigStripped` as present on BOTH `run_status` and `run_result` — mirrors
      *  `RunStatusView.seedConfigStripped` exactly (same absent-when-nothing-stripped rule, never
