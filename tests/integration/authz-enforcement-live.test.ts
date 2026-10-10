@@ -130,10 +130,12 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(codeOf(await callTool('workspace_list', { runId }, bobToken))).toBe('RUN_NOT_FOUND');
     expect(codeOf(await callTool('workspace_delete', { runId, paths: ['a.txt'] }, bobToken))).toBe('RUN_NOT_FOUND');
     // ...and the workflow-scope mode keys off `workflow`, refusing a non-owner of the WORKFLOW.
-    expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
-    expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
+    // Reverify round-6 finding 5: this mode now ALSO joins the templated set — masked to
+    // WORKFLOW_NOT_FOUND for a non-admin, same as workflow_deregister/workflow_publish.
+    expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('WORKFLOW_NOT_FOUND');
+    expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('WORKFLOW_NOT_FOUND');
     // ...and workspace_delete's own asset mode (issue #92 part B verification) is refused the same way.
-    expect(codeOf(await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
+    expect(codeOf(await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken))).toBe('WORKFLOW_NOT_FOUND');
     // The owner is not refused (the check runs, it does not simply reject everyone) — and the real
     // {deleted} answer (issue #92 part B) comes back through, not a hardcoded true, for a name that
     // was never pushed.

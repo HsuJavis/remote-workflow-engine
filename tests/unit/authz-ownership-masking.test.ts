@@ -94,15 +94,47 @@ describe('authz ownership masking (issue #116 decision a)', () => {
     expect(verdict.crossPrincipalRead).toBe(true);
   });
 
-  it('a tool NOT in notFoundTemplate\'s documented scope keeps the OLD unmasked NOT_WORKFLOW_OWNER behavior (documented residual risk, not silently dropped)', () => {
+  // Independent-verifier finding (2026-10-10, reverify-r6-b finding 5): decision a says "every
+  // MCP tool" — workspace_list/workspace_delete's own `workflow` mode and workspace_push's own
+  // `asset` mode (all three resolve `ownership:'workflow'`) were left unmasked, an oracle a
+  // non-owner could still exploit (NOT_WORKFLOW_OWNER vs WORKFLOW_NOT_FOUND). Now templated the
+  // same way workflow_deregister/workflow_publish already are, using each tool's OWN genuine
+  // not-found wording (verified against mcp-facade.ts's real handlers).
+  it("workspace_push (asset mode): non-owner masked to WORKFLOW_NOT_FOUND, message matching mcp-facade.ts's own wording", () => {
     const lookup: OwnerLookup = { ...NOOP_LOOKUP, workflowOwner: () => 'alice' };
-    // workspace_push's asset-mode row resolves ownership:'workflow' but the tool name is not
-    // templated — authz.ts falls back to the pre-existing behavior rather than guessing a message
-    // shape it was never verified against.
     const verdict = authorize(CAROL, { name: 'workspace_push', key: null, authz: { minRole: 'author', ownership: 'workflow' } }, { workflow: 'wf1' }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.reason).toBe("WORKFLOW_NOT_FOUND: unknown workflow 'wf1' — register it first (workflow_register), then push its assets");
     expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
+    expect(verdict.detail).toBeUndefined();
+  });
+
+  it("workspace_list (workflow mode): non-owner masked to WORKFLOW_NOT_FOUND, message 'Unknown workflow: X' (mcp-facade.ts's own wording)", () => {
+    const lookup: OwnerLookup = { ...NOOP_LOOKUP, workflowOwner: () => 'alice' };
+    const verdict = authorize(CAROL, { name: 'workspace_list', key: null, authz: { minRole: 'author', ownership: 'workflow' } }, { workflow: 'wf1' }, lookup);
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.reason).toBe('Unknown workflow: wf1');
+    expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
+  });
+
+  it("workspace_delete (workflow mode): non-owner masked to WORKFLOW_NOT_FOUND, message matching mcp-facade.ts's own wording", () => {
+    const lookup: OwnerLookup = { ...NOOP_LOOKUP, workflowOwner: () => 'alice' };
+    const verdict = authorize(CAROL, { name: 'workspace_delete', key: null, authz: { minRole: 'author', ownership: 'workflow' } }, { workflow: 'wf1' }, lookup);
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.reason).toBe("WORKFLOW_NOT_FOUND: unknown workflow 'wf1'");
+    expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
+  });
+
+  // workspace_list/workspace_delete's RUN mode (a DIFFERENT ownerCode on the SAME tool name) must
+  // keep masking to RUN_NOT_FOUND unaffected by the new WORKFLOW_NOT_FOUND template above — this is
+  // the "first-match-wins" trap a Map<string, ErrorCode> would fall into (call-tool.ts's
+  // NOT_FOUND_STAMP_CODE must be a Map<string, Set<ErrorCode>> for exactly this reason).
+  it('workspace_list (run mode) still masks to RUN_NOT_FOUND — unaffected by its own workflow-mode template', () => {
+    const lookup: OwnerLookup = { ...NOOP_LOOKUP, runOwner: () => 'alice' };
+    const verdict = authorize(BOB, { name: 'workspace_list', key: 'runId', authz: { minRole: 'user', ownership: 'run' } }, { runId: 'r1' }, lookup);
+    expect(verdict.code).toBe('RUN_NOT_FOUND');
+    expect(verdict.reason).toBe('Run not found: r1');
   });
 
   it('a role refusal (FORBIDDEN_ROLE) is never masked and always carries internalReason === code', () => {

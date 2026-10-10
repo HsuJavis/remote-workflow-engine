@@ -210,9 +210,11 @@ const cases: Case[] = [
   // ---- ownership: asset (subject is args.workflow; scope 'global' is role-only) ----
   { n: 'asset/global scope is role-only', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'global', workflow: 'w' }, lookup: wfOwner('bob'), expected: { ok: true } },
   { n: 'asset/workflow scope, self', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('alice'), expected: { ok: true } },
-  { n: 'asset/workflow scope, other', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('bob'), expected: { ok: false, code: 'NOT_WORKFLOW_OWNER' } },
+  // Reverify round-6 finding 5: workspace_push (ASSET's spec.name) is now templated too — masked
+  // to WORKFLOW_NOT_FOUND, same as workflow_deregister/workflow_publish above.
+  { n: 'asset/workflow scope, other', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('bob'), expected: { ok: false, code: 'WORKFLOW_NOT_FOUND' } },
   { n: 'asset/workflow scope, absent', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner(undefined), expected: { ok: true } },
-  { n: 'asset/workflow scope, ownerless', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner(null), expected: { ok: false, code: 'NOT_WORKFLOW_OWNER' } },
+  { n: 'asset/workflow scope, ownerless', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner(null), expected: { ok: false, code: 'WORKFLOW_NOT_FOUND' } },
   { n: 'asset/admin over another owner', p: ADMIN, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('bob'), expected: { ok: true } },
   { n: 'asset/role floor still applies below the ownership check', p: ALICE, spec: ASSET, args: { scope: 'global' }, lookup: NOOP_LOOKUP, expected: { ok: false, code: 'FORBIDDEN_ROLE' } },
 
@@ -220,7 +222,9 @@ const cases: Case[] = [
   { n: 'moded/read is user+none', p: ALICE, spec: MODED, args: { mode: 'read' }, lookup: NOOP_LOOKUP, expected: { ok: true } },
   { n: 'moded/write refuses a user by role, naming the mode', p: ALICE, spec: MODED, args: { mode: 'write', name: 'w' }, lookup: wfOwner('alice'), expected: { ok: false, code: 'FORBIDDEN_ROLE', mode: 'write' } },
   { n: 'moded/write, author owns it', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('alice'), expected: { ok: true } },
-  { n: 'moded/write, author does not own it', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('bob'), expected: { ok: false, code: 'NOT_WORKFLOW_OWNER', mode: 'write' } },
+  // Reverify round-6 finding 5: also masked now — a masked verdict drops `detail` entirely (the
+  // real not-found arm carries none; `detail.mode` would itself be a tell), so `mode` is absent.
+  { n: 'moded/write, author does not own it', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('bob'), expected: { ok: false, code: 'WORKFLOW_NOT_FOUND' } },
   { n: 'moded/admin row refuses an author', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'admin' }, lookup: NOOP_LOOKUP, expected: { ok: false, code: 'FORBIDDEN_ROLE', mode: 'admin' } },
   { n: 'moded/admin row admits an admin', p: ADMIN, spec: MODED, args: { mode: 'admin' }, lookup: NOOP_LOOKUP, expected: { ok: true } },
 ];
@@ -256,15 +260,15 @@ describe('authz — the generated kind x role x ownership x mode matrix (UT-140 
 describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to the refused caller', () => {
   // Issue #116 (decision a): RUN/WF/TRIG are all templated tools — their `code` here is the
   // post-mask code, which is a STRONGER form of "never discloses the owner identity" (it no longer
-  // even discloses that the resource is owned by someone else, vs. missing outright). ASSET/MODED
-  // use `workspace_push`, which is outside notFoundTemplate's documented scope (residual risk,
-  // tests/unit/authz-ownership-masking.test.ts) — unchanged, still the real NOT_WORKFLOW_OWNER.
+  // even discloses that the resource is owned by someone else, vs. missing outright). Reverify
+  // round-6 finding 5: ASSET/MODED (both `workspace_push`) join them too — see
+  // tests/unit/authz-ownership-masking.test.ts for the per-tool message pins.
   const OWNER_CASES: Array<{ n: string; p: Principal; spec: Spec; args: Record<string, unknown>; lookup: OwnerLookup; code: string }> = [
     { n: 'run', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('owner-secret@example.com'), code: 'RUN_NOT_FOUND' },
     { n: 'workflow', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'WORKFLOW_NOT_FOUND' },
     { n: 'trigger', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('owner-secret@example.com'), code: 'TRIGGER_NOT_FOUND' },
-    { n: 'asset (workflow scope)', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
-    { n: 'moded write', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
+    { n: 'asset (workflow scope)', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'WORKFLOW_NOT_FOUND' },
+    { n: 'moded write', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'WORKFLOW_NOT_FOUND' },
   ];
 
   it.each(OWNER_CASES.map((c) => [c.n, c] as const))('%s refusal reason names neither the owner nor the caller', (_n, c) => {
@@ -277,12 +281,14 @@ describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to
     expect(JSON.stringify(verdict.detail ?? {})).not.toContain('owner-secret@example.com');
   });
 
-  // Issue #90 (verification finding 4): every OTHER catalog refusal message starts with its own
-  // code (`workflow-catalog.ts`'s `` `${code}: workflow '${name}' is not owned by the caller` ``,
-  // the very code+id shape that made the DIFFERENT `workflow_register` conflict path's message
-  // machine-greppable) — `authorize()`'s owner refusals were the one place that convention was
-  // missing. The resource id named here is the CALLER'S OWN request argument (they already know
-  // it), never the owner's — the case above already pins that half.
+  // Issue #90 (verification finding 4): before issue #116, every OTHER catalog refusal message
+  // started with its own code (`workflow-catalog.ts`'s `` `${code}: workflow '${name}' is not
+  // owned by the caller` ``) — `authorize()`'s owner refusals were the one place that convention
+  // was missing. Reverify round-6 finding 5: `workspace_push`'s asset-mode row (ASSET/MODED above)
+  // is now ALSO templated/masked (same as run/workflow/trigger), so every OWNER_CASES row answers
+  // with ITS OWN TOOL's real not-found wording rather than this generic convention — the id each
+  // case names is still the CALLER'S OWN request argument (they already know it), never the
+  // owner's, which is what this check now pins instead.
   const RESOURCE_ID: Record<string, string> = {
     run: 'r',
     workflow: 'w',
@@ -290,18 +296,12 @@ describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to
     'asset (workflow scope)': 'w',
     'moded write': 'w',
   };
-
-  // Issue #116 (decision a): this convention (`${code}: ... '${id}'`) is the UNMASKED shape —
-  // still true for the two cases `workspace_push` leaves untouched; the three templated cases
-  // (run/workflow/trigger) now answer with THAT TOOL's own real not-found wording instead (which
-  // never followed this convention to begin with — see tests/unit/authz-ownership-masking.test.ts
-  // for the per-tool message pins), so they are excluded here rather than asserted against a
-  // pattern that was never their contract.
-  const UNMASKED_CASES = OWNER_CASES.filter((c) => c.n === 'asset (workflow scope)' || c.n === 'moded write');
-  it.each(UNMASKED_CASES.map((c) => [c.n, c] as const))('%s refusal reason starts with its own code and names the resource (issue #90)', (n, c) => {
+  it.each(OWNER_CASES.map((c) => [c.n, c] as const))('%s refusal reason names the CALLER\'s own resource id, never the owner (issue #90)', (n, c) => {
     const verdict = authorize(c.p, c.spec as never, c.args, c.lookup);
-    expect(verdict.reason).toMatch(new RegExp(`^${c.code}: `));
-    expect(verdict.reason).toContain(`'${RESOURCE_ID[n]}'`);
+    // Bare substring, not a quoted-literal match: the masked message shapes differ per tool (e.g.
+    // `Run not found: r` is unquoted; `workspace_push`'s is `unknown workflow 'w'`, quoted) — see
+    // tests/unit/authz-ownership-masking.test.ts for each tool's own exact wording pin.
+    expect(verdict.reason).toContain(RESOURCE_ID[n]!);
   });
 
   it('an ownerless (legacy) resource refusal on a TEMPLATED tool (run_status) is masked to RUN_NOT_FOUND for a non-admin (issue #116 decision a) — still never names the owner', () => {

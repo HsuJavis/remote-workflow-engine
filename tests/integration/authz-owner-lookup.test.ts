@@ -189,19 +189,24 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
     expect(verdict.internalReason).toBe('NOT_RUN_OWNER');
   });
 
-  it('workspace_push({workflow,kind}) in asset mode enforces workflow ownership against the real store', () => {
+  // Reverify round-6 finding 5: both of workspace_push/workspace_delete's workflow-ownership modes
+  // now join authz.ts's templated set too — masked to WORKFLOW_NOT_FOUND for a non-admin, same as
+  // workflow_deregister/workflow_publish (internalReason keeps the real NOT_WORKFLOW_OWNER for audit).
+  it('workspace_push({workflow,kind}) in asset mode enforces workflow ownership against the real store, masked to WORKFLOW_NOT_FOUND', () => {
     const verdict = authorize(BOB, realSpec('workspace_push') as never, { workflow: 'wf-a', kind: 'skill', name: 'n', files: [] }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
   });
 
   // Issue #92 part B: `workspace_delete`'s asset mode (`{workflow,kind,name}`, `deleteMode` ⇒
   // 'workflow') resolves to the SAME `ownership:'workflow'` row `workspace_push`/`workspace_list`
   // already prove above — confirming the sibling gap named in the issue is not actually open.
-  it('workspace_delete({workflow,kind,name}) in asset mode enforces workflow ownership against the real store', () => {
+  it('workspace_delete({workflow,kind,name}) in asset mode enforces workflow ownership against the real store, masked to WORKFLOW_NOT_FOUND', () => {
     const verdict = authorize(BOB, realSpec('workspace_delete') as never, { workflow: 'wf-a', kind: 'skill', name: 'n' }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(verdict.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_WORKFLOW_OWNER');
     // ...and the owner is not refused.
     expect(authorize(ALICE, realSpec('workspace_delete') as never, { workflow: 'wf-a', kind: 'skill', name: 'n' }, lookup).ok).toBe(true);
   });

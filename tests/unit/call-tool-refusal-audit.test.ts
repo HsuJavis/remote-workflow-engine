@@ -123,12 +123,42 @@ describe('callTool — authorize() refusal audit + requestId (issue #116)', () =
     expect(result).toEqual({ runId: 'r1', status: 'failed', error: { code: 'RUN_NOT_FOUND', message: 'Run not found: r1', detail: { requestId: result.error.detail!.requestId } } });
   });
 
-  it("workspace_list's WORKFLOW-mode refusal is NOT masked (mode trap guard) — NOT_WORKFLOW_OWNER reaches the wire unchanged, still with a requestId via the ordinary unmasked path", async () => {
-    const verdict: AuthzVerdict = { ok: false, code: 'NOT_WORKFLOW_OWNER', internalReason: 'NOT_WORKFLOW_OWNER', reason: "NOT_WORKFLOW_OWNER: workflow 'wf1' is not owned by the caller" };
+  // Independent-verifier finding (2026-10-10, reverify-r6-b finding 5): workspace_list/
+  // workspace_delete's own `workflow` mode (and workspace_push's own `asset` mode) now join
+  // authz.ts's templated set too — masked to WORKFLOW_NOT_FOUND, same convention as
+  // workflow_deregister. This is also the Map<string, Set<ErrorCode>> trap guard: workspace_list
+  // now has TWO templated ownerCodes (NOT_RUN_OWNER->RUN_NOT_FOUND, NOT_WORKFLOW_OWNER->
+  // WORKFLOW_NOT_FOUND) — a first-match-wins `Map<string, ErrorCode>` would only ever stamp ONE of
+  // them; both must get a requestId.
+  it("workspace_list's WORKFLOW-mode refusal is NOW masked to WORKFLOW_NOT_FOUND, plus a requestId", async () => {
+    const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: 'Unknown workflow: wf1' };
     const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
-    const result = await callTool(deps, 'workspace_list', { workflow: 'wf1', kind: 'skill' }, { kind: 'author', id: 'bob' }) as { code: string; error: { code: string; detail?: { requestId?: string } } };
-    expect(result.code).toBe('NOT_WORKFLOW_OWNER');
-    expect(result.error.code).toBe('NOT_WORKFLOW_OWNER');
+    const result = await callTool(deps, 'workspace_list', { workflow: 'wf1', kind: 'skill' }, { kind: 'author', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
+    expect(result.error.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(typeof result.error.detail?.requestId).toBe('string');
+  });
+
+  it("workspace_list's RUN-mode masking still gets its OWN stamp, unaffected by the workflow-mode template above (mode trap guard — Set, not a single ErrorCode)", async () => {
+    const verdict: AuthzVerdict = { ok: false, code: 'RUN_NOT_FOUND', internalReason: 'NOT_RUN_OWNER', reason: 'Run not found: r1' };
+    const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
+    const result = await callTool(deps, 'workspace_list', { runId: 'r1' }, { kind: 'user', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
+    expect(result.error.code).toBe('RUN_NOT_FOUND');
+    expect(typeof result.error.detail?.requestId).toBe('string');
+  });
+
+  it("workspace_delete's WORKFLOW-mode refusal is masked to WORKFLOW_NOT_FOUND, plus a requestId", async () => {
+    const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: "WORKFLOW_NOT_FOUND: unknown workflow 'wf1'" };
+    const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
+    const result = await callTool(deps, 'workspace_delete', { workflow: 'wf1', kind: 'skill', name: 'n' }, { kind: 'author', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
+    expect(result.error.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(typeof result.error.detail?.requestId).toBe('string');
+  });
+
+  it("workspace_push's ASSET-mode refusal is masked to WORKFLOW_NOT_FOUND, plus a requestId", async () => {
+    const verdict: AuthzVerdict = { ok: false, code: 'WORKFLOW_NOT_FOUND', internalReason: 'NOT_WORKFLOW_OWNER', reason: "WORKFLOW_NOT_FOUND: unknown workflow 'wf1' — register it first (workflow_register), then push its assets" };
+    const deps = partialDeps({ facade: {}, lookup: {}, audit: {}, authorize: () => verdict });
+    const result = await callTool(deps, 'workspace_push', { workflow: 'wf1', kind: 'skill', name: 'n', files: [] }, { kind: 'author', id: 'bob' }) as { error: { code: string; detail?: { requestId?: string } } };
+    expect(result.error.code).toBe('WORKFLOW_NOT_FOUND');
     expect(typeof result.error.detail?.requestId).toBe('string');
   });
 

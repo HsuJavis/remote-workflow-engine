@@ -117,13 +117,13 @@ describe('workspace_push/workspace_delete refuse an UNREGISTERED workflow name (
     expect((del['result'] as { deleted?: boolean } | undefined)?.deleted).toBe(true);
   });
 
-  it('pushing to an EXISTING workflow owned by someone else is still NOT_WORKFLOW_OWNER, not WORKFLOW_NOT_FOUND (contrast case, unchanged behaviour)', async () => {
+  it('pushing to an EXISTING workflow owned by someone else is masked to WORKFLOW_NOT_FOUND (reverify round-6 finding 5: contrast case now masked, same as a genuinely unregistered name)', async () => {
     const wf = 'it102-owned-by-alice-2';
     const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR' }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
 
     const push = await callTool('workspace_push', skillPush(wf, 'bob-tries', '# Bob is not the owner\n'), bobToken);
-    expect(codeOf(push)).toBe('NOT_WORKFLOW_OWNER');
+    expect(codeOf(push)).toBe('WORKFLOW_NOT_FOUND');
   });
 
   it("ADMIN behaviour: even an admin cannot push/delete an asset for a workflow that does not exist (WORKFLOW_NOT_FOUND, no admin ownership bypass over non-existence)", async () => {
@@ -157,10 +157,10 @@ describe('workspace_push/workspace_delete refuse an UNREGISTERED workflow name (
     const list = await callTool('workspace_list', { workflow: wf, kind: 'skill' }, aliceToken);
     expect((list['result'] ?? []) as unknown[]).toHaveLength(0);
 
-    // 4) Bob still cannot push now that alice owns it — NOT_WORKFLOW_OWNER, the pre-existing (and
-    // still correct) contrast behaviour the issue itself calls out.
+    // 4) Bob still cannot push now that alice owns it — masked to WORKFLOW_NOT_FOUND since reverify
+    // round-6 finding 5 (byte-identical to step 1's genuinely-unregistered-name refusal above).
     const stillRefused = await callTool('workspace_push', skillPush(wf, 'codeword', '# still squatting\n'), bobToken);
-    expect(codeOf(stillRefused)).toBe('NOT_WORKFLOW_OWNER');
+    expect(codeOf(stillRefused)).toBe('WORKFLOW_NOT_FOUND');
   });
 });
 

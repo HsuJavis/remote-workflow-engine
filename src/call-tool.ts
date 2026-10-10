@@ -774,33 +774,43 @@ function withRequestIdOnError(result: Record<string, unknown>, requestId: string
 // TOOL_SPECS row per possible ownerCode — so the requestId-stamp set is EXACTLY the masked-response
 // set `notFoundTemplate` itself defines, never a second hand-maintained list that can drift from
 // it. Module-load-time, not per-call: `TOOL_SPECS` is a fixed, already-imported array.
-const NOT_FOUND_STAMP_CODE: ReadonlyMap<string, ErrorCode> = new Map(
-  TOOL_SPECS.map((s): readonly [string, ErrorCode] | undefined => {
+//
+// Reverify round-6 finding 5's own trap: a tool can now be templated under MORE THAN ONE ownerCode
+// (`workspace_list`/`workspace_delete` are templated under BOTH `NOT_RUN_OWNER` -> `RUN_NOT_FOUND`
+// AND, since that finding, `NOT_WORKFLOW_OWNER` -> `WORKFLOW_NOT_FOUND`). A `Map<string,
+// ErrorCode>` built by "first ownerCode that matches wins" would silently drop every code after
+// the first — `workspace_list`'s workflow-mode masked response would then NEVER get a requestId,
+// a silent decision-b regression nothing else would catch (decision a's byte-identity still holds
+// either way, since both masked and genuine arms would equally lack one — only the TRACE is lost).
+// `Set<ErrorCode>` per tool name closes that: every ownerCode's template is collected, not just
+// the first.
+const NOT_FOUND_STAMP_CODES: ReadonlyMap<string, ReadonlySet<ErrorCode>> = new Map(
+  TOOL_SPECS.map((s): readonly [string, ReadonlySet<ErrorCode>] | undefined => {
+    const codes = new Set<ErrorCode>();
     for (const ownerCode of ['NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'NOT_TRIGGER_OWNER'] as const satisfies readonly AuthzErrorCode[]) {
       const t = notFoundTemplate(s.name, '', ownerCode);
-      if (t) return [s.name, t.code] as const;
+      if (t) codes.add(t.code);
     }
-    return undefined;
-  }).filter((e): e is readonly [string, ErrorCode] => e !== undefined),
+    return codes.size > 0 ? [s.name, codes] as const : undefined;
+  }).filter((e): e is readonly [string, ReadonlySet<ErrorCode>] => e !== undefined),
 );
 
-/** Issue #116 (decision a+b, finding 3): stamps `error.detail.requestId` on a templated tool's
- *  NOT_FOUND-family response — a MASKED refusal or the GENUINE miss alike (`NOT_FOUND_STAMP_CODE`
- *  is derived from the SAME `notFoundTemplate` decision a's masking already uses) — so the two stay
- *  byte-identical in SHAPE (both now carry a requestId; the VALUES differ per call, same as any two
- *  calls to the same tool always would) while the masked side gains the trace decision b promises
- *  (previously it carried none at all, "left untouched" by design, which meant a masked refusal
- *  had no way to be traced back to its own audit row). An admin tracing a caller's report: a
- *  presented requestId that MATCHES a row in `audit_refusals_list` is the masked case; a requestId
- *  that matches no row is the genuine miss (which never gets a row — see `audit_refusals_list`'s
- *  own description). Any OTHER error on the same tool (e.g. workspace_pull's WORKSPACE_ESCAPE, or
- *  workspace_list/workspace_delete's own WORKFLOW_NOT_FOUND arm — still unmasked, untemplated, per
- *  authz.ts's documented scope) is untouched; so is a success response. */
+/** Issue #116 (decision a+b, finding 3; reverify round-6 finding 5): stamps `error.detail.requestId`
+ *  on a templated tool's NOT_FOUND-family response — a MASKED refusal or the GENUINE miss alike
+ *  (`NOT_FOUND_STAMP_CODES` is derived from the SAME `notFoundTemplate` decision a's masking
+ *  already uses) — so the two stay byte-identical in SHAPE (both now carry a requestId; the VALUES
+ *  differ per call, same as any two calls to the same tool always would) while the masked side
+ *  gains the trace decision b promises (previously it carried none at all, "left untouched" by
+ *  design, which meant a masked refusal had no way to be traced back to its own audit row). An
+ *  admin tracing a caller's report: a presented requestId that MATCHES a row in
+ *  `audit_refusals_list` is the masked case; a requestId that matches no row is the genuine miss
+ *  (which never gets a row — see `audit_refusals_list`'s own description). Any OTHER error on the
+ *  same tool (e.g. workspace_pull's WORKSPACE_ESCAPE) is untouched; so is a success response. */
 function stampRequestId(toolName: string, result: unknown, requestId: string): unknown {
-  const expected = NOT_FOUND_STAMP_CODE.get(toolName);
+  const expected = NOT_FOUND_STAMP_CODES.get(toolName);
   if (expected === undefined || !result || typeof result !== 'object') return result;
   const r = result as Record<string, unknown>;
   const err = r['error'] as { code?: string } | undefined;
-  if (!err || err.code !== expected) return result;
+  if (!err || err.code === undefined || !expected.has(err.code as ErrorCode)) return result;
   return withRequestIdOnError(r, requestId);
 }

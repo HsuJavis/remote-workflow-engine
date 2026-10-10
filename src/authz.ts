@@ -208,16 +208,31 @@ function refuse(code: AuthzErrorCode, reason: string, mode?: string): AuthzVerdi
  *  workspace_list/workspace_delete's TWO possible ownership modes: both tools return here under
  *  `'run'` mode (ownerCode `NOT_RUN_OWNER`) but NOT under `'workflow'` mode (ownerCode
  *  `NOT_WORKFLOW_OWNER`) — templating by `toolName` alone would have masked the WRONG resource's
- *  existence (a `workspace_list({workflow})` non-owner would have been told a RUN is missing). NOT
- *  templated (residual risk, documented in the task report, not silently dropped):
- *  workspace_pull/list/push/delete's `workflow`/`asset` ownership MODE (a different,
- *  less-consistent WORKFLOW_NOT_FOUND wording per call site) and workflow_register's own internal
- *  ownership/trigger-claim checks (workflow-catalog.ts's workflow-NAME gate; mcp-facade.ts's own
- *  trigger-claim gate is masked separately, at its own throw site — see its own comment) — the
- *  workflow-NAME gate has no `*_NOT_FOUND` sibling to mask TOWARD at all for a brand-new name
- *  (registering a free name succeeds; there is nothing to disclose-as-absent), so decision a's own
- *  framing does not apply there. An untemplated tool/mode keeps today's `NOT_*_OWNER` behavior
- *  unchanged — this function returns `undefined` and the caller falls through to the old refusal.
+ *  existence (a `workspace_list({workflow})` non-owner would have been told a RUN is missing).
+ *
+ *  Reverify round-6 finding 5 (independent verifier, 2026-10-10): decision a's own wording is
+ *  "every MCP tool", not "every tool the dashboard/acceptance tests happen to exercise" — closed
+ *  the one remaining gap: `workspace_list`/`workspace_delete`'s OWN `'workflow'` mode and
+ *  `workspace_push`'s OWN `'asset'` mode (all three resolve `ownership:'workflow'`) now template to
+ *  WORKFLOW_NOT_FOUND too, using each tool's own genuine not-found wording (verified against
+ *  mcp-facade.ts: `workspace_list` -> `` `Unknown workflow: ${resourceId}` `` at its own shared
+ *  not-found arm; `workspace_delete` -> `` `WORKFLOW_NOT_FOUND: unknown workflow '${resourceId}'` ``;
+ *  `workspace_push` -> `` `WORKFLOW_NOT_FOUND: unknown workflow '${resourceId}' — register it
+ *  first (workflow_register), then push its assets` ``, each tool's own wording, never a shared
+ *  generic string, same discipline the run/workflow/trigger templates above already apply). The
+ *  mitigation that made this a LOW rather than deferred outright: `workflow_list` is
+ *  `minRole:'user'`/`ownership:'none'` and already lists every workflow name with its OWNER to any
+ *  logged-in user, so masking this one narrower oracle discloses nothing `workflow_list` did not
+ *  already — closed anyway, for literal conformance with decision a's stated scope.
+ *
+ *  Still NOT templated (residual risk, documented in the task report, not silently dropped):
+ *  workflow_register's own internal ownership/trigger-claim checks (workflow-catalog.ts's
+ *  workflow-NAME gate; mcp-facade.ts's own trigger-claim gate is masked separately, at its own
+ *  throw site — see its own comment) — the workflow-NAME gate has no `*_NOT_FOUND` sibling to mask
+ *  TOWARD at all for a brand-new name (registering a free name succeeds; there is nothing to
+ *  disclose-as-absent), so decision a's own framing does not apply there. An untemplated tool/mode
+ *  keeps today's `NOT_*_OWNER` behavior unchanged — this function returns `undefined` and the
+ *  caller falls through to the old refusal.
  *
  *  Exported (review round 6 finding 3): `call-tool.ts` derives its requestId-stamp set from this
  *  SAME function (called once per tool name per ownerCode) so the masked-response set and the
@@ -230,6 +245,13 @@ export function notFoundTemplate(toolName: string, resourceId: string, ownerCode
   }
   if (ownerCode === 'NOT_WORKFLOW_OWNER' && toolName === 'workflow_deregister') return { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${resourceId}` };
   if (ownerCode === 'NOT_WORKFLOW_OWNER' && toolName === 'workflow_publish') return { code: 'WORKFLOW_NOT_FOUND', message: `Workflow not found in catalog: ${resourceId}` };
+  // Reverify round-6 finding 5: workspace_list/workspace_delete's own `'workflow'` mode and
+  // workspace_push's own `'asset'` mode — see this function's own doc for the exact wording source.
+  if (ownerCode === 'NOT_WORKFLOW_OWNER' && toolName === 'workspace_list') return { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${resourceId}` };
+  if (ownerCode === 'NOT_WORKFLOW_OWNER' && toolName === 'workspace_delete') return { code: 'WORKFLOW_NOT_FOUND', message: `WORKFLOW_NOT_FOUND: unknown workflow '${resourceId}'` };
+  if (ownerCode === 'NOT_WORKFLOW_OWNER' && toolName === 'workspace_push') {
+    return { code: 'WORKFLOW_NOT_FOUND', message: `WORKFLOW_NOT_FOUND: unknown workflow '${resourceId}' — register it first (workflow_register), then push its assets` };
+  }
   if (ownerCode === 'NOT_TRIGGER_OWNER' && (toolName === 'schedule_delete' || toolName === 'schedule_setEnabled')) return { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${resourceId}` };
   if (ownerCode === 'NOT_TRIGGER_OWNER' && toolName === 'webhook_delete') return { code: 'TRIGGER_NOT_FOUND', message: `Unknown webhook: ${resourceId}` };
   return undefined;
