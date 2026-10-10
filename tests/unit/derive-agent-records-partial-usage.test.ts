@@ -48,6 +48,46 @@ describe('deriveAgentRecords — a failed usage event carrying tokens stays stat
     expect('partial' in record).toBe(false);
   });
 
+  it('issue #160 BUG-4: a failed usage event with estimated:true derives estimated:true (restart-reconstruction parity, DES-188 lock)', () => {
+    const transcripts = new Map([
+      ['a1e', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a1e', descriptor: { model: '', provider: '' } } },
+        {
+          ts: 't1', kind: 'usage' as const,
+          data: {
+            reason: 'aborted', provider: '', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
+            tokens: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpriced: true, partial: true, estimated: true,
+          },
+        },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a1e') as any;
+    expect(record.state).toBe('failed');
+    expect(record.tokens).toEqual({ input: 100, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(record.partial).toBe(true);
+    expect(record.estimated).toBe(true);
+  });
+
+  it('issue #160 BUG-4: a failed usage event with a REAL partial figure (no estimated field) derives no estimated field (absence rule)', () => {
+    const transcripts = new Map([
+      ['a1r', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a1r', descriptor: { model: 'the-model', provider: 'anthropic' } } },
+        {
+          ts: 't1', kind: 'usage' as const,
+          data: {
+            reason: 'aborted', provider: 'anthropic', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
+            tokens: { input: 11, output: 4, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpriced: true, partial: true,
+          },
+        },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a1r') as any;
+    expect(record.partial).toBe(true);
+    expect('estimated' in record).toBe(false);
+  });
+
   it('a DONE usage event CAN carry partial:true (invoke()\'s retry loop summed a prior failed attempt into the final success) and it survives derivation', () => {
     const transcripts = new Map([
       ['a3', [

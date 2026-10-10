@@ -103,6 +103,10 @@ export function deriveAgentRecords(
         // DONE branch's when `invoke()`'s retry loop summed a prior failed attempt's own lower-bound
         // tokens into the final successful total (ClaudeAgentSdkGatewayClient.invoke).
         partial?: true;
+        // issue #160 BUG-4 (owner decision): mirrored verbatim onto the reconstructed record, FAILED
+        // branch only (capture()'s done branch never sets this on a usage event) — see
+        // `AgentRecord.estimated`'s own doc.
+        estimated?: true;
         // issue #162 (owner-approved): mirrors `AgentRecord.schemaExhausted`/`reaskCount` — set only
         // on the done-branch usage event `capture()`'s schema-retry loop emits when its last attempt
         // never conformed (agent-executor.ts `_callAgent`).
@@ -152,6 +156,7 @@ export function deriveAgentRecords(
             : ZERO_TOKENS,
           costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? false,
           ...(data.partial === true ? { partial: true as const } : {}),
+          ...(data.estimated === true ? { estimated: true as const } : {}),
           ...(data.transport !== undefined ? { transport: data.transport } : {}),
           // v26 (H-3/M-2 send-back repair, DES-188 lock): same fields `capture()`'s failed branch
           // sets live — present only when the event carries them, matching the ok-branch's own

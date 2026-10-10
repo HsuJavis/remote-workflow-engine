@@ -158,10 +158,16 @@ export type GatewayResult =
   | {
       // dash-auth-spec.md section C (2026-09-30): `'aborted'` is produced by exactly ONE site —
       // `AgentExecutor._finalizeAborted` (agent-executor.ts), when `run_suspend`/`run_stop` cuts a
-      // call short — never by a real gateway implementation (an SDK/HTTP failure is always
-      // 'timeout'/'unreachable'/'terminal'). Kept in the SAME union rather than a sibling type so
-      // every existing `ok:false` branch (capture()'s failed path, `deriveAgentRecords`) handles it
-      // by construction instead of needing a second parallel type to stay in sync.
+      // call short — never by a real gateway's OWN classified failure (an SDK/HTTP failure is
+      // always 'timeout'/'unreachable'/'terminal'). issue #160 BUG-4 correction: a gateway CAN also
+      // build this reason directly, when its OWN internal abort check (`pi-gateway-client.ts`'s
+      // `req.signal?.aborted` branch) wins the race against `AgentExecutor`'s — `_runTracked`'s
+      // generic `!result.ok` branch then handles it exactly like `_finalizeAborted`'s own result,
+      // including `applyAbortEstimate`'s estimate fallback (agent-executor.ts), which is why that
+      // helper keys off `reason === 'aborted'` rather than off which site built the object. Kept in
+      // the SAME union rather than a sibling type so every existing `ok:false` branch (capture()'s
+      // failed path, `deriveAgentRecords`) handles it by construction instead of needing a second
+      // parallel type to stay in sync.
       ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
       /** Observability: when a real SDK session ends in a non-success `result` message, the CLI's
        *  error subtype (e.g. `error_during_execution`, `error_max_turns`) and any error text — so a
@@ -177,6 +183,11 @@ export type GatewayResult =
        *  saw any usage at all before failing (e.g. refused before dispatch, or a pre-#127 gateway). */
       tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
       partial?: true;
+      /** issue #160 BUG-4 (owner decision): `true` iff `tokens` is `applyAbortEstimate`'s
+       *  client-side `ceil(chars/4)` floor over the dispatched text, not anything a provider or
+       *  harness reported — see `AgentRecord.estimated`'s own doc. Set only alongside
+       *  `reason:'aborted'` and `partial:true`; absent on every other failure. */
+      estimated?: true;
       /** v26 (DES-171, ARCH-111, TASK-176, issue #65): `false` on a `classifyApiError`-terminal
        *  failure — `invoke()`'s retry loop stops immediately instead of burning the full
        *  `timeoutMs × (1+retries)` bound against a provider that already said no. Absent (not

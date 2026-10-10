@@ -41,6 +41,40 @@ function addTokenVectors(a: Tokens, b: Tokens): Tokens {
   return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite };
 }
 
+/** issue #160 BUG-4 (owner decision, 2026-10-10): a deterministic, provider-independent INPUT-token
+ *  floor for an aborted attempt that reported no usage at all — `ceil(chars/4)` over the exact text
+ *  THIS attempt dispatched (the composed prompt, including the schema/output-format block
+ *  `_runTracked` appends when `schema` is set). Not a tokenizer and not meant to be exact — a crude
+ *  byte/4 ratio, documented as such in `workflow_authoring_guide` — only non-zero so that a
+ *  `budget:{tokens:N}` limit can still bind on a provider (OpenRouter via the pi harness) that never
+ *  streams mid-turn usage at all, closing the gap `applyAbortEstimate` (below) exists to fill. Never
+ *  applied to the output columns — an aborted attempt's output, if any, was never observed and is
+ *  left at 0, same as before this fix. */
+export function estimateInputTokens(dispatchedText: string): number {
+  return Math.ceil(dispatchedText.length / 4);
+}
+
+/** issue #160 BUG-4 (owner decision, gateway-neutral): when a `reason:'aborted'` result carries NO
+ *  real usage signal from either producer — the gateway's own `result.tokens` sums to zero, exactly
+ *  pi-gateway-client.ts's documented "neither source has anything yet" convention — charge
+ *  `estimateInputTokens`'s floor over `dispatchedText` instead, marked `estimated:true` beside the
+ *  existing `partial:true`. A genuine real signal (any nonzero `result.tokens`, from EITHER
+ *  `_finalizeAborted`'s own live-attempt read or a gateway's own internal abort branch) always wins
+ *  and this never adds to it — the estimate and a real figure are mutually exclusive, never summed.
+ *  `dispatchedText === undefined` means nothing was ever handed to a gateway for this attempt (the
+ *  call was aborted before dispatch) — stays an honest, un-estimated zero, same as before this fix.
+ *  Keying off `reason === 'aborted'` (not which call site built `result`) is what makes this apply
+ *  identically whether `AgentExecutor._finalizeAborted` built the result or a gateway's OWN abort
+ *  check won the race first (`pi-gateway-client.ts`'s `req.signal?.aborted` branch) — see
+ *  `GatewayResult`'s own doc (client.ts) for why that second producer exists. */
+function applyAbortEstimate(result: GatewayResult, dispatchedText: string | undefined): GatewayResult {
+  if (result.ok || result.reason !== 'aborted' || dispatchedText === undefined) return result;
+  const existing = result.tokens;
+  const hasRealSignal = existing !== undefined && sumTokens({ input: existing.input, output: existing.output, cacheRead: existing.cacheRead ?? 0, cacheWrite: existing.cacheWrite ?? 0 }) > 0;
+  if (hasRealSignal) return result;
+  return { ...result, tokens: { input: estimateInputTokens(dispatchedText), output: 0, cacheRead: 0, cacheWrite: 0 }, partial: true, estimated: true };
+}
+
 /** v26 (H-3 send-back repair, ARCH-111, DES-171, INV-V26-5): the SAME redact-then-cap rule as
  *  `capPrompt` above, for a provider-authored error `detail` string. Used to run inside
  *  `claude-agent-sdk-client.ts`'s `_drain`, at BUILD time — before `redact()` ever saw the string —
@@ -644,7 +678,12 @@ export class AgentTranscriptSink {
             // because a re-ask happened; only THIS attempt's own `result.partial` (issue #127's
             // lower-bound-on-failure figure) or an earlier attempt's already-partial total propagate.
             const partial = priorPartial || result.partial === true ? (true as const) : undefined;
-            return { tokens, costUSD, unpriced, partial };
+            // issue #160 BUG-4: never propagated from a prior re-ask attempt the way `partial` is —
+            // an aborted call ends the schema-retry loop outright (`_runTracked` returns from
+            // `_finalizeAborted`/this branch immediately, no further attempt follows), so THIS
+            // attempt's own `result.estimated` is the only source there will ever be.
+            const estimated = result.estimated === true ? (true as const) : undefined;
+            return { tokens, costUSD, unpriced, partial, estimated };
           })();
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, agentKey: req.agentKey, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
@@ -658,6 +697,9 @@ export class AgentTranscriptSink {
         state: 'failed', provider, model: prev?.model ?? '',
         tokens: failUsage?.tokens ?? ZERO_TOKENS, costUSD: failUsage?.costUSD ?? 0, unpriced: failUsage?.unpriced ?? false,
         ...(failUsage?.partial === true ? { partial: true as const } : {}),
+        // issue #160 BUG-4: mirrors `partial` immediately above, same source (`failUsage`) — present
+        // only when THIS attempt's own estimate (never a prior one, see `failUsage`'s own doc) fired.
+        ...(failUsage?.estimated === true ? { estimated: true as const } : {}),
         // dash-auth-spec.md section C: the gateway's own failure reason, verbatim — see
         // `AgentRecord.failReason`'s own doc for why this is never re-mapped at either producer.
         failReason: result.reason, ...warnings,
@@ -700,7 +742,7 @@ export class AgentTranscriptSink {
           // issue #141: the merged total, same as the record above — not `result.unmapped` raw, and
           // never gated on `failUsage` (see `totalUnmappedFail`'s own doc).
           ...(totalUnmappedFail.length > 0 ? { unmapped: totalUnmappedFail } : {}),
-          ...(failUsage !== undefined ? { tokens: failUsage.tokens, costUSD: failUsage.costUSD, unpriced: failUsage.unpriced, ...(failUsage.partial === true ? { partial: true as const } : {}) } : {}),
+          ...(failUsage !== undefined ? { tokens: failUsage.tokens, costUSD: failUsage.costUSD, unpriced: failUsage.unpriced, ...(failUsage.partial === true ? { partial: true as const } : {}), ...(failUsage.estimated === true ? { estimated: true as const } : {}) } : {}),
         },
       });
     }
@@ -792,7 +834,7 @@ export class AgentExecutor implements AgentSpawner {
    *  UNRESOLVED sentinel, not a claim — `capture()`'s failed branch (below) merges in whatever the
    *  live record (`markHarness`) already resolved, exactly like every other failure path; this call
    *  site never needs to know whether that happened. */
-  private async _finalizeAborted(req: AgentReq): Promise<AgentOutcome> {
+  private async _finalizeAborted(req: AgentReq, dispatchedPrompt?: string): Promise<AgentOutcome> {
     // issue #127: the gateway's own returned Promise is abandoned the instant the run's abort wins
     // `_invokeOnce`'s race (below) — whatever it would eventually report is lost UNLESS it already
     // streamed a live figure onto this agent's record via `onUsage`/`markUsage` before that happened.
@@ -811,14 +853,25 @@ export class AgentExecutor implements AgentSpawner {
     // abort check wins instead of this executor-level race) was fixed under issue #152 to ALWAYS
     // set `partial:true` with whatever `cumulative` holds, even 0 — "the known spend is a lower
     // bound, possibly 0" is the one honest reading. Mirrored here: always partial:true for 'aborted'.
+    //
+    // issue #160 BUG-4 reopen (2026-10-10 owner decision): `liveAttempt` is STILL the common case of
+    // "nothing" under the pi harness with a provider (OpenRouter) that never populates `usage` on an
+    // intermediate chunk — `applyAbortEstimate` (below) is what now stands in a client-side estimate
+    // for that specific gap, keyed off `dispatchedPrompt` (the EXACT text `_runTracked` handed
+    // `_invokeOnce` for this attempt — absent when the call was aborted before ever reaching a
+    // gateway, in which case the estimate correctly stays out: see that param's own call sites).
     const liveAttempt = this._sink.getLiveAttemptUsage(req.agentId);
-    await this._sink.capture(
-      req.runId,
-      { agentId: req.agentId, label: req.opts.label, agentKey: req.agentKey },
+    const result = applyAbortEstimate(
       {
         ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
         tokens: liveAttempt ?? ZERO_TOKENS, partial: true as const,
       },
+      dispatchedPrompt,
+    );
+    await this._sink.capture(
+      req.runId,
+      { agentId: req.agentId, label: req.opts.label, agentKey: req.agentKey },
+      result,
       this._clock.isoNow(),
     );
     return { kind: 'null', aborted: true };
@@ -973,14 +1026,25 @@ export class AgentExecutor implements AgentSpawner {
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
       const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff, attempt);
-      if (outcome === 'aborted') return this._finalizeAborted(req);
+      // issue #160 BUG-4: only the race-lost 'aborted' sentinel carries a dispatched prompt to
+      // estimate from — 'aborted-before-dispatch' (the signal was already set when `_invokeOnce`
+      // checked, before `this._gateway.invoke` was ever called) must stay an honest, un-estimated
+      // zero, same as `_runTracked`'s own pre-loop check above.
+      if (outcome === 'aborted') return this._finalizeAborted(req, prompt);
+      if (outcome === 'aborted-before-dispatch') return this._finalizeAborted(req);
       const result = outcome;
 
       if (!result.ok) {
+        // issue #160 BUG-4 (gateway-neutral): a gateway can ALSO build `reason:'aborted'` directly
+        // (its OWN internal abort check winning the race before this executor's `aborted` sentinel
+        // does — `pi-gateway-client.ts`'s `req.signal?.aborted` branch) rather than losing the race
+        // to `_finalizeAborted` above. `applyAbortEstimate` is a no-op for every other reason/result
+        // shape, so this is safe to call unconditionally.
+        const estimated = applyAbortEstimate(result, prompt);
         // A genuine gateway failure always ends the loop — `capture()`'s default `final:true` is
         // correct here unchanged (it also folds in any earlier re-ask attempt's committed total —
         // see `capture()`'s own doc).
-        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label, agentKey: req.agentKey }, result, this._clock.isoNow());
+        await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label, agentKey: req.agentKey }, estimated, this._clock.isoNow());
         return { kind: 'null' };
       }
       if (!validate) {
@@ -1017,10 +1081,13 @@ export class AgentExecutor implements AgentSpawner {
     return { kind: 'null' };
   }
 
-  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams, attempt: number): Promise<GatewayResult | 'aborted'> {
+  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams, attempt: number): Promise<GatewayResult | 'aborted' | 'aborted-before-dispatch'> {
     // issue #53: a schema-retry attempt that begins after the abort must not dispatch — the race
     // below adds its listener to an already-aborted signal, which never fires.
-    if (req.signal.aborted) return 'aborted';
+    // issue #160 BUG-4: a DISTINCT sentinel from the race-lost 'aborted' below — nothing was ever
+    // handed to `this._gateway.invoke` for this attempt, so `applyAbortEstimate` (the caller) must
+    // not estimate a cost for text that was never dispatched.
+    if (req.signal.aborted) return 'aborted-before-dispatch';
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
     // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the

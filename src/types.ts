@@ -400,6 +400,16 @@ export interface AgentRecord {
    *  `failed` record whose gateway result DID carry an authoritative `result.usage` (e.g.
    *  `error_max_turns`): those totals are exactly what the provider reported, not an estimate. */
   partial?: true;
+  /** issue #160 BUG-4 (owner decision, 2026-10-10): `true` iff `tokens` (always `partial:true` too
+   *  when this is set) is NOT anything a provider or harness reported — real or partial — but a
+   *  deterministic, provider-independent floor computed client-side from the exact text this
+   *  attempt dispatched (`agent-executor.ts`'s `estimateInputTokens`, `ceil(chars/4)` over the
+   *  composed prompt — never the output columns, always 0). Set ONLY on an `'aborted'` call that
+   *  carried no real usage signal at all from either source `applyAbortEstimate` consults — a
+   *  provider that reports ANYTHING (even a genuine, harness-reported 0) is read as `partial`
+   *  without this flag, never overridden by a guess. Absent — never `false` — on every other
+   *  record, including a `partial` one whose lower bound came from the provider/harness itself. */
+  estimated?: true;
 }
 
 export interface PhaseView {
