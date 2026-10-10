@@ -736,21 +736,14 @@ describe('buildAuthoringGuide — "Engine ceilings" states PARAM_CONTRACT_INVALI
   });
 });
 
-// issue #89 item 3: VERIFIED IN CODE (not just per the issue's initial framing) — a schedule
-// firing's CONFINEMENT_UNAVAILABLE is thrown by RunManager.start() inside the ticker's dispatch
-// (server.ts's `ticker.start(...)` callback) and falls into the GENERIC `.catch()` there, which
-// calls `scheduler.markFailed(firing, code)` — server.ts's own comment says so explicitly ("a
-// thrown CONFINEMENT_UNAVAILABLE falls into the SAME generic .catch() below markFailed already
-// handles"). `markFailed` sets `lastError` (scheduler.ts), NEVER `refusalCount`/`lastRefusedAt`/
-// `lastRefusalReason` — those three are written only by `markRefused`, called from
-// `resolveScheduleTarget`'s OWN pre-dispatch reasons (UNCLAIMED/CHANNEL_UNPUBLISHED/
-// CLAIMED_WORKFLOW_MISSING/NOT_IN_RELEASE), which never include CONFINEMENT_UNAVAILABLE. So the
-// guide's ORIGINAL claim — "surfaced in schedule_list's lastError" — was ALREADY ACCURATE; the
-// issue's premise (drawn from the DIFFERENT, webhook-registry.ts:357-359 behavior, which DOES
-// special-case CONFINEMENT_UNAVAILABLE into the refusal trio) does not hold for schedules. DECISION
-// (this iteration, per re-verification): keep the guide's original `lastError` claim; the
-// scheduler/webhook asymmetry itself is a possible follow-up, reported, not fixed here.
-describe('buildAuthoringGuide — "Host path grants" names the field a schedule\'s CONFINEMENT_UNAVAILABLE actually lands in (issue #89 item 3, re-verified)', () => {
+// Issue #122 (owner decision 2026-10-10): the schedule/webhook asymmetry issue #89 item 3 reported
+// (and this iteration's own earlier re-verification left as a documented, unfixed follow-up) is
+// now FIXED — server.ts's ticker `.catch()` special-cases CONFINEMENT_UNAVAILABLE into
+// `scheduler.markRefused(firing, 'CONFINEMENT_UNAVAILABLE')` (the refusalCount/lastRefusedAt/
+// lastRefusalReason trio), the same way `WebhookRegistry.deliver()` already does for the identical
+// code. Every OTHER start()-thrown code during a firing is still a genuine dispatch failure and
+// still lands on `lastError` via `markFailed`, unchanged.
+describe('buildAuthoringGuide — "Host path grants" names the field a schedule\'s CONFINEMENT_UNAVAILABLE actually lands in (issue #122, fixed)', () => {
   // Exhaustive (both directions, via a Record<keyof T, true>) so a future field rename/addition on
   // either row shape is caught here rather than silently under-checked.
   const SCHEDULE_FIELDS: Record<keyof ScheduleStatus, true> = {
@@ -765,10 +758,10 @@ describe('buildAuthoringGuide — "Host path grants" names the field a schedule\
     lastRefusalMessage: true,
   };
 
-  it('the unconfined body attributes a schedule firing\'s refusal to lastError, matching the ACTUAL markFailed/lastError code path (not the refusal trio)', () => {
+  it('the unconfined body attributes a schedule firing\'s refusal to lastRefusalReason, matching the ACTUAL markRefused/refusal-trio code path (#122)', () => {
     const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: 'unconfined' });
     const section = text.slice(text.search(/host path grants/i));
-    expect(section).toContain("schedule_list`'s `lastError`");
+    expect(section).toContain("schedule_list`'s `lastRefusalReason`");
   });
 
   it('every field the guide attributes to schedule_list/webhook_list actually exists on that tool\'s own output row', () => {

@@ -27,7 +27,7 @@ import { parseMeta, parseMetaParams, parseWorkflowSkeleton, checkMetaPhases } fr
 import { deriveExpectedGraph } from './skeleton-graph.js';
 // Issue #91: the SAME literal `path-verdict.ts`'s asset-tree check refuses a reserved-prefix path
 // segment with — reused, not re-typed, so the two checks can never drift on what "reserved" means.
-import { RESERVED_PREFIX, isReservedPrefixed, isValidBareName } from './path-verdict.js';
+import { RESERVED_PREFIX, isReservedPrefixed, isValidBareName, bareNameViolation } from './path-verdict.js';
 import { isPathContained } from './path-containment.js';
 import { scanAgentCalls, type AgentCallViolationCode } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
@@ -232,6 +232,23 @@ export function canRunResolved(
 }
 function isActor(x: unknown): x is Actor {
   return typeof x === 'object' && x !== null && 'bypass' in x && 'idSource' in x;
+}
+
+// Issue #166 tail (low item 2, owner decision): the ONE place an INVALID_NAME refusal turns a
+// `bareNameViolation()` result into both the wire `detail` object and a human-readable message
+// suffix — called from `validateRegistration` (a fresh name) AND `_computeStoredVersionValidity`
+// (a stored row re-checked against today's rule), so the two can never disagree about the shape.
+// `undefined` only when `bareNameViolation` itself returns `null`, which neither caller reaches
+// (both call this only after `isValidBareName(name)` is already known false).
+function bareNameViolationDetail(name: string): { rule: string; limit?: number; actual?: number } | undefined {
+  const v = bareNameViolation(name);
+  if (!v) return undefined;
+  return { rule: v.rule, ...(v.limit !== undefined ? { limit: v.limit } : {}), ...(v.actual !== undefined ? { actual: v.actual } : {}) };
+}
+function bareNameViolationSuffix(name: string): string {
+  const v = bareNameViolation(name);
+  if (!v) return '';
+  return ` — violated rule '${v.rule}'${v.limit !== undefined ? ` (limit ${v.limit}, actual ${v.actual})` : ''}`;
 }
 
 export interface WorkflowCatalogOpts {
@@ -679,9 +696,14 @@ export class WorkflowCatalog {
     // requires a single non-empty, slash-free, non-`.`/`..`, length-bounded segment — the ONE shape
     // that can never add, remove, or escape a directory level when joined.
     if (!isValidBareName(name)) {
+      // Issue #166 tail (low item 2, owner decision): `detail` AND the message now name the
+      // SPECIFIC rule (`bareNameViolation`) this name tripped — the generic sentence here used to
+      // list every rule, leaving a caller to guess which ONE actually fired, e.g. the 128-character
+      // ceiling vs. the 200-byte one (the exact pair #166 decision 2 itself added).
       throw codedError(
         'INVALID_NAME',
-        `INVALID_NAME: workflow name '${name}' must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters AND at most 200 UTF-8 bytes (issue #166: a multi-byte name can satisfy the character limit while still exceeding this one)`,
+        `INVALID_NAME: workflow name '${name}' must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters AND at most 200 UTF-8 bytes (issue #166: a multi-byte name can satisfy the character limit while still exceeding this one)${bareNameViolationSuffix(name)}`,
+        bareNameViolationDetail(name),
       );
     }
 
@@ -1388,11 +1410,17 @@ export class WorkflowCatalog {
     // a row whose name predates this rule must come back INVALID_NAME, not some other code a later
     // check happens to hit first.
     if (!isValidBareName(name)) {
+      // Issue #166 tail (low item 2, owner decision): the SAME `bareNameViolation` call
+      // `validateRegistration`'s own INVALID_NAME throw now uses — single source of truth, so a
+      // stored row and a fresh registration can never disagree about which rule it broke.
+      // `rule`/`limit`/`actual` ride ALONGSIDE the existing `violation:'INVALID_NAME'` key (which
+      // every other staleness cause on this method already uses to name WHICH check failed) —
+      // `workflow_describe`'s `runnableDetail` forwards both (mcp-facade.ts's `workflowDescribe`).
       return {
         ok: false,
         code: 'NOT_RUNNABLE',
-        message: `NOT_RUNNABLE: this version's name ('${name}') is no longer a valid workflow name (INVALID_NAME) — re-register it under a valid name`,
-        detail: { violation: 'INVALID_NAME' },
+        message: `NOT_RUNNABLE: this version's name ('${name}') is no longer a valid workflow name (INVALID_NAME) — re-register it under a valid name${bareNameViolationSuffix(name)}`,
+        detail: { violation: 'INVALID_NAME', ...bareNameViolationDetail(name) },
       };
     }
     // 2026-10-08 integration (rv) fix: `scanAgentCalls` runs FIRST now (ahead of its pinned

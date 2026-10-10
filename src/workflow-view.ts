@@ -160,7 +160,20 @@ export interface WorkflowDescribeView {
   // `'NOT_RUNNABLE'`, and ALSO null for the pre-existing `full.validation.ok===false` branch (a
   // `validateCurrent()`-only parse/shape failure the caller never handed a `ctx.notRunnableDetail`
   // for) rather than guess at a cause this field was never given.
-  runnableDetail: { violation: string; message: string } | null;
+  runnableDetail: RunnableDetail | null;
+}
+
+// Issue #166 tail (low item 2, owner decision): widened to carry the SAME `bareNameViolation`
+// fields `workflow-catalog.ts`'s `_computeStoredVersionValidity` now attaches to an INVALID_NAME
+// staleness result (`rule`/`limit`/`actual`) — present only for that one violation, `undefined`
+// for every other `violation` value (RESERVED_PREFIX, a scan code, …), which never had sub-rules
+// to name. `violation`/`message` are unchanged from before this fix.
+export interface RunnableDetail {
+  violation: string;
+  message: string;
+  rule?: string;
+  limit?: number;
+  actual?: number;
 }
 
 // Transcribed LITERALLY from WorkflowDescribeView's own top-level field list (same convention as
@@ -256,7 +269,7 @@ export function projectWorkflowDescribe(
     // `ctx.notRunnable` booleanizes, kept whole here so `runnableDetail` can name the violation —
     // never a second check, never re-derived. Omitted whenever `ctx.notRunnable` is falsy/omitted
     // (every pre-existing call site keeps compiling and keeps `runnableDetail: null`).
-    notRunnableDetail?: { violation: string; message: string };
+    notRunnableDetail?: RunnableDetail;
   },
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;

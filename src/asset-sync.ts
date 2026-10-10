@@ -127,6 +127,12 @@ export function classifyAsset(kind: LegacyAssetKind, _asset: unknown): AssetDisp
  *  `workspace_pull`. `RESERVED_PREFIX` earns its own catalog key because it is specific and
  *  actionable ("pick a name that does not start with `rwe-`"); every other lexical reject is either
  *  a containment failure or a malformed argument. */
+// Issue #166 tail (low item 1, owner decision): the ONE wording for an asset name of exactly
+// `.`/`..` — used verbatim by BOTH `push()` and `delete()` below, so the two doors can never drift
+// back into the mismatched `INVALID_ARGUMENT`-vs-`INVALID_NAME` codes (and the message-less vs.
+// message-bearing refusals) the tester's reverify caught.
+const DOT_SEGMENT_ASSET_NAME_REASON = "'.'/'..' are not valid asset names — a single path segment is required";
+
 function assetNameErrorCode(v: { kind: 'reject'; reason: string } | { kind: string; reason?: string }): string {
   switch (v.reason) {
     case 'RESERVED_PREFIX': return 'RESERVED_PREFIX';
@@ -559,7 +565,12 @@ export class AssetSyncService {
     if (nameVerdict.kind !== 'ok') return { error: assetNameErrorCode(nameVerdict) };
     // lexicalVerdict drops a bare "." segment, so an asset NAME of exactly "." came back ok and
     // would be stored at `<…>/<kind>/.` — the kind directory itself (#166 final reverify).
-    if (req.name === '.') return { error: 'INVALID_ARGUMENT' };
+    // #166 tail (low item 1, owner decision): this used to return a bare `{error:'INVALID_ARGUMENT'}`
+    // with no `detail` — mcp-facade.ts's `workspacePush` only builds a reasoned `message` when
+    // `detail` is present (`r.detail !== undefined ? ... : r.error`), so the caller saw the naked
+    // code and nothing else. Now INVALID_NAME (matching `delete()`'s own refusal for the identical
+    // shape, just below) WITH a `detail.message` that is actually delivered.
+    if (req.name === '.') return { error: 'INVALID_NAME', detail: { message: DOT_SEGMENT_ASSET_NAME_REASON } };
     const pushedBy = req.pushedBy ?? 'local';
     const pushedAt = this._clock.isoNow();
     const workflow = req.scope === 'workflow' ? req.workflow : undefined;
@@ -844,8 +855,13 @@ export class AssetSyncService {
   async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean; warning?: string }> {
     // The ASSET name is a path segment too: a bare "." would resolve `<…>/skill/.` to the whole
     // skill directory (every skill of the workflow, or every global skill). Refused pre-commit.
+    // #166 tail (low item 1, owner decision): the `.`/`..` case gets the SAME reason string
+    // `push()` now returns for the identical shape (`DOT_SEGMENT_ASSET_NAME_REASON`) — every other
+    // refusal this helper covers (empty, NUL, a separator) keeps its own generic wording, which
+    // already states why.
     if (!this._lenientWorkflowSegmentOk(req.name)) {
-      throw codedError('INVALID_NAME', `INVALID_NAME: asset name '${req.name}' is not a valid path segment`);
+      const reason = req.name === '.' || req.name === '..' ? DOT_SEGMENT_ASSET_NAME_REASON : `asset name '${req.name}' is not a valid path segment`;
+      throw codedError('INVALID_NAME', `INVALID_NAME: ${reason}`);
     }
     const root = req.kind === 'skill' ? this._skillRootLenient(req.scope, req.workflow, req.name) : undefined;
     if (req.kind === 'skill' && root === undefined) {

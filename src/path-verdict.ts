@@ -120,6 +120,41 @@ export const MAX_BARE_NAME_LENGTH = 128;
 // every join site that already exists today.
 export const MAX_BARE_NAME_BYTES = 200;
 
+// Issue #166 tail (tester reverify, low item 2, owner decision): `isValidBareName`'s boolean API
+// told a caller NOTHING about which of its six independent rules actually tripped — a 129-
+// character name and a 201-byte name both came back `false`, indistinguishable from the message
+// alone. `bareNameViolation` is the one function that now DECIDES ("ok" vs. which rule"), in the
+// exact same checked order `isValidBareName` always used (so no existing boolean call site's
+// result can change); `isValidBareName` becomes a thin `=== null` wrapper over it, never a second,
+// independently-maintained copy of the same six conditions.
+export type BareNameRule = 'empty' | 'whitespace' | 'separator' | 'control-char' | 'dot-segment' | 'maxChars' | 'maxBytes';
+
+export interface BareNameViolation {
+  rule: BareNameRule;
+  /** Present only for the two bounded rules (`maxChars`/`maxBytes`) — the ceiling itself. */
+  limit?: number;
+  /** Present only for the two bounded rules — the actual character/byte count that exceeded it. */
+  actual?: number;
+}
+
+/** `null` for a valid bare name; else the ONE rule that failed, in the same priority order
+ *  `isValidBareName` has always checked in (empty/non-string first, then the character ceiling,
+ *  then whitespace, then a separator, then a control character, then `.`/`..`, then the byte
+ *  ceiling last). Pure, no filesystem access — see `isValidBareName`'s own doc for the history of
+ *  each individual rule; this file only adds the ABILITY to name which one fired. */
+export function bareNameViolation(name: string): BareNameViolation | null {
+  if (typeof name !== 'string' || name.length === 0) return { rule: 'empty' };
+  if (name.length > MAX_BARE_NAME_LENGTH) return { rule: 'maxChars', limit: MAX_BARE_NAME_LENGTH, actual: name.length };
+  if (name.trim() !== name) return { rule: 'whitespace' }; // leading/trailing whitespace padding
+  if (name.includes('/') || name.includes('\\')) return { rule: 'separator' };
+  // eslint-disable-next-line no-control-regex -- deliberately matching C0 controls + DEL
+  if (/[\x00-\x1f\x7f]/.test(name)) return { rule: 'control-char' };
+  if (name === '.' || name === '..') return { rule: 'dot-segment' };
+  const actualBytes = Buffer.byteLength(name, 'utf8');
+  if (actualBytes > MAX_BARE_NAME_BYTES) return { rule: 'maxBytes', limit: MAX_BARE_NAME_BYTES, actual: actualBytes };
+  return null;
+}
+
 /** True for a non-empty, length-bounded name with no leading/trailing whitespace that contains
  *  neither path separator and is not exactly `.`/`..` — safe to join as exactly one path segment
  *  with no risk of adding, removing, or escaping a directory level. Deliberately silent on the
@@ -138,14 +173,11 @@ export const MAX_BARE_NAME_BYTES = 200;
  *  registrations) and `_computeStoredVersionValidity` (the #154-style re-check of an
  *  already-stored row) both call, so a byte-oversized legacy name is refused at registration AND
  *  demoted to `NOT_RUNNABLE` on every existing row the same way — the two can never disagree about
- *  what counts as a valid bare name. */
+ *  what counts as a valid bare name.
+ *
+ *  issue #166 tail (low item 2): now a thin wrapper over `bareNameViolation` — same six checks,
+ *  same order, same boolean result for every existing call site; the only change is that a caller
+ *  who also wants to know WHICH rule failed can call `bareNameViolation` directly instead. */
 export function isValidBareName(name: string): boolean {
-  if (typeof name !== 'string' || name.length === 0 || name.length > MAX_BARE_NAME_LENGTH) return false;
-  if (name.trim() !== name) return false; // rejects '', whitespace-only, and leading/trailing padding
-  if (name.includes('/') || name.includes('\\')) return false;
-  // eslint-disable-next-line no-control-regex -- deliberately matching C0 controls + DEL
-  if (/[\x00-\x1f\x7f]/.test(name)) return false;
-  if (name === '.' || name === '..') return false;
-  if (Buffer.byteLength(name, 'utf8') > MAX_BARE_NAME_BYTES) return false;
-  return true;
+  return bareNameViolation(name) === null;
 }

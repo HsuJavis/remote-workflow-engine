@@ -5,14 +5,18 @@
 // just an architectural argument).
 //
 // Residual note this test also DOCUMENTS rather than fixes (see the PR/report): the ticker's
-// generic `.catch()` classifies ANY start() throw the same way it always has —
-// `scheduler.markFailed(firing, code)`, which for a `once` trigger sets `enabled = 0` (consumed).
-// This is PRE-EXISTING behaviour for every start()-thrown code during a firing (a bad model ref
-// behaves identically), not something this slice introduces — but it does mean a once-trigger
-// refused MCP_NOT_PROVISIONED is spent: pushing the missing asset afterwards does not make it
-// retry. Only `lastError`, never `lastRefusalReason` (that field is `markRefused`'s, for the four
-// pre-dispatch policy reasons UNCLAIMED/CLAIMED_WORKFLOW_MISSING/CHANNEL_UNPUBLISHED/NOT_IN_RELEASE
-// — MCP_NOT_PROVISIONED is a `start()` throw, not one of those).
+// generic `.catch()` classifies MCP_NOT_PROVISIONED (and every other genuine dispatch failure) the
+// same way it always has — `scheduler.markFailed(firing, code)`, which for a `once` trigger sets
+// `enabled = 0` (consumed). This is PRE-EXISTING behaviour, not something this slice introduces —
+// but it does mean a once-trigger refused MCP_NOT_PROVISIONED is spent: pushing the missing asset
+// afterwards does not make it retry. Only `lastError`, never `lastRefusalReason` (that field is
+// `markRefused`'s, for the pre-dispatch policy reasons UNCLAIMED/CLAIMED_WORKFLOW_MISSING/
+// CHANNEL_UNPUBLISHED/NOT_IN_RELEASE — MCP_NOT_PROVISIONED is a `start()` throw, not one of those).
+// Issue #122 (owner decision 2026-10-10, fixed): CONFINEMENT_UNAVAILABLE is the ONE exception now
+// — the ticker special-cases that single code into `markRefused`'s refusal trio instead, matching
+// a webhook delivery (see server.ts's `.catch()` and tests/integration/scheduler-confinement-
+// refusal.test.ts). MCP_NOT_PROVISIONED and every other code this file's own scenario covers are
+// unaffected by that fix.
 // Mock policy (integration): real createServer, real MCP HTTP, real production ticker.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';

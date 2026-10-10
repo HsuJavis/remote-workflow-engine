@@ -238,5 +238,27 @@ describe('AssetSyncService.delete() — a legacy byte-oversized workflow name mu
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #166 tail (tester's 2026-10-10 reverify comment, low item 1, owner decision): push's `.`
+  // asset-name refusal used to be a bare `{error:'INVALID_ARGUMENT'}` with NO `detail` — mismatched
+  // against delete's `INVALID_NAME` for the identical shape, and with no reason attached at all.
+  // Both must now return INVALID_NAME, and push's must carry a `detail.message` stating why — the
+  // code-only shape alone is not enough: `mcp-facade.ts`'s `workspacePush` only builds a reasoned
+  // caller-facing message when `detail` is present (see that method's own comment).
+  //
+  // RED before the fix: `pushed.error === 'INVALID_ARGUMENT'` and `pushed.detail === undefined`.
+  it('push({name:"."}) returns INVALID_NAME WITH a detail.message stating why (#166 tail, low item 1)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-166-push-dot-detail-'));
+    try {
+      const svc = makeService(dir, true);
+      const pushed = await svc.push({ scope: 'workflow', workflow: 'wf', kind: 'skill', name: '.', files: [{ path: 'SKILL.md', contentB64: Buffer.from('# x').toString('base64') }] } as never) as { error?: string; detail?: { message?: string } };
+      expect(pushed.error).toBe('INVALID_NAME');
+      expect(pushed.detail?.message).toBeTruthy();
+      expect(pushed.detail?.message).toMatch(/not valid asset names|single path segment/);
+      expect(existsSync(join(dir, 'wf'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 

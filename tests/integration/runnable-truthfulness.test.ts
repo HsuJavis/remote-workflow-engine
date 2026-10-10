@@ -117,3 +117,31 @@ describe('issue #154 residual — workflow_describe names the reserved-prefix st
     expect(res.result?.runnableDetail?.message).toMatch(/rwe-/);
   });
 });
+
+// Issue #166 tail (tester's 2026-10-10 reverify comment, low item 2, owner decision): the SAME
+// `runnableDetail` closure, for the OTHER staleness cause that now has sub-rules to name —
+// INVALID_NAME. Seeded the same renamed-row idiom as the RESERVED_PREFIX case just above: register
+// under a valid placeholder, then rename the already-inserted row directly to a byte-oversized (but
+// character-limit-compliant) legacy name — `register()` itself would refuse this name today.
+//
+// RED before the fix: `runnableDetail` has no `rule`/`limit`/`actual` keys (undefined for all three).
+describe('issue #166 tail — workflow_describe names the INVALID_NAME sub-rule a stored row now breaks (low item 2)', () => {
+  it("a stored row renamed to a 201-UTF-8-byte legacy name describes runnable:false, runnableReason:'NOT_RUNNABLE', runnableDetail:{violation:'INVALID_NAME', rule:'maxBytes', limit:200, actual:201}", async () => {
+    const placeholder = 'runnable-truth-invalid-name-placeholder';
+    await registerAndPublish(placeholder);
+    const legacyName = 'ñ'.repeat(100) + 'x'; // 101 chars (under 128), 201 UTF-8 bytes (over 200)
+    const db = new Database(join(dir, 'catalog.db'));
+    db.prepare('UPDATE workflows SET name = ? WHERE name = ?').run(legacyName, placeholder);
+    db.prepare('UPDATE workflow_versions SET name = ? WHERE name = ?').run(legacyName, placeholder);
+    db.close();
+    const res = await callTool(partialDeps({ facade }), 'workflow_describe', { name: legacyName }, AUTH_DISABLED) as {
+      result?: { runnable?: boolean; runnableReason?: string | null; runnableDetail?: { violation: string; message: string; rule?: string; limit?: number; actual?: number } | null };
+    };
+    expect(res.result?.runnable).toBe(false);
+    expect(res.result?.runnableReason).toBe('NOT_RUNNABLE');
+    expect(res.result?.runnableDetail?.violation).toBe('INVALID_NAME');
+    expect(res.result?.runnableDetail?.rule).toBe('maxBytes');
+    expect(res.result?.runnableDetail?.limit).toBe(200);
+    expect(res.result?.runnableDetail?.actual).toBe(201);
+  });
+});

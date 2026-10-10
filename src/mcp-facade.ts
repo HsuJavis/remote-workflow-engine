@@ -783,7 +783,17 @@ export class McpFacade {
       // Issue #154 residual: names the specific rule `validateStoredVersion` found this stored row
       // failing (e.g. RESERVED_PREFIX) — the SAME `staleness` result `notRunnable` above already
       // booleanizes, never a second call.
-      notRunnableDetail: staleness.ok ? undefined : { violation: String(staleness.detail?.['violation'] ?? staleness.code), message: staleness.message },
+      // Issue #166 tail (low item 2): `rule`/`limit`/`actual` ride along for the one `violation`
+      // value that has sub-rules (INVALID_NAME) — `staleness.detail` carries them only for that
+      // case (workflow-catalog.ts's `_computeStoredVersionValidity`), so a plain `String(...)`/
+      // `undefined` read is correct for every other violation too.
+      notRunnableDetail: staleness.ok ? undefined : {
+        violation: String(staleness.detail?.['violation'] ?? staleness.code),
+        message: staleness.message,
+        ...(typeof staleness.detail?.['rule'] === 'string' ? { rule: staleness.detail['rule'] as string } : {}),
+        ...(typeof staleness.detail?.['limit'] === 'number' ? { limit: staleness.detail['limit'] as number } : {}),
+        ...(typeof staleness.detail?.['actual'] === 'number' ? { actual: staleness.detail['actual'] as number } : {}),
+      },
     });
     // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file

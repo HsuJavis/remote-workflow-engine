@@ -478,18 +478,16 @@ const HOST_PATH_GRANTS_UNCONFINED =
   "version's registering submission was remote — `run_start`/`run_resume` (a remote MCP caller, " +
   'or a LOCAL caller naming a workflow version that was itself registered remotely), a webhook ' +
   'delivery (`POST /hooks/:id` → HTTP 403), and a schedule firing (surfaced in ' +
-  // issue #89 item 3: RE-VERIFIED against server.ts's ticker driver (not just the issue's initial
-  // framing) — a schedule firing's CONFINEMENT_UNAVAILABLE is thrown by RunManager.start() and
-  // falls into the ticker's GENERIC `.catch()`, which calls `scheduler.markFailed(firing, code)`
-  // (server.ts's own comment: "a thrown CONFINEMENT_UNAVAILABLE falls into the SAME generic
-  // .catch() below markFailed already handles"). `markFailed` sets `lastError` — never the
-  // refusalCount/lastRefusedAt/lastRefusalReason trio, which `markRefused` writes only for
-  // resolveScheduleTarget's OWN pre-dispatch reasons (UNCLAIMED/CHANNEL_UNPUBLISHED/
-  // CLAIMED_WORKFLOW_MISSING/NOT_IN_RELEASE — never CONFINEMENT_UNAVAILABLE). So `lastError` is the
-  // ACCURATE claim here, unlike a webhook delivery's CONFINEMENT_UNAVAILABLE (webhook-registry.ts
-  // DOES special-case it into that same trio) — the two admission routes genuinely differ; this is
-  // not a copy-paste of one onto the other.
-  '`schedule_list`\'s `lastError`) all return `CONFINEMENT_UNAVAILABLE` — **regardless of what ' +
+  // issue #122 (owner decision 2026-10-10): a schedule firing's CONFINEMENT_UNAVAILABLE is now
+  // special-cased the SAME way a webhook delivery already is — server.ts's ticker `.catch()`
+  // routes this ONE code to `scheduler.markRefused(firing, 'CONFINEMENT_UNAVAILABLE')` (the
+  // refusalCount/lastRefusedAt/lastRefusalReason trio, the SAME trio `resolveScheduleTarget`'s own
+  // pre-dispatch reasons already use), not the generic `markFailed`/`lastError` every OTHER
+  // start()-thrown code during a firing still gets. This supersedes issue #89 item 3's
+  // re-verification (which found the asymmetry accurate at the time and left it as a reported,
+  // unfixed follow-up) — the two admission routes no longer disagree about where this one code's
+  // refusal lands.
+  '`schedule_list`\'s `lastRefusalReason`) all return `CONFINEMENT_UNAVAILABLE` — **regardless of what ' +
   'tools any agent in the workflow declares.** A workflow whose every agent declares ' +
   "`allowedTools: []` (no `Bash`, no file tools, nothing) is refused identically to one that " +
   'declares `Bash`: this rule gates every admission route by submission/trigger/version ' +

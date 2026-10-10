@@ -1310,8 +1310,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       }
       runManager
         // v37 (ARCH-182, DES-263, TASK-258): `origin` stamped from `resolveScheduleTarget`'s own
-        // read of the fired trigger's stored `createdRemote` — a thrown CONFINEMENT_UNAVAILABLE
-        // falls into the SAME generic `.catch()` below `markFailed` already handles.
+        // read of the fired trigger's stored `createdRemote`. Issue #122 (owner decision
+        // 2026-10-10): a thrown CONFINEMENT_UNAVAILABLE used to fall into the generic `.catch()`
+        // below and record it as `lastError` — a DISPATCH failure — while a webhook delivery
+        // already special-cases the identical code into the refusalCount/lastRefusedAt/
+        // lastRefusalReason trio (webhook-registry.ts's `deliver()`). The `.catch()` below now
+        // does the same for a schedule firing; see its own comment.
         // issue #103(d): startedBy.id is the SCHEDULE id (`firing.id`), like a webhook run carries
         // the webhook's own id — never the workflow name, which already travels as `name` and via
         // `run_origins`'s scheduleId->runId join.
@@ -1329,7 +1333,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           // failure instead of silence. Without this the schedule stays "due" and re-fires at the
           // 500ms driver-tick cadence forever.
           const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'DISPATCH_FAILED';
-          scheduler.markFailed(firing, code);
+          // Issue #122 (owner decision): CONFINEMENT_UNAVAILABLE is a POLICY refusal decided
+          // BEFORE dispatch (the same admission check `run_start`/a webhook delivery go through),
+          // not a dispatch failure like a deleted catalog entry — record it the way
+          // `resolveScheduleTarget`'s own pre-dispatch refusals a few lines up already are
+          // (`markRefused`, the refusalCount/lastRefusedAt/lastRefusalReason trio), matching
+          // `WebhookRegistry.deliver()`'s identical special-case for the same code. Every OTHER
+          // thrown code here is still a genuine dispatch failure and keeps `markFailed`/`lastError`
+          // unchanged.
+          if (code === 'CONFINEMENT_UNAVAILABLE') {
+            scheduler.markRefused(firing, 'CONFINEMENT_UNAVAILABLE');
+          } else {
+            scheduler.markFailed(firing, code);
+          }
           // eslint-disable-next-line no-console
           console.error(`[remote-workflow-engine] scheduled firing ${firing.id} failed to start:`, err);
         });

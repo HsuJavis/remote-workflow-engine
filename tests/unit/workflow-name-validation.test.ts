@@ -105,3 +105,45 @@ describe('#166 decision 2: workflow_register ALSO refuses a byte-oversized (but 
     ).resolves.toBeDefined();
   });
 });
+
+// Issue #166 tail (tester's 2026-10-10 reverify comment, low item 2, owner decision): INVALID_NAME
+// never said WHICH rule failed — a 129-character name and a 201-byte name both came back the
+// identical generic sentence. `error.detail` must now name the rule, and for the two BOUNDED rules
+// (maxChars/maxBytes) the limit and the actual count — `bareNameViolation` (path-verdict.ts) is the
+// single source of truth both `validateRegistration` and `_computeStoredVersionValidity` call.
+//
+// RED before the fix: every row below throws `code:'INVALID_NAME'` with `detail: undefined`.
+describe('#166 tail: workflow_register\'s INVALID_NAME names the violated rule in error.detail (low item 2)', () => {
+  it('a name just over the 200-UTF-8-byte ceiling (101 chars, under the char ceiling): detail = {rule:"maxBytes", limit:200, actual:201}', async () => {
+    const name = 'ñ'.repeat(100) + 'x'; // 101 chars, 201 UTF-8 bytes
+    await expect(
+      catalog.validateRegistration({ name, script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ code: 'INVALID_NAME', detail: { rule: 'maxBytes', limit: 200, actual: 201 } });
+  });
+
+  it('a 129-character ASCII name (under the byte ceiling): detail = {rule:"maxChars", limit:128, actual:129}', async () => {
+    const name = 'a'.repeat(129);
+    await expect(
+      catalog.validateRegistration({ name, script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ code: 'INVALID_NAME', detail: { rule: 'maxChars', limit: 128, actual: 129 } });
+  });
+
+  it('an embedded tab: detail = {rule:"control-char"}, no limit/actual (an unbounded rule)', async () => {
+    await expect(
+      catalog.validateRegistration({ name: 'tab\tmid', script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ code: 'INVALID_NAME', detail: { rule: 'control-char' } });
+  });
+
+  it('the literal "..": detail = {rule:"dot-segment"}', async () => {
+    await expect(
+      catalog.validateRegistration({ name: '..', script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ code: 'INVALID_NAME', detail: { rule: 'dot-segment' } });
+  });
+
+  it('the message ALSO states the rule, not just error.detail (human-readable, same single source of truth)', async () => {
+    const name = 'ñ'.repeat(100) + 'x';
+    await expect(
+      catalog.validateRegistration({ name, script: VALID_SCRIPT, mermaid: VALID_MERMAID }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("'maxBytes'") });
+  });
+});

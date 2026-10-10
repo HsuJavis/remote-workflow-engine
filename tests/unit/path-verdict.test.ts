@@ -2,7 +2,7 @@
 // realpath; the three caller-typed namespaces removed. Written test-first (Gate 5, RED) —
 // src/path-verdict.ts does not exist yet.
 import { describe, it, expect } from 'vitest';
-import { lexicalVerdict, pathVerdict, isValidBareName, MAX_BARE_NAME_BYTES, type Dest } from '../../src/path-verdict.js';
+import { lexicalVerdict, pathVerdict, isValidBareName, bareNameViolation, MAX_BARE_NAME_LENGTH, MAX_BARE_NAME_BYTES, type Dest } from '../../src/path-verdict.js';
 
 describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () => {
   const STRIPPED_ROWS = [
@@ -169,5 +169,62 @@ describe('isValidBareName — UTF-8 byte ceiling, additional to the character ce
   it('an ordinary short multi-byte name is unaffected (no false positive)', () => {
     expect(isValidBareName('guide-nested workflow() black box')).toBe(true);
     expect(isValidBareName('名-01')).toBe(true);
+  });
+});
+
+// Issue #166 tail (tester's 2026-10-10 reverify comment, low item 2, owner decision): "give the
+// shared validator a way to report the violated rule ... keep isValidBareName's boolean API for
+// existing callers, add e.g. bareNameViolation(name) returning null | {rule, limit?, actual?}".
+// Each row below is also cross-checked against `isValidBareName` itself, so the two functions can
+// never silently disagree about which names are valid.
+describe('bareNameViolation — names WHICH rule failed, isValidBareName stays a thin wrapper (#166 tail, low item 2)', () => {
+  it('a valid name: null from bareNameViolation, true from isValidBareName', () => {
+    expect(bareNameViolation('my-workflow_v2.1')).toBeNull();
+    expect(isValidBareName('my-workflow_v2.1')).toBe(true);
+  });
+
+  const RULE_ROWS: Array<[string, string, ReturnType<typeof bareNameViolation>]> = [
+    ['empty string', '', { rule: 'empty' }],
+    ['whitespace-only', '   ', { rule: 'whitespace' }],
+    ['leading/trailing padding', ' x ', { rule: 'whitespace' }],
+    ['an embedded "/"', 'a/b', { rule: 'separator' }],
+    ['an embedded "\\\\"', 'a\\b', { rule: 'separator' }],
+    ['an embedded tab (C0 control)', 'tab\tmid', { rule: 'control-char' }],
+    ['an embedded newline', 'nl\nmid', { rule: 'control-char' }],
+    ['the literal "."', '.', { rule: 'dot-segment' }],
+    ['the literal ".."', '..', { rule: 'dot-segment' }],
+  ];
+  it.each(RULE_ROWS)('%s ("%s") => rule %s', (_label, name, expected) => {
+    expect(bareNameViolation(name)).toEqual(expected);
+    expect(isValidBareName(name)).toBe(false);
+  });
+
+  it('a 129-character ASCII name => rule maxChars, limit 128, actual 129', () => {
+    const name = 'a'.repeat(129);
+    expect(bareNameViolation(name)).toEqual({ rule: 'maxChars', limit: MAX_BARE_NAME_LENGTH, actual: 129 });
+    expect(isValidBareName(name)).toBe(false);
+  });
+
+  it('a 128-character CJK name (under the char ceiling, ~384 UTF-8 bytes) => rule maxBytes, limit 200', () => {
+    const name = '名'.repeat(128);
+    expect(name.length).toBe(128); // under MAX_BARE_NAME_LENGTH — isolates this to the byte rule
+    const v = bareNameViolation(name);
+    expect(v?.rule).toBe('maxBytes');
+    expect(v?.limit).toBe(MAX_BARE_NAME_BYTES);
+    expect(v?.actual).toBe(Buffer.byteLength(name, 'utf8'));
+    expect(isValidBareName(name)).toBe(false);
+  });
+
+  it('a name just at both ceilings (100 "ñ", 100 chars / 200 bytes) is valid — no false positive at the boundary', () => {
+    const name = 'ñ'.repeat(100);
+    expect(bareNameViolation(name)).toBeNull();
+    expect(isValidBareName(name)).toBe(true);
+  });
+
+  it('priority order matches isValidBareName\'s own checked order: the FIRST rule a name breaks is the one reported, not every rule it breaks', () => {
+    // 129 characters AND contains a "/" — maxChars is checked before separator, so that is the
+    // one rule reported, exactly mirroring the single `return false` isValidBareName always gave.
+    const name = 'a'.repeat(64) + '/' + 'b'.repeat(64); // 129 chars, one '/'
+    expect(bareNameViolation(name)?.rule).toBe('maxChars');
   });
 });
