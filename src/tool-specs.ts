@@ -452,7 +452,7 @@ export const TOOL_SPECS = [
     // delete into a reported failure. A `result.warning` of `'ASSET_CLEANUP_INCOMPLETE'` means the
     // on-disk asset tree may not have been fully removed (logged server-side) — `removed` is still
     // `true` and nothing about the catalog row is in question.
-    description: "Delete a workflow and release every trigger claimed under its name. Optionally pass `version` to delete only that one version instead of the whole workflow. `removed:true` is the catalog's own answer and is reported even when a legacy workflow's on-disk asset tree could not be fully cleaned up (see `result.warning`) — on-disk cleanup is best-effort and never reported as this call failing.",
+    description: "Delete a workflow and release every trigger claimed under its name. Optionally pass `version` to delete only that one version instead of the whole workflow. `removed:true` is the catalog's own answer and is reported even when a legacy workflow's on-disk asset tree could not be fully cleaned up — `result.warning` then carries the literal value `'ASSET_CLEANUP_INCOMPLETE'` (present only on that case, absent otherwise) — on-disk cleanup is best-effort and never reported as this call failing.",
     inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "Optional. Delete only this version (e.g. 'v1') instead of the whole workflow." } }, ['name']),
     outputSchema: OUT,
     errors: [
@@ -1101,7 +1101,8 @@ export const TOOL_SPECS = [
     description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset. " +
       "Asset mode ({workflow or scope:'global', kind, name}) answers {deleted:false} rather than an error when nothing matched the given name — deleting is idempotent, not an existence check. " +
       "Run mode ({runId, paths}) processes EVERY path in the array independently and is never all-or-nothing: each input path lands in exactly one of the response's deleted/missing/rejected lists, so one bad path (escapes the workspace, absolute, a symlink out, etc.) never causes the other, valid paths in the same call to go undeleted and unreported. " +
-      "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push or POST /assets/* — those are content-addressed within the caller's own pool; remove unused ones with workspace_prune_blobs.",
+      "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push or POST /assets/* — those are content-addressed within the caller's own pool; remove unused ones with workspace_prune_blobs. " +
+      "Issue #166 decision 1: `deleted:true` (kind:'skill') is reported even when a legacy workflow name's on-disk skill tree could not be fully cleaned up afterward — `result.warning` then carries the literal value `'ASSET_CLEANUP_INCOMPLETE'` (present only on that case, absent otherwise); on-disk cleanup is best-effort and never reported as this call failing.",
     // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
     // Issue #92 part B: `kind`/`scope` are closed enums of the actually-supported AssetKind/
     // AssetScope values — see the matching comment on workspace_push's mode-B branch above.

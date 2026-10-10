@@ -513,8 +513,12 @@ export class AssetSyncService {
     // exposure the workflow-catalog.ts B4 fix closed at registration, named explicitly in that
     // issue's plan as a second site needing the same check. `push()` below already refuses an
     // invalid `workflow` before ever reaching here (returning the clean `{error}` shape its callers
-    // expect); this is the backstop for this method's OTHER two callers (the provisioning-check read
-    // and `delete()`), which have no such pre-check of their own.
+    // expect); this is the backstop for this method's one remaining caller with no pre-check of its
+    // own — `resolveDeclaredAssets`'s provisioning-check read. (`delete()` used to rely on this same
+    // backstop too; #166 decision 1, r5-a round-3 reverify, moved it to its own PRE-commit lenient
+    // check, `_skillRootLenient` + its own throw, because this method's STRICT byte/char ceiling —
+    // right for a fresh read — wrongly refused a legacy, byte-oversized-but-otherwise-valid workflow
+    // name on delete.)
     if (scope === 'workflow' && workflow !== undefined && !isValidBareName(workflow)) {
       throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${workflow}' is not a valid path segment`);
     }
@@ -801,12 +805,58 @@ export class AssetSyncService {
    *  catalog-only. Issue #92 part B: the tree is only touched when the catalog actually removed a
    *  row (`deleted:true`) — a `deleted:false` (nothing matched) leaves whatever is on disk alone
    *  rather than blindly `rmSync`-ing a path that may not even belong to this name. The `{deleted}`
-   *  the catalog reports is returned as-is, not re-derived. */
-  async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean }> {
+   *  the catalog reports is returned as-is, not re-derived.
+   *
+   *  Issue #166 decision 1 (regression fix, r5-a round-3 reverify): the tree cleanup below runs
+   *  AFTER `deleteAsset` has already committed the DB-side delete — there is no row left to roll
+   *  back by then, the exact same invariant `deleteWorkflowTree` documents for
+   *  `workflow_deregister`. `_skillRoot()`'s strict `isValidBareName` check (which also enforces
+   *  `MAX_BARE_NAME_BYTES`, #166 decision 2's own ceiling) is therefore run BEFORE `deleteAsset`
+   *  here as its own pre-check — `codedError('INVALID_NAME', …)` thrown here never reaches the "DB
+   *  committed, then a filesystem step throws" trap decision 1 forbids, because nothing has been
+   *  committed yet; it keeps B4's original guarantee that this reusable class refuses a garbage
+   *  workflow string (an escape attempt, embedded `/`, `..`, …) on its own, independent of any
+   *  caller-side check. That strict pre-check is exactly what regressed for a LEGACY workflow name
+   *  between 201 and 255 UTF-8 bytes — fully valid at registration time (under the pre-#166
+   *  128-character limit, and under the filesystem's own NAME_MAX), so a real skill could really
+   *  have been pushed under it — so the pre-check here uses the LENIENT twin instead
+   *  (`_skillRootLenient`): a lexical-only verdict (blocks `/`, `\`, `..`, empty, NUL, a reserved
+   *  prefix — still a real refusal, still BEFORE any DB call — but never the byte/char ceilings
+   *  `isValidBareName` added, which are a registration-time POLICY, not a filesystem necessity).
+   *  `rmSync`'s own `ENOENT`/`ENAMETOOLONG` (reachable only for a TRULY NAME_MAX-exceeding legacy
+   *  name, past the lenient check's own byte-blind pass) are treated as "nothing on disk to
+   *  remove", never re-thrown. Any OTHER fs error (e.g. `EACCES`) is logged server-side and
+   *  surfaced as `warning: 'ASSET_CLEANUP_INCOMPLETE'` on the otherwise-successful result, same
+   *  convention as `deleteWorkflowTree`. */
+  async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean; warning?: string }> {
+    const root = req.kind === 'skill' ? this._skillRootLenient(req.scope, req.workflow, req.name) : undefined;
+    if (req.kind === 'skill' && root === undefined) {
+      throw codedError('INVALID_NAME', `INVALID_NAME: workflow name '${req.workflow}' is not a valid path segment`);
+    }
     const result = await this._catalog.deleteAsset(req);
-    if (result.deleted && req.kind === 'skill') {
-      rmSync(this._skillRoot(req.scope, req.workflow, req.name), { recursive: true, force: true });
+    if (!result.deleted || req.kind !== 'skill' || root === undefined) return result;
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'ENOENT' || code === 'ENAMETOOLONG') return result;
+      console.error(`[asset-sync] delete(): on-disk cleanup failed after the catalog row was already removed (code=${code ?? 'unknown'}) — surfaced as workspace_delete's result.warning`);
+      return { ...result, warning: 'ASSET_CLEANUP_INCOMPLETE' };
     }
     return result;
+  }
+
+  /** Issue #166 decision 1: the lenient twin of `_skillRoot()` for `delete()`'s own PRE-commit
+   *  refusal check — never throws itself (the caller does, from `undefined`). Tolerates a legacy,
+   *  byte-oversized-but-otherwise-valid workflow name (see `delete()`'s own doc for why
+   *  `_skillRoot()`'s strict `isValidBareName` check is wrong for this call site). `undefined`
+   *  means "this workflow string is not safely joinable at all" (empty, a path separator, `..`,
+   *  NUL, a reserved prefix) — `delete()` refuses BEFORE calling the catalog for that case. */
+  private _skillRootLenient(scope: AssetScope, workflow: string | undefined, name: string): string | undefined {
+    if (scope !== 'workflow') return join(this._globalRoot, 'skill', name);
+    if (workflow === undefined) return undefined;
+    const verdict = lexicalVerdict('asset-tree', workflow);
+    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return undefined;
+    return join(this._workRoot, workflow, 'skill', name);
   }
 }

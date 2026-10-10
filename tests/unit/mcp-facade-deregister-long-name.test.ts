@@ -10,7 +10,7 @@
 // directly) + a REAL AssetSyncService on a real tmp dir, so the ENAMETOOLONG this test needs is a
 // genuine kernel error, not a mock.
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -136,6 +136,16 @@ describe('McpFacade.workflowDeregister — a byte-oversized legacy name succeeds
       }
 
       // ...but decision 1 still requires it to be fully deregisterable through the REAL facade.
+      // Independent verifier (round-3): this directory must actually EXIST before the facade's
+      // asset-tree cleanup runs — `realAssetSync(join(dir,'assets'))` roots the service at a path
+      // that was otherwise never created, so `rmSync`'s own `lstat` hit `ENOENT` on the MISSING
+      // PARENT before it ever got a chance to hit `ENAMETOOLONG` on the long name itself, and
+      // `force:true` silently swallows that ENOENT — this case would pass unchanged even if the
+      // `ENAMETOOLONG` tolerance this issue added were deleted entirely. Creating the parent here
+      // makes `rmSync` actually reach the long name and hit the real `ENAMETOOLONG` this test means
+      // to exercise (the stub-catalog cases above already do, by construction of their own
+      // `realAssetSync(dir)` root).
+      mkdirSync(join(dir, 'assets'), { recursive: true });
       const facade = new McpFacade({
         runManager: { catalog },
         assetSync: realAssetSync(join(dir, 'assets')),
