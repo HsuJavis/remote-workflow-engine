@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { listArtifacts, readArtifactChunk, DEFAULT_MAX_CHUNK } from '../../src/workspace-artifacts.js';
 import { materializeSeed, isStrippedSeedPath } from '../../src/workspace-seed.js';
-import { prepareDispatchMountTargets } from '../../src/gateway/project-config-guard.js';
+import { prepareDispatchMountTargets, prepareReadonlyMountTargets } from '../../src/gateway/project-config-guard.js';
 
 let ws: string;
 let outside: string;
@@ -43,6 +43,23 @@ describe('listArtifacts (REQ-023: recursive + sha256, escape-safe)', () => {
     writeFileSync(join(ws, '.mcp.json'), '{}');
     const paths2 = listArtifacts(ws).map((a) => a.path);
     expect(paths2).toEqual(['.mcp.json', 'real.txt']);
+  });
+
+  // Issue #119: the SDK gateway's `prepareReadonlyMountTargets` (bash-confinement.ts's
+  // READONLY_MOUNT_TARGETS, a DIFFERENT list from PROJECT_CONFIG_MOUNT_TARGETS above, pre-created
+  // before a `bashMode:'readonly'` dispatch) pre-creates the SAME shape of untouched 0-byte
+  // placeholder (.gitconfig, .bashrc, ...) — af54cee/02a040c only exempted the pi-gateway's list,
+  // so these still showed up in workspace_list/workspace_pull. Same exemption, same rule: hidden
+  // only while untouched; a file an agent actually wrote content into is still listed/pullable.
+  it("issue #119: hides the SDK gateway's untouched 0-byte READONLY_MOUNT_TARGETS placeholders (.gitconfig, .bashrc, ...), but lists a real file at the same path", () => {
+    writeFileSync(join(ws, 'real.txt'), 'hello');
+    prepareReadonlyMountTargets(ws); // same call claude-agent-sdk-client.ts makes before a readonly-Bash dispatch
+    const paths = listArtifacts(ws).map((a) => a.path);
+    expect(paths).toEqual(['real.txt']); // every 0-byte placeholder is hidden
+    // A placeholder an agent later wrote real content into is no longer hidden.
+    writeFileSync(join(ws, '.gitconfig'), '[user]\n');
+    const paths2 = listArtifacts(ws).map((a) => a.path);
+    expect(paths2).toEqual(['.gitconfig', 'real.txt']);
   });
 
   it('skips a symlink whose real target escapes the workspace', () => {
@@ -96,6 +113,17 @@ describe('readArtifactChunk (REQ-022: windowed, capped, realpath-contained)', ()
     const r = readArtifactChunk(ws, '.mcp.json');
     if ('error' in r) throw new Error(r.error);
     expect(r.size).toBe(2);
+  });
+
+  it("issue #119: an untouched 0-byte SDK readonly mount placeholder is NOT_A_FILE, consistent with listArtifacts hiding it", () => {
+    prepareReadonlyMountTargets(ws);
+    expect(readArtifactChunk(ws, '.gitconfig')).toEqual({ error: 'NOT_A_FILE' });
+    expect(readArtifactChunk(ws, '.bashrc')).toEqual({ error: 'NOT_A_FILE' });
+    // A placeholder an agent later wrote real content into is pullable normally, same as listArtifacts.
+    writeFileSync(join(ws, '.bashrc'), '# hi\n');
+    const r = readArtifactChunk(ws, '.bashrc');
+    if ('error' in r) throw new Error(r.error);
+    expect(r.size).toBe(5);
   });
 
   it('DEFAULT_MAX_CHUNK is a sane 1 MiB ceiling', () => {

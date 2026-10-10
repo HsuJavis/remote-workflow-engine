@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, openSync, readSync, closeSync, type Dirent } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { isPathContained } from './path-containment.js';
-import { PROJECT_CONFIG_MOUNT_TARGETS } from './gateway/bash-confinement.js';
+import { PROJECT_CONFIG_MOUNT_TARGETS, READONLY_MOUNT_TARGETS } from './gateway/bash-confinement.js';
 
 // Issue #159 (NEW row): the pi gateway's `prepareDispatchMountTargets` (project-config-guard.ts)
 // pre-creates every still-missing `PROJECT_CONFIG_MOUNT_TARGETS` 'file' entry as a 0-byte real file
@@ -19,9 +19,19 @@ import { PROJECT_CONFIG_MOUNT_TARGETS } from './gateway/bash-confinement.js';
 // calls `prepareDispatchMountTargets`) never produces in the first place. A placeholder that an agent
 // later wrote REAL content into is no longer 0 bytes and is listed normally — this only hides the
 // untouched, genuinely-empty engine artifact.
-const MOUNT_PLACEHOLDER_FILES: ReadonlySet<string> = new Set(
-  PROJECT_CONFIG_MOUNT_TARGETS.filter((t) => t.kind === 'file').map((t): string => t.rel),
-);
+// Issue #119: the SDK gateway's `prepareReadonlyMountTargets` (project-config-guard.ts) pre-creates
+// every still-missing `READONLY_MOUNT_TARGETS` 'file' entry (.gitconfig, .bashrc, ...) as a 0-byte
+// real file before a `bashMode:'readonly'` dispatch — the SAME "engine-owned placeholder, not a
+// client deliverable" shape `PROJECT_CONFIG_MOUNT_TARGETS` already gets exempted for just above
+// (af54cee/02a040c, pi gateway only). `READONLY_MOUNT_TARGETS` is a DIFFERENT list (a different
+// gateway, a different trigger condition) but the exact same rule applies: untouched (0 bytes at
+// this exact path) is hidden from workspace_list/workspace_pull; a file the agent actually wrote
+// content to is no longer 0 bytes and stays listed/pullable normally. The two lists overlap on no
+// path in practice, but the Set naturally unions either way.
+const MOUNT_PLACEHOLDER_FILES: ReadonlySet<string> = new Set([
+  ...PROJECT_CONFIG_MOUNT_TARGETS.filter((t) => t.kind === 'file').map((t): string => t.rel),
+  ...READONLY_MOUNT_TARGETS.filter((t) => t.kind === 'file').map((t): string => t.rel),
+]);
 
 /** Default max bytes returned by a single artifact_get chunk (a client pages by advancing offset). */
 export const DEFAULT_MAX_CHUNK = 1024 * 1024; // 1 MiB

@@ -322,6 +322,46 @@ describe('validateStoredVersion() — re-validates an ALREADY-STORED version aga
     const result = await cat.validateStoredVersion('154-b4-valid-name', 'v1');
     expect(result).toEqual({ ok: true });
   });
+
+  // Issue #154 residual (2026-10-10, v0.37.10 follow-up): `isReservedPrefixed` is enforced at
+  // registration (`validateRegistration` refuses it case-insensitively), but
+  // `_computeStoredVersionValidity` only ever re-checked `isValidBareName` — never the reserved-
+  // prefix rule — so a row registered as `RWE-x` (any case) BEFORE v0.37.9 shipped stays
+  // `runnable:true` forever, the exact "a rule added after a version was stored never
+  // retroactively applies to it" gap this whole describe block exists to close for every OTHER
+  // B1-B4 rule. Seeded directly (raw INSERT), the same "predates the rule" shape every other case
+  // in this file uses — `register()` itself cannot produce this row any more.
+  it('a stored row named with the reserved prefix (lowercase) is NOT_RUNNABLE / RESERVED_PREFIX', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-reserved-lower-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, 'rwe-x', 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion('rwe-x', 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('NOT_RUNNABLE');
+      expect(result.detail?.['violation']).toBe('RESERVED_PREFIX');
+    }
+  });
+
+  it('a stored row named with the reserved prefix in ANY CASE (e.g. RWE-x) is also NOT_RUNNABLE / RESERVED_PREFIX', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-reserved-upper-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, 'RWE-x', 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion('RWE-x', 'v1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('NOT_RUNNABLE');
+      expect(result.detail?.['violation']).toBe('RESERVED_PREFIX');
+    }
+  });
+
+  it('a stored row whose name has no reserved prefix is unaffected by the new check (no false positive)', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-154-reserved-none-'));
+    const cat = new WorkflowCatalog(workRoot);
+    seedRawVersion(workRoot, '154-reserved-not-rwe', 'v1', "export const meta = { phases: [] };\nreturn 1;");
+    const result = await cat.validateStoredVersion('154-reserved-not-rwe', 'v1');
+    expect(result).toEqual({ ok: true });
+  });
 });
 
 // Issue #154 B4 PARTIAL (2026-10-07 reverify): `workFolder`'s containment check was against

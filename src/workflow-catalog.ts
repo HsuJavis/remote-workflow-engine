@@ -1361,9 +1361,26 @@ export class WorkflowCatalog {
    *  even runs, same relative position as before, different outcome). Its OWN violations are still
    *  consulted in the pinned relative order, after `validateScriptEntry`. */
   private _computeStoredVersionValidity(name: string, script: string): { ok: true } | { ok: false; code: ErrorCode; message: string; detail?: Record<string, unknown> } {
-    // Issue #154 B4 PARTIAL: checked FIRST, same ordering rationale as `validateRegistration`'s own
-    // RESERVED_PREFIX/INVALID_NAME pair at the top of that method — a row whose name predates this
-    // rule must come back INVALID_NAME, not some other code a later check happens to hit first.
+    // Issue #154 residual (2026-10-10, v0.37.10 follow-up): checked FIRST, same ordering rationale
+    // as `validateRegistration`'s own RESERVED_PREFIX/INVALID_NAME pair at the top of that method
+    // (RESERVED_PREFIX before INVALID_NAME there too) — a row registered as `RWE-x`/`rwe-x` (any
+    // case) BEFORE the case-insensitive `isReservedPrefixed` rule shipped (v0.37.9) stayed
+    // `runnable:true` forever: this re-check only ever covered `isValidBareName`, never the
+    // reserved-prefix rule itself, even though `validateRegistration` has refused it at
+    // registration since that version. Same `isReservedPrefixed` the registration path uses, so
+    // the two can never disagree about what counts as reserved.
+    if (isReservedPrefixed(name)) {
+      return {
+        ok: false,
+        code: 'NOT_RUNNABLE',
+        message: `NOT_RUNNABLE: this version's name ('${name}') starts with the engine-reserved '${RESERVED_PREFIX}' prefix (RESERVED_PREFIX) — re-register it under a non-reserved name`,
+        detail: { violation: 'RESERVED_PREFIX' },
+      };
+    }
+    // Issue #154 B4 PARTIAL: checked SECOND (after RESERVED_PREFIX, same ordering rationale as
+    // `validateRegistration`'s own RESERVED_PREFIX/INVALID_NAME pair at the top of that method) —
+    // a row whose name predates this rule must come back INVALID_NAME, not some other code a later
+    // check happens to hit first.
     if (!isValidBareName(name)) {
       return {
         ok: false,

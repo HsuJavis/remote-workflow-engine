@@ -248,3 +248,30 @@ describe("run_start refuses a stored row whose NAME is no longer valid (#154 B4 
     expect(existsSync(join(storeDir, 'runs'))).toBe(false);
   });
 });
+
+// Issue #154 residual (2026-10-10, v0.37.10 follow-up): `isReservedPrefixed` was enforced at
+// registration (case-insensitive, since the B4 follow-up above) but never re-checked on an
+// ALREADY-STORED version, so a row registered as `RWE-x`/`rwe-x` BEFORE that rule shipped stayed
+// `runnable:true` and actually dispatched through `run_start` — the exact "a rule added after a
+// version was stored never retroactively applies to it" gap this whole file exists to close for
+// every OTHER B1-B4/B4-PARTIAL cause. `register()` itself refuses any case of the reserved prefix
+// today, so the pre-fix row is simulated the SAME way the `../store` case above does: register
+// under a valid placeholder name, then rename the already-inserted row directly.
+describe('run_start refuses a stored row whose NAME carries the reserved prefix, any case (#154 residual)', () => {
+  it.each(['rwe-x', 'RWE-x', 'Rwe-X'])("a stored row named '%s' is refused NOT_RUNNABLE at run_start", async (name) => {
+    const dir = tempDir();
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
+    const placeholder = 'it154residual-reserved-placeholder';
+    const { version } = await registerPublished(mgr.catalog, placeholder, 'return 1;');
+    const db = new Database(join(dir, 'catalog.db'));
+    db.prepare('UPDATE workflows SET name = ? WHERE name = ?').run(name, placeholder);
+    db.prepare('UPDATE workflow_versions SET name = ? WHERE name = ?').run(name, placeholder);
+    db.close();
+
+    await expect(mgr.start({ origin: 'local', name, version })).rejects.toMatchObject({
+      code: 'NOT_RUNNABLE',
+      detail: { violation: 'RESERVED_PREFIX' },
+    });
+  });
+});
