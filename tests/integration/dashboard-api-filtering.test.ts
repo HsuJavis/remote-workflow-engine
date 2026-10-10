@@ -126,12 +126,17 @@ describe('the parity table: every run-keyed /api route refuses exactly what its 
   ];
 
   for (const row of ROUTES) {
-    it(`${row.route(':runId')} vs ${row.tool}: bob on alice's run -> refused with the tool's own code`, async () => {
+    // Issue #116 (decision a): this row IS the oracle the issue names — bob's non-owner refusal
+    // used to come back 403/NOT_RUN_OWNER while an unknown runId came back 404, letting bob learn
+    // "this run exists" just from the status code. Both are now masked to RUN_NOT_FOUND/404,
+    // indistinguishable from each other — see the very next `it` in this file.
+    it(`${row.route(':runId')} vs ${row.tool}: bob on alice's run -> refused, masked to RUN_NOT_FOUND/404 (same as an unknown run)`, async () => {
       const viaMcp = await mcp(row.tool, row.args(aliceRun), BOB);
-      expect(codeOf(viaMcp)).toBe('NOT_RUN_OWNER');
+      expect(viaMcp['code']).toBeUndefined(); // masked envelope carries no top-level `code`
+      expect(codeOf(viaMcp)).toBe('RUN_NOT_FOUND'); // codeOf() falls back to error.code
       const r = await api(row.route(aliceRun), BOB);
-      expect(r.status).toBe(403);
-      expect(r.body.code).toBe('NOT_RUN_OWNER');
+      expect(r.status).toBe(404);
+      expect(r.body.code).toBeUndefined();
       expect(JSON.stringify(r.body)).not.toContain('v1');
     });
 

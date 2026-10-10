@@ -49,7 +49,16 @@ export const ERROR_CATALOG = {
   PROBE_ERROR: { see: null, hint: 'system_info could not collect one or more host diagnostics; detail.rawCode carries the original signal when known' },
 
   // Ownership
+  // Issue #116 (OWNER DECISION a, 2026-10-10): on workflow_deregister/workflow_publish, a
+  // non-admin caller now receives WORKFLOW_NOT_FOUND instead (masked — indistinguishable from the
+  // name not existing at all); this code is still returned as-is by every OTHER
+  // `ownership:'workflow'`/`'asset'` tool (workspace_push/_pull/_list/_delete's workflow/asset
+  // modes) — see authz.ts's `notFoundTemplate` for the exact, documented scope.
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
+  // Issue #116 (OWNER DECISION a): on run_status/run_result/run_suspend/run_resume/run_stop/
+  // run_agent_log/issue_report, a non-admin caller now receives RUN_NOT_FOUND instead (masked —
+  // indistinguishable from the run not existing at all); still returned as-is by workspace_pull/
+  // _list/_delete's run mode (authz.ts's `notFoundTemplate` documents the exact scope).
   NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
   // v24 Gate 8 (AF-3, TASK-162): `authz.ts`'s loopback-exempt refusal — a caller reaching a tool
   // that needs an identity over a connection that carries none. It was DECLARED in
@@ -68,6 +77,10 @@ export const ERROR_CATALOG = {
   // when a registration declares a trigger someone else created. REQ-116 requires a registration
   // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
   // the guide is where the create-then-claim lifecycle is explained.
+  // Issue #116 (OWNER DECISION a): on schedule_delete/schedule_setEnabled/webhook_delete, a
+  // non-admin caller now receives TRIGGER_NOT_FOUND instead (masked — indistinguishable from the
+  // id not existing at all); still returned as-is from the workflow_register trigger-claim step
+  // (mcp-facade.ts), which has no sibling *_NOT_FOUND to mask toward for a brand-new name.
   NOT_TRIGGER_OWNER: { see: 'workflow_authoring_guide', hint: 'the caller does not own (did not create) this trigger' },
   // Service accounts spec (owner decision 2026-10-03): a service account created with a
   // `workflows` allowlist, naming a workflow outside it on a workflow-scoped tool.

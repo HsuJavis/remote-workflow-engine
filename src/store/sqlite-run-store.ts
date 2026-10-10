@@ -24,6 +24,8 @@ import type {
   AuditEvent,
   PriceBook,
   RunUsage,
+  RefusalAuditEvent,
+  RefusalAuditFilter,
 } from '../types.js';
 
 /** Issue #104 (ObservedStats): cheap pre-`JSON.parse` line filter for `settledCallEvents` — matches
@@ -117,6 +119,26 @@ export class SqliteRunStore implements RunStore {
         path TEXT
       );
     `);
+    // Issue #116 (OWNER DECISION b): every authorization refusal, separate from `audit_events`
+    // above — `runId`/`owner` there are NOT NULL (an admin cross-owner READ of an existing run),
+    // which a role/pending-approval refusal naming no run at all does not fit. `actor` IS nullable
+    // here (NOT NULL in `audit_events`): `auth-disabled`/`loopback-exempt` carry no actor id.
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS authz_refusals (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        requestId TEXT NOT NULL,
+        actor TEXT,
+        authMethod TEXT,
+        tool TEXT NOT NULL,
+        targetKind TEXT NOT NULL,
+        targetId TEXT,
+        realReason TEXT NOT NULL,
+        returnedCode TEXT NOT NULL
+      );
+    `);
+    this._db.exec('CREATE INDEX IF NOT EXISTS authz_refusals_actor_ts ON authz_refusals(actor, ts)');
+    this._db.exec('CREATE INDEX IF NOT EXISTS authz_refusals_tool_ts ON authz_refusals(tool, ts)');
   }
 
   private _runDir(runId: string): string {
@@ -580,6 +602,38 @@ export class SqliteRunStore implements RunStore {
     return rows.map((r) => ({
       ts: r.ts, actor: r.actor, action: r.action as AuditEvent['action'], runId: r.runId, owner: r.owner,
       ...(r.path !== null ? { path: r.path } : {}),
+    }));
+  }
+
+  /** Issue #116: synchronous append (better-sqlite3) — same fail-closed convention as `appendAudit`
+   *  (a throw here must reach the call site, which refuses WITHOUT writing an audit row, rather
+   *  than turn a refusal into a success). */
+  appendRefusal(ev: RefusalAuditEvent): void {
+    this._db
+      .prepare('INSERT INTO authz_refusals (ts, requestId, actor, authMethod, tool, targetKind, targetId, returnedCode, realReason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(ev.ts, ev.requestId, ev.actor, ev.authMethod ?? null, ev.tool, ev.targetKind, ev.targetId, ev.returnedCode, ev.realReason);
+  }
+
+  /** Issue #116: newest-first, capped at `limit` (default 200) — same convention as `auditFor`. */
+  queryRefusals(filter: RefusalAuditFilter = {}): RefusalAuditEvent[] {
+    const { actor, tool, since, limit = 200 } = filter;
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (actor !== undefined) { clauses.push('actor = ?'); params.push(actor); }
+    if (tool !== undefined) { clauses.push('tool = ?'); params.push(tool); }
+    if (since !== undefined) { clauses.push('ts >= ?'); params.push(since); }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this._db
+      .prepare(`SELECT ts, requestId, actor, authMethod, tool, targetKind, targetId, realReason, returnedCode FROM authz_refusals ${where} ORDER BY seq DESC LIMIT ?`)
+      .all(...params, limit) as Array<{
+        ts: string; requestId: string; actor: string | null; authMethod: string | null; tool: string;
+        targetKind: string; targetId: string | null; realReason: string; returnedCode: string;
+      }>;
+    return rows.map((r) => ({
+      ts: r.ts, requestId: r.requestId, actor: r.actor,
+      ...(r.authMethod !== null ? { authMethod: r.authMethod } : {}),
+      tool: r.tool, targetKind: r.targetKind as RefusalAuditEvent['targetKind'], targetId: r.targetId,
+      realReason: r.realReason, returnedCode: r.returnedCode,
     }));
   }
 

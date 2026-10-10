@@ -80,11 +80,23 @@ export type AuthzErrorCode = (typeof AUTHZ_ERROR_CODES)[number];
 // TypeScript will allow the read, which is more ceremony than this total function's callers need.
 export interface AuthzVerdict {
   ok: boolean;
-  code?: AuthzErrorCode;
+  // Issue #116 (OWNER DECISION a): widened from `AuthzErrorCode` to `ErrorCode` — for a non-admin
+  // ownership refusal on a tool `NOT_FOUND_TEMPLATES` covers (below), `code`/`reason` are the
+  // MASKED `*_NOT_FOUND` code/message (byte-identical to that tool's own genuine not-found arm),
+  // never `NOT_RUN_OWNER`/`NOT_WORKFLOW_OWNER`/`NOT_TRIGGER_OWNER` — so callers reading `.code`
+  // straight off an `ok`-checked verdict (this interface's own stated reason for staying a flat
+  // shape, not a discriminated union) still get a code their own `ErrorCode`-typed plumbing accepts.
+  code?: ErrorCode;
   reason?: string;
   see?: 'workflow_authoring_guide' | null;
   detail?: { mode?: string };
   crossPrincipalRead?: true;
+  // Issue #116 (OWNER DECISION b): the TRUE internal reason, ALWAYS an `AuthzErrorCode` and ALWAYS
+  // set alongside `ok:false` — identical to `code` unless masking (decision a) substituted a
+  // `*_NOT_FOUND` code/message for a non-admin caller, in which case this keeps the real one
+  // (`NOT_RUN_OWNER` etc.) for the audit row while `code`/`reason` carry what the caller sees.
+  // `call-tool.ts`/`server.ts` read this to audit the REAL reason even when the response is masked.
+  internalReason?: AuthzErrorCode;
 }
 
 const ROLE_RANK: Record<Role, number> = { user: 0, author: 1, admin: 2 };
@@ -162,7 +174,63 @@ function resolveRow(authz: ToolAuthz, args: unknown): { row: AuthzRow; mode?: st
 }
 
 function refuse(code: AuthzErrorCode, reason: string, mode?: string): AuthzVerdict {
-  return { ok: false, code, reason, see: 'workflow_authoring_guide', ...(mode !== undefined ? { detail: { mode } } : {}) };
+  // Issue #116: `internalReason` always equals `code` here — this is the ONE constructor every
+  // refusal in this module goes through BEFORE any masking decision, so it is always the true
+  // reason at the point it's built. The ownership branch below may still overwrite `code`/`reason`
+  // (never `internalReason`) afterward for a non-admin caller on a templated tool (decision a).
+  return { ok: false, code, internalReason: code, reason, see: 'workflow_authoring_guide', ...(mode !== undefined ? { detail: { mode } } : {}) };
+}
+
+/** Issue #116 (OWNER DECISION a): for a NON-ADMIN caller, "exists but not yours" must be
+ *  indistinguishable from "does not exist" — same code AND same message/detail shape as the
+ *  corresponding `*_NOT_FOUND` the tool's OWN handler would answer for a genuinely absent id
+ *  (byte-identical apart from the id itself, which the caller already supplied). The handlers'
+ *  real not-found messages are heterogeneous (grep confirms: `mcp-facade.ts`'s shared `notFound()`
+ *  says `Run not found: X` for every run-ownership tool; `workflow_deregister` says
+ *  `Unknown workflow: X`; `workflow_publish`'s `CatalogNotFoundError` says
+ *  `Workflow not found in catalog: X`; `scheduler.ts` says `Unknown schedule: X`; the webhook
+ *  registry says `Unknown webhook: X`) — so this is a per-TOOL template, not one generic shape.
+ *  Admin is never looked up here: `authorize()`'s ownership branch already returns `ok:true` for
+ *  admin before this function could be reached (an ownerless resource is the one exception, and
+ *  that branch's own `isAdmin` guard already keeps admin out of this path too) — "admin keeps the
+ *  precise code" therefore falls out of control flow, not a check duplicated in this table.
+ *
+ *  Scope (documented, not silently partial): covers every tool whose ownership subject is `run`
+ *  (run_status/result/suspend/resume/stop/agent_log, issue_report's `run` mode) plus the two
+ *  `ownership:'workflow'` tools (workflow_deregister, workflow_publish) and the three
+ *  `ownership:'trigger'` tools (schedule_delete, schedule_setEnabled, webhook_delete) — the tools
+ *  the dashboard API and the acceptance tests exercise. NOT templated (residual risk, documented
+ *  in the task report, not silently dropped): workspace_pull/list/push/delete's `workflow`/`asset`
+ *  ownership MODE (a different, less-consistent WORKFLOW_NOT_FOUND wording per call site) and
+ *  workflow_register's own internal ownership/trigger-claim checks (workflow-catalog.ts,
+ *  mcp-facade.ts) — the latter has no `*_NOT_FOUND` sibling to mask TOWARD at all for a brand-new
+ *  name (registering a free name succeeds; there is nothing to disclose-as-absent), so decision a's
+ *  own framing does not apply there. An untemplated tool keeps today's `NOT_*_OWNER` behavior
+ *  unchanged — this function returns `undefined` and the caller falls through to the old refusal. */
+function notFoundTemplate(toolName: string, resourceId: string): { code: ErrorCode; message: string } | undefined {
+  const RUN_TOOLS = new Set(['run_status', 'run_result', 'run_suspend', 'run_resume', 'run_stop', 'run_agent_log', 'issue_report']);
+  if (RUN_TOOLS.has(toolName)) return { code: 'RUN_NOT_FOUND', message: `Run not found: ${resourceId}` };
+  if (toolName === 'workflow_deregister') return { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${resourceId}` };
+  if (toolName === 'workflow_publish') return { code: 'WORKFLOW_NOT_FOUND', message: `Workflow not found in catalog: ${resourceId}` };
+  if (toolName === 'schedule_delete' || toolName === 'schedule_setEnabled') return { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${resourceId}` };
+  if (toolName === 'webhook_delete') return { code: 'TRIGGER_NOT_FOUND', message: `Unknown webhook: ${resourceId}` };
+  return undefined;
+}
+
+/** Issue #116: the ONE place both ownership-refusal arms below call — builds the plain `NOT_*_OWNER`
+ *  verdict via `refuse()` (which stamps `internalReason`), then, for a non-admin caller on a
+ *  templated tool, overwrites `code`/`reason` to the masked `*_NOT_FOUND` shape and drops `detail`
+ *  entirely (the real not-found arm carries none — `detail.mode` would itself be a tell). */
+function ownershipRefusal(toolName: string, ownerCode: AuthzErrorCode, message: string, resourceId: string, mode?: string): AuthzVerdict {
+  const plain = refuse(ownerCode, message, mode);
+  const masked = notFoundTemplate(toolName, resourceId);
+  if (!masked) return plain;
+  // `see` is kept (not stripped): `call-tool.ts`'s own envelope builders never serialize `.see`
+  // onto the wire for EITHER an unmasked or a masked refusal (verified: `refusalEnvelope`/
+  // `maskedRefusalEnvelope` read only `code`/`reason`/`detail`) — it is this module's own internal
+  // contract field, asserted by authz.test.ts's generated matrix independently of wire behavior,
+  // so leaving it unchanged here costs decision a's byte-identity nothing.
+  return { ok: false, code: masked.code, internalReason: ownerCode, reason: masked.message, see: 'workflow_authoring_guide' };
 }
 
 /** Service accounts spec (owner decision 2026-10-03): the workflow name a row's allowlist check
@@ -285,7 +353,7 @@ export function authorize(
     // Ownerless (legacy/migrated row): admin-only.
     return isAdmin
       ? { ok: true }
-      : refuse(ownerCode, `${ownerCode}: ${resourceLabel} '${resourceId}' has no owner; only admin may act on it`, mode);
+      : ownershipRefusal(spec.name, ownerCode, `${ownerCode}: ${resourceLabel} '${resourceId}' has no owner; only admin may act on it`, resourceId, mode);
   }
 
   if (owner === principal.id) return { ok: true };
@@ -302,5 +370,5 @@ export function authorize(
   // echo it either, so the message names neither. Issue #90 (verification finding 4): the message
   // now starts with its own code, `${resourceLabel} '${resourceId}'` and all, matching the SAME
   // shape `workflow-catalog.ts`'s own `NOT_WORKFLOW_OWNER` refusals already use.
-  return refuse(ownerCode, `${ownerCode}: ${resourceLabel} '${resourceId}' is not owned by the caller`, mode);
+  return ownershipRefusal(spec.name, ownerCode, `${ownerCode}: ${resourceLabel} '${resourceId}' is not owned by the caller`, resourceId, mode);
 }

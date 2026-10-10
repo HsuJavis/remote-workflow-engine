@@ -1,7 +1,7 @@
 // RunStore port + InMemoryRunStore (DES-010).
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage, HarnessWarning } from './types.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage, HarnessWarning, RefusalAuditEvent, RefusalAuditFilter } from './types.js';
 // v26 (DES-183, TASK-183): the "at rest" RunUsage fold — shared by InMemoryRunStore and
 // SqliteRunStore's getRun, mirroring deriveAgentRecords above (both live in run-guard.js/here
 // respectively; no runtime cycle — run-guard.ts imports only errors.js and types.js).
@@ -343,6 +343,13 @@ export interface RunStore {
   appendAudit(ev: AuditEvent): void;
   /** v24 (DES-151): newest-first, capped at `limit` (default 200). */
   auditFor(runId: string, limit?: number): AuditEvent[];
+  /** Issue #116 (OWNER DECISION b): synchronous append, same fail-closed convention as
+   *  `appendAudit` (a throw here must propagate to the caller — call-tool.ts/server.ts catch it
+   *  and refuse WITHOUT rethrowing to the original caller, never silently swallow it here). */
+  appendRefusal(ev: RefusalAuditEvent): void;
+  /** Issue #116: admin-only query (`audit_refusals_list`) — newest-first, capped at `limit`
+   *  (default 200, same convention as `auditFor`). */
+  queryRefusals(filter?: RefusalAuditFilter): RefusalAuditEvent[];
   /** v27 (DES-193, ARCH-128, TASK-198, REQ-141): merges a `{usage}`-only row into a run's
    *  persisted snapshot when it has none — a no-op unless the run is TERMINAL AND the existing
    *  snapshot (if any) carries no `usage` key already (idempotent: a second call never
@@ -388,6 +395,7 @@ interface StoredRun {
 export class InMemoryRunStore implements RunStore {
   private readonly _runs = new Map<string, StoredRun>();
   private readonly _audit: AuditEvent[] = [];
+  private readonly _refusals: RefusalAuditEvent[] = [];
 
   constructor(private readonly _clock: Clock) {}
 
@@ -637,5 +645,20 @@ export class InMemoryRunStore implements RunStore {
   /** v24 (DES-151): newest-first (insertion order reversed — appendAudit is the only writer). */
   auditFor(runId: string, limit = 200): AuditEvent[] {
     return this._audit.filter((e) => e.runId === runId).slice(-limit).reverse();
+  }
+
+  /** Issue #116: synchronous, in-memory — same convention as appendAudit above. */
+  appendRefusal(ev: RefusalAuditEvent): void {
+    this._refusals.push(ev);
+  }
+
+  /** Issue #116: newest-first, filtered then capped (so `limit` bounds the RESULT, not the scan). */
+  queryRefusals(filter: RefusalAuditFilter = {}): RefusalAuditEvent[] {
+    const { actor, tool, since, limit = 200 } = filter;
+    return this._refusals
+      .filter((e) => (actor === undefined || e.actor === actor) && (tool === undefined || e.tool === tool) && (since === undefined || e.ts >= since))
+      .slice()
+      .reverse()
+      .slice(0, limit);
   }
 }

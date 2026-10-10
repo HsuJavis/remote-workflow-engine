@@ -38,7 +38,10 @@ describe('authz — Principal/resolveRole/authorize (UT-140, DES-139)', () => {
       lookup,
     );
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_RUN_OWNER');
+    // Issue #116 (decision a): `run_status` is a templated tool — a non-admin's ownerless-run
+    // refusal is masked to RUN_NOT_FOUND; `internalReason` keeps the real NOT_RUN_OWNER for audit.
+    expect(verdict.code).toBe('RUN_NOT_FOUND');
+    expect(verdict.internalReason).toBe('NOT_RUN_OWNER');
   });
 
   it('auth-disabled kind is always ok and never emits a crossPrincipalRead audit signal', () => {
@@ -176,25 +179,32 @@ const cases: Case[] = [
 
   // ---- ownership: run ----
   { n: 'run/absent (undefined) never leaks existence', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner(undefined), expected: { ok: true } },
-  { n: 'run/ownerless (null) is admin-only', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner(null), expected: { ok: false, code: 'NOT_RUN_OWNER' } },
+  // Issue #116 (decision a): `RUN` is `run_status`, a templated tool — a non-admin's refusal is
+  // masked to the SAME code `run_status` would answer for a genuinely missing runId. See
+  // tests/unit/authz-ownership-masking.test.ts for the full masking suite (message shape,
+  // internalReason, admin bypass, untemplated-tool fallback); this matrix keeps asserting `.code`
+  // (what the matrix's job is), now against the post-mask value.
+  { n: 'run/ownerless (null) is admin-only', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner(null), expected: { ok: false, code: 'RUN_NOT_FOUND' } },
   { n: 'run/self', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('alice'), expected: { ok: true } },
-  { n: 'run/other', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('bob'), expected: { ok: false, code: 'NOT_RUN_OWNER' } },
+  { n: 'run/other', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('bob'), expected: { ok: false, code: 'RUN_NOT_FOUND' } },
   { n: 'run/admin over ownerless', p: ADMIN, spec: RUN, args: { runId: 'r' }, lookup: runOwner(null), expected: { ok: true } },
   { n: 'run/admin cross-read is FLAGGED', p: ADMIN, spec: RUN, args: { runId: 'r' }, lookup: runOwner('bob'), expected: { ok: true, cross: true } },
   { n: 'run/admin cross-read on a row without adminCrossRead is NOT flagged', p: ADMIN, spec: RUN_NOCROSS, args: { runId: 'r' }, lookup: runOwner('bob'), expected: { ok: true } },
 
   // ---- ownership: workflow ----
   { n: 'workflow/absent', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner(undefined), expected: { ok: true } },
-  { n: 'workflow/ownerless', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner(null), expected: { ok: false, code: 'NOT_WORKFLOW_OWNER' } },
+  // Issue #116 (decision a): `WF` is `workflow_deregister`, also templated — masked to WORKFLOW_NOT_FOUND.
+  { n: 'workflow/ownerless', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner(null), expected: { ok: false, code: 'WORKFLOW_NOT_FOUND' } },
   { n: 'workflow/self', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('alice'), expected: { ok: true } },
-  { n: 'workflow/other', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('bob'), expected: { ok: false, code: 'NOT_WORKFLOW_OWNER' } },
+  { n: 'workflow/other', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('bob'), expected: { ok: false, code: 'WORKFLOW_NOT_FOUND' } },
   { n: 'workflow/admin over another owner, unflagged', p: ADMIN, spec: WF, args: { name: 'w' }, lookup: wfOwner('bob'), expected: { ok: true } },
 
   // ---- ownership: trigger (ONE lookup method over both stores) ----
   { n: 'trigger/absent', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner(undefined), expected: { ok: true } },
-  { n: 'trigger/ownerless', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner(null), expected: { ok: false, code: 'NOT_TRIGGER_OWNER' } },
+  // Issue #116 (decision a): `TRIG` is `schedule_delete`, also templated — masked to TRIGGER_NOT_FOUND.
+  { n: 'trigger/ownerless', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner(null), expected: { ok: false, code: 'TRIGGER_NOT_FOUND' } },
   { n: 'trigger/self', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('alice'), expected: { ok: true } },
-  { n: 'trigger/other', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('bob'), expected: { ok: false, code: 'NOT_TRIGGER_OWNER' } },
+  { n: 'trigger/other', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('bob'), expected: { ok: false, code: 'TRIGGER_NOT_FOUND' } },
   { n: 'trigger/admin over ownerless', p: ADMIN, spec: TRIG, args: { id: 'i' }, lookup: trigOwner(null), expected: { ok: true } },
 
   // ---- ownership: asset (subject is args.workflow; scope 'global' is role-only) ----
@@ -244,10 +254,15 @@ describe('authz — the generated kind x role x ownership x mode matrix (UT-140 
 // unnecessary rather than dangerous, but this asserts that too, since neither belongs in a message
 // answered to the caller who triggered the refusal.
 describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to the refused caller', () => {
+  // Issue #116 (decision a): RUN/WF/TRIG are all templated tools — their `code` here is the
+  // post-mask code, which is a STRONGER form of "never discloses the owner identity" (it no longer
+  // even discloses that the resource is owned by someone else, vs. missing outright). ASSET/MODED
+  // use `workspace_push`, which is outside notFoundTemplate's documented scope (residual risk,
+  // tests/unit/authz-ownership-masking.test.ts) — unchanged, still the real NOT_WORKFLOW_OWNER.
   const OWNER_CASES: Array<{ n: string; p: Principal; spec: Spec; args: Record<string, unknown>; lookup: OwnerLookup; code: string }> = [
-    { n: 'run', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('owner-secret@example.com'), code: 'NOT_RUN_OWNER' },
-    { n: 'workflow', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
-    { n: 'trigger', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('owner-secret@example.com'), code: 'NOT_TRIGGER_OWNER' },
+    { n: 'run', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('owner-secret@example.com'), code: 'RUN_NOT_FOUND' },
+    { n: 'workflow', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'WORKFLOW_NOT_FOUND' },
+    { n: 'trigger', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('owner-secret@example.com'), code: 'TRIGGER_NOT_FOUND' },
     { n: 'asset (workflow scope)', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
     { n: 'moded write', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
   ];
@@ -276,18 +291,25 @@ describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to
     'moded write': 'w',
   };
 
-  it.each(OWNER_CASES.map((c) => [c.n, c] as const))('%s refusal reason starts with its own code and names the resource (issue #90)', (n, c) => {
+  // Issue #116 (decision a): this convention (`${code}: ... '${id}'`) is the UNMASKED shape —
+  // still true for the two cases `workspace_push` leaves untouched; the three templated cases
+  // (run/workflow/trigger) now answer with THAT TOOL's own real not-found wording instead (which
+  // never followed this convention to begin with — see tests/unit/authz-ownership-masking.test.ts
+  // for the per-tool message pins), so they are excluded here rather than asserted against a
+  // pattern that was never their contract.
+  const UNMASKED_CASES = OWNER_CASES.filter((c) => c.n === 'asset (workflow scope)' || c.n === 'moded write');
+  it.each(UNMASKED_CASES.map((c) => [c.n, c] as const))('%s refusal reason starts with its own code and names the resource (issue #90)', (n, c) => {
     const verdict = authorize(c.p, c.spec as never, c.args, c.lookup);
     expect(verdict.reason).toMatch(new RegExp(`^${c.code}: `));
     expect(verdict.reason).toContain(`'${RESOURCE_ID[n]}'`);
   });
 
-  it('an ownerless (legacy) resource refusal also starts with its own code', () => {
+  it('an ownerless (legacy) resource refusal on a TEMPLATED tool (run_status) is masked to RUN_NOT_FOUND for a non-admin (issue #116 decision a) — still never names the owner', () => {
     const lookup: OwnerLookup = { ...NOOP_LOOKUP, runOwner: () => null };
     const verdict = authorize(ALICE, RUN as never, { runId: 'legacy-r' }, lookup);
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe('NOT_RUN_OWNER');
-    expect(verdict.reason).toMatch(/^NOT_RUN_OWNER: /);
-    expect(verdict.reason).toContain("'legacy-r'");
+    expect(verdict.code).toBe('RUN_NOT_FOUND');
+    expect(verdict.reason).toBe('Run not found: legacy-r');
+    expect(verdict.internalReason).toBe('NOT_RUN_OWNER');
   });
 });

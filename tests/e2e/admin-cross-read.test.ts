@@ -118,8 +118,12 @@ describe('admin cross-read is audited (E2E-009, DES-151, S-4)', () => {
     const runId = started.result?.runId;
     expect(runId).toBeDefined();
 
+    // Issue #116 (decision a): run_status is templated — a non-admin, non-owner refusal is masked
+    // to RUN_NOT_FOUND, byte-identical to a genuinely missing run (no top-level `code` key at all,
+    // matching mcp-facade.ts's own `notFound()` shape — only `error.code` carries it).
     const status = await call('run_status', { runId }, STRANGER);
-    expect(status.code).toBe('NOT_RUN_OWNER');
+    expect(status.code).toBeUndefined();
+    expect(status.error?.code).toBe('RUN_NOT_FOUND');
     expect(status).not.toHaveProperty('adminReads');
   });
 });

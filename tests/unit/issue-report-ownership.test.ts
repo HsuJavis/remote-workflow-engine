@@ -99,10 +99,12 @@ describe('issue #130 — issue_report({runId}) ownership (integration: tool-spec
     expect(auditRows).toHaveLength(0);
   });
 
-  it("a non-owner is refused NOT_RUN_OWNER and NOTHING is filed — the fake reporter is never called", async () => {
+  // Issue #116 (decision a): issue_report is templated — a non-owner's refusal is masked to
+  // RUN_NOT_FOUND (byte-identical to the test right below, a genuinely missing runId).
+  it("a non-owner is refused, masked to RUN_NOT_FOUND, and NOTHING is filed — the fake reporter is never called", async () => {
     const { deps, report } = depsWith(() => 'alice');
     const res = (await callTool(deps, 'issue_report', OK_ARGS, BOB)) as ToolEnvelope;
-    expect(res.error?.code).toBe('NOT_RUN_OWNER');
+    expect(res.error?.code).toBe('RUN_NOT_FOUND');
     expect(report).not.toHaveBeenCalled();
   });
 
@@ -113,10 +115,11 @@ describe('issue #130 — issue_report({runId}) ownership (integration: tool-spec
     expect(report).not.toHaveBeenCalled();
   });
 
-  it('an ownerless (legacy) run is admin-only: a regular user is refused NOT_RUN_OWNER, nothing filed', async () => {
+  // Issue #116 (decision a): an ownerless run's refusal is ALSO masked to RUN_NOT_FOUND for a non-admin.
+  it('an ownerless (legacy) run is admin-only: a regular user is refused, masked to RUN_NOT_FOUND, nothing filed', async () => {
     const { deps, report } = depsWith(() => null);
     const res = (await callTool(deps, 'issue_report', OK_ARGS, ALICE)) as ToolEnvelope;
-    expect(res.error?.code).toBe('NOT_RUN_OWNER');
+    expect(res.error?.code).toBe('RUN_NOT_FOUND');
     expect(report).not.toHaveBeenCalled();
   });
 
@@ -134,10 +137,10 @@ describe('issue #130 — issue_report({runId}) ownership (integration: tool-spec
     expect(report).toHaveBeenCalledTimes(1);
   });
 
-  it("a service-account principal that does NOT own the run is refused NOT_RUN_OWNER, nothing filed", async () => {
+  it("a service-account principal that does NOT own the run is refused, masked to RUN_NOT_FOUND, nothing filed", async () => {
     const { deps, report } = depsWith(() => 'alice');
     const res = (await callTool(deps, 'issue_report', OK_ARGS, SERVICE_ACCOUNT)) as ToolEnvelope;
-    expect(res.error?.code).toBe('NOT_RUN_OWNER');
+    expect(res.error?.code).toBe('RUN_NOT_FOUND');
     expect(report).not.toHaveBeenCalled();
   });
 

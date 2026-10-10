@@ -1695,6 +1695,34 @@ export const TOOL_SPECS = [
       },
     },
   },
+  // Issue #116 (OWNER DECISION b): the admin-only read path over the refusal audit trail every
+  // `authorize()` refusal now writes (call-tool.ts's `recordRefusal`, server.ts's dashboard
+  // `allowed()`). Minimal by design (owner decision text: "keep it minimal and documented") — a
+  // flat filter over one table, the same shape `auditFor`/`queryRefusals` already return, no new
+  // aggregation. `targetId` is always what the REFUSED CALLER itself named (authz.ts/call-tool.ts's
+  // existing non-disclosure convention), never the resource's actual owner.
+  {
+    name: 'audit_refusals_list', entity: 'audit', key: null,
+    description:
+      'Admin only. Query the authorization-refusal audit trail — every non-owner/insufficient-role/pending-account/disabled-principal/workflow-not-allowed refusal any MCP tool or dashboard API route has returned, newest first. ' +
+      'Each row: ts, requestId (matches `detail.requestId` on the refused caller\'s OWN response, UNLESS that response was masked to look like a *_NOT_FOUND answer — issue #116 decision a — in which case trace by actor+tool+targetId+ts instead, since a requestId on a masked response would itself be a new oracle), ' +
+      'actor (null for auth-disabled/loopback-exempt), authMethod ("service-account" when the actor authenticated as one, absent otherwise), tool (the MCP tool name or dashboard route), targetKind ("run"|"workflow"|"trigger"|"none"), targetId (the id the REFUSED CALLER supplied — never the resource\'s real owner), realReason (the true internal reason, e.g. NOT_RUN_OWNER, even when the caller was shown RUN_NOT_FOUND), returnedCode (what the caller actually received). ' +
+      'All filters optional: actor, tool (exact match), since (ISO-8601, inclusive), limit (default/cap same as the rest of this engine\'s audit reads).',
+    inputSchema: {
+      ...schema({
+        actor: { type: 'string', description: 'Exact match on the refused caller\'s own id.' },
+        tool: { type: 'string', description: 'Exact match on the MCP tool name or dashboard route this refusal happened on.' },
+        since: { type: 'string', description: 'ISO-8601 timestamp — only rows at or after this instant.' },
+        limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Max rows to return (default 200).' },
+      }),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: [] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: { happy: {}, errors: {} },
+  },
   // ---- service accounts (6) — owner decision 2026-10-03: non-interactive full-MCP principals.
   // Admin only, ownership:'none' (one admin manages every account centrally — there is no
   // per-account ownership concept the way workflows/runs have one). client_secret is shown ONCE,

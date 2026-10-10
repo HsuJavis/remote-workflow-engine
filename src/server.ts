@@ -1,7 +1,7 @@
 // MCP Streamable HTTP server bootstrap (DES-001 / ARCH-001 / TASK-001).
 // Owns transport + tool registration only — no business logic (pure delegation to McpFacade).
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { gunzip, inflate } from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -66,6 +66,7 @@ import { callTool, type ToolDeps } from './call-tool.js';
 import { toPublicRunView, toPublicRunSummary } from './run-view.js';
 import { projectToolsList, ENVELOPE_NOTE, TOOL_SPECS } from './tool-specs.js';
 import { authorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
+import { recordRefusal } from './authz-refusal.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, DEFAULT_BOOT_PROBE_GRACE_MS, harnessFilteredProbeLookup, harnessFilteredProbeStore, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
@@ -430,11 +431,25 @@ async function handleDashboardRequest(
   // Spec §A: every route below first applies its MCP tool's OWN authorize() row (role + ownership,
   // tri-state: a resource that does not exist passes here and 404s downstream, exactly as the tool
   // answers *_NOT_FOUND) — a refusal is 403 with the tool's own code.
+  // Issue #116 (OWNER DECISIONS a+b): same classification+audit `call-tool.ts` uses for the MCP
+  // surface (`src/authz-refusal.ts`), so the masking rule and the audit row's shape cannot drift
+  // between the two. A MASKED refusal (decision a) gets the route's OWN not-found status+shape
+  // (404, `{error: message}`, no `code` key — matching every real not-found response on this
+  // dashboard, e.g. `sendJson(res, 404, {error: \`Run not found: ${runId}\`})` below) rather than
+  // the normal role-refusal 403 — a masked 403 would itself be the tell decision a exists to close.
+  // An UNMASKED refusal keeps 403 `{code, error}` plus a `requestId` for traceability (safe here:
+  // there is no sibling not-found response it must stay identical to).
   const allowed = (tool: string, args: Record<string, unknown>): AuthzVerdict | null => {
     const spec = TOOL_SPECS.find((t) => t.name === tool)!;
     const verdict = authorize(principal, spec, args, viewer.lookup);
     if (verdict.ok) return verdict;
-    sendJson(res, 403, { code: verdict.code, error: verdict.reason });
+    const requestId = randomUUID();
+    const { code, reason, masked } = recordRefusal(store, requestId, principal, tool, args, verdict);
+    if (masked) {
+      sendJson(res, 404, { error: reason });
+    } else {
+      sendJson(res, 403, { code, error: reason, requestId });
+    }
     return null;
   };
   // The `run_list` rule (mcp-facade.ts `runListScope`): a non-admin sees only their own runs.
@@ -1150,7 +1165,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
     return {
-      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, harnessProviders: config?.harnessProviders, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
+      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, harnessProviders: config?.harnessProviders, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, refusalAudit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
       // Service accounts spec (owner decision 2026-10-03): wired unconditionally — `serviceAccounts`
       // is constructed on every boot, same lifetime as `principalAdmin` just above.
       serviceAccounts, revokeServiceAccountTokens: (principal) => authTokenStore?.revokeAllFor(principal) ?? 0,

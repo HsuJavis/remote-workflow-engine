@@ -3,6 +3,7 @@
 // parameters plus a name/args/principal/authEnabled tail — the v24 tool surface is entirely new
 // names (TOOL_SPECS, tool-specs.ts) so this is a fresh dispatcher, not an in-place edit.
 import Ajv from 'ajv';
+import { randomUUID } from 'node:crypto';
 import { TOOL_SPECS } from './tool-specs.js';
 import { parseBudget } from './run-guard.js';
 import { authorize as realAuthorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
@@ -24,6 +25,7 @@ import { checkModelRef, PROVIDERS, type Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
 import { redactSystemInfoForRole, type SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
+import { recordRefusal } from './authz-refusal.js';
 import { codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { PrincipalAdmin } from './auth/principal-admin.js';
 import type { ServiceAccountStore, ServiceAccountRow, ServiceAccountSecretRow } from './auth/service-account-store.js';
@@ -71,6 +73,13 @@ export interface ToolDeps {
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
+  /** Issue #116 (OWNER DECISION b): every `authorize()` refusal, appended BEFORE the refusal is
+   *  returned (never after — a crash writing it must not silently skip the record). Optional for
+   *  the same reason `probeLookup`/`observedStats`/`principals` are: the ~250 existing `ToolDeps`
+   *  fixtures compile unchanged; absent -> refusals are stamped with a requestId but not persisted
+   *  (never a crash, never flips a refusal into a success). `server.ts` always wires it (the same
+   *  `RunStore` `audit` already reads). */
+  refusalAudit?: Pick<RunStore, 'appendRefusal' | 'queryRefusals'>;
   authorize?: (principal: Principal, spec: { name: string; key: string | null; authz: unknown }, args: Record<string, unknown>, lookup: OwnerLookup) => AuthzVerdict;
   /** v37 (DES-262, ARCH-181, REQ-218, ADR-083 owner_decision posture C): this engine's MEASURED
    *  confinement posture (src/gateway/confinement-probe.ts, set once at boot — never a config key).
@@ -119,6 +128,51 @@ const TRIGGER_SEED_KEYS = ['seed', 'seedManifest', 'seedManifestRef', 'seedRef']
 
 function refusalEnvelope(code: ErrorCode, message: string, detail?: Record<string, unknown>): Record<string, unknown> {
   return { runId: '', status: 'failed', code, error: { code, message, ...(detail ? { detail } : {}) } };
+}
+
+// Issue #116 (OWNER DECISION a): the two tool families whose GENUINE `*_NOT_FOUND` answer does
+// NOT use `refusalEnvelope`'s own generic shape (`{runId:'', status:'failed', code, error}`) —
+// `workflow_deregister`/`workflow_publish` DO use that exact shape already (verified against
+// mcp-facade.ts), so a masked verdict for THEM needs no special envelope at all; these two families
+// do, or the masked response would carry a tell (`runId:''` instead of the real id, or an extra
+// top-level `code` key the real handler never sets) that the real not-found answer does not.
+const MASKED_BARE_ENVELOPE = new Set(['issue_report', 'schedule_delete', 'schedule_setEnabled', 'webhook_delete']);
+const MASKED_RUN_ENVELOPE = new Set(['run_status', 'run_result', 'run_suspend', 'run_resume', 'run_stop']);
+
+/** Issue #116: builds the masked refusal in the SAME shape that tool's own genuine `*_NOT_FOUND`
+ *  answer uses (mcp-facade.ts's shared `notFound()` for the run family — real `runId`, no
+ *  top-level `code`; `run_agent_log`'s own three extra always-present fields; the bare `{error}`
+ *  tool-by-tool pass-throughs for issue_report/schedule/webhook). Returns `undefined` for a tool
+ *  `refusalEnvelope` already matches byte-for-byte (workflow_deregister/workflow_publish) or that
+ *  authz.ts never masks for (notFoundTemplate's own documented scope) — the caller falls back to
+ *  the generic `refusalEnvelope` either way, which is correct in both cases. */
+function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, code: ErrorCode, message: string): Record<string, unknown> | undefined {
+  if (MASKED_BARE_ENVELOPE.has(toolName)) return { error: { code, message } };
+  const runId = args['runId'];
+  if (MASKED_RUN_ENVELOPE.has(toolName)) return { runId, status: 'failed', error: { code, message } };
+  if (toolName === 'run_agent_log') return { runId, status: 'failed', error: { code, message }, harness: null, events: [], hasMore: false };
+  return undefined;
+}
+
+/** Issue #116 (OWNER DECISION b): classifies + audits via the shared `authz-refusal.ts` (server.ts's
+ *  dashboard `allowed()` uses the SAME function, so the masking/audit rule cannot drift between the
+ *  two surfaces), then shapes THIS transport's own envelope: stamps `detail.requestId` on an
+ *  UNMASKED refusal, or leaves the body byte-identical to that tool's genuine `*_NOT_FOUND` answer
+ *  on a masked one (decision a) — see `recordRefusal`'s own doc for why the masked side carries no
+ *  requestId. */
+function buildRefusalEnvelope(
+  deps: Pick<ToolDeps, 'refusalAudit'>,
+  requestId: string,
+  principal: Principal,
+  toolName: string,
+  args: Record<string, unknown>,
+  verdict: AuthzVerdict,
+): Record<string, unknown> {
+  const { code, reason, masked } = recordRefusal(deps.refusalAudit, requestId, principal, toolName, args, verdict);
+  if (masked) {
+    return maskedRefusalEnvelope(toolName, args, code, reason) ?? refusalEnvelope(code, reason, verdict.detail);
+  }
+  return refusalEnvelope(code, reason, { ...verdict.detail, requestId });
 }
 
 /** issue #158 F1: for a property validated with `anyOf` (e.g. `budget`), ajv (even with
@@ -312,7 +366,10 @@ export async function callTool(
   const authorize = deps.authorize ?? realAuthorize;
   const verdict = authorize(principal, spec, a, deps.lookup);
   if (!verdict.ok) {
-    return refusalEnvelope(verdict.code ?? 'FORBIDDEN_ROLE', verdict.reason ?? 'refused', verdict.detail);
+    // Issue #116 (OWNER DECISIONS a+b): one audit row + (for an unmasked refusal) a requestId
+    // echoed on the envelope — see buildRefusalEnvelope's own doc for why a MASKED refusal's
+    // envelope is left untouched instead.
+    return buildRefusalEnvelope(deps, randomUUID(), principal, spec.name, a, verdict);
   }
   const crossPrincipalRead = verdict.crossPrincipalRead === true;
   // `auth-disabled` carries no actor id — DES-151's audited handlers must never write a row for it.
@@ -556,6 +613,17 @@ export async function callTool(
       const out = deps.principals.setQuota(a['id'] as string, a['limit'] ?? null, actor ?? 'local');
       if (!out.ok) return refusalEnvelope(out.code, out.reason);
       return { runId: '', status: 'completed', result: out.entry };
+    }
+    // Issue #116 (OWNER DECISION b): admin-only query over the refusal audit trail.
+    case 'audit_refusals_list': {
+      if (!deps.refusalAudit) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the refusal audit store is not wired on this engine');
+      const filter = {
+        ...(typeof a['actor'] === 'string' ? { actor: a['actor'] as string } : {}),
+        ...(typeof a['tool'] === 'string' ? { tool: a['tool'] as string } : {}),
+        ...(typeof a['since'] === 'string' ? { since: a['since'] as string } : {}),
+        ...(typeof a['limit'] === 'number' ? { limit: a['limit'] as number } : {}),
+      };
+      return { runId: '', status: 'completed', result: deps.refusalAudit.queryRefusals(filter) };
     }
 
     // ---- service accounts (6) — owner decision 2026-10-03 ----

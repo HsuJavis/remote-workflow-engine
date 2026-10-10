@@ -112,19 +112,22 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
 
   afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 
-  it('runs.principal — the owner acts, a non-owner is refused NOT_RUN_OWNER (same verdict as the fake)', () => {
+  it('runs.principal — the owner acts, a non-owner is refused RUN_NOT_FOUND (masked, issue #116 decision a) — the fake lookup agrees, and the real internalReason is still NOT_RUN_OWNER', () => {
     expect(lookup.runOwner(aliceRunId)).toBe(ALICE.id);
     expect(authorize(ALICE, RUN_STATUS, { runId: aliceRunId }, lookup).ok).toBe(true);
     const real = authorize(BOB, RUN_STATUS, { runId: aliceRunId }, lookup);
     const fake = authorize(BOB, RUN_STATUS, { runId: aliceRunId }, fakeLookup({ runOwner: () => ALICE.id }));
     expect(real.ok).toBe(false);
-    expect(real.code).toBe('NOT_RUN_OWNER');
+    expect(real.code).toBe('RUN_NOT_FOUND');
+    expect(real.internalReason).toBe('NOT_RUN_OWNER');
     expect(real.code).toBe(fake.code);
   });
 
-  it('runs.principal NULL (pre-v15 row) is admin-only, and an absent runId never leaks existence', () => {
+  it('runs.principal NULL (pre-v15 row) is admin-only (masked to RUN_NOT_FOUND for a non-admin, issue #116), and an absent runId never leaks existence', () => {
     expect(lookup.runOwner(legacyRunId)).toBeNull();
-    expect(authorize(ALICE, RUN_STATUS, { runId: legacyRunId }, lookup).code).toBe('NOT_RUN_OWNER');
+    const refused = authorize(ALICE, RUN_STATUS, { runId: legacyRunId }, lookup);
+    expect(refused.code).toBe('RUN_NOT_FOUND');
+    expect(refused.internalReason).toBe('NOT_RUN_OWNER');
     expect(authorize(ADMIN, RUN_STATUS, { runId: legacyRunId }, lookup).ok).toBe(true);
     expect(lookup.runOwner('00000000-0000-0000-0000-000000000000')).toBeUndefined();
     expect(authorize(BOB, RUN_STATUS, { runId: '00000000-0000-0000-0000-000000000000' }, lookup).ok).toBe(true);
@@ -136,19 +139,21 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
     expect(verdict.crossPrincipalRead).toBe(true);
   });
 
-  it('workflows.owner — the owner acts, a non-owner is refused NOT_WORKFLOW_OWNER', () => {
+  it('workflows.owner — the owner acts, a non-owner is refused WORKFLOW_NOT_FOUND (masked, issue #116 decision a)', () => {
     expect(lookup.workflowOwner('wf-a')).toBe(ALICE.id);
     expect(authorize(ALICE, WORKFLOW_DEREGISTER, { name: 'wf-a' }, lookup).ok).toBe(true);
     const real = authorize(BOB, WORKFLOW_DEREGISTER, { name: 'wf-a' }, lookup);
-    expect(real.code).toBe('NOT_WORKFLOW_OWNER');
+    expect(real.code).toBe('WORKFLOW_NOT_FOUND');
+    expect(real.internalReason).toBe('NOT_WORKFLOW_OWNER');
     expect(real.code).toBe(authorize(BOB, WORKFLOW_DEREGISTER, { name: 'wf-a' }, fakeLookup({ workflowOwner: () => ALICE.id })).code);
   });
 
-  it('schedules.createdBy — the creator of an UNCLAIMED schedule may delete it', () => {
+  it('schedules.createdBy — the creator of an UNCLAIMED schedule may delete it; a non-owner is masked to TRIGGER_NOT_FOUND (issue #116 decision a)', () => {
     expect(lookup.triggerOwner(aliceScheduleId)).toBe(ALICE.id);
     expect(authorize(ALICE, SCHEDULE_DELETE, { id: aliceScheduleId }, lookup).ok).toBe(true);
     const real = authorize(BOB, SCHEDULE_DELETE, { id: aliceScheduleId }, lookup);
-    expect(real.code).toBe('NOT_TRIGGER_OWNER');
+    expect(real.code).toBe('TRIGGER_NOT_FOUND');
+    expect(real.internalReason).toBe('NOT_TRIGGER_OWNER');
     expect(real.code).toBe(authorize(BOB, SCHEDULE_DELETE, { id: aliceScheduleId }, fakeLookup({ triggerOwner: () => ALICE.id })).code);
   });
 
