@@ -41,6 +41,12 @@ export const ERROR_CATALOG = {
   INTERNAL_ERROR: { see: null, hint: 'an unclassified engine fault; detail.rawCode carries the original signal when known' },
   FORBIDDEN_ROLE: { see: null, hint: 'the caller\'s role is below the tool\'s minRole' },
   NOT_FOUND: { see: null, hint: 'generic not-found for an entity with no more specific code' },
+  // Round-3 reverify (#166 decision 3): `system_info`'s own probe failed (a host fs/CPU/memory
+  // read threw) — kept as its own code, distinct from `INTERNAL_ERROR`, so a caller can tell
+  // "this ONE diagnostics call failed" from "something is generally wrong with the engine". Its
+  // message is scrubbed through the SAME `toErrEnvelope` branch INTERNAL_ERROR uses (below) —
+  // never the raw caught error, which could carry this engine's absolute host path.
+  PROBE_ERROR: { see: null, hint: 'system_info could not collect one or more host diagnostics; detail.rawCode carries the original signal when known' },
 
   // Ownership
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
@@ -407,21 +413,30 @@ export function toErrorCode(code: string): ErrorCode {
  *  path-free hint `tools/list` already advertises for INTERNAL_ERROR
  *  (`ERROR_CATALOG.INTERNAL_ERROR.hint`), so a cold caller sees nothing it couldn't already have
  *  read from the tool surface. `detail` (e.g. `.rawCode`, a short code string, never a path) is
- *  untouched — only `message` was ever the leak vector. */
+ *  untouched — only `message` was ever the leak vector.
+ *
+ *  Round-3 reverify (low): the scrub below now ALSO applies to `PROBE_ERROR` (system_info's own
+ *  probe-failure code, call-tool.ts) — generalized from a hardcoded `'INTERNAL_ERROR'` literal to
+ *  the resolved `code` variable so a future similarly-sourced-from-a-raw-caught-error code gets
+ *  the same treatment for free. `PROBE_ERROR` is deliberately kept as its OWN code here (never
+ *  folded onto `INTERNAL_ERROR` — it already survives `toErrorCode` unchanged because it is now a
+ *  real `ERROR_CATALOG` member), so the caller still learns "the probe failed" specifically; only
+ *  the message is scrubbed, exactly like `INTERNAL_ERROR`'s always was. */
 export function toErrEnvelope(err: unknown): { code: ErrorCode; message: string; see: 'workflow_authoring_guide' | null; detail?: Record<string, unknown> } {
   const e = err as { code?: unknown; message?: unknown; detail?: Record<string, unknown> } | null | undefined;
   const code = toErrorCode(typeof e?.code === 'string' ? e.code : '');
   const message = typeof e?.message === 'string' ? e.message : String(err);
-  if (code === 'INTERNAL_ERROR') {
+  if (code === 'INTERNAL_ERROR' || code === 'PROBE_ERROR') {
     console.error(`[internal-error] ${message}`);
     // The hint itself promises "detail.rawCode carries the original signal when known" — so when
     // the thrown value carried an uncatalogued `.code` (a raw fs error's `ENAMETOOLONG`/`EACCES`,
-    // or any other string `toErrorCode` folded onto INTERNAL_ERROR) and no caller already attached
-    // `rawCode` upstream (e.g. run-manager.ts's own `toErr()` wrapping), attach it HERE — it is a
-    // short code string, never a path, so it carries none of the leak this branch exists to close.
-    const rawCode = typeof e?.code === 'string' && e.code !== '' && e.code !== 'INTERNAL_ERROR' ? e.code : undefined;
+    // or any other string `toErrorCode` folded onto this branch's code) and no caller already
+    // attached `rawCode` upstream (e.g. run-manager.ts's own `toErr()` wrapping), attach it HERE —
+    // it is a short code string, never a path, so it carries none of the leak this branch exists
+    // to close.
+    const rawCode = typeof e?.code === 'string' && e.code !== '' && e.code !== code ? e.code : undefined;
     const detail = rawCode !== undefined || e?.detail ? { ...e?.detail, ...(rawCode !== undefined ? { rawCode } : {}) } : undefined;
-    return { code, message: `INTERNAL_ERROR: ${ERROR_CATALOG.INTERNAL_ERROR.hint}`, see: ERROR_CATALOG[code].see, detail };
+    return { code, message: `${code}: ${ERROR_CATALOG[code].hint}`, see: ERROR_CATALOG[code].see, detail };
   }
   return { code, message, see: ERROR_CATALOG[code].see, detail: e?.detail };
 }

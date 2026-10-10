@@ -24,7 +24,7 @@ import { checkModelRef, PROVIDERS, type Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
 import { redactSystemInfoForRole, type SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
-import type { ErrorCode } from './errors.js';
+import { codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { PrincipalAdmin } from './auth/principal-admin.js';
 import type { ServiceAccountStore, ServiceAccountRow, ServiceAccountSecretRow } from './auth/service-account-store.js';
 
@@ -530,7 +530,15 @@ export async function callTool(
         // (harness-info.ts) the authoring guide and DEPLOY.md read, so the three can never drift.
         return { status: 'ok', result: { ...view, harness: buildHarnessAnnounce(deps.harnessProviders) } };
       } catch (err) {
-        return { status: 'error', error: { code: 'PROBE_ERROR', message: String(err) } };
+        // Round-3 reverify (#166 decision 3, low): used to answer the raw caught error's own
+        // `.message` directly — bypassing the central `toErrEnvelope` scrub every OTHER
+        // MCP-facing envelope funnels through, which is exactly what could leak a host path from
+        // an underlying fs/probe error. `PROBE_ERROR` is a real `ERROR_CATALOG` member now, so
+        // `toErrEnvelope` scrubs its message the same way it already scrubbed `INTERNAL_ERROR`'s,
+        // while still reporting `PROBE_ERROR` (not folded onto `INTERNAL_ERROR`) to the caller.
+        const rawCode = (err as { code?: unknown } | null)?.code;
+        const envelope = toErrEnvelope(codedError('PROBE_ERROR', String(err), typeof rawCode === 'string' ? { rawCode } : undefined));
+        return { status: 'error', error: envelope };
       }
     }
     case 'principals_list': {

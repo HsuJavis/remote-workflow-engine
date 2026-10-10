@@ -139,6 +139,9 @@ describe('(c) every UPPER_SNAKE token in a tool\'s hand-written description is a
     // run_status.warnings) — same "not an ErrorCode" shape.
     'MEMORY_FILE_PATH', // issue #126 B: @modelcontextprotocol/server-memory's own env var name,
     // used in workspace_push's description as the ${run:dir} worked example — not an engine code.
+    'ASSET_CLEANUP_INCOMPLETE', // issue #166 decision 1: a `result.warning` literal on an
+    // otherwise-successful workflow_deregister/workspace_delete — same "not an ErrorCode" shape
+    // as the RegistrationWarning codes above.
   ]);
   for (const spec of TOOL_SPECS) {
     it(`${spec.name}: every UPPER_SNAKE token in its description is a catalogued code or allowlisted`, () => {
