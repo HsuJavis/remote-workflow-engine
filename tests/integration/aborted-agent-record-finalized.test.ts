@@ -101,9 +101,10 @@ describe('an aborted agent record is finalized (#53 root cause B)', () => {
     expect(view.agents[0]!.estimated).toBe(true);
     // The estimate is nonzero and provider/model are still '' (unresolved — this fake gateway never
     // calls `onHarness`) at abort time, so there is genuinely no price-book entry to charge against
-    // — `unpriced` correctly flips to `true` for THIS case (an unpriced call really did happen: the
-    // estimate IS a spend of unknown-priced tokens), unlike the exact-zero case below, which spent
-    // literally nothing and stays `unpriced:false`.
+    // — `unpriced` correctly flips to `true` for THIS case: an unpriced call really did happen (the
+    // estimate IS a spend of unknown-priced tokens), unlike a truly-never-dispatched call (which
+    // spends literally nothing and stays `unpriced:false` — see agent-executor-aborted-estimate.test.ts's
+    // "nothing ever dispatched" case).
     expect(view.agents[0]!.unpriced).toBe(true);
   }, 20000);
 

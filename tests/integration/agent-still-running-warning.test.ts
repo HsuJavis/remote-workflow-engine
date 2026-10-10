@@ -135,7 +135,7 @@ describe('issue #162(1): AGENT_STILL_RUNNING meta.warnings while a fire-and-forg
     expect(terminal.status).toBe('completed');
   });
 
-  it('run_stop on a wide parallel(): the QUEUED (never-dispatched) agents settle too, past settleInflight\'s bound — no permanent AGENT_STILL_RUNNING (IT-133 residual check)', async () => {
+  it('run_stop on a wide parallel(): measures whether QUEUED (never-dispatched) agents settle past settleInflight\'s bound — asserts whichever outcome is actually observed (IT-133 residual check, dual-branch measurement, not a fixed-outcome assertion)', async () => {
     const blockingGateway: GatewayClient = { invoke: async () => new Promise(() => {}) }; // never settles
     const store = new InMemoryRunStore(new SystemClock());
     const mgr = new RunManager({ gateway: blockingGateway, store, concurrency: 1 } as never);
