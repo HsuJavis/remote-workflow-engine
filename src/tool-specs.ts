@@ -744,7 +744,10 @@ export const TOOL_SPECS = [
     // instead of an object, is exactly that: the override cannot be read as part of the contract at
     // all). validateUserOverrides (params/contract.ts) has returned this code at run_start since
     // before this fix; it was simply missing from this list and from the guide's error table.
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'PARAM_CONTRACT_INVALID', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    // issue #125: QUOTA_EXCEEDED joined this row — a seedRef fetch's CasStore.putBlob can refuse
+    // the caller's own content-store quota mid-fetch; it now surfaces as its real code (previously
+    // folded into SEEDREF_FETCH_FAILED on run_status, though run_result's error.code was unaffected).
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'PARAM_CONTRACT_INVALID', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'QUOTA_EXCEEDED', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     // Service accounts spec: run_start has no ownership subject of its own (ownership:'none' —
     // "run any version" vs "release only" is a separate rule inside RunManager.start(), not
@@ -1565,6 +1568,7 @@ export const TOOL_SPECS = [
     // at all on the very first sample — not enough delta yet, not a probe failure).
     description:
       'Report engine system info: CPU, memory, disk, and process metrics (engine-self plus the top-N by CPU). No auth/principal information is included. ' +
+      "issue #123: `process.topN` (process names/command detail) is admin-only — a `user`/`author` caller gets `process.self`/`process.system` (COUNTS: total + byState) exactly as an admin does, but `topN` is absent and `process.processDetailNote` explains why. " +
       'Sizes are in bytes; `cpu.utilizationPct` and every `usedPct` are a percent (0-100); `cpu.loadAvg` is the OS 1/5/15-minute load average, NOT a percent; uptime is in seconds. ' +
       '`memory`, `disk` and `process.system` are each EITHER their normal shape OR entirely replaced by a `{reason, detail?}` object when that probe is unavailable on this host — never JSON null. ' +
       '`cpu.utilizationPct` is null (reason in the sibling `cpu.utilizationDegraded`, present only when degraded) on the first sample and on a CPU probe failure. ' +

@@ -37,7 +37,7 @@ import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueL
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import { ModelBook, toModelCatalogSnapshot } from './models/model-book.js';
-import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
+import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION, redactSystemInfoForRole } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
 import type { UpdateOutcome } from './update-types.js';
 import { verifyTagWebhook } from './self-update-webhook.js';
@@ -478,7 +478,12 @@ async function handleDashboardRequest(
     // constant per caller is free — and a knob on this unauthenticated route would widen recon).
     if (path === '/api/system') {
       if (!allowed('system_info', {})) return;
-      const view = await systemInfo.get({ topN: 20 });
+      const rawView = await systemInfo.get({ topN: 20 });
+      // issue #123: the SAME redaction the system_info MCP tool applies (call-tool.ts) — never
+      // two independent filters that could drift. `auth-disabled` (single-operator mode) is
+      // treated as admin, same as a real `admin` principal.
+      const isAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled';
+      const view = redactSystemInfoForRole(rawView, isAdmin);
       // v24 (DES-141): auth = {enabled, principalsCount, defaultRole} (ARCH-090).
       sendJson(res, 200, { ...view, auth: authAnnounce, harness: buildHarnessAnnounce(harnessProviders) });
       return;

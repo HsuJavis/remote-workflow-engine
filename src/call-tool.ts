@@ -22,7 +22,7 @@ import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { ObservedStatsProvider } from './models/observed-stats.js';
 import { checkModelRef, PROVIDERS, type Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
-import type { SystemInfoSampler } from './system-info.js';
+import { redactSystemInfoForRole, type SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
 import type { PrincipalAdmin } from './auth/principal-admin.js';
@@ -517,7 +517,14 @@ export async function callTool(
     case 'system_info': {
       const topN = a['topN'] !== undefined ? Math.floor(Number(a['topN'])) : 5;
       try {
-        const view = await deps.systemInfo.get({ topN });
+        const rawView = await deps.systemInfo.get({ topN });
+        // issue #123: below-admin callers (`user`/`author`, or an unauthenticated
+        // loopback-exempt caller) get CPU/memory/disk and process COUNTS only — never the top-N
+        // process list (OS `comm` names/command detail). `auth-disabled` (single-operator mode,
+        // where no caller is any less trusted than any other) is treated as admin, same as a real
+        // `admin` principal. The SAME redactSystemInfoForRole is applied by GET /api/system.
+        const isAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled';
+        const view = redactSystemInfoForRole(rawView, isAdmin);
         // pi harness v1 (spec "Disclosure"): the self-describing MCP surface states the harness,
         // its provider set, unsupported tools, and effort/usage semantics — same source
         // (harness-info.ts) the authoring guide and DEPLOY.md read, so the three can never drift.

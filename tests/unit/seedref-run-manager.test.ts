@@ -156,6 +156,40 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
     if (!res.ok) expect((res as any).error?.code).toBe('SEEDREF_SHA_MISMATCH');
   });
 
+  // Issue #125: a CasStore.putBlob throw during the seedRef fetch (QUOTA_EXCEEDED/DISK_LOW) kept
+  // its real code in seedRefFail.code/resultError.code, but RunStatusView.seedRef.failCode was
+  // coerced to SEEDREF_FETCH_FAILED because the failCode whitelist (run-manager.ts) only let
+  // SEEDREF_SHA_MISMATCH/SEEDREF_TOO_LARGE through. A caller polling run_status (not run_result)
+  // could not tell a quota refusal from a generic fetch failure.
+  it('(vi) QUOTA_EXCEEDED: putBlob throws quota error → run_status surfaces failCode QUOTA_EXCEEDED, not SEEDREF_FETCH_FAILED', async () => {
+    const fakeFetcher: FakeSeedRefFetcher = {
+      async fetch(_req, putBlob) {
+        await putBlob(sha256('x'), Buffer.from('x'));
+        throw Object.assign(new Error('QUOTA_EXCEEDED: this upload needs 10B but your content store holds 100B of your 100B quota'), { code: 'QUOTA_EXCEEDED' });
+      },
+    };
+
+    const cas = new CasStore(casDir);
+    const mgr = new RunManager({
+      workRoot: tmpDir,
+      cas,
+      seedFetcher: fakeFetcher,
+      seedRefAllowlist: ALLOWLIST,
+    } as any);
+
+    const runId = await startScript(mgr, `return 'seeded';`, {
+      seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
+      seedNamespace: '_test',
+    } as any);
+
+    const view = await pollStatus(mgr, runId);
+    expect(view.status).toBe('failed');
+    expect((view as any).seedRef?.failCode).toBe('QUOTA_EXCEEDED');
+    const res = await mgr.result(runId);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect((res as any).error?.code).toBe('QUOTA_EXCEEDED');
+  });
+
   it('(iv) dropped[] from fetcher result is surfaced on seedRef field of RunStatusView', async () => {
     const DROPPED = ['src/huge-asset.bin'];
     const fakeFetcher: FakeSeedRefFetcher = {
