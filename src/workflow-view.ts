@@ -150,6 +150,17 @@ export interface WorkflowDescribeView {
   // mirrors `run_start` for every reason either issue found.
 
   runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE' | null;
+  // Issue #154 residual (2026-10-10 follow-up): the generic `runnableReason:'NOT_RUNNABLE'` never
+  // named WHICH static rule a stored row now fails (the 2026-10-08 reverify's own INFO note:
+  // "只違反新規則的舊版本 ... describe 的 reason 未點名違規") — a caller could see `runnable:false`
+  // but not, from `workflow_describe` alone, whether that was RESERVED_PREFIX, INVALID_NAME, a
+  // scan violation, or anything else; only `run_start`'s thrown `detail.violation` named it.
+  // Populated from the SAME `catalog.validateStoredVersion()` result `ctx.notRunnable` already
+  // derives from (never a second, independent check) — null whenever `runnableReason` is not
+  // `'NOT_RUNNABLE'`, and ALSO null for the pre-existing `full.validation.ok===false` branch (a
+  // `validateCurrent()`-only parse/shape failure the caller never handed a `ctx.notRunnableDetail`
+  // for) rather than guess at a cause this field was never given.
+  runnableDetail: { violation: string; message: string } | null;
 }
 
 // Transcribed LITERALLY from WorkflowDescribeView's own top-level field list (same convention as
@@ -158,7 +169,7 @@ export interface WorkflowDescribeView {
 export const EXPECTED_DESCRIBE_KEYS = [
   'name', 'version', 'resolvedBy', 'channels', 'versions', 'description', 'phases',
   'params', 'lockedKeys', 'owner', 'reportProblem', 'triggers',
-  'mermaid', 'mermaidNote', 'runnable', 'runnableReason',
+  'mermaid', 'mermaidNote', 'runnable', 'runnableReason', 'runnableDetail',
 ] as const;
 
 /** True for any version row that predates the v24 per-agent contract — it cannot be run
@@ -241,6 +252,11 @@ export function projectWorkflowDescribe(
     // "no newer rule refuses it" (every pre-existing call site, which predates this check, keeps
     // compiling and keeps its prior behaviour unchanged).
     notRunnable?: boolean;
+    // Issue #154 residual (2026-10-10 follow-up): the SAME `validateStoredVersion()` result
+    // `ctx.notRunnable` booleanizes, kept whole here so `runnableDetail` can name the violation —
+    // never a second check, never re-derived. Omitted whenever `ctx.notRunnable` is falsy/omitted
+    // (every pre-existing call site keeps compiling and keeps `runnableDetail: null`).
+    notRunnableDetail?: { violation: string; message: string };
   },
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
@@ -315,5 +331,10 @@ export function projectWorkflowDescribe(
     mermaidNote: mermaid === null ? 'LEGACY_NO_DIAGRAM' : null,
     runnable: runnableReason === null,
     runnableReason,
+    // Issue #154 residual: named ONLY for the `ctx.notRunnableDetail`-carrying cause (a stored-row
+    // staleness `validateStoredVersion()` found) — never for `full.validation.ok===false` (the
+    // older, detail-less `validateCurrent()` branch folded into the SAME `'NOT_RUNNABLE'` reason,
+    // where no caller has ever supplied a detail to name), and never for any other reason.
+    runnableDetail: runnableReason === 'NOT_RUNNABLE' && ctx.notRunnableDetail ? ctx.notRunnableDetail : null,
   };
 }

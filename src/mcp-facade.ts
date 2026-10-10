@@ -744,6 +744,10 @@ export class McpFacade {
       // folds in — an owner, a bypass actor, or an ownerless row sees every version/channel.
       viewerIsOwner: canMutate(full.owner, actor),
       notRunnable: !staleness.ok,
+      // Issue #154 residual: names the specific rule `validateStoredVersion` found this stored row
+      // failing (e.g. RESERVED_PREFIX) — the SAME `staleness` result `notRunnable` above already
+      // booleanizes, never a second call.
+      notRunnableDetail: staleness.ok ? undefined : { violation: String(staleness.detail?.['violation'] ?? staleness.code), message: staleness.message },
     });
     // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
