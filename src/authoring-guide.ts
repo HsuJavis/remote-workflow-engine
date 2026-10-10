@@ -857,9 +857,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '(issue #165). `options.label`, if set, is a SEPARATE, purely cosmetic display name — ' +
         'reported as `agents[].label` (defaulting to the same positional when `options.label` is ' +
         'absent) — that two different agent() calls may share on purpose; it selects nothing. ' +
-        "run_agent_log's `label` argument matches either field, first match in `agents[]` order " +
-        "wins, so pass `agentId` to reach one specific call when several share a label/agentKey " +
-        'value. ' +
+        "run_agent_log's `label` argument matches `agentKey` FIRST across every call, and only " +
+        'falls back to `label` when none matches — a value that is one call\'s agentKey always ' +
+        "resolves to THAT call even when it also collides with a different call's cosmetic label; " +
+        'pass `agentId` to reach one specific call when several genuinely share the SAME value ' +
+        'within the SAME field (agentKey, or failing that, label) — array order then decides. ' +
         '`options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand ' +
         'property (`{allowedTools}`) — every key must be written `key: <literal>` so it can be ' +
         'checked statically (a spread or shorthand entry is refused `AGENT_OPTS_SPREAD` / ' +

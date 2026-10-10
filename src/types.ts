@@ -265,7 +265,21 @@ export interface AgentRecord {
    *  the resume/replay key (`CallKey` stays `{prompt, opts}` with no positional component — see
    *  that type's own doc and `_handleAgentRequest`'s comment at the `key: CallKey = …` line for why
    *  changing it would break resume of an in-flight run). Absent on every pre-#165 record (a
-   *  restart-reconstructed record from an old journal has no positional to recover). */
+   *  restart-reconstructed record from an old journal has no positional to recover) AND on a
+   *  post-#165 record reconstructed with no harness event of its own to read it from (a terminal
+   *  pre-dispatch refusal, or an abort cut off before its harness event's write landed, followed by
+   *  a restart before the terminal snapshot saved) — `deriveAgentRecords`'s usage-only branch has
+   *  nowhere else to source it from either.
+   *  Owner flag: the original #165 ask ("old rows → agentKey null") and an idempotent `ALTER TABLE
+   *  ADD COLUMN` migration assumed a SQL column. There is none to migrate — every `AgentRecord` is
+   *  reconstructed from the `run_snapshots` JSON blob and the transcript's harness/refused/usage
+   *  events (this file's own doc above), never a row with its own columns — so an old record's
+   *  `agentKey` is OMITTED (`undefined`), the same "absent, never defaulted" convention every other
+   *  optional field here follows (UT-162), not a literal SQL `null`. tool-specs.ts's run_status/
+   *  run_agent_log text says "absent, never null" to match what the code actually does; this
+   *  deliberately substitutes for the original ask's "null" wording and needs the owner's explicit
+   *  sign-off that absent-instead-of-null is the accepted contract, since a client built straight to
+   *  the original issue text (checking `agentKey === null`) would never match either way. */
   agentKey?: string;
   phase?: string;
   /** v26 (DES-175, ARCH-114, TASK-186): the phase lane's ordinal (0-based), snapshotted at IPC
