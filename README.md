@@ -42,14 +42,17 @@
   呼叫端用 `run_start({overrides:{agents:{'<label>':{model?,effort?,timeoutMs?,appendPrompt?}}}})`
   **逐 agent** 覆寫（沒有「整個工作流程一次覆寫」的欄位，扁平寫法回 `PARAM_UNKNOWN`），
   超出範圍即在送出當下被拒（`PARAM_OUT_OF_RANGE`/`PARAM_LOCKED`），從不留下半途而廢的 run；
-  `prompt`/`tools`/`skills`/`mcp`/`workdir`/`cwd` 六個鍵永遠鎖定、呼叫端無法觸及。優先序只有兩層：
+  `prompt`/`allowedTools`/`bash`/`skills`/`mcp`/`workdir`/`cwd` 七個鍵永遠鎖定、呼叫端無法觸及。優先序只有兩層：
   該次 run 的 `overrides.agents.<label>.<key>` > 腳本自己宣告的 `.default`——在 `agent()` 呼叫裡直接寫
   `model`/`effort`/`timeoutMs` 會在註冊當下被拒（`SCAN_VIOLATION`）。
   `meta.params.knobs`、`meta.defaults`、以及 `workflow_register` 的 `defaults` 參數都會被拒絕（`DEFAULTS_RETIRED`），
   錯誤訊息會指出要改寫到 `meta.params.agents.<label>.<key>.default`。
 - **已知工作流程探索**：`workflow_register`/`workflow_publish`/`workflow_list`/`workflow_deregister`/
   `workflow_authoring_guide`（引擎用自己的強制常數渲染的作者指南，也就是 `docs/AUTHORING.md`）。
-  `workflow_list` 每筆是 `{name, owner, versions, channels, runnable}`；`owner` 就是註冊者的身分
+  工作流程名稱必須是單一路徑片段：不含 `/`、`\`、前後空白，不是 `.`／`..`，最多 128 字元**且**最多
+  200 UTF-8 bytes（兩個上限都要過），也不能用引擎保留的 `rwe-` 開頭（任何大小寫），即使是 admin
+  也一樣會被拒絕 `RESERVED_PREFIX`（細節見 DEPLOY.md §1b）。`workflow_list` 每筆是
+  `{name, owner, versions, channels, runnable}`；`owner` 就是註冊者的身分
   （啟用驗證時是登入的 email；在關閉驗證且未帶 `args.principal` 的部署上註冊的工作流程本來就沒有擁有者，該欄為 `null`）。`user` 角色預設只看得到可執行（已發布 `release`）的工作流程，`author`／`admin` 預設看全部；
   `onlyRunnable:true|false` 可明確指定。
   讀腳本本文的工具是 `workflow_source`（需要 `author` 角色；非擁有者拿到 `scriptWithheld:true` 的遮蔽投影），
@@ -208,7 +211,10 @@
   + meta-refresh/JS 自動轉跳），無論有無 loopback listener 都可操作。
   D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）；過期 auth 表列由 GC sweep 自動清除
   （`workspaceTtlMs` 正確從 composeConfig 傳遞）；
-  工作流程擁有權（`NOT_WORKFLOW_OWNER`）；per-run principal attribution；
+  工作流程擁有權——非 admin 碰到別人的 run／trigger／workflow 一律回與「不存在」相同的錯誤碼
+  （`WORKFLOW_NOT_FOUND` 等，issue #116，見下方「角色」一節）；`workflow_register` 搶注別人已占用的
+  名字是唯一例外，仍直接回 `NOT_WORKFLOW_OWNER`（沒有對應的 not-found 兄弟碼可以遮）；
+  per-run principal attribution；
   角色（`principals`）：`workflow_register`/`workflow_deregister`/`workflow_publish`/`workflow_source`/
   `schedule_*`/`webhook_*` 需要 `author`，全域資產推送需要 `admin`（見 DEPLOY.md §1b「角色」）。
   啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1b 設定總表）。
@@ -221,8 +227,12 @@
   author 5 GiB、admin 不限，`casQuota` 可調；admin 可用 `principal_set_quota` 或管理分頁逐帳號覆寫），
   超過回 `QUOTA_EXCEEDED`；用 `workspace_prune_blobs` 清掉沒被已註冊版本用到的舊 blob。磁碟可用空間低於
   `diskFloor`（預設 max(5%, 5 GiB)）時，上傳與新 run 一律暫時拒絕 `DISK_LOW`。見 DEPLOY.md §1b。
+- **服務帳號與稽核**：`service_account_create`／`_list`／`_update`／`_rotate_secret`／`_revoke_secret`／
+  `_delete`（admin 限定，`client_credentials`，角色只能是 `author`／`user`，刪除/退役名稱永久不可重用）；
+  非 admin 碰到別人資源時被遮住的真正拒絕原因（擁有權不符等）寫進稽核表 `authz_refusals`，admin 用
+  `audit_refusals_list` 依 `requestId` 查詢。見 DEPLOY.md §1b「角色」「服務帳號」。
 
-共 **46 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
+共 **48 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 
 ## 前置需求
 
@@ -460,7 +470,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 沒過就回 401 + WWW-Authenticate——而且是在讀到任何工作流程資料「之前」就擋下，
 # 所以未授權的呼叫端連「這個名稱存不存在」都問不出來（存在與不存在都是同一個 401）。
 
-# 查詢 46 個 MCP 工具（含 schema）
+# 查詢 48 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -577,11 +587,14 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   兩種情況的處置都一樣：照「前置需求」把 venv 的 `bin/` 加進 `PATH`，或改用
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
-- **`effort` 對 OpenRouter 模型目前沒有作用**：引擎會把 `effort` 換算成 thinking 預算送進 CLI，
+- **`gateway:"sdk"` 下，`effort` 對 OpenRouter 模型沒有作用**：引擎會把 `effort` 換算成 thinking 預算送進 CLI，
   但這個值到不了 OpenRouter——實測 `low` 與 `high` 送出的請求內容完全相同、也沒有 `reasoning_effort` 欄位
   （CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter 丟掉這個參數）。
   `run_agent_log` 的 `harness.effortApplied` 會如實回報 `{applied:false, reason:…}` 並寫明原因。
-  Anthropic 模型的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
+  Anthropic 模型的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。**`gateway:"pi"` 不受此限**：對目錄
+  宣告支援 reasoning 的 OpenRouter 模型，`effort` 會實際透過 `reasoning.effort` 送上線——per-model 的
+  真相來源是 `models_list`/`GET /api/models` 的 `effortAppliedOnTransport` 欄位（見 DEPLOY.md §1b），
+  每次呼叫的結果另外看 `run_agent_log.harness.effortApplied`。
 - **已知缺陷**：目前沒有已知、尚未修復的缺陷待追蹤（2026-10-06 查核：先前列在這裡的
   [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)——偶發的
   `suspend`→`resume`→`failed`、agent 工作在終態之後還在跑——已在 v0.22.0（2026-09-25）修好並關閉，
