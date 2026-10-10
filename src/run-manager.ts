@@ -7,6 +7,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { materializeSeed, materializeManifest, validateSeedSpec } from './workspace-seed.js';
 import type { CasStore } from './cas-store.js';
 import { casNamespaceFor } from './cas-store.js';
@@ -785,16 +786,44 @@ export class RunManager {
    *  (every pre-existing caller) -> no-op. A disabled/expired/deleted account refuses
    *  unconditionally, BEFORE the allowlist is even consulted (spec: "refused everywhere", no
    *  narrower case to disclose). `workflowName` absent (an ad-hoc/nested call with nothing to name
-   *  yet) skips the allowlist half only — liveness is still checked. */
+   *  yet) skips the allowlist half only — liveness is still checked.
+   *
+   *  Issue #116 (decision b, reverify-r6-b finding 4): this is the ONE admission chokepoint a
+   *  bearer-less trigger firing ever reaches, and ALSO the one real MCP-reachable chokepoint for
+   *  `run_resume` (whose `ownership:'run'` authz row never re-checks the allowlist) — neither
+   *  `authorize()` nor `call-tool.ts`'s own refusal-audit wrapper ever runs for either path, so a
+   *  refusal here used to leave NO row in `audit_refusals_list`, unlike the SAME account's refused
+   *  `POST /mcp` bearer check. Audited the SAME way `authz-refusal.ts`'s `recordRefusal` is: one
+   *  row via `this._store.appendRefusal` (never turning an audit-write failure into a success — the
+   *  refusal already happened; the catch here only logs), a requestId minted once and ALSO stamped
+   *  onto the thrown error's `detail` so the caller (an MCP `run_resume`'s `error.detail.requestId`,
+   *  same convention `withRequestIdOnError`/`stampRequestId` use on the authorize()-refusal path)
+   *  can be traced back to it. `workflowName` is the target this engine's own
+   *  `authzTarget`/`workflowNameSubject` would resolve for a workflow-scoped tool — recorded as
+   *  `targetKind:'workflow'` even when absent (`targetId: null`), never `'none'`, since the caller
+   *  always named (or was already running as) a workflow by the time this gate can fire. */
   private _assertServiceAccountAdmission(principal: string | null | undefined, workflowName: string | undefined): void {
     if (!principal) return;
     const status = this._serviceAccountStatus?.(principal);
     if (!status) return;
+    const refuse = (code: 'SERVICE_ACCOUNT_DISABLED' | 'WORKFLOW_NOT_ALLOWED', message: string): never => {
+      const requestId = randomUUID();
+      try {
+        this._store.appendRefusal({
+          ts: this._clock.isoNow(), requestId, actor: principal, authMethod: 'service-account',
+          tool: 'run-manager', targetKind: 'workflow', targetId: workflowName ?? null,
+          realReason: code, returnedCode: code,
+        });
+      } catch (err) {
+        console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: 'run-manager', error: err instanceof Error ? err.message : String(err) }));
+      }
+      throw codedError(code, message, { requestId });
+    };
     if (!status.live) {
-      throw codedError('SERVICE_ACCOUNT_DISABLED', 'SERVICE_ACCOUNT_DISABLED: this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one');
+      return refuse('SERVICE_ACCOUNT_DISABLED', 'SERVICE_ACCOUNT_DISABLED: this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one');
     }
     if (status.workflows && status.workflows.length > 0 && workflowName !== undefined && !status.workflows.includes(workflowName)) {
-      throw codedError('WORKFLOW_NOT_ALLOWED', `WORKFLOW_NOT_ALLOWED: this caller is restricted to workflows [${status.workflows.join(', ')}]`);
+      return refuse('WORKFLOW_NOT_ALLOWED', `WORKFLOW_NOT_ALLOWED: this caller is restricted to workflows [${status.workflows.join(', ')}]`);
     }
   }
 
