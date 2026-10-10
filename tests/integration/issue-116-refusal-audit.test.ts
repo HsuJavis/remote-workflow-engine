@@ -217,6 +217,18 @@ describe('issue #116 decision a: non-owner is indistinguishable from missing', (
     expect(nonOwner['error']['detail']['requestId']).not.toBe(missing['error']['detail']['requestId']);
   });
 
+  // Final opus verify (LOW): `{workflow}` with no `kind` resolved to the 'invalid' mode, whose
+  // authz row is ownership:'none', so the handler's existence check ran unguarded — an existing
+  // workflow answered `completed []`, a missing one WORKFLOW_NOT_FOUND. A missing `kind` is a
+  // malformed request and must be refused the same way regardless of whether the workflow exists.
+  it('workspace_list {workflow} without kind: existing vs missing workflow answer the same INVALID_ARGUMENT', async () => {
+    const existing = await mcp('workspace_list', { workflow: WF }, bobToken);
+    const missing = await mcp('workspace_list', { workflow: 'no-such-workflow-it116-nokind' }, bobToken);
+    expect(existing['status']).toBe('failed');
+    expect(existing['error']['code']).toBe('INVALID_ARGUMENT');
+    expect(missing).toEqual(existing);
+  });
+
   it("workspace_delete workflow mode: non-owner vs missing-workflow are byte-identical (apart from the workflow name and the requestId), including error.see", async () => {
     const nonOwner = await mcp('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken);
     const missing = await mcp('workspace_delete', { workflow: 'no-such-workflow-it116-wd', kind: 'skill', name: 'n' }, bobToken);

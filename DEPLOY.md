@@ -832,7 +832,7 @@ claims 檢查與 `auth-service.ts` 的 scope），不是改 `rwe.config.json` �
 
 - 同一個人若未來改用別的身分登入（換 IdP、換公司 email、identity provider 換了 `sub`/UPN 格式），
   他原本名下的每一筆資源都會變成「擁有者是一個再也登入不進來的字串」——非擁有者、非 admin 誰都碰
-  不到（`NOT_WORKFLOW_OWNER`/`NOT_RUN_OWNER` 之類的擁有權拒絕，見「角色」一節），個人配額/角色覆寫
+  不到（非 admin 收到的是和「不存在」相同的 *_NOT_FOUND，見「角色」一節），個人配額/角色覆寫
   也不會跟著生效到新身分上。
 - **搬家（§7）或換身分系統時，必須先做「identity remap」這一步**，二選一：(a) 讓新 IdP 簽出一模
   一樣的 email 字串（issuer 換了沒關係，字串本身不變，既有 refresh token 仍會失效但資料擁有權不受
@@ -1120,8 +1120,11 @@ expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回�
 | `admin` | `principals_list`／`principal_set_role`（查看／執行期變更角色，見下方「執行期角色管理」）、`principal_set_quota`、`service_account_create`／`_list`／`_update`／`_rotate_secret`／`_revoke_secret`／`_delete`、dashboard 的「管理」分頁、`models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
-角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
-`NOT_RUN_OWNER`／`NOT_TRIGGER_OWNER`）：有 `author` 角色不代表能動別人的工作流程。
+角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查：有 `author` 角色不代表能動別人的工作流程。
+非 admin 碰到別人的 run／trigger／workflow 時，回應與「不存在」完全相同（`RUN_NOT_FOUND`／
+`TRIGGER_NOT_FOUND`／`WORKFLOW_NOT_FOUND`，issue #116），無法用錯誤碼探測 id 是否存在；真正的原因
+（例如擁有權不符）只記在稽核表 `authz_refusals`，回應帶的 `requestId` 可對到那一筆，admin 用
+`audit_refusals_list` 查詢。
 
 ⚠ **啟用 auth 卻沒設定 `principals` 的話，沒有人能用任何東西。** 這是刻意的 fail-closed
 （2026-09-30 owner decision，取代 ADR-028 的 `user` 預設）：`auth.enabled:true` 時每個已驗證但未列名
@@ -1184,8 +1187,8 @@ expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回�
   免登入，但身分是「無人」（`loopback-exempt`）——只看得到系統／模型／issues／工作流程（非擁有者視角），
   任何 run 頁面與管理分頁回 `PRINCIPAL_REQUIRED`。`bind:127.0.0.1` 時沒有豁免，本機也要登入（或帶 bearer）。
 - **每位使用者看到的資料＝對應 MCP 工具會給他的**（同一個授權判斷，不可能不一致）：run 列表／首頁卡片／
-  成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則 403
-  `NOT_RUN_OWNER`，admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
+  成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則回與「不存在」
+  相同的 404 並帶 `requestId`，拒絕記進稽核；admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
   （beta／草稿版本不列、describe/diagram 回 404）；系統、模型、issues 任何有角色（`user` 以上）的登入者可看（`none` 待核准者什麼都看不到）。
 - **CSRF**：會改東西的 dashboard 請求（登出、改角色）必須同源——`Origin` 的 host 等於請求的 `Host`
   或引擎自己的公開網址（`publicBaseUrl`／`auth.issuer`，所以隧道改寫 `Host` 也沒關係），或帶

@@ -1501,6 +1501,12 @@ export class McpFacade {
     if (a.workflow === undefined) {
       return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list requires runId, workflow (with kind), or scope:'global' (with kind) — pass workflow or scope:'global'" } };
     }
+    // Issue #116 (final verify): `{workflow}` without `kind` resolves to listMode 'invalid', whose
+    // authz row has no ownership check — so it must be refused BEFORE the existence check below,
+    // or an existing workflow (`completed []`) and a missing one (WORKFLOW_NOT_FOUND) differ.
+    if (!a.kind) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list with workflow requires kind:'skill'|'mcp'" } };
+    }
     // v24 (integrator, REQ-118): the asset-scope branch used to answer `[]` for a workflow that was
     // never registered, which reads identically to "registered, no assets" — and the row's own
     // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`. An empty list is a fact about an
