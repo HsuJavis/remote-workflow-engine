@@ -40,8 +40,13 @@ export interface RefusalClassification {
   code: ErrorCode;
   reason: string;
   /** True iff `authz.ts` substituted a `*_NOT_FOUND` code/message for a non-admin caller (decision
-   *  a) — the caller MUST NOT add a requestId or any other field to the response body in this
-   *  case, or the masking is defeated by the very field meant to help trace it. */
+   *  a). Reverify round-6 finding 2: both callers (call-tool.ts's `stampRequestId`, server.ts's
+   *  `allowed()`) now DO stamp a requestId on the masked response too — stamping only this branch
+   *  would itself be the tell decision a exists to close (a requestId's mere PRESENCE would mean
+   *  "refused"), so the tool's/route's genuine not-found sibling is stamped with one as well. The
+   *  two stay byte-identical in SHAPE either way; the inference an admin needs (masked vs. genuine)
+   *  comes from whether the presented requestId matches a row in `audit_refusals_list`, never from
+   *  whether the key is present at all. */
   masked: boolean;
 }
 
