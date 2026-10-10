@@ -168,7 +168,8 @@ const MASKED_ERR_ENVELOPE = new Set(['workspace_delete', 'workflow_publish', 'wo
  *  other tool here — always attaches `error.see` (`null` for this code's catalog entry). Built via
  *  `toErrEnvelope(codedError(code, message))` itself (not hand-typed `see: null`), so byte-identity
  *  holds by CONSTRUCTION — a future `ERROR_CATALOG` edit to this code's `see` pointer can never
- *  silently reopen the tell `workspace_delete`/`workspace_purge` join the same way for. */
+ *  silently reopen the tell `workspace_delete`/`workspace_purge`/`workspace_push` join the same
+ *  way for. */
 function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, code: ErrorCode, message: string): Record<string, unknown> | undefined {
   if (MASKED_BARE_ENVELOPE.has(toolName)) return { error: { code, message } };
   // 4th repair round (issue #116 defect 1): `workspace_list`/`workspace_delete`'s own `workflow`
@@ -184,7 +185,7 @@ function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, 
   if (MASKED_RUN_ENVELOPE.has(toolName)) return { runId, status: 'failed', error: { code, message } };
   if (toolName === 'run_agent_log') return { runId, status: 'failed', error: { code, message }, harness: null, events: [], hasMore: false };
   // `workspace_purge`'s own catch arm (mcp-facade.ts) carries `error.see` via `toErrEnvelope()`
-  // but — UNLIKE `workspace_delete`/`workflow_publish` — NO top-level `code` key.
+  // but — UNLIKE `workspace_delete`/`workflow_publish`/`workspace_push` — NO top-level `code` key.
   if (toolName === 'workspace_purge') return { runId, status: 'failed', error: toErrEnvelope(codedError(code, message)) };
   if (MASKED_ERR_ENVELOPE.has(toolName)) {
     const e = toErrEnvelope(codedError(code, message));
@@ -201,9 +202,10 @@ function maskedRefusalEnvelope(toolName: string, args: Record<string, unknown>, 
 /** Issue #116 (OWNER DECISION b): classifies + audits via the shared `authz-refusal.ts` (server.ts's
  *  dashboard `allowed()` uses the SAME function, so the masking/audit rule cannot drift between the
  *  two surfaces), then shapes THIS transport's own envelope: stamps `detail.requestId` on an
- *  UNMASKED refusal, or leaves the body byte-identical to that tool's genuine `*_NOT_FOUND` answer
- *  on a masked one (decision a) — see `recordRefusal`'s own doc for why the masked side carries no
- *  requestId. */
+ *  UNMASKED refusal here directly, or (decision a) leaves the body byte-identical to that tool's
+ *  genuine `*_NOT_FOUND` answer on a masked one, unstamped — `callTool`'s own caller stamps a
+ *  requestId on THAT side too, uniformly with the genuine miss, via `stampRequestId` below (review
+ *  round 6 finding 3), so neither side's presence/absence of a requestId is itself a tell. */
 function buildRefusalEnvelope(
   deps: Pick<ToolDeps, 'refusalAudit'>,
   requestId: string,
