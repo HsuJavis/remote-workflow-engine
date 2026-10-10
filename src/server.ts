@@ -125,7 +125,12 @@ export interface ServerConfig {
   runConcurrency?: number;
   // REQ-026 (v2): run-workspace retention TTL in ms. When set (>0), a periodic GC reclaims TERMINAL
   // run workspaces older than this (never active/suspended). Omitted -> no auto-GC (workspaces are
-  // kept until an explicit workspace_purge), so no surprise deletion by default.
+  // kept until an explicit workspace_purge), so no surprise deletion by default — true AT THIS
+  // ServerConfig level, and unchanged for every direct createServer() caller (tests included).
+  // Issue #121 (owner decision): the PRODUCTION entrypoint no longer leaves this omitted —
+  // `composeConfig()` (main.ts) fills `WORKSPACE_TTL_DEFAULT_MS` (7 days) in when the config FILE
+  // omits the key, before ServerConfig ever sees "omitted" at all; an explicit `0` in the file
+  // still reaches here as `0`, still disabled.
   workspaceTtlMs?: number;
   // v7 (REQ-039/040): injectable live-catalog transports for the `models_list` tool — integration
   // tests supply fake Ollama/OpenRouter fetchers (no real network). Omitted -> real fetch against
@@ -1337,7 +1342,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // Issue #121: a one-shot follow-up sweep, armed only when a sweep call hit GC_SWEEP_BATCH_CAP
   // (reclaimStaleWorkspaces's own `maxReclaim` doc comment has the full "why cap at all" story) —
   // drains a large backlog across several short-interval ticks instead of stalling the event loop
-  // once per the (now up to 7-day-interval) regular sweep. `gcFollowUpTimer` guards against
+  // once per hourly regular sweep tick (`_intervalMs` below is `min(_gcTtl, 1h)`, so a 7-day TTL
+  // still means hourly, same as before #121 — only the TTL age changed, not the sweep cadence).
+  // `gcFollowUpTimer` guards against
   // stacking: a sweep already scheduled for 30s from now is never re-armed by a LATER sweep tick
   // finding the SAME still-draining backlog still over the cap.
   let gcFollowUpTimer: ReturnType<typeof setTimeout> | undefined;
