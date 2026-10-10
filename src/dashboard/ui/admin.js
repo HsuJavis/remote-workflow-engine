@@ -165,14 +165,26 @@ function paint(state, body) {
   }
 }
 
+// Issue #117: guards against the one overlap the new `onTick` resume-reload (below) introduces —
+// `render()`'s own mount-time `load()` and the `scheduleTick()` that follows it both land a
+// `fresh:true` tick before the cold-import/cached-remount paths' first paint ever settles, which
+// would otherwise fire `/api/principals` (+ service-accounts) TWICE on every single mount. Same
+// in-flight guard shape as `createServiceAccount`/`changeRole`'s own `showError`-then-await
+// pattern, just hoisted to cover re-entry rather than a single call's own error path.
 async function load(state) {
-  const r = await getViewJSON('/api/principals');
-  if (r.status !== 'ok' || !r.body) {
-    showError(state, t(state.lang, 'admError') + ((r.body && (r.body.error || r.body.code)) || 'unavailable'));
-    return;
+  if (state.loading) return;
+  state.loading = true;
+  try {
+    const r = await getViewJSON('/api/principals');
+    if (r.status !== 'ok' || !r.body) {
+      showError(state, t(state.lang, 'admError') + ((r.body && (r.body.error || r.body.code)) || 'unavailable'));
+      return;
+    }
+    paint(state, r.body);
+    await loadServiceAccounts(state.sa);
+  } finally {
+    state.loading = false;
   }
-  paint(state, r.body);
-  await loadServiceAccounts(state.sa);
 }
 
 // ── Service accounts section (service accounts spec, owner decision 2026-10-03) ─────────────────
