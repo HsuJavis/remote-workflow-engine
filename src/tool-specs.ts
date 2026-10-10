@@ -445,7 +445,14 @@ export const TOOL_SPECS = [
     // v36 (DES-246, TASK-244): `version` is optional — omitted, this deletes the WHOLE workflow
     // (every version, its diagrams, its assets, the name row) exactly as before; supplied, it
     // deletes only that one version's rows and the name/assets/other versions survive.
-    description: "Delete a workflow and release every trigger claimed under its name. Optionally pass `version` to delete only that one version instead of the whole workflow.",
+    // Issue #166 decision 1: the catalog row is always the source of truth for `removed` — a
+    // legacy name whose on-disk asset tree can no longer even be addressed (a name registered
+    // before the length limits existed, long enough to hit the filesystem's own NAME_MAX) still
+    // answers `removed:true`; its on-disk cleanup is best-effort and NEVER turns a completed
+    // delete into a reported failure. A `result.warning` of `'ASSET_CLEANUP_INCOMPLETE'` means the
+    // on-disk asset tree may not have been fully removed (logged server-side) — `removed` is still
+    // `true` and nothing about the catalog row is in question.
+    description: "Delete a workflow and release every trigger claimed under its name. Optionally pass `version` to delete only that one version instead of the whole workflow. `removed:true` is the catalog's own answer and is reported even when a legacy workflow's on-disk asset tree could not be fully cleaned up (see `result.warning`) — on-disk cleanup is best-effort and never reported as this call failing.",
     inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "Optional. Delete only this version (e.g. 'v1') instead of the whole workflow." } }, ['name']),
     outputSchema: OUT,
     errors: [

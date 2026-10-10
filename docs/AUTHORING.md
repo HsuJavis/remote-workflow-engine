@@ -328,7 +328,7 @@ A trigger bound through `triggers:[id]` is PINNED to the HIGHEST-numbered versio
 - `BUDGET_EXCEEDED` — the run's token budget is spent; the engine refused to dispatch this agent() call
 - `AGENT_OPTS_TAMPERED` — the agent() call's dispatched allowedTools/bash does not match any options literal this script's registered scan recorded for that label — the options object was altered after registration (e.g. by a planted Array.prototype.toJSON)
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
-- `INVALID_NAME` — the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\', not '.' or '..', at most 128 characters
+- `INVALID_NAME` — the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\', not '.' or '..', at most 128 characters AND at most 200 UTF-8 bytes (a multi-byte name can satisfy one ceiling while still exceeding the other)
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
 - `UNKNOWN_RUN_PLACEHOLDER` — a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run's id) are supported
 - `ITEM_CAP_EXCEEDED` — parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which

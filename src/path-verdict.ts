@@ -109,6 +109,17 @@ export function pathVerdict(
  *  it reaches a filesystem call (ENAMETOOLONG territory starts well above this on every target OS). */
 export const MAX_BARE_NAME_LENGTH = 128;
 
+// Issue #166 decision 2: `MAX_BARE_NAME_LENGTH` counts JS string characters (`.length`), and a
+// surrogate-pair-free character is one JS "character" regardless of its UTF-8 encoded size — a
+// 128-character name built from 3-byte CJK codepoints (e.g. "名") is ~384 UTF-8 bytes, comfortably
+// past Linux's NAME_MAX (255 bytes for one path component, the exact ceiling the issue's live
+// repro hit as `ENAMETOOLONG` out of `unlink`/`mkdir` on `assets/<name>` and `workflows/<name>`).
+// This is an ADDITIONAL ceiling, enforced ALONGSIDE `MAX_BARE_NAME_LENGTH`, not a replacement for
+// it — the owner's own number (#166 decision 2), chosen to leave ~55 bytes of headroom under the
+// 255-byte NAME_MAX for any future name-derived sibling path component without having to re-audit
+// every join site that already exists today.
+export const MAX_BARE_NAME_BYTES = 200;
+
 /** True for a non-empty, length-bounded name with no leading/trailing whitespace that contains
  *  neither path separator and is not exactly `.`/`..` — safe to join as exactly one path segment
  *  with no risk of adding, removing, or escaping a directory level. Deliberately silent on the
@@ -120,7 +131,14 @@ export const MAX_BARE_NAME_LENGTH = 128;
  *  control byte in the middle of the name, e.g. `'ver2-01-tab\tmid'`) round-tripped through `trim()`
  *  unchanged and registered. Every C0 control character (0x00–0x1F) and DEL (0x7F) anywhere in the
  *  name is now refused — not just the three ('\0', '/', '\\') already checked for path-escape
- *  reasons; a bare name has no business carrying a tab/newline/etc. at all, embedded or not. */
+ *  reasons; a bare name has no business carrying a tab/newline/etc. at all, embedded or not.
+ *
+ *  issue #166 decision 2: ALSO refused past `MAX_BARE_NAME_BYTES` UTF-8 bytes — see that
+ *  constant's own doc. This is the ONE shared validator `validateRegistration` (fresh
+ *  registrations) and `_computeStoredVersionValidity` (the #154-style re-check of an
+ *  already-stored row) both call, so a byte-oversized legacy name is refused at registration AND
+ *  demoted to `NOT_RUNNABLE` on every existing row the same way — the two can never disagree about
+ *  what counts as a valid bare name. */
 export function isValidBareName(name: string): boolean {
   if (typeof name !== 'string' || name.length === 0 || name.length > MAX_BARE_NAME_LENGTH) return false;
   if (name.trim() !== name) return false; // rejects '', whitespace-only, and leading/trailing padding
@@ -128,5 +146,6 @@ export function isValidBareName(name: string): boolean {
   // eslint-disable-next-line no-control-regex -- deliberately matching C0 controls + DEL
   if (/[\x00-\x1f\x7f]/.test(name)) return false;
   if (name === '.' || name === '..') return false;
+  if (Buffer.byteLength(name, 'utf8') > MAX_BARE_NAME_BYTES) return false;
   return true;
 }

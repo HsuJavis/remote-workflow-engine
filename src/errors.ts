@@ -287,7 +287,12 @@ export const ERROR_CATALOG = {
   // Issue #154 B4: a workflow name that is empty, whitespace, contains `/` or is exactly `.`/`..`,
   // or exceeds the length bound — distinct from RESERVED_PREFIX (a well-formed name the engine still
   // refuses) since this is "not a name at all", checked by path-verdict.ts's isValidBareName.
-  INVALID_NAME: { see: 'workflow_authoring_guide', hint: "the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters" },
+  // issue #166 decision 2: a byte ceiling (200 UTF-8 bytes) is checked ALONGSIDE the pre-existing
+  // 128-character one — a multi-byte name (e.g. CJK) can stay under 128 characters while still
+  // exceeding Linux's NAME_MAX (255 bytes per path component), which is what let a legacy name
+  // reach `workflow_deregister`'s on-disk cleanup and throw a raw `ENAMETOOLONG` instead of ever
+  // being refused here.
+  INVALID_NAME: { see: 'workflow_authoring_guide', hint: "the name must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters AND at most 200 UTF-8 bytes (a multi-byte name can satisfy one ceiling while still exceeding the other)" },
   HOOKS_UNSUPPORTED: { see: null, hint: 'the requested Claude hook is not supported by the sandbox' },
   // v26 (DES-170, TASK-175, issue #64): now guide-pointing — a caller reading tools/list's item
   // schemas needs the same door to workflow_authoring_guide the other authoring refusals get.
@@ -388,11 +393,36 @@ export function toErrorCode(code: string): ErrorCode {
 }
 
 /** v24 (DES-137): the one place a thrown `codedError` becomes the wire envelope — `see` is ALWAYS
- *  read from the catalog, never hand-typed at a call site. */
+ *  read from the catalog, never hand-typed at a call site.
+ *
+ *  Issue #166 decision 3: `INTERNAL_ERROR` is the ONE code whose message this function has never
+ *  controlled — `toErrorCode` folds every uncatalogued/unrecognized thrown code onto it (an
+ *  ordinary Node fs error's `.code`, e.g. `ENAMETOOLONG`/`EACCES`, is never a member of the closed
+ *  `ErrorCode` union), and a raw fs error's `.message` carries this engine's absolute host
+ *  filesystem layout verbatim (`ENAMETOOLONG: … unlink '/home/rwe/.local/share/rwe-data/assets/
+ *  <name>'` was the live #166 repro, out of `workflow_deregister`'s asset-tree cleanup). Every
+ *  call site that builds an MCP-facing envelope (mcp-facade.ts, ~10 of them) funnels through this
+ *  ONE function, so the fix belongs here rather than at each throw site: the real message (and any
+ *  host path it carries) is logged server-side only; the wire envelope gets the SAME catalogued,
+ *  path-free hint `tools/list` already advertises for INTERNAL_ERROR
+ *  (`ERROR_CATALOG.INTERNAL_ERROR.hint`), so a cold caller sees nothing it couldn't already have
+ *  read from the tool surface. `detail` (e.g. `.rawCode`, a short code string, never a path) is
+ *  untouched — only `message` was ever the leak vector. */
 export function toErrEnvelope(err: unknown): { code: ErrorCode; message: string; see: 'workflow_authoring_guide' | null; detail?: Record<string, unknown> } {
   const e = err as { code?: unknown; message?: unknown; detail?: Record<string, unknown> } | null | undefined;
   const code = toErrorCode(typeof e?.code === 'string' ? e.code : '');
   const message = typeof e?.message === 'string' ? e.message : String(err);
+  if (code === 'INTERNAL_ERROR') {
+    console.error(`[internal-error] ${message}`);
+    // The hint itself promises "detail.rawCode carries the original signal when known" — so when
+    // the thrown value carried an uncatalogued `.code` (a raw fs error's `ENAMETOOLONG`/`EACCES`,
+    // or any other string `toErrorCode` folded onto INTERNAL_ERROR) and no caller already attached
+    // `rawCode` upstream (e.g. run-manager.ts's own `toErr()` wrapping), attach it HERE — it is a
+    // short code string, never a path, so it carries none of the leak this branch exists to close.
+    const rawCode = typeof e?.code === 'string' && e.code !== '' && e.code !== 'INTERNAL_ERROR' ? e.code : undefined;
+    const detail = rawCode !== undefined || e?.detail ? { ...e?.detail, ...(rawCode !== undefined ? { rawCode } : {}) } : undefined;
+    return { code, message: `INTERNAL_ERROR: ${ERROR_CATALOG.INTERNAL_ERROR.hint}`, see: ERROR_CATALOG[code].see, detail };
+  }
   return { code, message, see: ERROR_CATALOG[code].see, detail: e?.detail };
 }
 

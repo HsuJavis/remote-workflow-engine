@@ -681,7 +681,7 @@ export class WorkflowCatalog {
     if (!isValidBareName(name)) {
       throw codedError(
         'INVALID_NAME',
-        `INVALID_NAME: workflow name '${name}' must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters`,
+        `INVALID_NAME: workflow name '${name}' must be a single path segment: non-empty, no leading/trailing whitespace, no '/' or '\\', not '.' or '..', at most 128 characters AND at most 200 UTF-8 bytes (issue #166: a multi-byte name can satisfy the character limit while still exceeding this one)`,
       );
     }
 

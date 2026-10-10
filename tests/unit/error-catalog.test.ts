@@ -120,3 +120,56 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
     expect(ERROR_CATALOG.PARAM_CONTRACT_INVALID.hint).toMatch(/overrides\.agents/);
   });
 });
+
+// Issue #166 decision 3: INTERNAL_ERROR is the ONE code `toErrorCode` folds every uncatalogued
+// thrown `.code` onto — including a raw Node fs error's (`ENAMETOOLONG`, `EACCES`, …), whose
+// `.message` carries this engine's absolute host filesystem layout verbatim. Every MCP-facing
+// envelope (mcp-facade.ts) is built by THIS function, so the fix belongs here: the real message
+// is logged server-side only (not asserted here — a `console.error` spy is covered at the
+// mcp-facade-deregister-long-name.test.ts integration level) and the wire envelope gets the
+// catalogued, path-free hint instead.
+describe('toErrEnvelope — INTERNAL_ERROR never carries the raw (possibly path-leaking) message onto the wire (#166 decision 3)', () => {
+  it('a raw fs-style error (ENAMETOOLONG, absolute host path in .message) becomes the catalogued, path-free hint', () => {
+    const fsErr = Object.assign(new Error(`ENAMETOOLONG: name too long, unlink '/home/rwe/.local/share/rwe-data/assets/x'`), { code: 'ENAMETOOLONG' });
+    const env = toErrEnvelope(fsErr);
+    expect(env.code).toBe('INTERNAL_ERROR');
+    expect(env.message).not.toContain('/home/');
+    expect(env.message).not.toContain('ENAMETOOLONG');
+    expect(env.message).toContain(ERROR_CATALOG.INTERNAL_ERROR.hint);
+  });
+
+  it('a plain uncoded Error (no .code at all) also gets the generic hint, never its own .message', () => {
+    const env = toErrEnvelope(new Error('/home/rwe/some/internal/detail blew up'));
+    expect(env.code).toBe('INTERNAL_ERROR');
+    expect(env.message).not.toContain('/home/');
+  });
+
+  it('a deliberately-constructed codedError(\'INTERNAL_ERROR\', …) (e.g. audited-read.ts) is ALSO scrubbed — the central fix covers every INTERNAL_ERROR, not only unmapped ones', () => {
+    const err = codedError('INTERNAL_ERROR', "INTERNAL_ERROR: audit append failed, read refused: SQLITE_CANTOPEN: unable to open database file '/home/rwe/.local/share/rwe-data/audit.db'");
+    const env = toErrEnvelope(err);
+    expect(env.message).not.toContain('/home/');
+  });
+
+  it('detail is forwarded unchanged (only .message was ever the leak vector)', () => {
+    const err = codedError('SOME_UNKNOWN_CODE' as never, 'boom', { rawCode: 'SOME_UNKNOWN_CODE' });
+    const env = toErrEnvelope(err);
+    expect(env.detail).toEqual({ rawCode: 'SOME_UNKNOWN_CODE' });
+  });
+
+  it('a raw fs error with no .detail at all still gets detail.rawCode attached HERE, matching the catalog hint\'s own promise', () => {
+    const fsErr = Object.assign(new Error("ENAMETOOLONG: name too long, unlink '/home/rwe/x'"), { code: 'ENAMETOOLONG' });
+    const env = toErrEnvelope(fsErr);
+    expect(env.detail).toEqual({ rawCode: 'ENAMETOOLONG' });
+  });
+
+  it('a plain uncoded Error (no .code at all) carries no detail — nothing to attach, no empty object invented', () => {
+    const env = toErrEnvelope(new Error('boom, no code'));
+    expect(env.detail).toBeUndefined();
+  });
+
+  it('a NON-INTERNAL_ERROR catalogued code is completely unaffected (no over-broad scrub)', () => {
+    const err = codedError('WORKFLOW_NOT_FOUND', 'WORKFLOW_NOT_FOUND: /home/does/not/matter/here');
+    const env = toErrEnvelope(err);
+    expect(env.message).toBe('WORKFLOW_NOT_FOUND: /home/does/not/matter/here');
+  });
+});

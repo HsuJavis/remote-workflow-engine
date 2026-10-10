@@ -47,7 +47,7 @@ import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCo
 import { RoleStore } from './auth/role-store.js';
 import { PrincipalAdmin, type QuotaView } from './auth/principal-admin.js';
 import { ServiceAccountStore } from './auth/service-account-store.js';
-import { ERROR_CATALOG } from './errors.js';
+import { ERROR_CATALOG, toErrEnvelope } from './errors.js';
 import { CAS_QUOTA_DEFAULTS, DISK_FLOOR_DEFAULTS, type CasQuotaConfig, type DiskFloorConfig } from './cas-quota.js';
 import { DiskFloor } from './disk-floor.js';
 import type { PrincipalRole as Role } from './authz.js';
@@ -1970,7 +1970,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
               }
               sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
             } catch (err) {
-              sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: (err as Error).message } });
+              // Issue #166 decision 3: this is the OUTER catch around the whole `callTool(...)`
+              // dispatch — every tool handler already scrubs its OWN uncoded/INTERNAL_ERROR
+              // throws via `toErrEnvelope` (errors.ts) before returning, but anything that
+              // escapes a handler's own try/catch (a dispatch-level bug, never a coded refusal)
+              // used to reach here and echo `err.message` — potentially an absolute host path —
+              // verbatim onto the wire. Routed through the SAME central scrub, not a second one.
+              sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: toErrEnvelope(err).message } });
             }
           }).catch((err: unknown) => {
             if (err instanceof BodyTooLargeError) {
@@ -2215,7 +2221,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         }
         sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
       } catch (err) {
-        sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: (err as Error).message } });
+        // Issue #166 decision 3: the auth-disabled/loopback-exempt twin of the outer catch above —
+        // same reasoning, same central scrub.
+        sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: toErrEnvelope(err).message } });
       }
     }).catch((err: unknown) => {
       // REQ-024/063: an over-cap body (compressed or decompressed) → a TYPED, actionable 413.

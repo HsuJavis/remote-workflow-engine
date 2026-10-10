@@ -765,14 +765,36 @@ export class AssetSyncService {
    *
    *  The workflow name is a PATH SEGMENT here, so it goes through the same `lexicalVerdict` every
    *  asset name and file path goes through before anything is removed: a name that is not a plain
-   *  contained segment deletes NOTHING (returning false) rather than resolving to some parent of
-   *  the asset root. `deregister` accepts an arbitrary string from the wire; `rmSync` does not get
-   *  to see one. */
-  deleteWorkflowTree(workflow: string): boolean {
+   *  contained segment deletes NOTHING (returning `{removed:false}`) rather than resolving to some
+   *  parent of the asset root. `deregister` accepts an arbitrary string from the wire; `rmSync`
+   *  does not get to see one.
+   *
+   *  Issue #166 decision 1: by the time this runs, the catalog's DB-side delete has ALREADY
+   *  committed (`mcp-facade.ts`'s `workflowDeregister` only calls this `if (removed)`) — there is
+   *  no DB row left to roll back, so nothing this method does can turn the overall deregister back
+   *  into "it didn't happen". A legacy name that predates the length limits (registered before
+   *  #154/#166, or — per #166 decision 2 — one that satisfies the 128-character ceiling while
+   *  still exceeding the 200-UTF-8-byte one) can be long enough that `rmSync`'s own `lstat` fails
+   *  with `ENAMETOOLONG` regardless of whether anything is actually on disk at that path;
+   *  `force:true` only ever suppresses `ENOENT`, never that. Both are caught HERE and treated as
+   *  "nothing on disk to remove" — a deregister whose own on-disk asset tree can no longer even be
+   *  NAMED is, as far as this method is concerned, already clean. Any OTHER fs error (e.g. EACCES)
+   *  is caught too, for the same "the DB delete already happened" reason, logged server-side
+   *  (never shipped to the MCP caller — see `errors.ts`'s `toErrEnvelope`, #166 decision 3) and
+   *  surfaced as a `warning` on the otherwise-successful `{removed:true}` result rather than a
+   *  thrown `INTERNAL_ERROR` that would misreport a completed delete as a failure. */
+  deleteWorkflowTree(workflow: string): { removed: boolean; warning?: string } {
     const verdict = lexicalVerdict('asset-tree', workflow);
-    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return false;
-    rmSync(join(this._workRoot, workflow), { recursive: true, force: true });
-    return true;
+    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return { removed: false };
+    try {
+      rmSync(join(this._workRoot, workflow), { recursive: true, force: true });
+      return { removed: true };
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'ENOENT' || code === 'ENAMETOOLONG') return { removed: true };
+      console.error(`[asset-sync] deleteWorkflowTree: on-disk cleanup failed after the catalog row was already removed (code=${code ?? 'unknown'}) — see workflow_deregister's warning`);
+      return { removed: true, warning: 'ASSET_CLEANUP_INCOMPLETE' };
+    }
   }
 
   /** Removes the row THEN the tree (DES-153) — a `skill` row also owns an on-disk tree; `mcp` is
