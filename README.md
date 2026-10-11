@@ -229,8 +229,9 @@
   `diskFloor`（預設 max(5%, 5 GiB)）時，上傳與新 run 一律暫時拒絕 `DISK_LOW`。見 DEPLOY.md §1b。
 - **服務帳號與稽核**：`service_account_create`／`_list`／`_update`／`_rotate_secret`／`_revoke_secret`／
   `_delete`（admin 限定，`client_credentials`，角色只能是 `author`／`user`，刪除/退役名稱永久不可重用）；
-  非 admin 碰到別人資源時被遮住的真正拒絕原因（擁有權不符等）寫進稽核表 `authz_refusals`，admin 用
-  `audit_refusals_list` 依 `requestId` 查詢。見 DEPLOY.md §1b「角色」「服務帳號」。
+  非 admin 碰到別人資源時被遮住的真正拒絕原因（擁有權不符等）寫進稽核表 `authz_refusals`，回應帶的
+  `requestId` 可對到那一筆；admin 用 `audit_refusals_list`（依 actor／tool／since／limit 篩選）查詢。
+  見 DEPLOY.md §1b「角色」「服務帳號」。
 
 共 **48 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 
