@@ -6,9 +6,9 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **46 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 7、`schedule_*` 4、`webhook_*` 3、
-`issue_*` 5、`models_list`/`models_probe`/`system_info`、`principals_list`/`principal_set_role`/`principal_set_quota`、
-`service_account_create`/`_list`/`_update`/`_rotate_secret`/`_revoke_secret`/`_delete`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
+介面對外提供 **48 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 7、`schedule_*` 4、`webhook_*` 3、
+`issue_*` 6、`models_list`/`models_probe`/`system_info`、`principals_list`/`principal_set_role`/`principal_set_quota`、
+`audit_refusals_list`、`service_account_create`/`_list`/`_update`/`_rotate_secret`/`_revoke_secret`/`_delete`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
 （Anthropic / OpenRouter / 本機 Ollama——只有這三條路，見下方 §0 附錄）。狀態全存在本機檔案
 （SQLite + JSONL journal），
 不需要外部資料庫伺服器。**權威工具清單是 `src/tool-specs.ts`**——不在那張表上的名字，引擎一律回
@@ -188,7 +188,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 46
+# 預期：tools: 48
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -336,17 +336,6 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > `prompt` 的值不必是單一字串字面值——如上例用 `+` 串接常數與 `args`/前一步結果都是合法寫法（`agent()`
 > 的限制只在於**呼叫本身的 options 物件**要寫成字面量 `{ … }`，不能是變數或 spread；物件裡每個鍵的
 > 值可以是任何表達式）。`allowedTools` 才是唯一在註冊時會被解析成字面陣列的鍵。
->
-> ⚠️ **貼進去的角色全文本身不能撞到掃描器的關鍵字——這是實測撞到過的真坑，不是假設**：
-> `workflow_register` 的掃描器（`scanAgentCalls`）是對**整份腳本原始碼**跑正則
-> `/(?<!\.)\bagent\s*\(/g`，不分辨這段文字是不是在字串字面值裡面；同一份腳本裡另外幾個關鍵字
-> （`phase(`、`workflow(`、`parallel(`）跟 `Date.now()`/`Math.random()`/`new Date()`（沒帶參數的）
-> 也是同樣對原始碼逐字掃描。實測：把 iso-agile-sdlc plugin 舊版（1.25.0）`sdlc-verifier.md` 正文裡
-> 本來就有的一句「...sdlc-verifier agent (mode A)...」貼進 `ARCHITECT_ROLE` 常數（哪怕正確包在合法
-> 字串字面值裡），`scanAgentCalls` 就會在那一行多抓出一次不完整的 `agent(` 呼叫，整個腳本被
-> `AGENT_LABEL_REQUIRED` 拒絕註冊——即使腳本語法完全正確。貼之前先對你要貼的那份角色全文跑一次
-> `grep -nE '\bagent\s*\(|\bphase\s*\(|\bworkflow\s*\(|\bparallel\s*\(|Date\.now\(\)|Math\.random\(\)|new Date\(\)'`，
-> 撞到的詞改寫掉（例如把「agent (mode A)」改成「agent role (mode A)」或拿掉那個空格）再貼。
 >
 > ### 4) 實際跑起來（直接 `run_start`；plugin 已於 2026-09-26 移除）
 > client plugin `remote-workflow-plugin` 已於 2026-09-26 移除，現在只有 MCP 工具這一條路，沒有
@@ -556,7 +545,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
     | `?version=v2` | 指定版本 |
     | `200` | `image/svg+xml`,回應含 `X-Diagram-Cache: hit｜miss`、`X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:` |
     | `404` | 該名稱／版本沒有圖(`LEGACY_NO_DIAGRAM`)或工作流不存在 |
-    | `503` | `{"code":"DIAGRAM_RENDER_UNAVAILABLE","reason":"RENDER_FAILED｜RENDERER_MISSING"}` — 渲染器不可用,dashboard 會自動退回顯示原始碼 |
+    | `503` | `{"code":"DIAGRAM_RENDER_UNAVAILABLE","reason":"RENDERER_MISSING｜RENDER_TIMEOUT｜RENDER_FAILED｜RENDER_BUSY"}` — 渲染器不可用／逾時／失敗／同時渲染數已滿,dashboard 會自動退回顯示原始碼 |
     **快取是行程內的**:重啟引擎後同一個 `(name, version)` 會再 `miss` 一次。
   - **不裝也可以**：`@mermaid-js/mermaid-cli` 與 `puppeteer` 在 `optionalDependencies`，
     沒有它們引擎照常啟動與運作，dashboard 只是退回顯示 Mermaid 原始碼（`RENDERER_MISSING`）。
@@ -627,7 +616,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `modelProbe` 的探測結果現在按 harness 分（issue #138） | 每筆探測結果記住是哪個 harness/transport（`claude-agent-sdk`／`direct-fetch`／`pi`）量到的；切換 `gateway`（例如 `sdk`→`pi`）後，舊 harness 量到的結果對目前這個 harness 一律視為「還沒探測過」——`toolUseVerified`/`proseVerified` 讀回 `null`、`stabilitySource` 落回 `rule`、`run_start` 不再用舊 harness 的結果發 `MODEL_TOOL_USE_UNVERIFIED`。週期探測器會在引擎開始接受連線約 2 分鐘後的開機探測自動重新探測（之後每小時檢查一次，不必等 `intervalMs` 那麼久）；要立刻刷新可手動呼叫一次不帶參數的 admin `models_probe()`（探測所有已宣告的相異 model）。**升級**：`store/index.db` 的 `model_probes` 表會自動補上 `harness` 欄位，舊資料列保留、標成 `harness:'sdk'`（這張表存的時間點必定早於 pi harness 存在，所以「不是 pi」是確定的事實）。**降版（rollback）**：這張表只是週期探測器會自己重建的快取，從來不是必要資料——降到本次變更之前的版本前，先 `DROP TABLE model_probes`（或直接刪 `store/index.db` 重建也可以，但會連 run 歷史一起清掉，優先選只刪這張表），否則舊版引擎的寫入會因欄位數不符而失敗 | — | — | #138 |
 | `modelProbe` 的探測結果現在按「探測邏輯版本」分（issue #152，業主核准的附帶改善） | 背景：v0.37.4 修過一次 pi 探測器本身的邏輯錯誤，但修之前量到的「錯誤結果」在 `intervalMs`（預設 7 天）過期前一直被當成「還新鮮」，得靠人工重新呼叫 `models_probe()` 才會刷新。現在每筆探測結果額外記一個 `PROBE_LOGIC_VERSION`（寫在 `src/models/model-probe.ts`，`classifyProbe` 的判定規則或 `runProbe` 的派發方式——問什麼、怎麼判——改變語意時就要調高這個常數）；一筆探測結果存的版本只要跟目前程式碼的版本不一樣，就跟 issue #138 的 harness 不符一樣，整列視為「還沒探測過」——`get()`/`all()` 直接隱藏它（`toolUseVerified`/`proseVerified` 讀回 `null`、`stabilitySource` 落回 `rule`），週期探測器也會立刻把它排進下一輪，不必等 `intervalMs`。這個常數從 1 開始起跳：這一版部署之前存在的每一筆資料列，必定也早於這個欄位本身存在，所以回填值一定比 1 小，於是這次部署會自動刷新全部舊資料，正是業主要的效果，不需要為了這次部署額外調整常數。**升級**：`store/index.db` 的 `model_probes` 表會自動補上 `logic_version` 欄位（新建表與既有表走的是同一段 additive migration，跟 `harness` 欄位同一個 constructor、同樣的「先查欄位存不存在、不存在才 ALTER、重複欄位名稱的 race 直接吞掉」防護），舊資料列保留、回填成一個保證比目前版本小的值。**降版（rollback）**：這張表一樣只是快取，從來不是必要資料；跟 `harness` 欄位同一個理由——降到本次變更之前的版本前，先 `DROP TABLE model_probes`（或直接刪 `store/index.db`，但會連 run 歷史一起清掉，優先選只刪這張表），否則舊版引擎的 `INSERT OR REPLACE INTO model_probes VALUES (...)` 用的是位置參數、欄位數固定寫死，遇到多出來的 `logic_version` 欄位會直接因為欄位數不符而寫入失敗 | — | — | #152 |
 | `rwe.config.json` → `workspaceTtlMs` | **不是 sweep 間隔，是終態 run workspace 的保留年齡（ms）**：GC 回收「結束超過這個年齡」的 workspace（REQ-026）；sweep 本身多久跑一次是 `min(ttl, 1小時)`，獨立的另一回事。**issue #121（2026-10-10 業主裁決）：省略此鍵 = 7 天（`604800000`，`WORKSPACE_TTL_DEFAULT_MS`，main.ts `composeConfig()`），不需編輯設定檔即生效；明確寫 `0` 才是停用**（`??` 只在鍵缺失時代入預設，寫死的 `0` 原樣通過，絕不被升級成預設值）。**issue #121（2026-10-10 業主裁決）：「結束超過這個年齡」量的是 run 自己記錄的結束時間**——第一次終態轉換的時間戳（`RunSummary`/`RunStatusView` 的 `terminalAt`，run store 的權威欄位；`workspace-gc.ts` 的 `gcStatusFromSummary` 是唯一的轉換點），**不是 workspace 目錄的檔案系統 mtime**：一個跑了很多天才結束的 run，不會因為 workspace 目錄本身是舊的（例如 seed 時就建立）而在剛結束就被回收；反過來，一個早就結束、但目錄 mtime 因為某次 `workspace_pull` 或其他寫入而變新的 run，仍然會在它真正結束超過 TTL 後被回收。**舊資料（沒有 `terminalAt` 的 legacy row，即從未記錄過終態轉換）退回用目錄 mtime 量**，行為跟升級前完全一樣，不會因為升級而突然把從未記錄過結束時間的舊 run 永遠保留或立即回收。`mcp-state/<runId>` 旁置目錄用同一個 `{status, endedAt}` 判斷，但 orphan mcp-state 清理分支本身沒有年齡檢查（`runs/<runId>` 本體已經不在了，沒有東西可以再「老化」）。**同時決定 auth-table GC（`gcExpired()`）的 sweep 間隔**：auth 啟用但此鍵省略/`0` 時，那個 sweep 固定每小時跑一次（跟 workspace reclaim 有沒有開啟無關）。**首次啟用／升級後第一次 sweep 的大量 backlog 保護**：`reclaimStaleWorkspaces()` 本身是同步呼叫（`readdirSync`/`statSync`/`rmSync`，無 await），`server.ts` 每次呼叫傳入 `maxReclaim`（目前 200）上限，一次 sweep 最多清掉這麼多筆，超過上限時 30 秒後自動重排一次後續 sweep 繼續清，避免某次 tick 因為堆積太多終態 workspace 而卡住 event loop（issue #121） | `number` / `604800000`（7 天；省略即此值，`0` 才是停用） | 否 | v16, #121 |
-| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 46 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
+| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 48 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
 | `rwe.config.json` → `publicBaseUrl` | `webhook_create` 回傳的 `url` 用哪個 base URL 組出來（issue #97）——省略時退回這個 process 自己的 bind 位址／request `Host` 表頭，對走 cloudflared/nginx 反向代理進來的遠端呼叫端會是不可達的 `http://localhost:8899` 這類值。優先序：明白設定的 `publicBaseUrl` 一律最優先；沒設但 `auth.enabled:true` 時退回 `auth.issuer`（該值已經是這個部署對外宣告的身分，同一顆 base URL 沒有理由分開設定兩次）；兩者都沒有才退回舊行為。**任何有反向代理/隧道（cloudflared 等）在前面的部署都應該明白設這個鍵**，否則 webhook 送達方永遠拿不到能打的網址——見 §6 外部 ingress 安全一節。**開機時不驗證這個值的形狀**（不是合法 URL 也照樣接受、原樣拼進 `url`）——跟 `auth.issuer` 現有的寬鬆程度一致，但這裡沒有 `enabled` 開關保護，打錯就是每一次 `webhook_create` 都回一個打不通的網址，直到手動修正設定檔為止 | `string` / — | 有反向代理/隧道時建議設定 | #97 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定。每個 namespace 的用量受 `casQuota` 限制，清理見 `workspace_prune_blobs`；若放在與 `workRoot` 不同的檔案系統，`diskFloor` 兩邊都量、取較差者 | `string` / `$workRoot/cas` | 否 | v10 |
@@ -1091,21 +1080,15 @@ npm install` 全量重算（為了讓 brace-expansion override 真的生效—�
 項目本該在 lockfile 裡全列著（讓非本機平台的 `npm ci` 也能解析出自己要裝的那個），即使實際只有「跟
 本機平台相符」的那個會真的落地到 `node_modules`。已修：手動從 regression 前的 lockfile 把那 6 個
 `claude-agent-sdk-*` 變體原樣補回去（版本、`resolved`、`integrity` 皆未變動，且已逐一對 npm registry
-核對那個版本仍然存在）——純附加的 diff，沒動到任何既有行。esbuild/rollup 那批（review L11 估計約 80
-項）因為是遞移相依（非這次新增的直接依賴），暫未逐一補回，留待下次真的需要跨平台 `npm ci` 時再處理，
-不在這次 pi harness 的影響半徑內。
+核對那個版本仍然存在）——純附加的 diff，沒動到任何既有行。**esbuild/rollup/`@napi-rs/canvas` 那批跨
+平台項目經查並未受這次全量重算影響**（regen 前後的 lockfile 對照：兩邊的 `@esbuild/*`／
+`@rollup/rollup-*` 清單筆數相同）——只有 `@anthropic-ai/claude-agent-sdk-*` 這一組直接依賴的平台變體
+被 npm 的 resolver 砍掉，現已 8/8 補齊。
 
-**第二輪嘗試（review round 2 裁決：「從 master 的 lockfile 當底，試一次」）**：`git show
-origin/master:package-lock.json` 當起點、`npm install --package-lock-only` 疊上這個分支新增的 pi 相
-依套件——這個組合完整保留了全部 ~86 個跨平台項目（claude-agent-sdk 全 8 個 + esbuild/rollup 那批都
-在），達成了「cheap 保留跨平台項目」這個目標本身。但代價是 brace-expansion override **沒有**生效：
-`--package-lock-only`（試了兩次，含單獨對 `@earendil-works/pi-coding-agent` 子樹重跑一次）都回報
-「up to date」，解出的仍是舊版 `5.0.9`。接著試了 `rm -rf node_modules && npm install`（從這個以
-master 為底、已含 pi 相依的 lockfile 出發，而非從零)：這次 `npm ls` 顯示 `overridden: true`，但版本
-**仍然**是 `5.0.9`——override 旗標亮著卻沒套用正確版本，像是 npm 自己的一個不一致（可能跟上一輪遺留
-的 npm 快取有關），值得記錄但超出「試一次」的預算。結論：**保留**本節上方、已驗證正確（brace-
-expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回的既有版本，**不採用**這次 master
-為底的版本——寧可少補 80 個 dev 期間遲早要處理的跨平台項目，也不要賠上一個已經修好的 CVE。
+**已試過並放棄的替代方案**：以 `origin/master` 的 lockfile 為底、疊上這個分支新增的 pi 相依套件再跑
+`npm install --package-lock-only`，雖然完整保留了跨平台項目，但 brace-expansion override 沒有套用
+（解出的仍是舊版 `5.0.9`），換一次 `npm install` 仍然卡在同一個版本——不採用，保留本節上方已驗證
+正確（`5.0.12`）的版本。
 
 ### 角色（`principals`）——啟用 auth 前一定要讀
 
@@ -1117,7 +1100,7 @@ expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回�
 | 角色 | 這個角色（含以上）才叫得動的工具 |
 |---|---|
 | `author` | `workflow_register`／`workflow_deregister`／`workflow_publish`／`workflow_source`、`schedule_create`／`schedule_list`／`schedule_delete`／`schedule_setEnabled`、`webhook_create`／`webhook_list`／`webhook_delete`、`workspace_push` 的資產模式（`{workflow,kind,name}`）、`workspace_list`／`workspace_delete` 的工作流程模式 |
-| `admin` | `principals_list`／`principal_set_role`（查看／執行期變更角色，見下方「執行期角色管理」）、`principal_set_quota`、`service_account_create`／`_list`／`_update`／`_rotate_secret`／`_revoke_secret`／`_delete`、dashboard 的「管理」分頁、`models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
+| `admin` | `principals_list`／`principal_set_role`（查看／執行期變更角色，見下方「執行期角色管理」）、`principal_set_quota`、`audit_refusals_list`、`service_account_create`／`_list`／`_update`／`_rotate_secret`／`_revoke_secret`／`_delete`、dashboard 的「管理」分頁、`models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
 角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查：有 `author` 角色不代表能動別人的工作流程。
@@ -1404,7 +1387,7 @@ CLI 自己就會回「sandbox is enabled but dependencies are missing: ... not i
 `<prefix>/lib/node_modules` 的 symlink）；永遠不會是家目錄本身或共用的 `~/.local`；不存在或違反
 授權規則的候選會被**靜默略過**（營運者沒要求它），其餘靠 `sandbox.allowReadPaths` 補。機制是 CLI
 自己的 sandbox：每個 `denyRead` 目錄掛一個空 `tmpfs`，再把允許的路徑 bind 回去——已在一台圍籠生效
-的主機上實測（bwrap + socat，CLI 2.1.283，量測紀錄見 `docs/evidence/issue-101-read-confinement.md`，
+的主機上實測（bwrap + socat，CLI 2.1.199，量測紀錄見 `docs/evidence/issue-101-read-confinement.md`，
 自動化驗收是 `tests/acceptance/val-101-bash-read-confinement.test.ts`）。所以在 agent 眼中：
 `ls ~` 或 `ls <workRoot>` 會成功，但只看到通往自己工作目錄/工具鏈的空骨架目錄，看不到其他 run，
 也讀不到任何憑證。`/usr`、`/etc`、`/tmp` 等家目錄以外的系統路徑仍是唯讀可見（`git`、`python3`
@@ -1823,9 +1806,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 46 個工具（`workflow_*` 7、`run_*` 8、
-`workspace_*` 7、`schedule_*` 4、`webhook_*` 3、`issue_*` 5、`models_list`＋`models_probe`＋`system_info`、
-`principals_list`＋`principal_set_role`＋`principal_set_quota`、`service_account_create`／`_list`／
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 48 個工具（`workflow_*` 7、`run_*` 8、
+`workspace_*` 7、`schedule_*` 4、`webhook_*` 3、`issue_*` 6、`models_list`＋`models_probe`＋`system_info`、
+`principals_list`＋`principal_set_role`＋`principal_set_quota`＋`audit_refusals_list`、`service_account_create`／`_list`／
 `_update`／`_rotate_secret`／`_revoke_secret`／`_delete`）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
@@ -1855,20 +1838,20 @@ npm run start
 | `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該 model ref 對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`）——一個**依序** `await agent(...)` 呼叫失敗或逾時一律回傳 `null`，不拋例外，是刻意設計，不是漏接；`run_status`/`run_result`/`GET /api/runs/:id` 會同時多一個 `failedAgentCount` 欄位，不必自己去掃 `agents[]` 才發現「這次 run 裡有東西失敗了」 | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且腳本 `meta.params.agents.<label>.model.default` 寫的完整 ref 指到你要的 provider/model；腳本自己要對 `await agent(...)` 的回傳值判斷 `null` 再往下用，避免把 `null` 字串化接進下一段 prompt |
 | 宣告的 `timeoutMs` 跟實際等到失敗的時間對不上（例如宣告 60000ms、實測快兩倍才失敗） | `timeoutMs` 界定的是**單次嘗試**、不是整個呼叫；部署的 `retries`（`rwe.config.json`，**預設值依 gateway 而不同，見 §1b「retries」列**：sdk/pi 是 0、direct-fetch 是 1）會讓實際最壞等待時間變成 `timeoutMs × attempts`（`attempts = 1 + retries`） | 呼叫 `workflow_describe` 直接讀 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs`（伺服器已經照這台部署實際生效的 gateway 算好 attempts，不必自己乘） |
 | `workflow_register` 回 `UNKNOWN_MODEL` | 腳本 `meta.params.agents.<label>.model.default`／`.enum` 不是合法的完整 `<provider>/<model-id>` ref（裸名稱、認不得的 provider 前綴），或 openrouter/ollama 的 id 在該供應商的現行目錄裡真的找不到 | 改成完整 ref（用 `models_list` 查、複製它的 `ref` 欄位貼上）——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
-| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（46 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
+| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（48 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
 | 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`、`aliases`——2026-09-26 起別名機制整個移除） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些。**`aliases` 這個鍵不會擋住開機**（自我更新重啟舊設定檔時仍要能正常啟動），但已完全不生效——把每個模型改寫進腳本自己的 `meta.params.agents.<label>.model.default`（完整 `<provider>/<model-id>` ref） |
 | 設定檔裡巢狀物件打錯鍵名（例如 `auth.enable:true`、`sandbox.allowHostPath:[...]`），**沒有任何警告**，開機 log 乾淨 | 這個「不認得的鍵」檢查**只掃頂層**（`composeConfig()` 的 `unknownKeys` 比對只看 `Object.keys(fileConfig)`）；物件內部的鍵打錯字，該物件本身仍是「認得的頂層鍵」，所以完全靜默——`auth.enable:true`（想打 `auth.enabled`）的後果是 auth **仍然關閉**，看起來像設定生效了其實完全沒有；`sandbox.allowHostPath`（漏了 `s`）的後果是這個授權**完全沒套用**。目前只有 `modelProbe`、`casQuota`、`diskFloor` 這三個巢狀物件自己額外做了「不認得的內部鍵就拒絕」——其餘（`auth`、`sandbox`、`principals[x]` 除了 `role` 以外的鍵）沒有這層保護 | 巢狀鍵名**逐字元**對照 §1b 這份表；設完重開後，用 `workflow_describe` 或 `GET /api/status`／`system_info` 等能反映該設定「是否真的生效」的介面二次確認，不要只看「開機沒有警告」就當作設定生效 |
 | `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | 註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
 | `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是扁平的 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
 | `run_start` 回 `CHANNEL_UNPUBLISHED`；或 `workflow_describe` 回 `runnable:false` | 剛註冊完還沒發布——註冊只建立版本，不會自動指向任何頻道 | `workflow_publish({name, version, channel:"release"})`（三個參數都必填，`version` 是註冊回傳的字串如 `"v1"`）|
 | `workflow_describe` 回 `runnable:false` + `runnableReason:"LEGACY_REREGISTER"` | 這個版本沒有 `meta.params.agents` 契約（引擎不提供舊契約的解析階梯） | 照現行契約重新 `workflow_register` 一次（新版本），再 `workflow_publish` |
-| `run_start`/`run_resume` 回 `NOT_RUNNABLE`；或 `workflow_describe`/`workflow_list` 回 `runnable:false` + `runnableReason:"NOT_RUNNABLE"`（issue #154，2026-10-07 起） | **這台引擎升級後，既有版本可能變成不可執行**：每次 `run_start`/`run_resume`，以及一個 `workflow()` 組合呼叫的子工作流程，都會把該版本「當初註冊時存下的腳本／名稱」拿去重新跑一次**目前這個版本**的靜態檢查（依序：`isValidBareName` 的名稱格式檢查〔issue #154 B4，2026-10-08 起加入——這條之前刻意不回頭套用，理由是「一個已存在的版本，名稱從註冊起就不會變」，但這對「規則本身是在這個版本註冊之後才上線」的舊版本並不成立〕、`validateScriptEntry` 的解析/包裝檢查、`scanAgentCalls` 的工具宣告檢查、`parseMetaParams` 的參數契約檢查——**不含** Mermaid 圖形文法與 `TOOL_UNSUPPORTED_BY_HARNESS`，這兩項刻意不回頭套用，見下）——如果這個版本是在某條規則新增**之前**註冊的，而這個腳本剛好會踩到那條新規則，就會從原本的 `runnable:true` 變成 `runnable:false`，`run_start`/`run_resume` 也從原本能跑變成拒絕。`detail.violation` 會指名是哪一條規則、哪一行。檢查結果對同一個 (name, version) 在**行程存活期間**只算一次（版本列不可變，見 ADR-025），所以不會每次呼叫都重算，但**重啟引擎**＝重算一次，規則集變嚴格後舊版本會在下次重啟時第一次被重新評估 | 用 `workflow_describe({name, version})` 看 `detail.violation`／錯誤訊息找出是哪條規則踩到了；照現行規則修好腳本後重新 `workflow_register` 一次（新版本）再 `workflow_publish`，和 `LEGACY_REREGISTER` 的修法一樣。**不會**回頭套用的兩類：(1) Mermaid 圖形文法（`diagram_contract:'v1'` 的既有版本永遠不會因為 v26 之後加的圖形規則變成不可執行）；(2) `TOOL_UNSUPPORTED_BY_HARNESS`（取決於這台部署當下是 `gateway:"pi"` 還是 `"sdk"`，不是腳本本身的問題，不在這個重驗範圍內） |
+| `run_start`/`run_resume` 回 `NOT_RUNNABLE`；或 `workflow_describe`/`workflow_list` 回 `runnable:false` + `runnableReason:"NOT_RUNNABLE"`（issue #154，2026-10-07 起） | **這台引擎升級後，既有版本可能變成不可執行**：每次 `run_start`/`run_resume`，以及一個 `workflow()` 組合呼叫的子工作流程，都會把該版本「當初註冊時存下的腳本／名稱」拿去重新跑一次**目前這個版本**的靜態檢查（依序：`isValidBareName` 的名稱格式檢查〔issue #154 B4，2026-10-08 起加入——這條之前刻意不回頭套用，理由是「一個已存在的版本，名稱從註冊起就不會變」，但這對「規則本身是在這個版本註冊之後才上線」的舊版本並不成立〕、`validateScriptEntry` 的解析/包裝檢查、`scanAgentCalls` 的工具宣告檢查、`parseMetaParams` 的參數契約檢查——**不含** Mermaid 圖形文法與 `TOOL_UNSUPPORTED_BY_HARNESS`，這兩項刻意不回頭套用，見下）——如果這個版本是在某條規則新增**之前**註冊的，而這個腳本剛好會踩到那條新規則，就會從原本的 `runnable:true` 變成 `runnable:false`，`run_start`/`run_resume` 也從原本能跑變成拒絕。`detail.violation` 會指名是哪一條規則、哪一行。檢查結果對同一個 (name, version) 在**行程存活期間**只算一次（版本列不可變，見 ADR-025），所以不會每次呼叫都重算，但**重啟引擎**＝重算一次，規則集變嚴格後舊版本會在下次重啟時第一次被重新評估 | 用 `workflow_describe({name, version})` 看 `runnableDetail.violation`／錯誤訊息找出是哪條規則踩到了；照現行規則修好腳本後重新 `workflow_register` 一次（新版本）再 `workflow_publish`，和 `LEGACY_REREGISTER` 的修法一樣。**不會**回頭套用的兩類：(1) Mermaid 圖形文法（`diagram_contract:'v1'` 的既有版本永遠不會因為 v26 之後加的圖形規則變成不可執行）；(2) `TOOL_UNSUPPORTED_BY_HARNESS`（取決於這台部署當下是 `gateway:"pi"` 還是 `"sdk"`，不是腳本本身的問題，不在這個重驗範圍內） |
 | 腳本內 `budget.spent()` 一直是 `0`、`budget.remaining()` 一直等於 `budget.total` | 該次執行可能尚未完成任何一次 `agent()` 呼叫 | 第一筆用量要等第一次 `agent()` 回應後才會同步 |
 | 想知道一個 `status:"failed"` 的 run 為什麼失敗，不想自己翻 sqlite | `run_status`/`run_result`/`run_list`/`GET /api/runs/:id` 在失敗時都帶 `error:{code,message}`（腳本拋錯的原因，或 `SCRIPT_ERROR`/逾時等系統判定），且這個欄位持久化在 `runs` 表自己的 `error` 欄，**重啟引擎後仍讀得到同一個原因**；run 自己的工作目錄下 `journal.jsonl` 也會有一行 `{"type":"error",...}` | 直接呼叫上述任一工具，或看儀表板該 run 的「失敗原因」欄；不需要額外設定 |
 | **本機 7B 級 Ollama 模型不會真的觸發工具呼叫**：`agent()` 要求讀檔/寫檔，回傳的內容看起來像結果，但檔案沒真的被寫入/讀到的內容是編造的 | 已知的模型能力上限（非程式碼缺陷）：即使工具清單已縮減到最小，SDK 的工具迴圈對本機 7B 級模型仍不會真正被觸發，模型直接生成一段編造的「工具結果」文字（直接對 Ollama 原生 API 測試排除了模型本身不支援 tool-calling 的可能） | 目前沒有繞過方法；若工作流程依賴 agent 真的讀寫檔案，改用更大的本機模型（例如 32B 級）或已驗證憑證的付費供應商 |
 | 續跑（`run_resume`）之後，原本被中止那次呼叫的紀錄一直卡在 `"state":"running"` | 已知的顯示瑕疵：中止的呼叫紀錄不會自己轉成終止狀態，續跑會多出一筆新紀錄 | 純顯示瑕疵，不影響最終 `run_result` 的正確性；可忽略舊的那筆紀錄 |
 | 關掉伺服器後還有一個 `litellm --config ...` process 留著 | 正常 `SIGTERM`/`SIGINT` 關機會連帶砍掉內部管理的 `litellm` 子行程；殘留多半是非正常關機（如 `kill -9`）留下的 | 手動 `ps aux \| grep litellm` 找到後 `kill`；也可以用 `litellmPort` 鍵讓每個實例用不同 port，避開多實例誤連風險 |
-| 關掉伺服器（或重啟）後，某個 run 的 sandbox child 行程（`child-entry.ts`）還留著，甚至長時間占滿一顆 CPU（issue #162，2026-10-09 起已修） | 正常 `SIGTERM`/`SIGINT` 關機現在會對每一個仍在 `running` 的 run 呼叫同一套 `run_stop` 已在用的 SIGKILL（連同任何正在跑的巢狀 `workflow()` 子行程），之前這一步完全沒接線，所以一個卡在同步迴圈（例如腳本寫錯的 `while(true){}`）的 child 行程會在父行程退出後變成孤兒，**連重啟引擎也救不回來**（新行程不知道舊孤兒的存在）；殘留多半是舊版引擎非正常關機（`kill -9`，或升級前的版本）留下的 | 手動 `ps aux \| grep child-entry.ts` 找到後 `kill -9`；往後用目前版本做正常 `SIGTERM`/`SIGINT` 關機應該不會再留下 |
+| 關掉伺服器（或重啟）後，某個 run 的 sandbox child 行程（`child-entry.ts`）還留著，甚至長時間占滿一顆 CPU（issue #162，2026-10-09 起已修） | 正常 `SIGTERM`/`SIGINT` 關機現在會對每一個仍在 `running` 的 run 呼叫同一套 `run_stop` 已在用的 SIGKILL（連同任何正在跑的巢狀 `workflow()` 子行程）。另外加了第二層：每個 sandbox child 產生時，它的 pid／啟動時間會記在 `workRoot` 下的一個登錄檔；下次開機（`main.ts` 的 boot path，在接受任何 run 之前）會讀這個登錄檔，對仍存活且啟動時間吻合的 pid 直接 SIGKILL，所以**目前版本**留下的孤兒（例如 `kill -9`、OOM，或卡在同步迴圈如腳本寫錯的 `while(true){}`）下次重啟引擎就會自動清掉。這層登錄只在目前版本才會寫——**升級前的舊版引擎**留下的孤兒沒有登錄檔可讀，重啟仍救不回來 | 先確認版本：目前版本的孤兒重啟引擎即可清掉；舊版留下的，手動 `ps aux \| grep child-entry.ts` 找到後 `kill -9` |
 | Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.19 | 升級 Node 到 22.19 以上（`node --version` 確認） |
 | 服務啟動失敗，log 只有一行 `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` | `gateway:"sdk"` 在**開機階段**就要起一個 `litellm` 代理子行程，而 `PATH` 上沒有 `litellm` 執行檔（常見於 systemd unit 的 `PATH` 沒帶到 venv） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH`（systemd 要寫在 unit 的 `Environment=PATH=...`）再啟動；或改成 §1a 的 `gateway:"direct-fetch"` + `useLiteLLMProxy:false` 免 LiteLLM 組合 |
 | 服務起得來，但每次 `agent()` 都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
@@ -1954,7 +1937,7 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
 巢狀樹（不攤平）；改動前留下、無快照的舊 run 仍以既有方式重建。**尚未支援**：parallel-group
 標記（需 sandbox-IPC 改動）、樹的靜態預讀+快取。
 
-**沒有跨觸發串接工具**：46 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
+**沒有跨觸發串接工具**：48 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
 `continuationDbPath` 設定鍵存在（見 §1b），但沒有任何可呼叫的功能對應到它。要串接多個工作流程，改在腳本裡用 `await workflow(name, args)`
 巢狀呼叫（深度/總數由 `maxWorkflowDepth`／`maxWorkflowDescendants` 把關）。
 
@@ -2063,8 +2046,10 @@ immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端�
 
 **子行程環境變數白名單（安全性）**：`gateway:"sdk"` 路徑產生的 `claude` CLI 子行程，環境變數是
 明確白名單（`PATH`/`HOME`/`SHELL`/`LANG`/`LC_ALL`/`TMPDIR`/`TERM` + 覆寫過的
-`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`），不會原封不動傳入整個 `process.env`——避免主機上其他
-機密環境變數（如其他 provider 的 API key、雲端憑證）意外流入子行程。
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`，訂閱制 auth 則是 `CLAUDE_CODE_OAUTH_TOKEN` 取代
+`ANTHROPIC_API_KEY`，再加上固定寫死的 `ENABLE_TOOL_SEARCH=false`——issue #106 修復，避免 CLI 在
+第一輪就假設 ToolSearch 可用而不等 stdio MCP 連線），不會原封不動傳入整個 `process.env`——避免主機上
+其他機密環境變數（如其他 provider 的 API key、雲端憑證）意外流入子行程。
 
 **未驗證的真實依賴**：付費供應商（Anthropic/OpenRouter）需要一組 sandbox/test key 才能驗證
 「真正成功呼叫」的情境（含這些供應商上工具迴圈是否正常，目前只在本機 Ollama 上確認過小模型限制）。
@@ -2072,8 +2057,9 @@ immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端�
 sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
 
 
-**觸發器與資產的生命週期**：`schedule_create`／`webhook_create` 的 `workflow` 是選填——不帶就建立一個
-未認領的觸發器並回 id，再由 `workflow_register({triggers:[id]})` 綁定到那個版本；建立時不查目錄，
+**觸發器與資產的生命週期**：`schedule_create`／`webhook_create` 已經沒有 `workflow` 參數（帶了一律
+回 `INVALID_ARGUMENT`）——一律建立一個未認領的觸發器並回 id，再由 `workflow_register({triggers:[id]})`
+綁定到那個版本；建立時不查目錄，
 檢查在觸發當下做：未認領／工作流程不存在／未發布，各自被拒絕並記在該列的
 `lastRefusalReason`／`refusalCount`（`schedule_list`／`webhook_list` 可看）。一個觸發器同時只能被一個
 工作流程認領（`TRIGGER_ALREADY_CLAIMED`）。
@@ -2119,6 +2105,8 @@ GitHub → POST /github/webhook → 引擎（UNPRIVILEGED）
                                        │ flock + 消費旗標
                                        │ git fetch --tags（只接 RWE_OFFICIAL_REMOTE）
                                        │ 解析 tag→SHA（array-args，永不 shell-eval）
+                                       │   ↓ HEAD 已經 detached 在這個目標 SHA（舊旗標重打、已套用過）
+                                       │ 寫 skipped 結果，exit 40，不重啟
                                        │ git checkout <SHA>
                                        │ npm ci && npm run build
                                        │ npm test（gate；RWE_UPDATE_SKIP_TESTS=1 可跳過，僅限緊急逃生）
@@ -2359,8 +2347,10 @@ curl -s http://localhost:8787/api/version
 ### 用法
 
 ```bash
-deploy/migrate-to-service-user.sh --dry-run <phase>   # 印出每一條指令，不執行、不需要 sudo
-deploy/migrate-to-service-user.sh <phase>             # 真的執行；每條指令執行前都先印出（+ ...）
+deploy/migrate-to-service-user.sh --dry-run <phase>          # 印出每一條指令，不執行、不需要 sudo
+deploy/migrate-to-service-user.sh <phase>                    # 真的執行；每條指令執行前都先印出（+ ...）
+deploy/migrate-to-service-user.sh --yes <phase>               # 跳過停機／rollback 步驟前的確認提示
+deploy/migrate-to-service-user.sh --force <phase>              # phase4：覆寫既有設定/env；phase5：取代已複製過的 workRoot
 ```
 
 每個階段都可以重跑（已完成的步驟會被偵測並略過）。**先把每個階段都 `--dry-run` 一次**，確認推導
@@ -2541,8 +2531,10 @@ sudo -u rwe -H sh -c '
 引擎只在**啟動時**讀一次 `rwe.env`，改完 secret 一定要 `rwectl restart rwe.service` 才生效——
 單改設定檔或 `rwe.env` 不會讓正在跑的行程重新讀取。`v0.28.3` 起，callback 本身也會記
 `[auth.google_token] {status, error}`（`src/auth/auth-service.ts`），不用等到下次自我更新
-的 gate，真的用瀏覽器登入一次失敗時就能直接 `deploy/rwectl logs -n 50` 看到是 Google 拒絕
-（`google_rejected` / `invalid_client`）還是別的原因（`network_error`／`no_id_token`）。
+的 gate，真的用瀏覽器登入一次失敗時就能直接 `deploy/rwectl logs -n 50` 看到這行的 `outcome`：Google 拒絕
+是 `google_error`（`error` 欄位帶 Google 的錯誤碼，例如 `invalid_client`），還是別的原因
+（`network_error`／`no_id_token`）——`google_rejected` 本身只出現在回給瀏覽器的 HTTP 回應裡，不會
+寫進這行 log。
 輪替時**先**在 Google Console 把新 secret 加上去、驗證通過、**用瀏覽器真的登入成功一次**，
 才停用舊 secret——舊 secret 停用前，兩把 key 應該同時有效，切換視窗才不會中斷別人正在用的登入。
 
@@ -2693,10 +2685,14 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
    有沒有真的被排進要跑的工作流程。
 
 7. **`rwe.config.json`（`$RWE_CHECKOUT/rwe.config.json`，owner `rwe`，600）——複製後逐一核對，
-   不要整份檔案原樣照搬**：目前只有這些頂層鍵在用（`aliases` 已於 2026-09-26 移除，不會出現，見
-   §5 疑難排解）：`bind`／`port`／`allowedHosts`／`workRoot`／`timeoutMs`／`retries`／`gateway`／
-   `defaultAllowedTools`／`anthropicAuth`／`updateFlagPath`／`updateResultPath`／`auth`／
-   `principals`（每個鍵的意義查 §1b 設定總表）。換機要特別處理的三個地方：
+   不要整份檔案原樣照搬**：換機逐一核對用的鍵不只是 `bind`／`port`／`allowedHosts`／`workRoot`／
+   `timeoutMs`／`retries`／`gateway`／`defaultAllowedTools`／`anthropicAuth`／`updateFlagPath`／
+   `updateResultPath`／`auth`／`principals`——目前 `FileConfig` 承認的頂層鍵遠多於這組（`casDir`／
+   `assetRoot`／`sandbox`／`casQuota`／`diskFloor`／`workspaceTtlMs`／`publicBaseUrl`／
+   `anthropicBaseUrl`／`modelProbe`／`mcpEgressAllowlist`／`seedRefAllowlist`／各個 `*DbPath` 等都是
+   換機時容易漏查的例子），完整清單是 `src/main.ts` 的 `KNOWN_FILE_CONFIG_KEYS`（由 compose-config
+   的接線測試逐一掃過），不要只照這裡列出的子集抄；`aliases` 已於 2026-09-26 移除，不會出現（見
+   §5 疑難排解）。每個鍵的意義查 §1b 設定總表。換機要特別處理的三個地方：
    - **`allowedHosts`／`auth.issuer`／隧道 hostname 是否換掉是同一個決定**：不換公開網域名的話
      （只換運算主機、DNS/隧道還是指到同一個名字），這三者原封不動搬過去即可，GitHub webhook 也
      不用重新設定。**若連公開網域名都換了**：`auth.issuer` 要改成新網域，Google Cloud Console
