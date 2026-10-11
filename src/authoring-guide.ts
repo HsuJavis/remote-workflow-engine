@@ -683,7 +683,7 @@ function harnessDisclosureParagraph(harness?: 'sdk' | 'pi'): string {
     '`gateway:"sdk"`, whose Bash leaves the network field unset entirely and keeps full host network ' +
     'including loopback. A workflow whose Bash needs a same-host service must use `gateway:"sdk"` for ' +
     'now (see DEPLOY.md §1b2 for the full writeup). ' +
-    "Known unconfined-posture limitation (review R2-2): a Bash command that backgrounds a process " +
+    "Known unconfined-posture limitation: a Bash command that backgrounds a process " +
     "via `setsid` (not `nohup`, which stays reachable) escapes this dispatch's process group and " +
     'survives even normal completion — accepted because the unconfined posture only ever runs a ' +
     'local submission to begin with; the confined posture never has this gap (bwrap\'s own pid-' +
@@ -691,10 +691,9 @@ function harnessDisclosureParagraph(harness?: 'sdk' | 'pi'): string {
     'Confined Bash\'s own `TMPDIR` is a per-dispatch directory this engine verifies, never srt\'s ' +
     'shared `/tmp/claude` fallback — a host `/tmp/claude` (any local user can create one) is readable ' +
     '(the same exposure as every other host `/tmp` path) but never writable from inside confined ' +
-    'Bash, and its mere presence only emits an operator-visible warning event, never a refusal ' +
-    '(review round 4, R4-2). Issue #131: `gateway:"sdk"` (the default) got this identical ' +
-    '`/tmp/claude` protection too — no longer a pi-only difference — see DEPLOY.md §1b2/§1c for the ' +
-    'full writeup. Other pi-specific refusals an ' +
+    'Bash, and its mere presence only emits an operator-visible warning event, never a refusal. ' +
+    'Both `gateway:"sdk"` (the default) and pi get the identical `/tmp/claude` protection — see ' +
+    'DEPLOY.md §1b2/§1c for the full writeup. Other pi-specific refusals an ' +
     'operator may see on a failed agent (run_status.agentFailures / run_agent_log, not a direct ' +
     'tool-call error) are listed with the rest of this engine\'s error codes below, and in DEPLOY.md ' +
     '§1b2\'s own remediation table. ' +
@@ -844,15 +843,15 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'The script body IS the function the engine calls — write statements and a `return`, with no ' +
         '`function`/`async function` DECLARATION wrapped around any of it (`const thunk = () => ' +
         "agent(...)`, used for parallel()/pipeline(), is fine — only a top-level `function` STATEMENT " +
-        'is refused, `PARSE_ERROR`, issue #154). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` ' +
+        'is refused, `PARSE_ERROR`). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` ' +
         "DIRECTLY — `agent('label', {...})`, not `const a = agent; a(...)` or `agent.call(...)` — " +
         'registration can only see a call it can read at the call site; an alias, a `.call`/`.bind`, or ' +
-        'any other indirection is refused `SCRIPT_INVALID` (issue #154).\n\n' +
+        'any other indirection is refused `SCRIPT_INVALID`.\n\n' +
         "- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string " +
         'identifier (`/^[A-Za-z_][\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; ' +
         "this positional is the call's real contract key — it selects the label's per-agent " +
         'model/effort/timeoutMs/skills/mcp and is reported back as `run_status.agents[].agentKey` ' +
-        '(issue #165). `options.label`, if set, is a SEPARATE, purely cosmetic display name — ' +
+        '`options.label`, if set, is a SEPARATE, purely cosmetic display name — ' +
         'reported as `agents[].label` (defaulting to the same positional when `options.label` is ' +
         'absent) — that two different agent() calls may share on purpose; it selects nothing. ' +
         "run_agent_log's `label` argument matches `agentKey` FIRST across every call, and only " +
@@ -874,7 +873,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'property (`{allowedTools}`) — every entry must be written `key: value` at the syntax ' +
         'level so this scan can see each key at all (a spread entry hides every key it carries, ' +
         'a shorthand entry hides its value; both are refused `AGENT_OPTS_SPREAD` / ' +
-        '`AGENT_OPTS_SHORTHAND` at registration, issue #154). That is a rule on the OBJECT\'S ' +
+        '`AGENT_OPTS_SHORTHAND` at registration). That is a rule on the OBJECT\'S ' +
         "SHAPE, not on every key's VALUE: `prompt`, `schema`, and every other option may be any " +
         'runtime expression, read live at dispatch. Only TWO keys additionally require their OWN ' +
         'value to be a literal, checked key-by-key at registration: `allowedTools` (a `[...]` ' +
@@ -884,7 +883,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "literally) and `bash` (only the literal string `'readonly'` — any other value, including " +
         'a variable, is refused `BASH_MODE_INVALID`). A literal `schema` that can never be a ' +
         "valid JSON Schema (a string/number/array/null/template-literal — `schema: 'not-a-schema'`) " +
-        'is refused `AGENT_OPTS_SCHEMA_INVALID` at registration too (issue #162); an object literal ' +
+        'is refused `AGENT_OPTS_SCHEMA_INVALID` at registration too; an object literal ' +
         '(checked for real JSON-Schema validity only at dispatch, via ajv — `INVALID_SCHEMA`) or the ' +
         'literal booleans `true`/`false` (valid JSON Schema on their own) are both accepted here, and ' +
         'a NON-literal `schema` value — a variable, a function call building the schema at runtime ' +
@@ -904,8 +903,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '(cycle-checked, descendant-capped) — a call that exceeds the depth is refused ' +
         '`NESTING_DEPTH_EXCEEDED`, one that would re-enter an ancestor on ' +
         'its own chain is refused `NESTING_CYCLE`, and one that pushes the run past its descendant cap is ' +
-        'refused `DESCENDANT_CAP_EXCEEDED`. (An earlier one-level cap with a flatten-it instruction is ' +
-        "what an older draft of this guide taught — that no longer matches what's shipped.) Even with " +
+        'refused `DESCENDANT_CAP_EXCEEDED`. Even with ' +
         "depth available, the simplest and most readable script still flattens a needless wrapper into " +
         "its caller, and draws another owner's workflow as a black-box rectangle node in your diagram " +
         "rather than expanding it. A nested workflow()'s own phase() calls are recorded on THAT " +
@@ -995,7 +993,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "wrong: the run has a wall-clock deadline (`maxRunDurationMs`, 4 HOURS by default, " +
         "operator-configurable — covering every agent()/workflow() round trip across every phase, " +
         "not a single call, which `timeoutMs` already bounds — raised or lowered per deployment " +
-        "via rwe.config.json's own maxRunDurationMs key, issue #157 follow-up) and the sandboxed " +
+        "via rwe.config.json's own maxRunDurationMs key) and the sandboxed " +
         "process has a memory cap. Exceeding either " +
         'terminates the run with a coded `SCRIPT_TIMEOUT` or `SCRIPT_OOM` rather than hanging ' +
         'forever or crashing opaquely — including a synchronous infinite loop (`while(true){}`), ' +
@@ -1030,7 +1028,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "the construct). A `const` arrow function used as a thunk (for `parallel()`/`pipeline()`, " +
         'or called back out by name) is fine — but an `agent()`/`phase()` call written inside ANY ' +
         'function (a `const`-bound arrow, a nested `function` declaration, …) that the script never ' +
-        'demonstrably reaches is refused `SCRIPT_INVALID`, issue #154: the engine counts the call ' +
+        'demonstrably reaches is refused `SCRIPT_INVALID`: the engine counts the call ' +
         'site as live and the run silently dispatches nothing. "Demonstrably reaches" is a plain ' +
         'NAME census (does the bound name appear anywhere else in the script at all), never a real ' +
         'reachability analysis of control flow — a name referenced only from inside a branch that ' +
@@ -1043,7 +1041,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'declaration invisible to the engine, and every `agent()` label is then refused ' +
         '`AGENT_UNDECLARED`.\n\n' +
         'Every `agent(label, ...)` call in the script needs a matching `meta.params.agents.<label>` ' +
-        'declaration — `model`, `effort`, and `timeoutMs` are all required, each with a `.default` (v24: ' +
+        'declaration — `model`, `effort`, and `timeoutMs` are all required, each with a `.default` (' +
         'there is no implicit engine default per agent). `appendPrompt`, `skills`, and `mcp` are optional. ' +
         'A working example:\n\n' +
         '```js\n' +
@@ -1071,9 +1069,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "title is computed at runtime (`phase('tier:' + args.tier)`) cannot be checked textually — " +
         'declare ANY non-empty title for it, at the right position; only the position, never the ' +
         "text, is checked there (mirrors the diagram's own dynamic-lane rule below). This is what " +
-        "`workflow_describe`'s `phases` reads back (`phasesSource:'declared'`); a version registered " +
-        "before this rule existed has its `phases` DERIVED from its own `phase()` calls instead " +
-        "(`phasesSource:'derived'`) rather than reported empty.\n\n" +
+        "`workflow_describe`'s `phases` reads back (`phasesSource:'declared'`); a version whose " +
+        "script declares no `meta.phases` has its `phases` DERIVED from its own `phase()` calls " +
+        "instead (`phasesSource:'derived'`) rather than reported empty.\n\n" +
         // issues #81/#83: nothing said how a declared skill is activated, and the only example
         // paired one with file tools — authors could not tell a skill never reached the model.
         '**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: \'skill\'`). ' +
@@ -1118,7 +1116,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'This "explicit value always wins" rule is scoped to a TOP-LEVEL own key only: a nested ' +
         "`workflow()` call's `args` crosses a real OS-process IPC hop, and a function or symbol " +
         'value anywhere in it (top-level or nested), or a plain `undefined` NESTED inside a ' +
-        "sub-object/array, cannot survive that hop at all (issue #161) — it is refused " +
+        "sub-object/array, cannot survive that hop at all — it is refused " +
         '`PARAM_OUT_OF_RANGE` up front, before anything is sent, rather than silently vanishing and ' +
         'letting a declared default fill in behind your back. Pass only plain JSON-shaped data: ' +
         'objects, arrays, strings, numbers, booleans, `null`, and — at the top level only — an ' +
@@ -1163,7 +1161,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'framing, so a loose `{type:\'string\'}` (no `enum`, no byte-length `max`) lets ANY text ' +
         'through your own bound; constrain it with `enum`/`max`, or route free text through ' +
         '`appendPrompt` instead.\n\n' +
-        `\`meta.params.knobs\` and \`meta.defaults\` are retired — a script that declares either is ` +
+        `\`meta.params.knobs\` and \`meta.defaults\` are not accepted — a script that declares either is ` +
         `refused \`DEFAULTS_RETIRED\`, naming \`meta.params.agents.<label>.<key>.default\` as the ` +
         `replacement.\n\n` +
         'The engine-owned keys are never written inside an `agent()` call\'s options literal — ' +
@@ -1175,8 +1173,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'The options object is closed. An `agent()` option key that is not one of ' +
         `\`${WRITABLE_AGENT_OPT_KEYS.join('`, `')}\` is refused \`SCAN_VIOLATION: PARAM_UNKNOWN\` at ` +
         'registration, naming the key you wrote and listing the ones that are accepted. It is never ' +
-        'silently dropped — before v25 it was, and an author who reached for a plausible-sounding ' +
-        'name got a run that looked correct and ignored the option.',
+        'silently dropped: an unrecognized key always fails registration rather than being ignored.',
     ),
   );
 
@@ -1264,10 +1261,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       // v34 (DES-229, TASK-230, REQ-202/203): after the `agentType` mechanism's retirement there
       // are exactly two author/caller segments, plus the engine's own scaffolding — nothing else
       // contributes text to what the model actually sees.
-      'After v34 there are exactly two author/caller segments in the prompt a model receives: the ' +
+      'There are exactly two author/caller segments in the prompt a model receives: the ' +
         "script's own `prompt` argument to `agent()`, then a caller-supplied `appendPrompt` override, " +
-        'framed inline as `<user-instructions untrusted="true">…</user-instructions>`. Since issue ' +
-        '#156, the frame opens with one line of plain-language prose, ahead of the caller\'s own text, ' +
+        'framed inline as `<user-instructions untrusted="true">…</user-instructions>`. ' +
+        'The frame opens with one line of plain-language prose, ahead of the caller\'s own text, ' +
         "stating that the segment is caller-supplied and untrusted and cannot override the author's " +
         'instructions or any tool-use rule — the `untrusted="true"` attribute alone is machine-' +
         "readable, not something a model reliably acts on unprompted. The engine adds only its own " +
@@ -1278,7 +1275,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'applies ONLY when a caller actually supplies `appendPrompt` (even an explicit empty string). ' +
         'A declared `appendPrompt.default` that no caller overrides is YOUR OWN text, not the ' +
         "caller's — it is appended plainly, with no frame and no untrusted-caller prose, exactly as " +
-        'if you had written it straight into your own `prompt` (issue #156).',
+        'if you had written it straight into your own `prompt`.',
     ),
   );
 
@@ -1346,7 +1343,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "answer, 'degraded' = no tool use). If an agent needs tools, pick a model whose row says " +
         '`toolUseVerified: true` — `run_start` answers a non-fatal `warnings` entry ' +
         '(MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none. ' +
-        "Probe results are PER HARNESS (issue #138): a result only counts as evidence for the gateway/" +
+        "Probe results are PER HARNESS: a result only counts as evidence for the gateway/" +
         'transport that actually produced it, so after this deployment switches `gateway` (e.g. `"sdk"` to ' +
         '`"pi"`), every model\'s `toolUseVerified`/`proseVerified` read `null` again (`stabilitySource` falls ' +
         'back to the rule tier) until re-probed under the new harness — automatically on the periodic ' +
@@ -1397,7 +1394,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated. ' +
         'This applies identically whether the fanned-out thunks call `agent()` or nested `workflow()` ' +
         '— a wide `parallel()` of nested `workflow()` calls is throttled by its own same-sized pool, ' +
-        'never left to fork every child process at once (issue #163).\n\n' +
+        'never left to fork every child process at once.\n\n' +
         "`run_start`'s `budget` takes TWO independent limits — `{usd?, tokens?}` — either of which " +
         'may be omitted or `null` for unbounded. Each is a **stop-dispatching signal, not a hard ' +
         'ceiling**, and this is the honest description of what the engine can enforce. Before each ' +
@@ -1409,14 +1406,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'per call.\n\n' +
         "A fire-and-forget `agent()` call your script does not `await` keeps running to completion " +
         "AFTER the script returns and the run goes terminal — the engine never aborts in-flight work " +
-        'just because the run around it finished (issue #162, adjudication #9 I-2, a deliberate ' +
-        "owner ruling, not a bug). Its usage is folded into `run_result.meta.usage`/`run_list`'s " +
+        'just because the run around it finished (this is intended behaviour). Its usage is folded into ' +
+        "`run_result.meta.usage`/`run_list`'s " +
         "totals once it settles, so a figure read AT the terminal moment can be a lower bound until " +
         'then. While this is happening, `run_result`/`run_status`\'s own `meta.warnings` carries ' +
-        "`{code:'AGENT_STILL_RUNNING', message}` (issue #162(1)) — that is the signal to poll again " +
+        "`{code:'AGENT_STILL_RUNNING', message}` — that is the signal to poll again " +
         'rather than trust the figure as final; it disappears once every call has settled. This ' +
-        'tracks the engine PROCESS that owns the call, not a persisted fact (issue #162(1) ' +
-        'reverify-2): across an engine restart the warning stops appearing for a call that process ' +
+        'tracks the engine PROCESS that owns the call, not a persisted fact: across an engine restart ' +
+        'the warning stops appearing for a call that process ' +
         'owned — there is nothing left for any process to observe settling — and that call\'s ' +
         'usage, if any, is whatever had already been captured before the restart, final. Otherwise ' +
         '`await` every call whose spend you need counted or whose completion you need to know about.\n\n' +
@@ -1477,8 +1474,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // mismatch itself was the same hazard a sandbox-escape vector exploited, so fixing the
         // SECURITY hole fixed this caveat as a side effect).
         '`e.code` is still the recommended handle — a plain own property, simplest to branch on, and ' +
-        'unaffected by anything below. `e instanceof Error` and `args instanceof Object` now also ' +
-        'work correctly (fixed by #157 B1): every value the engine hands your script — errors, ' +
+        'unaffected by anything below. `e instanceof Error` and `args instanceof Object` ' +
+        'work correctly: every value the engine hands your script — errors, ' +
         '`args`, agent()/workflow() results — is built natively in your script\'s own realm, not the ' +
         'engine\'s, so standard checks (`instanceof`, `Array.isArray`) behave exactly as they would ' +
         'for a value you constructed yourself. Every engine refusal carries the same `e.code`/`e.name` ' +
@@ -1522,7 +1519,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // "counts toward, and can trip" a budget while also admitting it is "never a guarantee"
         // under exactly the harness (pi, no mid-turn usage) the tester's repro used, where the
         // figure was unconditionally 0. There is now a real estimate to describe instead of a gap.
-        '`estimated:true` is new ON TOP of `partial:true` (both together, never `estimated` alone): ' +
+        '`estimated:true` always appears alongside `partial:true` (never `estimated` alone): ' +
         'it means this attempt\'s figure is NOT anything a provider or harness reported, not even a ' +
         'partial one — it is `estimateInputTokens`\'s deterministic `ceil(chars/4)` floor over the ' +
         'exact text this attempt dispatched (the composed prompt, including the schema/output-' +
@@ -1530,39 +1527,43 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'prompt or tool definitions, which this layer cannot see), applied ONLY to `input` (`output` ' +
         'stays 0 — nothing was ever observed to estimate it from). The engine reaches for this ' +
         'estimate ONLY on a call cut short by `run_suspend`/`run_stop` (`agentFailures[].reason: ' +
-        '\'aborted\'`) — NEVER on a plain timeout, which still reports a genuine, un-estimated zero ' +
-        'when nothing streamed, unchanged from before this fix — and only when NEITHER source has ' +
+        '\'aborted\'`) — NEVER on a plain timeout, which reports a genuine, un-estimated zero ' +
+        'when nothing streamed — and only when NEITHER source has ' +
         'anything at all for that aborted attempt: the pi harness\'s wire protocol (above) reports ' +
         'nothing, AND nothing streamed onto the live record via the gateway\'s own mid-turn usage ' +
         'callback either. The engine cannot tell a REAL exact zero apart from "nothing reported" — ' +
         'both read as all four columns being 0 — so an all-zero figure from EITHER source is ' +
         'replaced by the estimate; only a NONZERO figure, from either source, counts as real, wins, ' +
         'and is read as `partial` with no `estimated` field — the two are mutually exclusive, never ' +
-        'summed. This means an attempt that was genuinely dispatched to a gateway and then cut short BY `run_suspend`/' +
-        '`run_stop` ALWAYS charges something nonzero against `budget` now (real or estimated) — the ' +
+        'summed. An attempt that was genuinely dispatched to a gateway and then cut short by `run_suspend`/' +
+        '`run_stop` ALWAYS charges something nonzero against `budget` (real or estimated) — the ' +
         'one case that stays an honest zero is an attempt aborted before it was ever dispatched at ' +
         'all (the signal was already set when the executor checked); a TIMEOUT with nothing streamed ' +
-        'also still stays an honest, un-estimated zero — this estimate is `run_suspend`/`run_stop` ' +
+        'also stays an honest, un-estimated zero — this estimate is `run_suspend`/`run_stop` ' +
         'only. ' +
-        // issue #160 BUG-4 reverify-2 (independent-verifier finding, 2026-10-10): "WILL eventually
-        // trip ... a token OR USD limit" overstated the USD half. The estimate's `input` floor is
-        // charged against `budget.tokens` and IS always nonzero for a non-empty prompt — the TOKEN
-        // claim holds. The SAME estimate's own `costUSD` is a DIFFERENT story: it is computed before
-        // this attempt's `onHarness` has resolved a provider/model (both still `''` at abort time),
-        // so there is no price-book entry to charge against — it prices at `costUSD:0,
-        // unpriced:true` and never moves the USD arm (and flips `budgetEnforceable.usd` to `false`
-        // for the run, same as any other unpriced call — see "A USD budget counts only calls the
-        // model catalog can price" above). A run suspended early and often enough that every
-        // charged figure is one of these never trips a USD limit at all, however many times it is
-        // resumed.
+        // issue #160 BUG-4 reverify-3: the estimate's own `costUSD` is priced the same way any
+        // other failed-call usage is — against `prev?.model`, the provider/model the harness already
+        // stamped onto the live record at markHarness before the abort — so once a session's
+        // harness has resolved a provider/model (the common case), the estimate's `costUSD` is
+        // priced like any other call against that model: a real, nonzero figure when the model has
+        // a catalog price, counting toward a USD limit exactly like any priced call (when the
+        // resolved model is itself unpriced, see "A USD budget counts only calls the model catalog
+        // can price" above). Only an attempt aborted before any harness ever resolved a
+        // provider/model (`prev.model` still `''`) has no price-book entry to charge against — THAT
+        // one prices at `costUSD:0, unpriced:true` (flipping `budgetEnforceable.usd` to `false` for
+        // the run, same as any other unpriced call) and never moves the USD arm.
         'Either figure — real or estimated — is charged exactly like a completed call\'s, so a ' +
         'repeated suspend/resume cycle of a usage-heavy agent counts toward, and WILL eventually ' +
         'trip, a TOKEN limit, including under a provider (OpenRouter via the pi harness) that never ' +
         'streams mid-turn usage at all — the floor is always nonzero for a non-empty prompt. A USD ' +
-        'limit is a DIFFERENT claim: an estimate taken before this attempt\'s own provider/model is ' +
-        'resolved prices at `costUSD:0, unpriced:true` (no price-book entry to charge against) and ' +
-        'does not move the USD arm — a run suspended early and often enough that every charged ' +
-        'figure is one of these sees its USD limit never trips, however many times it is resumed. ' +
+        'limit is charged the same way: the estimate is priced against whatever provider/model the ' +
+        'harness had already resolved onto the live record before the abort, so once a session\'s ' +
+        'harness has resolved a provider/model (the common case) it counts toward a USD limit too, ' +
+        'at a real nonzero price when that model has a catalog price. Only an attempt aborted ' +
+        'before any harness ever resolved a provider/model has no price-book entry to charge ' +
+        'against — it prices at `costUSD:0, unpriced:true` and does not move the USD arm, so a run ' +
+        'suspended early enough, every time, that no call ever resolves a provider/model never ' +
+        'trips a USD limit at all, however many times it is resumed. ' +
         'Separately: resuming a ' +
         'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
         'from the START, with a NEW agentId — it does not continue the old one, and the cut-off ' +
@@ -1580,10 +1581,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'The author-supplied diagram',
-      'Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — the ' +
-        'engine no longer draws the diagram for you (that generator is retired: registering a script ' +
-        'used to send the whole script body to an LLM as a prompt; the diagram is now yours to draw, so ' +
-        'nothing you write is sent anywhere just to produce a picture). A node is `id<shape>`, one per ' +
+      'Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — ' +
+        'the diagram is yours to draw; nothing you write is sent anywhere just to produce a picture. ' +
+        'A node is `id<shape>`, one per ' +
         'line, and these are the shapes this engine accepts — nothing else parses:\n\n' +
         shapeRows() +
         '\n\nThe stadium (agent) nodes MUST exactly match your script\'s `agent()` labels, checked both ' +
@@ -1615,7 +1615,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Canonical diagram',
-      'From v26 every NEW registration is checked against the shape of your own script, not just ' +
+      'Every NEW registration is checked against the shape of your own script, not just ' +
         'against its label set. Four rules, each with its own refusal code, each carrying the line ' +
         'and the structure the checker EXPECTED (as data — the engine never hands you a corrected ' +
         'diagram; writing it is the point).\n\n' +
@@ -1642,7 +1642,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'segment (or leaving the node with no `<br/>` at all) while `allowedTools` is a literal array ' +
         'is refused `TOOLS_MISMATCH` — it does NOT fall back to "not compared". When the call ' +
         'declares no `allowedTools` key at all, there is no declared list to VALUE-check the ' +
-        'segment against, but the segment is still not free text (issue #155): write exactly ' +
+        'segment against, but the segment is still not free text: write exactly ' +
         '`tools: default` (the honest word for "whatever this deployment configures") or leave the ' +
         'segment off — any OTHER text there, most dangerously a false `tools: none` (indistinguishable ' +
         'from a REAL `allowedTools: []`), is refused `TOOLS_MISMATCH` too.\n' +
@@ -1656,8 +1656,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rule 4 has no ' +
         'edges to compare there. Declare the agent\'s node inside that lane anyway: rule 2 (LANE) ' +
         'still requires it, and rule 3 (TOOLS) applies EXACTLY the same way it does everywhere else ' +
-        '— a dynamic lane earns no exemption at all (issue #154/#155 follow-up, 2026-10-09 ' +
-        're-verification): an `allowedTools` array still requires the exact `tools: …` segment, and ' +
+        '— a dynamic lane earns no exemption at all: an `allowedTools` array still requires the exact `tools: …` segment, and ' +
         'an ABSENT `allowedTools` still only accepts `tools: default` or no segment at all, same as ' +
         'rule 3\'s own paragraph above states. A VARIABLE `allowedTools` (`agent(\'a\', {allowedTools: ' +
         'tools})`, a ternary, a spread, `[...arr]`, …) is not a dynamic-lane carve-out either — it ' +
@@ -1681,8 +1680,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'Minimal accepted example:\n\n' +
         '```\ngraph LR\nsubgraph "draft"\nwriter(["writer"])\nend\nsubgraph "review"\n' +
         'critic(["critic"])\nend\nwriter-->critic\n```\n\n' +
-        'Versions registered BEFORE v26 are grandfathered: they keep `diagramContract: \'v1\'`, are ' +
-        'never re-checked, and render exactly as they always did. `workflow_describe` tells you ' +
+        'A stored version with `diagramContract: \'v1\'` is not checked against this shape and ' +
+        'renders as stored. `workflow_describe` tells you ' +
         'which contract a version was admitted under.',
     ),
   );
@@ -1814,9 +1813,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'version it just returned to iterate, and once it is stable `workflow_publish(release)` it — ' +
         'registering the same name again appends a new version and never overwrites an existing one. ' +
         'The rest of this section is exceptions, not the common path.\n\n' +
-        'Registering a script that predates the v24 contract (or was never migrated) resolves ' +
-        '`runnable:false` with `runnableReason: LEGACY_REREGISTER` — re-register it under the current ' +
-        'contract; there is no legacy-resolution ladder. Omitting a currently-registered trigger from a ' +
+        'A stored version whose script does not satisfy the current registration contract resolves ' +
+        '`runnable:false` with `runnableReason: LEGACY_REREGISTER` — this stored version does not ' +
+        'satisfy the current contract and cannot run; register it again. There is no fallback ' +
+        'resolution. Omitting a currently-registered trigger from a ' +
         'new version does not release it (omission does not release) — deregister the trigger ' +
         'explicitly if you mean to stop it. A `once` trigger is consumed on its firing attempt — whether ' +
         "that attempt succeeds or is refused — and will not fire again; a refused `cron` firing instead " +
@@ -1827,7 +1827,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'declares it — it runs that version directly when it fires, regardless of what `release`/`beta` ' +
         'point at, and even while neither channel is published at all. Re-declaring the same id in a ' +
         'later registration moves the binding forward to that version; omitting it from a later ' +
-        'version leaves the binding on the older version that still lists it (the "omission does not ' +
+        'version leaves the binding on the earlier version that still lists it (the "omission does not ' +
         'release" rule above). A trigger `workflow_deregister` releases is also DISABLED — a schedule ' +
         'needs `schedule_setEnabled({id, enabled:true})` after it is re-claimed to fire again; a ' +
         'disabled webhook has no re-enable call and answers every delivery `403 {code:TRIGGER_DISABLED}` ' +
@@ -1869,8 +1869,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '(refused `INVALID_ARGUMENT` — it is the manifest, never executed). The dispatched agent ' +
         'always runs inside its Bash sandbox either way: without `exec` a shebang script still runs ' +
         'via `sh <path>` or `python3 <path>`, but a compiled binary cannot run at all without it. ' +
-        'Legacy skills pushed before this flag existed carry no mode information — they stay at ' +
-        'whatever mode the original write happened to give them (umask-dependent, never made ' +
+        'A skill file pushed without an `exec` flag carries no mode information — it keeps ' +
+        'whatever mode it was written with (umask-dependent, never made ' +
         'executable by this) — push again with `exec:true` to change that.\n\n' +
         // Q3: no kind:'tool', ship it in a skill or a seed, never install at run time. Posture-
         // dependent claim (advisor review): "cannot install at run time" is only unconditionally
@@ -1925,8 +1925,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'https-only URL-prefix allowlist, the same fail-closed convention as `seedRefAllowlist`; ' +
         'omitted or empty denies EVERY `http` MCP config with `EGRESS_DENIED`, checked BEFORE the ' +
         'probe, zero probe attempts) is an operator decision an author cannot widen — but you can ' +
-        'SEE it before pushing: `system_info`\'s `policy.mcpEgressAllowlist` (owner decision ' +
-        '2026-09-30) reports this deployment\'s effective list to any authenticated caller, and an ' +
+        'SEE it before pushing: `system_info`\'s `policy.mcpEgressAllowlist` ' +
+        'reports this deployment\'s effective list to any authenticated caller, and an ' +
         '`EGRESS_DENIED` refusal from `workspace_push({kind:\'mcp\'})` points back at that same ' +
         'field. Two narrower checks run even BEFORE the allowlist, so a config that trips one of ' +
         "them never sees `EGRESS_DENIED` at all, no matter the allowlist: an unknown `${run:...}` " +

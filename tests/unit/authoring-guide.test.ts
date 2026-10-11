@@ -1056,12 +1056,13 @@ describe('issue #160/#162 reverify-2 (2026-10-10, independent-verifier findings)
     expect(diagramSection).toMatch(/`allowedTools` and `bash`'?s values in particular/);
   });
 
-  it('finding 4: "WILL eventually trip" is scoped to the TOKEN limit; a USD limit is NOT guaranteed to trip on a pre-onHarness estimate (costUSD:0, unpriced:true)', () => {
+  it('finding 4 (reverify-3): "WILL eventually trip" the TOKEN limit always; a USD limit trips too once a provider/model has resolved — only an estimate priced before any resolution (costUSD:0, unpriced:true) never moves the USD arm', () => {
     const budgetSection = sectionOf(text, 'Budget, concurrency, and how wide a fan-out really runs');
     expect(budgetSection).not.toMatch(/counts toward, and WILL eventually\s+trip, a token or USD limit/);
     expect(budgetSection).toMatch(/WILL eventually trip,?\s+a TOKEN limit/i);
     expect(budgetSection).toMatch(/costUSD:0, unpriced:true/);
-    expect(budgetSection).toMatch(/USD limit never trips/i);
+    expect(budgetSection).toMatch(/counts toward a USD limit too/i);
+    expect(budgetSection).not.toMatch(/USD limit never trips/i);
   });
 });
 

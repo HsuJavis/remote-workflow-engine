@@ -37,9 +37,9 @@ describe('webhook_create description pins the real delivery contract (issue #97 
     expect(d).toContain(`${REPLAY_WINDOW_MS / 1000}s`);
   });
 
-  it('documents #88 replay semantics: an accepted or permanently-refused delivery replays; a transient failure does not', () => {
+  it('documents replay semantics: an accepted or permanently-refused delivery replays; a transient failure does not', () => {
     const d = webhookCreateDescription();
-    expect(d).toMatch(/issue #88/);
+    expect(d.toLowerCase()).toContain('replay semantics');
     expect(d).toMatch(/NEW id/);
     expect(d.toLowerCase()).toContain('reprocesses for real');
   });

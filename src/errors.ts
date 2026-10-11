@@ -183,7 +183,7 @@ export const ERROR_CATALOG = {
   // resolver (workflow-scoped skill tree, then global), same registration-time warning instead.
   SKILL_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns' },
   SCRIPT_INVALID: { see: 'workflow_authoring_guide', hint: 'the script violates a sandbox-enforced structural rule' },
-  SCAN_VIOLATION: { see: 'workflow_authoring_guide', hint: 'an agent() call is not scannable — label/options must be literal (ADR-029)' },
+  SCAN_VIOLATION: { see: 'workflow_authoring_guide', hint: 'an agent() call is not scannable — label/options must be literal' },
   // v39 (owner decision 2026-09-30): meta.phases is required on every NEW registration and must
   // equal the script's own phase() call titles (count/order/title; a non-literal title matches any
   // non-empty declared title at that position, same rule LANE_MISMATCH applies to a dynamic lane).
@@ -198,7 +198,7 @@ export const ERROR_CATALOG = {
   // check-mermaid.ts's own VALUE_MISMATCH/COLLAPSED_EDGE rules.
   VALUE_MISMATCH: { see: 'workflow_authoring_guide', hint: "an agent node's `<br/>model · effort · timeout` triple disagrees with that label's declared default(s) — detail names the label and which field(s) disagree" },
   COLLAPSED_EDGE: { see: 'workflow_authoring_guide', hint: 'an edge uses the `&` fan-out shorthand (e.g. `a-->b & c`) — write one edge per line instead' },
-  MERMAID_REQUIRED: { see: 'workflow_authoring_guide', hint: 'v24 registration requires a non-empty mermaid diagram string (ADR-025)' },
+  MERMAID_REQUIRED: { see: 'workflow_authoring_guide', hint: 'registration requires a non-empty mermaid diagram string' },
   DIAGRAM_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s agent labels disagree with the script\'s' },
   // v26 (DES-184, ARCH-119, ADR-043/039, TASK-189): checkMermaid v2 — four rules compared against
   // the script's own derived ExpectedGraph (lane/slot/edge shape), each carrying {rule, line, expected}.
@@ -236,8 +236,8 @@ export const ERROR_CATALOG = {
   PARAM_LOCKED: { see: 'workflow_authoring_guide', hint: `a caller override targets a key the author locked (${LOCKED_KEYS.join('/')})` },
   PARAM_UNKNOWN: { see: 'workflow_authoring_guide', hint: 'a caller override names a parameter the contract does not declare' },
   UNKNOWN_AGENT_LABEL: { see: 'workflow_authoring_guide', hint: 'a caller override names an agent label the contract does not declare' },
-  DEFAULTS_RETIRED: { see: 'workflow_authoring_guide', hint: 'meta.params.knobs / meta.defaults are retired; declare params.agents.<label> instead' },
-  LEGACY_REREGISTER: { see: 'workflow_authoring_guide', hint: 'this version predates the v24 contract and cannot run; re-register it' },
+  DEFAULTS_RETIRED: { see: 'workflow_authoring_guide', hint: 'meta.params.knobs / meta.defaults are not accepted; declare params.agents.<label> instead' },
+  LEGACY_REREGISTER: { see: 'workflow_authoring_guide', hint: 'this stored version does not satisfy the current contract and cannot run; register it again' },
   INLINE_SCRIPT_CLOSED: { see: 'workflow_authoring_guide', hint: 'inline run-time scripts are closed; register once, then run by name' },
   // v37 Gate-8 send-back (finding C-1, ARCH-181/ARCH-182): `call-tool.ts`'s remote-submission door
   // (ADR-083 owner_decision posture C) throws this code BEFORE schema/authz, same precedent as
@@ -295,7 +295,7 @@ export const ERROR_CATALOG = {
   // version" is no longer a question either fire path ever asks. Left in `RefusalReason`/the
   // catalog (never removed) only because it is a real `ErrorCode` a pre-existing caller could still
   // reference; no code path produces it any more.
-  NOT_IN_RELEASE: { see: null, hint: 'retired (issue #160): a claimed trigger fires the version it is bound to, never a release-channel membership check' },
+  NOT_IN_RELEASE: { see: null, hint: 'unreachable: a claimed trigger fires the version it is bound to, never a release-channel membership check' },
 
   // Run lifecycle
   RUN_NOT_FOUND: { see: null, hint: 'no run is recorded under this runId' },
@@ -313,7 +313,7 @@ export const ERROR_CATALOG = {
   // `parallel()` swallowed it to `null` on the way, so a refused dispatch left no code, no record
   // and no event. `see` points at the guide because REQ-120 requires the guide to explain how a
   // budget interacts with fan-out width — the refusal is now self-documenting.
-  BUDGET_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'the run\'s token budget is spent; the engine refused to dispatch this agent() call' },
+  BUDGET_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'a budget limit (tokens or USD) is spent; the engine refused to dispatch this agent() call' },
   // Issue #154 NEW HIGH (blocker, 2026-10-07 reverify): a dispatch-time refusal, same family as
   // BUDGET_EXCEEDED/PARAM_UNKNOWN just above/below — the REAL opts an agent() call dispatched with
   // do not match any literal allowedTools/bash shape that label's registered script scanned at
