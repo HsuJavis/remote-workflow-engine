@@ -681,8 +681,8 @@ function harnessDisclosureParagraph(harness?: 'sdk' | 'pi'): string {
     'library routes ALL traffic through its own MITM proxy once any network field is set at all, which ' +
     'makes `localhost`/`127.0.0.1` destinations from inside the confined Bash unreachable — unlike ' +
     '`gateway:"sdk"`, whose Bash leaves the network field unset entirely and keeps full host network ' +
-    'including loopback. A workflow whose Bash needs a same-host service must use `gateway:"sdk"` for ' +
-    'now (see DEPLOY.md §1b2 for the full writeup). ' +
+    'including loopback. A workflow whose Bash needs a same-host service must use `gateway:"sdk"` ' +
+    '(see DEPLOY.md §1b2 for the full writeup). ' +
     "Known unconfined-posture limitation: a Bash command that backgrounds a process " +
     "via `setsid` (not `nohup`, which stays reachable) escapes this dispatch's process group and " +
     'survives even normal completion — accepted because the unconfined posture only ever runs a ' +

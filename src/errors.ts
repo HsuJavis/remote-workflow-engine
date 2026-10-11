@@ -270,7 +270,7 @@ export const ERROR_CATALOG = {
   INVALID_CHANNEL: { see: null, hint: 'the channel value is not "beta" or "release"' },
   CHANNEL_UNPUBLISHED: { see: null, hint: 'the requested channel has no published version' },
   DANGLING_CHANNEL: { see: null, hint: 'the channel points at a version that no longer exists (invariant violation)' },
-  NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. a legacy or refused registration)' },
+  NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. it does not satisfy the current registration contract, or its registration was refused)' },
   INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
   INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
   // issue #160 BUG-3: distinct from INVALID_CRON — this names the tz field, not the cron field,

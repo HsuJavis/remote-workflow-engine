@@ -1472,8 +1472,8 @@ export const TOOL_SPECS = [
       "false for ollama (no dial, any gateway); for openrouter it depends on the deployed gateway — false under the sdk gateway (the hop drops it), true under the pi harness for a model whose own row " +
       "declares reasoning support (capabilities.reasoning.supported). Check this field per row, not a provider-level assumption; `run_agent_log.harness.effortApplied` confirms it per call. " +
       "Use this, not effortDeclared, to decide whether setting effort does anything. `toolUseDeclared` / `effortDeclared` (boolean, or 'unknown' when the catalog said nothing) and `declaredSource` " +
-      "('upstream'|'static'|'unknown') are DECLARED flags, never probed by dispatching a call; effortDeclared only says the upstream catalog lists a reasoning parameter (deprecated in favour of " +
-      'capabilities.reasoning + effortAppliedOnTransport).\n' +
+      "('upstream'|'static'|'unknown') are DECLARED flags, never probed by dispatching a call; effortDeclared only says the upstream catalog lists a reasoning parameter — read " +
+      'capabilities.reasoning + effortAppliedOnTransport instead for whether/how it actually applies.\n' +
       '- local {family, parameterSize, quantization}: Ollama rows only (from Ollama details); null elsewhere.\n' +
       "- lifecycle {releasedAt (OpenRouter's listing date), knowledgeCutoff, expiresAt (scheduled removal)} — ISO strings or null.\n" +
       '- benchmarks: THIRD-PARTY, GLOBAL quality scores (not about this host): {source: "openrouter:artificial_analysis+design_arena", fetchedAt, borrowedFrom? (same full ref as the top-level borrowedFrom below), ' +

@@ -190,3 +190,12 @@ describe('toErrEnvelope — INTERNAL_ERROR never carries the raw (possibly path-
     expect(env.message).toBe('WORKFLOW_NOT_FOUND: /home/does/not/matter/here');
   });
 });
+
+// r7: BUDGET_EXCEEDED's hint used to say only "the run's token budget is spent", but
+// RunGuard.assertBudget (run-guard.ts) throws it for EITHER an exhausted usd limit or an exhausted
+// tokens limit, independently — the hint must name both, not just tokens.
+describe('ERROR_CATALOG.BUDGET_EXCEEDED — hint names BOTH budget limits, not just tokens', () => {
+  it('names tokens AND usd as the limits that can throw this code', () => {
+    expect(ERROR_CATALOG.BUDGET_EXCEEDED.hint).toMatch(/tokens or usd/i);
+  });
+});
