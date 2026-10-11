@@ -382,7 +382,7 @@ const AGENT_OPT_KEYS: Record<keyof AgentOpts | 'prompt', true> = {
  *  without this map the key would fall through to the generic `PARAM_UNKNOWN` unknown-key branch
  *  with no signal that it once worked. Consulted BEFORE the unknown-key check, never instead of it. */
 export const RETIRED_AGENT_OPT_KEYS: Record<string, string> = {
-  agentType: "retired at v34 — the server-side agent-definition mechanism is gone; put the system prompt in your script's own prompt (workflow_authoring_guide → prompt layering)",
+  agentType: "not supported — there is no server-side agent definition; put the system prompt in your script's own prompt (workflow_authoring_guide → prompt layering)",
 };
 
 /** The keys an author may actually write, in the refusal message: the closed set MINUS the tunables,

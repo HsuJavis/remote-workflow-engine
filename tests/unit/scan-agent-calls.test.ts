@@ -217,11 +217,11 @@ describe('scanAgentCalls — agentType retirement (DES-224, UT-270)', () => {
     expect(violations).toContainEqual(expect.objectContaining({ code: 'AGENT_OPT_RETIRED', key: 'agentType' }));
   });
 
-  it('the AGENT_OPT_RETIRED hint names v34 and points at workflow_authoring_guide, not silence', () => {
+  it('the AGENT_OPT_RETIRED hint says agentType is not supported and points at workflow_authoring_guide, not silence', () => {
     const src = 'agent("plan", { agentType: "reviewer" });';
     const { violations } = scanAgentCalls(src);
     const v = violations.find((x) => x.code === ('AGENT_OPT_RETIRED' as unknown));
-    expect(String(v?.hint)).toMatch(/v34/);
+    expect(String(v?.hint)).toMatch(/not supported[\s\S]*prompt/);
     expect(String(v?.hint)).toMatch(/workflow_authoring_guide/);
   });
 
@@ -240,7 +240,7 @@ describe('scanAgentCalls — agentType retirement (DES-224, UT-270)', () => {
     }
   });
 
-  it('RETIRED_AGENT_OPT_KEYS is exported and carries an agentType entry naming v34', () => {
-    expect(String((RETIRED_AGENT_OPT_KEYS as unknown as Record<string, string> | undefined)?.['agentType'])).toMatch(/v34/);
+  it('RETIRED_AGENT_OPT_KEYS is exported and carries an agentType entry pointing at the script prompt', () => {
+    expect(String((RETIRED_AGENT_OPT_KEYS as unknown as Record<string, string> | undefined)?.['agentType'])).toMatch(/not supported[\s\S]*prompt/);
   });
 });

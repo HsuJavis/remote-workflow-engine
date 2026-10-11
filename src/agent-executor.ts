@@ -948,8 +948,8 @@ export class AgentExecutor implements AgentSpawner {
     // one at runtime; the marker is the SAME `detail.violation` DES-224 mints at registration, so a
     // client writes one branch for both halves.
     if (Object.hasOwn(req.opts, 'agentType')) {
-      const detail = "PARAM_UNKNOWN: 'agentType' was retired at v34 — the server-side agent-definition "
-        + "mechanism is gone; put the system prompt in your script's own prompt. "
+      const detail = "PARAM_UNKNOWN: 'agentType' is not supported — there is no server-side agent "
+        + "definition; put the system prompt in your script's own prompt. "
         + "See workflow_authoring_guide, 'prompt layering'.";
       await this._sink.capture(
         req.runId,

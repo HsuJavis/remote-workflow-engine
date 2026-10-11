@@ -185,7 +185,7 @@ describe('a pre-v34 pinned script carrying agentType is refused at DISPATCH, not
       // DES-226's literal signature: "PARAM_UNKNOWN: 'agentType' was retired at v34 — … See
       // workflow_authoring_guide, 'prompt layering'." — matched loosely (retirement + guide
       // pointer), not word-for-word, so a small copy-edit doesn't false-red this pin.
-      expect(agentDetail).toMatch(/agentType[\s\S]*retired at v34/);
+      expect(agentDetail).toMatch(/agentType[\s\S]*not supported/);
       expect(agentDetail).toContain('workflow_authoring_guide');
     } finally {
       rmSync(dir, { recursive: true, force: true });
