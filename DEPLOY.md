@@ -337,17 +337,6 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > 的限制只在於**呼叫本身的 options 物件**要寫成字面量 `{ … }`，不能是變數或 spread；物件裡每個鍵的
 > 值可以是任何表達式）。`allowedTools` 才是唯一在註冊時會被解析成字面陣列的鍵。
 >
-> ⚠️ **貼進去的角色全文本身不能撞到掃描器的關鍵字——這是實測撞到過的真坑，不是假設**：
-> `workflow_register` 的掃描器（`scanAgentCalls`）是對**整份腳本原始碼**跑正則
-> `/(?<!\.)\bagent\s*\(/g`，不分辨這段文字是不是在字串字面值裡面；同一份腳本裡另外幾個關鍵字
-> （`phase(`、`workflow(`、`parallel(`）跟 `Date.now()`/`Math.random()`/`new Date()`（沒帶參數的）
-> 也是同樣對原始碼逐字掃描。實測：把 iso-agile-sdlc plugin 舊版（1.25.0）`sdlc-verifier.md` 正文裡
-> 本來就有的一句「...sdlc-verifier agent (mode A)...」貼進 `ARCHITECT_ROLE` 常數（哪怕正確包在合法
-> 字串字面值裡），`scanAgentCalls` 就會在那一行多抓出一次不完整的 `agent(` 呼叫，整個腳本被
-> `AGENT_LABEL_REQUIRED` 拒絕註冊——即使腳本語法完全正確。貼之前先對你要貼的那份角色全文跑一次
-> `grep -nE '\bagent\s*\(|\bphase\s*\(|\bworkflow\s*\(|\bparallel\s*\(|Date\.now\(\)|Math\.random\(\)|new Date\(\)'`，
-> 撞到的詞改寫掉（例如把「agent (mode A)」改成「agent role (mode A)」或拿掉那個空格）再貼。
->
 > ### 4) 實際跑起來（直接 `run_start`；plugin 已於 2026-09-26 移除）
 > client plugin `remote-workflow-plugin` 已於 2026-09-26 移除，現在只有 MCP 工具這一條路，沒有
 > plugin 可選。`run_start` 的 input schema 沒有 `agentPrefix` 這個鍵（見 `src/tool-specs.ts`）；新腳本不需要、
