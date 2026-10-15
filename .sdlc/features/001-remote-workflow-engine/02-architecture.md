@@ -257,7 +257,8 @@ flowchart TB
 ### ARCH-026 — Model catalog (`models_list`)
 - **status:** done
 - **traces:** REQ-039, REQ-040
-- **iter:** v7
+- **v40 amendment (REQ-222, ARCH-190):** the OpenRouter source now fetches `/api/v1/models?output_modalities=all` (459 → ~662 rows), `ModelType` gains `'decision'` (outputs `['decisions']`), and the `models_list` `modelType` enum gains it; rows whose outputs include `text` keep `chat` with identical fields (golden-snapshot guarded). The non-chat rows are listed for everyone (V40-Q13).
+- **iter:** v40
 - A new discovery surface so an MCP client authoring a workflow can enumerate the models the engine offers. Federates four sources into ONE normalized array (`ModelEntry`: `{provider, model, alias?, description, modalities:{in,out}, contextWindow, price, toolUse, location}`): the curated-alias overlay, a small static openai/anthropic table, a LIVE query of Ollama `/api/tags` (local models), and a LIVE query of OpenRouter `/api/v1/models` (remote metadata incl. tool support from `supported_parameters`). Each live source is injectable (fetcher seams) and degrades gracefully — an unreachable live catalog drops only its own entries; the curated/static entries still return. No secret/API-key value ever appears in the output (secret-separated).
 - Surfaces as MCP tool `models_list` (ARCH-001 tool/server surface: TOOL_NAMES + metadata/schema + callTool case) with an AND-filter over `{provider, query, modalityIn, modalityOut, maxPricePerM, minContext, toolUse, location, limit}`, capped by a sane default/hard `limit`, so a client can narrow OpenRouter's large catalog; an empty match returns `[]` (not an error). ServerConfig exposes injectable catalog seams (the fetchers) for test wiring.
 - Depends: ARCH-001 (tool/server surface the tool is added to), ARCH-005 (the alias/provider knowledge the catalog federates over), ARCH-025 (the `openrouter` provider whose live catalog this exposes).
@@ -733,7 +734,8 @@ speculation.
 - **api:** `LOCKED_KEYS` (const set: `prompt|tools|skills|mcp|workdir|cwd`); `TUNABLE_KEYS` (`model|effort|timeoutMs|appendPrompt`); types `ParamSpec {type, default?, enum?, min?, max?, unit?}`, `ParamContract {knobs: Record<string,ParamSpec>, args: Record<string,ParamSpec>}`, closed type `UserOverrides {model?: string; effort?: Effort; timeoutMs?: number; appendPrompt?: string}`; `parseParamContract(metaParams: unknown, aliasNames: Set<string>): Ok<ParamContract> | Err`; `validateUserOverrides(contract, raw: unknown, aliasNames, ceilings): Ok<UserOverrides> | Err`; `validateDeclaredArgs(contract, args): Ok|Err`; `isEffort(v): v is Effort`; `isKnownAlias(alias, aliasNames): boolean` (the ONE alias predicate — `openrouter/<id>` passthrough-aware, empty-table-skipping — shared by the registration-time and admission-time rungs, review §4 B4). **`Err` is one shared five-code union** (`contract.ts:47`): `PARAM_LOCKED | PARAM_OUT_OF_RANGE | PARAM_UNKNOWN | PARAM_CONTRACT_INVALID | UNKNOWN_ALIAS`, each with `{message, detail}`. Which function emits which — **verified against `contract.ts` rather than inferred from the code names**: `parseParamContract` → **`PARAM_CONTRACT_INVALID` only** (its single `invalid()` helper at `:129`), which covers *every* registration-time rejection including a locked key declared as a knob and a `model` enum entry that is not a known alias — i.e. at registration a locked key is **not** `PARAM_LOCKED` and a bad alias is **not** `UNKNOWN_ALIAS`, the same three-rungs-three-codes split IMPL-139 recorded; `validateUserOverrides` → `PARAM_LOCKED`, `PARAM_UNKNOWN`, `PARAM_OUT_OF_RANGE` **and `UNKNOWN_ALIAS`** (review §4 B1 — an `overrides.model` naming no configured alias, refused before any durable work; and §R2 R-G2, the same code on the EFFECTIVE post-merge model at `run-manager.ts:427`); `validateDeclaredArgs` → `PARAM_OUT_OF_RANGE`.
 - **note:** ONE pure, dependency-free module is the single place that knows the contract vocabulary — registration (ARCH-067), submission (ARCH-066) and v23's read-only describe surface all consume it, so the locked-key list and the bound-checking rules cannot drift into three copies (quality R-2/R-3). **Load-bearing invariants:** (1) **`UserOverrides` is a closed four-field type — a locked key is not representable** [ADR-001]; `validateUserOverrides` is the ONLY constructor from caller data (**[AMENDED v21 Gate 8 RE-REVIEW #4, A9/C-1]** — this clause and S-2 below named a `parseUserOverrides` that has never existed in `src/`; the exported name is and always was `validateUserOverrides`, `contract.ts:290`), every other `UserOverrides` value is built from the registry, so `PARAM_LOCKED` is a courtesy message at the boundary, never the security control; (2) **allowlist, enforced in ONE place — the parser** [AMENDED v21 Gate 8 RE-REVIEW #4, A3]: `validateUserOverrides` rejects any unknown key with `PARAM_UNKNOWN` rather than ignoring it (a denylist rots the next time a harness knob is added), and that rejection **is** the control. The MCP `workflow_run` inputSchema's `overrides` block (`additionalProperties:false`, exactly these four properties, drift-locked per the REQ-079/ARCH-051 self-describing-schema discipline) is **client-facing documentation, not a server-side check** — nothing in this engine evaluates `inputSchema` on the dispatch path (`server.ts:799` casts the arguments and forwards them; the only JSON-Schema validator in `src/` is the agent-*output* one in `agent-executor.ts`). The original "allowlist at both ends" wording credited a control that does not run; behaviour is unchanged and still fail-closed, because `validateUserOverrides` is total over caller data — what changed is that the doc stops claiming a second enforcement point; (3) **errors are self-describing** — `PARAM_OUT_OF_RANGE` carries `{param, supplied, allowed}` and `PARAM_LOCKED` carries `{param, tunable:[…]}`, so an agent caller repairs its call from the error without a second `workflow_get` round-trip (quality C-2, existing typed-envelope practice); (4) **backward compat is explicit, not `undefined`-shaped** — a script with no `params` block parses to the canonical *unconstrained* contract (four knobs, no enum/range, no declared args), so the resolver never branches on "contract missing" (quality's degradation point, adversarial D-6(ii) conceded); (5) `parseParamContract` bounds the author literal (byte size; **no nesting-depth bound** — adjudication B-1 dropped it: `ParamSpec` is a flat shape and any nested key a caller invents is inert, so a depth bound on a structure with no depth is dead code) BEFORE it reaches the existing `runInNewContext` pure-literal gate in `workflow-meta.ts`, and is called **at registration only** — the run path never re-parses a script to learn the contract [ADR-004]. Pure: no I/O, no clock, no randomness — the whole rejection taxonomy is a table-driven unit test.
 - **v35 amendment (REQ-206, ARCH-145, ADR-071):** the P6-3 prohibition on a declared `args.<k>.default` (`contract.ts:428`, 「never applied」) is deleted **for cause** — ARCH-144/145 make serving mean applying, which discharges the premise the ban rested on — and the declared default is validated like any other spec value. This module also gains one pure export, `materializeArgDefaults()`, because it already owns the `args: Record<string, ParamSpec>` shape and the meaning of `spec.default`. A reasoned reversal, not an amnesiac one: the reason ships in the comment that replaces the rejection.
-- **iter:** v35
+- **v40 amendment (REQ-220/221, ARCH-188):** `ParamContract` gains optional `decisions` / `images` blocks of `PrimitiveParamSpec = {model, timeoutMs, retries}` (each required with `.default`; no `effort`/`appendPrompt`/`skills`/`mcp`), with their own declared⇔used refusals and run-override validation; `AgentParamSpec` and the `agents` block are unchanged.
+- **iter:** v40
 
 ### ARCH-065 — pure resolution & composition module: two-moment merge, prompt composition, effort mapping
 - **status:** draft
@@ -1047,7 +1049,8 @@ runs skip 100% of submission validation).
 - **deps:** ARCH-008
 - **api:** pure-with-injected-ports `validateScriptEntry(script, {aliases, openrouterPassthrough, mcpLookup}) → {ok: true} | {ok: false, errors: [{code: 'PARSE_ERROR'|'UNKNOWN_ALIAS'|'MCP_NOT_PROVISIONED', message, detail}]}` — the parse/`checkMeta` + model-alias + MCP-name-existence checks lifted verbatim out of `submission-validator.ts:92`'s `if (spec.script)` block; also exports the `defaults.appendPrompt` frame-delimiter predicate reused from `params/contract.ts`'s `FRAME_CLOSE_FORGERY` (P6-2's registration half — the **same** predicate the dispatch site uses, never a second copy).
 - **note:** A **new tiny pure module rather than a call into `submission-validator.ts`**, for one concrete reason: `workflow-catalog.ts` is the new enforcement site and `submission-validator.ts` already type-imports the catalog — extracting the checks keeps the dependency acyclic and gives both call sites the **one** implementation (the F-2 lesson; `workflow-catalog.ts:36-46` already delegates `violatesOwnSpec` to the shared `checkValueAgainstSpec` for exactly this reason). **Disposition split, and it is the contested call** [ADR-013]: **registration enforces fail-closed** — any error ⇒ typed refusal, **nothing stored** (same codes the engine produced at submission, so no caller learns a new vocabulary); **admission observes**. `workflow_get` recomputes the same function for the served version via `catalog.validateCurrent()` and returns `validation: {ok, errors[]}` to the owner (masked to `{ok}` for a non-owner, DES-115/REQ-100) so an author can *query* which of their workflows went stale instead of discovering it in a run; **`workflow_list` deliberately does not** — it is polled by the dashboard every 3s and a per-row script parse there would be a real cost for a surface nobody debugs from. **[AMENDED v22 gate-closeout, adjudication #5 O-1]** This note originally said admission's observation was `start()` recomputing the two environmental checks against the resolved version and recording the outcome **on the run record**. That call was never built. Adjudication #4 (N-1) sited the observable narrower and elsewhere, after finding it live-missing at Gate 6 closeout: **only `MCP_NOT_PROVISIONED`** is recomputed, **per dispatched `agent()` call** (not once per run), and surfaced as `HarnessDescriptor.mcpUnresolved?: string[]` — present only when that call's own MCP references include one no longer provisioned, absent (never `[]`) otherwise (`workflow_agent_log`'s `harness` field). `UNKNOWN_ALIAS` is not rechecked at dispatch. The run is never retroactively refused, matching REQ-099's last clause either way; only the recording site and grain changed. One enforcement site (registration), one read-time observation site (`workflow_get`), one narrower per-call dispatch observation (`mcpUnresolved`) — the "no two gates that can disagree" property still holds, because none of the three ever refuses. **Structural guard REQ-099's own wording invites:** after the move, `SubmissionValidator` contains **zero `if (spec.script)` branches** — grep-able, cheap to assert in a lint-style test, and far stronger against re-introduction than the behavioural "a run by name is covered" test (which is also required).
-- **iter:** v22
+- **v40 amendment (REQ-224, ARCH-188):** `CALLABLE_API_NAMES` gains `decide` and `generateImage`, so aliasing either (`const d = decide`) is refused exactly as aliasing `agent` is.
+- **iter:** v40
 
 ### ARCH-075 — `projectWorkflowForRead`: one pure allowlist projection, constructed not deleted
 - **status:** draft
@@ -2851,7 +2854,8 @@ erDiagram
 - **api:** `type FourRates = { in: number; out: number; cacheRead: number; cacheWrite: number }` (USD per token); `type Caps = { reasoning: boolean | 'unknown'; tools: boolean | 'unknown'; source: 'upstream' | 'static' | 'unknown' }`; `type BookEntry = { price: FourRates | null; caps: Caps }`; `class ModelBook { constructor(source: () => Promise<ModelEntry[]>, opts: { ttlMs?: number /* 3_600_000 */; clock }); snapshot(): Promise<BookSnapshot> }` — refreshes at most once per TTL, single-flight (N concurrent callers share one `source()`), keeps the last-good snapshot in memory when `source()` throws. `BookSnapshot.lookup(provider, model) → BookEntry`: `anthropic` from the static table made numeric (`ratesPerM {in,out,cacheRead,cacheWrite}`, the `"$5/1M"` display string DERIVED from it — one source, with a `reviewedAt` date beside it); `ollama` → all-zero rates (priced, never `null`); `openrouter` from `/models` `pricing.{prompt, completion, input_cache_read, input_cache_write}` (a missing cache rate is priced at the `prompt` rate — an upper bound, conservative for a spend limit; a parse failure yields `null`, never `0`); anything unlisted → `price: null`. `caps.reasoning` = `supported_parameters.includes('reasoning')` for an openrouter row that declares it, else `'unknown'`; **`'unknown'` for anthropic and ollama**, whose static rows declare nothing — *declared, not probed* (ARCH-121(d)), which is what the code answers and the honest answer; `caps.tools` likewise; `caps.source` records where the row came from (`'upstream' | 'static' | 'unknown'`). Admission (`run_start`) resolves the reachable set `{effectiveParams.model} ∪ {agents[*].model}` — static since ADR-029/REQ-091 — and writes `runs.price_book = { fetchedAt, source: 'live' | 'last-good' | 'static', pinned: Record<'provider/model', BookEntry> }`; dispatch, capture and resume read the PIN, never the live book. `models_list` renders from the same snapshot — `ModelBook.snapshot()`, so a burst of `models_list` calls inside the TTL fires ONE upstream fetch — and stamps each ROW with `catalogFetchedAt: string | null` = that snapshot's own `fetchedAt`.
 - **note:** Boundary: pure lookups plus one loader class; the loader IS the already-injectable `config.modelCatalog`, so tests inject a fake source and clock. One fetch per TTL, not one per `run_start` and certainly not one per `agent()` — a 24-wide `parallel()` would otherwise fire 24 catalog fetches of ~1 MB; single-flight is the same shape `DiagramRenderer` already uses. Pinning at admission is what makes a run's arithmetic immune to a mid-run price change or a listing outage, and it is why no mid-run "unpriced" decision can exist (ADR-038). **Book-level provenance is load-bearing, not decoration:** the pin decides NOTHING about admission — after the owner's 2026-09-08 ruling no run is ever refused on price — but it fixes a run's arithmetic against a mid-run price change or a listing outage, and `price_book.source` is what makes "this run was priced on six-hour-stale OpenRouter prices, or on the static table" an auditable fact AFTERWARDS rather than an inference. Named honestly rather than left implied: no MCP field projects `source` today; it is persisted provenance, read from the run row during the post-mortem / re-pricing pass the ruling exists for (charge `0` now, adjust the price table later), while the LIVE signal a caller codes against is `run_result.meta.budgetEnforceable.usd:false`. Because the pin is immutable per run BY DESIGN, re-pricing is an offline recomputation over the persisted tokens, never a rewrite of a finished run's recorded cost. Per-row `declaredAt` is NOT added — it pre-shapes a slot for issue #73's deferred probe, and one snapshot-level `catalogFetchedAt` VALUE — stamped onto every row of the response — already carries the only honest "as of". Not built: a pricing service, a per-provider adapter hierarchy, a persisted price history, or a last-good snapshot that survives restart (named in ADR-038's consequence, deliberately not built).
 - **amended (2026-09-11, Gate 8 send-back repair, architecture half — A-1 plus the two LOWs the Gate 8 review scheduled for "the next Gate 2 touch"):** **(a, A-1)** the provenance sentence above justified itself by ADR-038's admission refusal, which the owner overruled — that was the sentence a future architect would have re-derived `PRICE_UNKNOWN` FROM, so it now states the reason that survives the ruling. **(b, cross-half consistency with H-4)** `catalogFetchedAt` ships **per ROW**, not as a top-level wrapper: `models_list` returns a bare array and wrapping it would be a breaking MCP shape change to save ~24 bytes/row (`src/models/model-catalog.ts:352-359`, advertised at `src/tool-specs.ts:966` — DES-179's own boundary). H-4's impl repair made both `models_list` and `GET /api/models` read `ModelBook.snapshot()` so the TTL and single-flight actually apply and the stamp is real; the api line now describes that, so the re-review does not read the shipped shape as a violation of this item. **(c, review LOW D-6)** `caps.reasoning`/`caps.tools` answer `'unknown'` for anthropic and ollama, not `true`/`false` — the code is the honest one and the ledger was overstating. **Consequence recorded rather than fixed in code:** `models_list` therefore reports anthropic effort as *undeclared*, steering a reader away from the one provider where the dial demonstrably lands (`PROVIDER_CAPS.anthropic.effortDelivered: true`). Both lenses agreed the repair is documentary — quality-dimensions (QR-2) argued the consumability cost is real and adversarial (§5 D-6) declined a static-table change inside a send-back whose mandate is *amend the record to match the code*; QD conceded the iteration, not the diagnosis, so the fix is chartered as backlog with its own red test, not smuggled in here.
-- **iter:** v26
+- **v40 amendment (REQ-223/225, ARCH-189/190):** `reachableModels` also pins `decisions[*].model` and `images[*].model` (declared defaults and run overrides); `toModelCatalogSnapshot` carries `modelType` + `modelTypeSource` through to the registration type gate; `BookEntry.price` may carry an optional `imageOutPerM` (absent ≠ 0), riding the existing `runs.price_book` JSON.
+- **iter:** v40
 
 ### ARCH-117 — `wireEffort`: the single writer of `options.thinking` AND `options.effort`, resolved as provider profile × MODEL capability; `models_list` gains `toolUseDeclared` / `effortDeclared` / `declaredSource`
 - **status:** draft
@@ -6503,3 +6507,396 @@ caller at all, which is the whole of REQ-219's case).
   proposals delivered equal value the simpler won: the pre-v24 cohort gets a documented identifying
   query rather than an active sweep; the naming complaint (C8) is declined because a column rename
   costs a migration on every deployed workRoot and buys nothing the two projections cannot say.
+
+## v40 slice — 經 pi-ai 接上兩類非 chat 模型:`decide()`(decision 分類器)與 `generateImage()`(圖片生成) (REQ-220..REQ-230): ARCH-183..194 + ADR-087..095, with ARCH-026/064/074/116 amended in place
+
+Two new script primitives that are **not agents**: each is one host-side HTTP request returning a typed
+answer (decide) or image files (generateImage) — no harness, no tool loop, no session. They therefore
+bypass `GatewayClient` entirely and work identically under `gateway: "sdk" | "direct-fetch" | "pi"`
+(REQ-220). Everything else in this slice is about making that one HTTP request **accountable** to the
+engine's existing contracts: the params contract and static scanners (REQ-220/221/224), the catalog and
+the registration door (REQ-222/223), money (REQ-225), resume (REQ-226), and four NFRs (REQ-227..230).
+
+**Panel.** Two grouped lenses, round 1 only (`.panel/architecture/{adversarial,quality-dimensions}.r1.md`,
+both dated 2026-10-15 and both written for v40); this gate synthesizes, it did not re-spawn. The
+`*.r2.md` files on disk are **v37's** (dated 2026-09-23) and were not used. No round 2 was warranted:
+the two r1 headlines are complementary — both independently land on *own the HTTP boundary through
+pi-ai's `options.fetch`, own the retry loop (`maxRetries: 0`), synthesize the pi-ai model object from
+the engine's ModelBook instead of pi-ai's snapshot, hash the journal key, extend the admission pin*.
+The three places they differ (module shape, per-run slot, script-facing error text) are ruled in
+「Decision rationale — v40」 below, with who conceded and why.
+
+**Closure discipline.** New requirements get NEW rows (ARCH-183..194). Four existing rows whose stated
+behaviour becomes false are amended IN PLACE with a delta bullet and `iter: v40`, `traces:` untouched
+(the transitive-closure rule recorded at v28/v34/v35/v36/v37 — appending REQ-22x to an old row's
+`traces:` would make every earlier IMPL under it read as implementing v40): **ARCH-026** (catalog fetch
+URL and type vocabulary), **ARCH-116** (admission pin reach + snapshot projection), **ARCH-064**
+(`ParamContract` shape), **ARCH-074** (`CALLABLE_API_NAMES`). Every other file touched (guards, host,
+IPC, run-manager, event-log, errors, served text) is touched **additively** and is named on the new
+row's `module:` line instead.
+
+**Scale / flags.** `state.yaml` declares no `scale:` → S/M; `build:`/`selftest:`/`flag:` stay optional
+and **no FLAG-\* is minted**. One candidate was considered and refused: a `primitives: off` switch. Both
+REQs are Must (V40-Q7), nothing in the agent path depends on the new code (INV-V40-1), and an off
+switch would only add a second state to test.
+
+**archify.** The vendored archify probe reports ready, but no slice of this ledger has an IR
+(`diagrams/` does not exist) and an IR's nodes must equal the ARCH set both ways — a v40-only IR would
+be a partial map. Skipped (soft dependency); the mermaid 4+1 views below are the baseline.
+
+**Where the non-functional qualities live** (Gate-2 NFR rule):
+- **REQ-227 (bounded retry → named error)** lives in ONE loop in `src/direct-models/call.ts`
+  (ARCH-183): pi-ai is always called with `maxRetries: 0`; the engine retries only on a wire-observed
+  429 / ≥500 / per-attempt timeout, at most `retries` times, then throws `PRIMITIVE_FAILED`. Each
+  attempt emits one `primitive.call` event (ARCH-192) — the log line is a consequence of the loop, not a
+  second feature.
+- **REQ-228 (independent caps)** lives in `src/main.ts` (ARCH-193): two more `createSemaphore()`
+  instances sized by the new `decideSlots` / `imageSlots` config keys, forwarded by `composeConfig()`
+  and swept by UT-219's wiring test; gauges beside `agentSemaphore` on `/api/status`. The primitives
+  take **neither** the agent semaphore **nor** the per-run `RunGuard.acquireSlot()` (ADR-092).
+- **REQ-229 (metadata-only)** is true **by construction**, not by redaction: the event type, the record
+  and the journal key have no field that can hold `state`, `prompt` or image bytes (ARCH-187/192,
+  ADR-090), and provider error bodies never leave the fetch seam (ADR-093).
+- **REQ-230 (engine overhead p95 ≤ 200 ms)** lives on the hot path rules of ARCH-187 (no ModelBook
+  await, pi-ai model object built once per run from the admission pin, one sync journal write, no extra
+  network round trip) and is **measured** by the fetch seam (ARCH-183): `providerMs` per attempt makes
+  `engineMs = totalMs − Σ providerMs` a production number, not only a stub-test quantity.
+- **Limits** — named and owned: `imageInputMaxBytes` (config, default 4718592 — pi-ai's own snapshot
+  value for OpenRouter image rows), a response-body cap, a `state` byte cap, a question-count cap and a
+  `retry-after` cap (constants in ARCH-183/185, exact values fixed at Gate 4). No health endpoint is
+  added; there is **no new table, column or migration** (Data architecture below).
+
+### 4+1 views — v40
+
+**Logical view** — who owns what.
+
+```mermaid
+graph TD
+  S["script (sandbox child)<br/>decide() / generateImage()"] -->|"IPC t:'decide' / t:'image'<br/>(no image bytes)"| H["sandbox host — ARCH-186"]
+  H --> RM["RunManager._handleDecideRequest / _handleImageRequest — ARCH-187"]
+  RM -->|replay + validate| RC["resume-cache (digest key) — ARCH-187"]
+  RM -->|"withSlot"| SEM["decideSlots / imageSlots semaphores — ARCH-193"]
+  RM -->|"assertBudget + price"| PR["pricePrimitiveCall — ARCH-191"]
+  RM -->|"inputs / outputs"| IF["image-files (realpath, fd, tmp+rename) — ARCH-185"]
+  RM --> DM["direct-models/call.ts — ARCH-183<br/>retry loop + fetch seam"]
+  DM -->|"options.fetch, maxRetries:0, apiKey"| PI["pi-ai ./api/typesafe-system-one classify<br/>./api/openrouter-images generateImages"]
+  DM --> KEY["openrouter-key.ts — ARCH-184"]
+  PI -->|HTTPS| OR["openrouter.ai/api/v1 (fixed baseUrl)"]
+  RM --> EV["event-log primitive.call — ARCH-192"]
+  RM --> REC["AgentRecord{kind} + usage transcript event — ARCH-192"]
+  REG["registration: contract + scan + type gate — ARCH-188/189"] --> CAT["catalog ?output_modalities=all — ARCH-190"]
+```
+
+**Development view** — file-level delta.
+
+```mermaid
+graph LR
+  subgraph added
+    A1["src/direct-models/call.ts — ARCH-183"]
+    A2["src/direct-models/image-files.ts — ARCH-185"]
+    A3["src/gateway/openrouter-key.ts — ARCH-184 (lifted from pi-gateway-client.ts)"]
+  end
+  subgraph changed_additively
+    C1["src/sandbox/{guards,child-entry,host}.ts + src/ipc/protocol.ts — ARCH-186"]
+    C2["src/run-manager.ts + src/resume-cache.ts + src/agent-executor.ts — ARCH-187"]
+    C3["src/params/contract.ts + workflow-meta.ts + script-checks.ts + check-mermaid.ts + workflow-catalog.ts — ARCH-188"]
+    C4["src/providers.ts + src/models/model-book.ts — ARCH-189"]
+    C5["src/models/{model-catalog,models-query}.ts — ARCH-190"]
+    C6["src/run-guard.ts — ARCH-191"]
+    C7["src/event-log.ts + src/types.ts + src/models/observed-stats.ts — ARCH-192"]
+    C8["src/main.ts + src/server.ts — ARCH-193"]
+    C9["src/errors.ts + tool-specs.ts + authoring-guide.ts + workflow-view.ts — ARCH-194"]
+  end
+  C2 --> A1
+  C2 --> A2
+  A1 --> A3
+  C2 --> C6
+  C3 --> C4
+```
+
+**Process view** — one `decide()` call (generateImage differs only in the two image-files steps).
+
+```mermaid
+sequenceDiagram
+  participant C as child (script)
+  participant H as host
+  participant RM as RunManager
+  participant DM as direct-models
+  participant F as fetch seam
+  participant P as pi-ai classify
+  participant OR as OpenRouter
+  C->>H: {t:'decide', callSeq, label, state, questions}
+  H->>RM: onDecideRequest
+  RM->>RM: validate options (PRIMITIVE_INPUT_INVALID, provider not called)
+  RM->>RM: key = 'decide:'+sha256(canonical{state,questions}); replay(callSeq,key)
+  alt replay hit
+    RM-->>H: journaled {answers} (0 provider calls)
+  else miss
+    RM->>RM: decideSlots.withSlot
+    RM->>RM: assertBudget; price known? else PRICE_UNKNOWN when USD budget armed
+    loop attempt ≤ retries+1
+      RM->>DM: runDecide(req, signal = timeout ∪ run-abort)
+      DM->>P: classify(model-from-pin, ctx, {fetch:F, maxRetries:0, apiKey, signal})
+      P->>F: POST /systemone
+      F->>OR: request
+      OR-->>F: status, body (read once, capped)
+      F-->>DM: {status, retryAfter, providerMs, wireCost?}
+      DM->>RM: primitive.call event (attempt, outcome, providerMs)
+    end
+    RM->>RM: price (reported > estimated > absent); guard.addUsage; record{kind:'decide'}; journal
+    RM-->>H: {answers}
+  end
+  H-->>C: decideResult / agentThrow(code)
+```
+
+**Deployment view.** No new process, port, secret or binary: the call is made from the existing engine
+host process (`rwe` user, outside bwrap) to `https://openrouter.ai/api/v1` with the same key the engine
+already holds (`rwe.env`, V40-Q6). Image files land inside the run workspace the host already owns.
+
+**Scenarios (+1).**
+1. *Webhook gate*: a DM-triggered run calls `decide('gate', {state, questions:{order:{type:'bool',…}}})`,
+   reads `answers.order.probability >= 0.7`, and only then calls `agent()`. 100 such runs at once queue
+   on `decideSlots`, never on the agent semaphore (REQ-228).
+2. *Reference image*: `generateImage('hero', {prompt, inputImages:['ref/a.png'], outDir:'out/ig'})`
+   returns `{files:[{path:'out/ig/hero-7-0.png', mimeType, bytes, sha256}]}`; `workspace_pull` fetches it.
+3. *Resume*: stop after 2 decides + 1 image, resume → 0 provider calls; delete the image first → that call
+   and every later one misses (REQ-226).
+4. *Hostile workspace*: an earlier agent planted `ref/a.png → /home/rwe/.config/rwe.env`; the call is
+   refused `IMAGE_PATH_REFUSED` before any request is made (INV-V40-7).
+
+### Data architecture — v40
+
+**Zero DDL, with the evidence** (v37's unconditional 「zero DDL」 claim was sent back once — finding A1 —
+so each new byte's home is named):
+- The admission pin's new optional `imageOutPerM` field rides `runs.price_book`, which is a JSON `TEXT`
+  column (`src/store/sqlite-run-store.ts:95` adds it, `:162` writes `JSON.stringify(priceBook)`). No
+  column change.
+- `AgentRecord.kind` rides the existing `run_snapshots` JSON (`sqlite-run-store.ts:75`) and is
+  re-derivable from the per-record `usage` transcript event's new `primitive` field
+  (`deriveAgentRecords`). No column change.
+- `journal.jsonl` gains entries whose `CallKey.prompt` is a digest string (`'decide:'|'image:' + sha256`)
+  and whose value is `{answers}` or `{files:[…]}` — the same file, the same line shape.
+- The per-instance operator log gains one event kind, `primitive.call` (ARCH-192).
+- The run workspace gains image files, default under the engine-chosen prefix `generated/` (REQ-221),
+  covered by the existing workspace TTL GC (REQ-026) and visible to `workspace_list`.
+- ModelBook (in memory) gains ~200 rows from `?output_modalities=all` and the `'decision'` type value.
+
+```mermaid
+erDiagram
+  RUN ||--o{ JOURNAL_ENTRY : "journal.jsonl"
+  RUN ||--|| PRICE_BOOK : "runs.price_book (JSON TEXT)"
+  RUN ||--o{ AGENT_RECORD : "run_snapshots JSON"
+  AGENT_RECORD ||--o{ TRANSCRIPT_EVENT : "usage event (+primitive)"
+  RUN ||--o{ WORKSPACE_FILE : "generated/<label>-<callSeq>-<i>.<ext>"
+  JOURNAL_ENTRY { int callSeq string keyDigest json value }
+  AGENT_RECORD { string kind "agent|decide|image (absent=agent)" }
+  PRICE_BOOK { json pinned "FourRates + imageOutPerM?" }
+```
+
+SQL-vs-NoSQL is not reopened: nothing new needs a store (ADR for the existing choice stands).
+
+### Interface & API contracts — v40
+
+| Surface | Shape | Owner / notes |
+|---|---|---|
+| script `decide(label, {state, questions})` | → `Promise<{answers: Record<id, {type:'bool',probability} \| {type:'choice',choice,probabilities,confidence} \| {type:'score',score,confidence}>}>` | ARCH-186/187. `state`: JSON object; `questions`: `{type:'bool'\|'choice'\|'score', instructions, criteria}` (pi-ai's own shapes). Label literal; options literal; tunables in options → `PARAM_IN_SCRIPT`. |
+| script `generateImage(label, {prompt, inputImages?, outDir?})` | → `Promise<{files: [{path, mimeType, bytes, sha256}]}>` | ARCH-185/186/187. Paths workspace-relative in and out; no base64 anywhere in the result. |
+| `meta.params.decisions.<label>` / `meta.params.images.<label>` | `{model:{default}, timeoutMs:{default}, retries:{default}}` — all three required, no `effort` | ARCH-188 (`PrimitiveParamSpec`). Run-overridable through the existing RunParams override path (REQ-091 machinery), same bounds rules. |
+| IPC `ChildMsg` | `{t:'decide', runId, callSeq, label, state, questions}` / `{t:'image', runId, callSeq, label, prompt, inputImages?, outDir?}` | ARCH-186. `ParentMsg` reuses `agentResult`/`agentThrow` (they already carry `spent`). |
+| `models_list` `modelType` enum | gains `'decision'` | ARCH-190. Description: `'chat'` for agent(), `'decision'` for decide(), `'image-gen'` for generateImage(). |
+| `rwe.config.json` | `decideSlots?` (default 16), `imageSlots?` (default 2), `imageInputMaxBytes?` (default 4718592) | ARCH-193. `KNOWN_FILE_CONFIG_KEYS` + `composeConfig()` + UT-219 sweep. |
+| event `primitive.call` | `{kind, runId, callSeq, primitive:'decide'\|'image', label, model, attempt, outcome:'ok'\|'retry'\|'failed'\|'refused', status?, errorCode?, providerMs?, engineMs, costUSD:number\|null, costSource:'reported'\|'estimated'\|'absent', answers?, files?}` | ARCH-192. No `state`/`prompt`/`questions`/`inputImages` field exists on the type. |
+| `/api/status`, `system_info` engine section | `decideSemaphore`, `imageSemaphore` gauges beside `agentSemaphore` | ARCH-193. |
+| `ERROR_CATALOG` (all `see: workflow_authoring_guide`) | register: `DECISION_UNDECLARED`, `DECISION_DECLARED_NOT_IN_SCRIPT`, `IMAGE_UNDECLARED`, `IMAGE_DECLARED_NOT_IN_SCRIPT`, `MODEL_TYPE_MISMATCH`, `PRIMITIVE_PROVIDER_UNSUPPORTED`; warning `MODEL_TYPE_UNVERIFIED`; runtime: `PRIMITIVE_INPUT_INVALID`, `IMAGE_PATH_REFUSED`, `PRICE_UNKNOWN`, `PRIMITIVE_FAILED`; reused `BUDGET_EXCEEDED`, `PARAM_IN_SCRIPT` | ARCH-194. `PRICE_UNKNOWN` joins `ENGINE_REFUSAL_CODES` + `RECORDED_REFUSAL_CODES` (propagates like `BUDGET_EXCEEDED`, ADR-073); `PRIMITIVE_FAILED` does not (script-catchable, REQ-227 降級). |
+
+### ARCH-183 — REQ-220/221/227/230: `src/direct-models/call.ts` — one host module that makes the HTTP request through pi-ai as a wire codec, owns the retry loop, and observes the wire through one `fetch` seam
+- **status:** draft
+- **traces:** REQ-220, REQ-221, REQ-227, REQ-230
+- **module:** src/direct-models/call.ts
+- **deps:** ARCH-184, ARCH-116, ARCH-141
+- **api:** `runDecide(req: {model: BookRowLike; state; questions; timeoutMs; retries; signal}, deps: DirectDeps): Promise<{answers, tokens?, wireCostUSD?, attempts}>`; `runImage(req: {model; prompt; inputImages: {data: Buffer; mimeType}[]; timeoutMs; retries; signal}, deps): Promise<{images: {data: Buffer; mimeType}[], tokens?, wireCostUSD?, attempts}>`; `DirectDeps = {fetch, now, sleep, resolveKey, onAttempt(obs)}`. Throws engine-coded errors only (`PRIMITIVE_FAILED` with `detail:{primitive, status?, attempts, reason:'http'|'timeout'|'no_output'|'response_too_large'|'malformed'}`).
+- **note:** **pi-ai is a codec, not a catalog (ADR-087)**: imports `classify` from `@earendil-works/pi-ai/api/typesafe-system-one` and `generateImages` from `@earendil-works/pi-ai/api/openrouter-images` (the exported `./api/*` subpath; the package root exports neither); the pi-ai model object is synthesized from the run's pinned ModelBook row with `api` from a two-entry map (`decision→'typesafe-system-one'`, `image-gen→'openrouter-images'`), `baseUrl` an engine CONSTANT `https://openrouter.ai/api/v1` (never catalog or script data — a workflow cannot redirect the bearer token), `cost` zeroed (pi-ai's computed `usage.cost` is never read, ADR-091). Built once per (run, model) and cached on the run entry (REQ-230 hot path). **Engine-owned retry (ADR-088)**: every pi-ai call passes `maxRetries: 0`, `apiKey` (ARCH-184, resolved per call), `signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), runAbort])` (per-attempt timeout; a run stop aborts in-flight work), and `fetch` = the seam. Retry iff the seam observed 429, ≥500, or the per-attempt timeout fired; any other 4xx, `no_output` (stop with zero image blocks) and `malformed` throw immediately. Backoff exponential with jitter, honouring `retry-after` up to a cap (constant, ~10 s, realtime use V40-Q5); a hint above the cap fails fast with `PRIMITIVE_FAILED{retryable:true}`. Worst-case wall time `(retries+1)×timeoutMs + backoff` is stated in the guide. pi-ai's `stopReason:'error'` is converted using the **seam's status**, never a regex over `errorMessage`; `'aborted'` maps onto the run-stop path. **The fetch seam**: reads the response body ONCE with a hard size cap (`response_too_large` above it), records `{status, retryAfter, providerMs, wireCostUSD?}` (the latter only if the body carries a numeric `usage.cost`), and hands pi-ai a fresh `Response` built from the buffer — one copy, satisfying security (bounded), performance (no double buffer) and testability (one stub) at once. **The seam is also the whole test strategy**: a scripted stub `fetch` (status sequence, latency, body) keeps the real pi-ai codec in the loop, so wire drift (e.g. pi-ai's `bool`↔`noul` mapping) fails CI; no module mocking. Pure helpers with their own UT: `classifyRetryable`, `canonicalJson`, `backoffMs`. **Validation of options happens in ARCH-187, before this module is reached.** Gate 7.5 is the only place the unverified wire facts get settled (does `/systemone` / image completions return `usage.cost`; what OpenRouter error bodies and `retry-after` look like) — the design never *requires* them.
+- **iter:** v40
+
+### ARCH-184 — REQ-220/221: `resolveOpenrouterKey` lifted to `src/gateway/openrouter-key.ts` — one resolver, same order, no new secret
+- **status:** draft
+- **traces:** REQ-220, REQ-221
+- **module:** src/gateway/openrouter-key.ts
+- **deps:** ARCH-016
+- **api:** `resolveOpenrouterKey(secretSource): string | undefined` — order unchanged: `secretSource.resolve('OPENROUTER_API_KEY')` → `RWE_SECRET_OPENROUTER_API_KEY` → `OPENROUTER_API_KEY`. Missing → the caller throws the existing `OPENROUTER_AUTH_MISSING`.
+- **note:** Today module-private in `pi-gateway-client.ts:528-530`; that file now imports it (pure move, behaviour byte-identical — INV-V40-1 covers the pi gateway too). The key is passed to pi-ai as `options.apiKey` only — never in `model.headers` (a field that could be logged), never via pi-ai's own env/credential discovery (V40-Q6: same key, no new secret).
+- **iter:** v40
+
+### ARCH-185 — REQ-221/226: `src/direct-models/image-files.ts` — the host is a privileged deputy on an agent-written tree, so it never follows a link out, never trusts a provider string for a filename, and never leaves a half-written file
+- **status:** draft
+- **traces:** REQ-221, REQ-226
+- **module:** src/direct-models/image-files.ts
+- **deps:** ARCH-020, ARCH-141
+- **api:** `readContainedInput(root, rel, maxBytes): Promise<{data: Buffer; mimeType; sha256}>`; `resolveOutDir(root, outDir | undefined, label): Promise<string>`; `writeImages(root, dir, label, callSeq, images): Promise<{path, mimeType, bytes, sha256}[]>`; `verifyFiles(root, files): Promise<boolean>`; refusals as `IMAGE_PATH_REFUSED{reason:'escape'|'not_regular'|'too_large'|'unsupported_type'}`.
+- **note:** **Adversarial S1 adopted in full** (quality-dimensions deferred to it on mechanism). Input: reject absolute / `..` lexically; `realpath` root and candidate and require containment (`isPathContained`, ARCH-020); `lstat` must say regular file; open, then `fstat` **the fd** for the size cap (closes check-then-open); sniff magic bytes against png/jpeg/webp/gif — anything else refused; all before any provider call. Output: `mkdir -p` then realpath the directory and re-check containment; file names are engine-chosen `<label>-<callSeq>-<i>.<ext>` with the extension from a mime **allowlist**, never from the provider's data-URL string; default dir `generated/`; write to a temp name opened `O_CREAT|O_EXCL|O_NOFOLLOW` inside the contained dir, then `rename` over the final name (rename replaces, never follows, a planted link; a crash leaves no plausible truncated file). `verifyFiles` (resume) = every file exists, is regular, contained, and its sha256 matches the journaled value (ADR-090). **For the verifier**: REQ-221's acceptance literally names only `../` and absolute paths; the tests MUST also include a **planted-symlink case for `inputImages` and for `outDir`** — a lexical check passes the literal acceptance and still uploads `rwe.env` (adversarial R1, high).
+- **iter:** v40
+
+### ARCH-186 — REQ-220/221/224: the sandbox surface — two inlined globals, two IPC message types, two host cases; nothing routes through `agent()`'s path
+- **status:** draft
+- **traces:** REQ-220, REQ-221, REQ-224
+- **module:** src/sandbox/guards.ts, src/sandbox/child-entry.ts, src/sandbox/host.ts, src/ipc/protocol.ts
+- **deps:** ARCH-003, ARCH-165, ARCH-166, ARCH-167
+- **api:** `SandboxApi.decide?` / `SandboxApi.generateImage?`; `SANDBOX_GLOBALS` += `decide`, `generateImage`; `ChildMsg` += `{t:'decide'}` / `{t:'image'}`; `SandboxHostConfig.onDecideRequest?` / `onImageRequest?`.
+- **note:** Child: both draw from the ONE shared `nextCallSeq` and share `pendingAgent` (so `agentThrow`'s lookup and `markEngineRefusal` work unchanged); results come back on `agentResult`/`agentThrow`. Guards: built from the `makeAgent` template (`wrap` → `toCtxPromise` → `reRealm` → `sanitizeThrownError`), registered in the `Object.assign(sandbox, …)` block; **no local value imports** in `guards.ts`/`child-entry.ts` (they are loaded by the child without `.js→.ts` resolution AND type-checked by tsc — memory note `rwe-sandbox-child-ts-imports`); `DETERMINISM_GUARDED[].why` reworded to cover all three primitives. Host: two `case`s mirroring `case 'agent'` (synchronous `currentPhase()` snapshot, deferred handler, `ipcErrorCode`); absent handler → the same fallback `case 'workflow'` uses. Image bytes never cross IPC in either direction (INV-V40-4).
+- **iter:** v40
+
+### ARCH-187 — REQ-220/221/225/226/228/229/230: `RunManager._handleDecideRequest` / `_handleImageRequest` — the accountable call: validate, replay, slot, budget, price, call, record, journal
+- **status:** draft
+- **traces:** REQ-220, REQ-221, REQ-225, REQ-226, REQ-228, REQ-229, REQ-230
+- **module:** src/run-manager.ts, src/resume-cache.ts, src/agent-executor.ts
+- **deps:** ARCH-183, ARCH-185, ARCH-186, ARCH-188, ARCH-191, ARCH-192, ARCH-006, ARCH-118, ARCH-004
+- **api:** `_handleDecideRequest(runId, framePath, callSeq, msg)`, `_handleImageRequest(…)` wired in `_newSandbox` AND in the nested host of `_handleWorkflowRequest` (callSeq namespaced `frameBase + n`, as agent); `Plan.replay(callSeq, key, validate?: (value) => boolean | Promise<boolean>)`; `AgentExecutor.recordPrimitive({kind, label, model, phase, frame, tokens?, costUSD, unpriced, state, startedAt, endedAt})`.
+- **note:** Order: (1) host-side option validation — closed key set, `state` a JSON object under the byte cap, question types ∈ {bool, choice, score} under the count cap, `outDir` string → `PRIMITIVE_INPUT_INVALID` naming the field (provider not called); image inputs read via ARCH-185 (`IMAGE_PATH_REFUSED`, provider not called). (2) effective `{model, timeoutMs, retries}` from the registered contract + run override (ARCH-188). (3) key: `CallKey.prompt = 'decide:' + sha256(canonicalJson({state, questions}))` / `'image:' + sha256(canonicalJson({prompt, inputImages:[{path, sha256}], outDir}))`, `opts = {label, model}`; `replay` — the image validator is ARCH-185's `verifyFiles`, a false sets the plan's existing first-miss flag (V40-Q18; ADR-090). (4) `decideSlots`/`imageSlots` `withSlot` — **not** the agent semaphore and **not** `guard.acquireSlot()` (ADR-092). (5) `guard.assertBudget()` → `BUDGET_EXCEEDED`; then if the run has a USD limit and ARCH-191 says the price is unknowable → `PRICE_UNKNOWN` (provider not called). (6) ARCH-183 call. (7) price (ARCH-191) → `guard.addUsage(tokens, costUSD, unpriced)`; `recordPrimitive` (the record `foldUsageFromRecords` reads, so live usage + snapshot include the spend — REQ-225 "計入 run 用量") + ONE `kind:'usage'` transcript event carrying `primitive` (so the resume-time `foldUsage` re-arms the USD limit with it); **no `kind:'message'` transcript event is ever written for a primitive** (that is where an agent's prompt lives and the only route by which `state` could reach `run_agent_log`). (8) journal push exactly as `agent()` does — every call that consumed a callSeq is journaled so later replay alignment holds; the persisted value is `{answers}` / `{files}`, never inputs. (9) `primitive.call` events (ARCH-192). Refusal ledger: only codes in `RECORDED_REFUSAL_CODES` (ARCH-194). **Hot path (REQ-230)**: never await ModelBook; pi-ai model object cached per run; the only I/O besides the provider is the sync journal write. **Budget overshoot bound** stated, not engineered away: concurrent calls can each pass `assertBudget` before any `addUsage` → overshoot ≤ `slots × maxPerCallCost`, the same stop-dispatching rule `agent()` has (`run-guard.ts` header); negligible for decide, bounded by the low `imageSlots` default for images. **Legacy versions** (REQ-223 last clause): nothing here re-checks model type; admission/resume of a pre-v40 version is unchanged.
+- **iter:** v40
+
+### ARCH-188 — REQ-220/221/223/224: the params contract and static scanners learn two declaration blocks — declared ⇔ used, literal labels, no aliasing, mermaid tolerates the labels
+- **status:** draft
+- **traces:** REQ-220, REQ-221, REQ-223, REQ-224
+- **module:** src/params/contract.ts, src/workflow-meta.ts, src/script-checks.ts, src/check-mermaid.ts, src/workflow-catalog.ts
+- **deps:** ARCH-064, ARCH-096, ARCH-074, ARCH-119, ARCH-189
+- **api:** `PrimitiveParamSpec = {model:{default}, timeoutMs:{default}, retries:{default}}` (all required; no `effort`/`appendPrompt`/`skills`/`mcp`); `ParamContract.decisions?` / `.images?`; `scanPrimitiveCalls(script) → {decide: labels[], generateImage: labels[]}`; `RunParams.decisions?` / `.images?` overrides.
+- **note:** A declaration type of its own, not `AgentParamSpec` with optional fields — `effort` is required there and meaningless here. Registration refusals under their OWN names (`DECISION_UNDECLARED`, `DECISION_DECLARED_NOT_IN_SCRIPT`, `IMAGE_UNDECLARED`, `IMAGE_DECLARED_NOT_IN_SCRIPT`) so a cold client learns which primitive it misdeclared from the code, not from `detail`. Scanner: `/(?<!\.)\bdecide\s*\(/` and `generateImage` likewise; **literal label required** (argument 1); options must be a literal object whose keys are in the closed set (`state, questions` / `prompt, inputImages, outDir`) — values may be runtime (`state` is data, so the agent rule "literal options" applies to keys only); a tunable key (`model`, `timeoutMs`, `retries`) → `PARAM_IN_SCRIPT`. `CALLABLE_API_NAMES` += both (ARCH-074 amendment) so `const d = decide` is refused like `agent`. `checkMermaid`: primitive labels are **allowed, not required** as diagram nodes (REQ-224 「視其為合法節點」); they are excluded from the lane/slot/edge structure check (not in `deriveExpectedGraph`, not subject to `AGENT_BEFORE_PHASE`). Provider: `decisions.*`/`images.*` models must be `openrouter/…` → else `PRIMITIVE_PROVIDER_UNSUPPORTED` (owner Won't list: no Cloudflare/llama.cpp this round); `harnessProviders` (the pi-gateway gate) does NOT apply — these never touch a harness. Model type: ARCH-189, at registration only. `workflow_describe`/`workflow_get` project `decisions`/`images` like `agents` (ARCH-194).
+- **iter:** v40
+
+### ARCH-189 — REQ-223/225: the registration type gate — refuse only "known and certainly wrong", warn on unknown, and give the admission pin the rows it needs
+- **status:** draft
+- **traces:** REQ-223, REQ-225
+- **module:** src/providers.ts, src/models/model-book.ts
+- **deps:** ARCH-112, ARCH-116
+- **api:** `checkPrimitiveModelType(kind: 'agent'|'decision'|'image', row: {modelType, modelTypeSource} | undefined) → {ok:true} | {ok:true, warning:{code:'MODEL_TYPE_UNVERIFIED', label, model, modelTypeSource}} | {ok:false, code:'MODEL_TYPE_MISMATCH', label, model, actual, required}` (pure); `toModelCatalogSnapshot` carries `modelType` + `modelTypeSource`; `reachableModels` += `decisions[*].model`, `images[*].model` (declared defaults and run overrides).
+- **note:** Required type: `agent→chat`, `decision→decision`, `image→image-gen` (REQ-223 as written; see ADR-095 for the open question about image+text models). `unknown` type or `id-heuristic` source → accept with a warning naming label/model/source (V40-Q17); catalog unavailable/static → the existing warning arm (`providers.ts:189-197`), so a catalog outage never blocks registration. Applied **only** in the registration path (`WorkflowCatalog`), never in `_refuseUnadmittableParams` (admission/resume/nested), so pre-v40 versions are untouched (REQ-223 last clause, V40-Q6). Applies to `agents.<label>` too (the REQ's first clause), which is the first time "only chat models can drive agent()" is enforced rather than documented — for NEW registrations only. The pin extension is what lets ARCH-187 evaluate `PRICE_UNKNOWN` from memory (REQ-230) and lets ARCH-191 price at all.
+- **iter:** v40
+
+### ARCH-190 — REQ-222/225: the catalog fetches every output modality, names `decision`, and captures the image-output rate — chat rows unchanged
+- **status:** draft
+- **traces:** REQ-222, REQ-225
+- **module:** src/models/model-catalog.ts, src/models/models-query.ts
+- **deps:** ARCH-026, ARCH-116
+- **api:** `ModelType` += `'decision'`; `openRouterModelType`: `output_modalities` = `['decisions']` (or containing `decisions` without `text`) → `{modelType:'decision', modelTypeSource:'openrouter-modalities'}`; fetch URL `…/api/v1/models?output_modalities=all`; `BookEntry.price` gains optional `imageOutPerM` from `pricing.image_output` (absent ≠ 0).
+- **note:** Existing branch order kept (`text` in outputs → `chat` first), so every row that was `chat` stays `chat` with identical fields — guarded by a **golden snapshot test** of the pre-change chat rows (REQ-222 last clause). 459 → ~662 rows; `models_query` already pages by `limit` and `PAGE_BYTE_BUDGET`, so REQ-210's size contract holds (more pages, no cliff). `models_list({modelType:'decision'})` uses the existing filter (`models-query.ts:92`) with the widened enum (ARCH-194 updates `tool-specs.ts:1528`). `image_output` is captured per OpenRouter's per-token convention; its unit for image-only rows (e.g. FLUX) is a Gate 7.5 measurement item — estimates using it are always flagged `estimated` (ADR-091).
+- **iter:** v40
+
+### ARCH-191 — REQ-225: `pricePrimitiveCall` — reported, else estimated, else absent; with a USD budget, absent refuses before send
+- **status:** draft
+- **traces:** REQ-225
+- **module:** src/run-guard.ts
+- **deps:** ARCH-118, ARCH-116
+- **api:** `primitivePriceKnowable(entry: BookEntry | undefined, kind): boolean` (pre-flight, pure); `pricePrimitiveCall({wireCostUSD?, tokens?, entry, kind}) → {costUSD: number, source:'reported'|'estimated'} | {absent: true}` (pure).
+- **note:** Beside `priceCall`, which is untouched (no change to agent pricing — INV-V40-1). Precedence (V40-Q12, owner): (1) `wireCostUSD` read off the wire by ARCH-183's seam; (2) estimate from the pinned row — decide: tokens × `FourRates`; image: input tokens × `in` + output tokens × (`imageOutPerM` ?? `out`); flagged `estimated`; (3) otherwise `absent` → `addUsage(…, unpriced:true)` with no number (the v31 rule: 「未量到的用量是缺席,不是零」), and the run summary counts it unpriced. Pre-flight: `primitivePriceKnowable` is false iff the pin has no rate row usable for that kind; with `budget.usd` set that refuses `PRICE_UNKNOWN` (provider not called); without one the call proceeds unpriced (owner-ruled V40-Q12; the unbounded-unpriced-spend risk at webhook volume is recorded, not relitigated — adversarial R4). Note the pre-flight cannot know whether tier 1 will arrive, so a model with no catalog price is refused under a USD budget even if OpenRouter would have reported a cost — the honest consequence of refusing before send.
+- **iter:** v40
+
+### ARCH-192 — REQ-229/227/225/228: one event kind, one record discriminator, own observed-stats buckets — metadata only by construction
+- **status:** draft
+- **traces:** REQ-229, REQ-227, REQ-225, REQ-228
+- **module:** src/event-log.ts, src/types.ts, src/models/observed-stats.ts
+- **deps:** ARCH-159, ARCH-026
+- **api:** `EngineEvent` += `primitive.call` (shape in the contracts table); `AgentRecord.kind?: 'decide' | 'image'` (absent = agent — the "absent, never defaulted" convention of `agentKey`); `AgentCallFact.kind` += `'decide' | 'image'`, `ObservedForRef` gains matching buckets.
+- **note:** ONE event kind with a `primitive` discriminator, not two (the closed union is deliberate: "a vNN kind is a vNN edit"). Per attempt: `outcome` `retry` / `failed` / `ok`, plus `refused` for every pre-flight refusal (REQ-227 「每次重試與最終失敗都出現在事件 log」). The event carries `answers` (decide — owner asked for it, V40-Q11) and `files` metadata (image); it has **no field** for `state`, `questions` text, `prompt` or input images, so the REQ-229 sentinel test is a property of the type, not of discipline at each emit site; it still rides `createEventSink`'s redaction like every kind. `observed-stats.loadFacts` buckets by `record.kind` when present — decide/image latency and cost never mix into chat's `tools`/`prose` buckets (REQ-225 last clause), and a decision model's `models_list` row shows its own measured success/p95. Records appear in `run_status.agents[]` and the swimlane (`buildDagModel` groups by frame); run-level `WorkflowMetrics` fold per run, so home-card metrics do not inflate. The agent slide-in panel's kind-aware variant is a filed v41 candidate (no REQ in this slice asks for it).
+- **iter:** v40
+
+### ARCH-193 — REQ-228/230: two semaphores at the composition root, three config keys through `composeConfig()`, two gauges
+- **status:** draft
+- **traces:** REQ-228, REQ-230
+- **module:** src/main.ts, src/server.ts
+- **deps:** ARCH-187, ARCH-177, ARCH-085, ARCH-073
+- **api:** `decideSemaphore = createSemaphore(decideSlots ?? 16)`, `imageSemaphore = createSemaphore(imageSlots ?? 2)` injected into RunManager; `imageInputMaxBytes ?? 4718592` injected via RunManager into ARCH-185's reads; gauges on `/api/status` and `system_info`.
+- **note:** Process-wide per kind, because the contended resource is the ONE shared OpenRouter key's rate limit, not any one run (ADR-092). `acquire` queues at the cap (same semantics as the agent semaphore) so a webhook burst degrades to latency, not failures. All three keys go into `KNOWN_FILE_CONFIG_KEYS` (with `assertPositiveInteger`) and are forwarded in `composeConfig()` — the thrice-bitten bug class (`updateFlagPath`, `auth`, `agentSlots`); UT-219 sweeps the whole key list, so a key listed but not forwarded fails a test. The image default is low because peak image memory ≈ `imageSlots × bodyCap × ~2.3` (base64 + decoded). The state/question/body/retry-after caps are code constants, not keys — fewer knobs, no wiring risk.
+- **iter:** v40
+
+### ARCH-194 — REQ-224/227/225: the served text and the error vocabulary — one catalog, three refusal sets in sync, a guide example that registers
+- **status:** draft
+- **traces:** REQ-224, REQ-227, REQ-225
+- **module:** src/errors.ts, src/tool-specs.ts, src/authoring-guide.ts, src/workflow-view.ts
+- **deps:** ARCH-141, ARCH-087, ARCH-107, ARCH-075
+- **api:** the `ERROR_CATALOG` rows in the contracts table; `ENGINE_REFUSAL_CODES` (guards.ts) and `RECORDED_REFUSAL_CODES` (run-manager.ts) each += `PRICE_UNKNOWN`; guide sections for `decide` / `generateImage`; `models_list` enum text; `workflow_describe`/`workflow_get` project `decisions`/`images`.
+- **note:** `PRICE_UNKNOWN` is an engine refusal like `BUDGET_EXCEEDED` — it propagates through `parallel()`/`pipeline()` (ADR-073) and is recorded in the refusal ledger; `PRIMITIVE_FAILED`, `PRIMITIVE_INPUT_INVALID`, `IMAGE_PATH_REFUSED` are ordinary script-catchable errors (REQ-227's `try/catch` 降級). `MODEL_TYPE_MISMATCH` etc. are registration-time only. The existing provenance test that pins the two sets equal is extended so every new runtime code is asserted present in exactly the sets it belongs to. Guide (served text = current behaviour only, no history, no issue numbers): signatures, declaration block, return shapes, every error code, the bool idiom `answers.order.probability >= 0.7` (REQ-220 returns a probability, a cold author would otherwise write `if (answers.order)`), the wall-time formula, that `retries` on images can double-bill a timed-out generation (suggest 0–1), that a changed or missing image file makes that call and every later one regenerate on resume, and that an error's message never contains the provider's response body. The worked `decide` example joins REQ-209's "printed examples must register" test; REQ-224's cold-client acceptance (Gate 7.5, real MCP) is the dimension's judge, not review.
+- **iter:** v40
+
+### ADR-087 — REQ-220/221: pi-ai is used as a wire codec via `./api/*`; the model object is synthesized from ModelBook — never `createModels()` / `getModelOfType()`
+- **status:** draft
+- **traces:** REQ-220, REQ-221, REQ-222
+- **note:** **Context** — pi-ai's documented path (`createModels().setProvider(openrouterProvider()).getModelOfType()`) reads pi-ai's frozen 1.0.0 snapshot: 9 classifiers, 57 image rows (37 priced all-zero), its own vocabulary (`classifier`/`image`). **Options** — (A) pi-ai catalog; (B) synthesize the `ClassifierModel`/`ImageModel` from the engine's pinned ModelBook row + fixed baseUrl, call the `./api/*` functions directly. **Decision** — (B): one catalog of record (REQ-222's live listing IS the executable set), one price source, no zero-cost row ever reaches pricing, vocabulary mapped at one adapter. **Runner-up** (A) lost: two catalogs that disagree, a frozen list that vetoes a classifier OpenRouter lists live, and 37 confident $0 prices. **Consequences** — the adapter must satisfy pi-ai's closed `api` unions; pi-ai stays pinned exactly at 1.0.0 and the stub-fetch tests run the real codec, so an upgrade that moves the wire format fails CI. The image `inputLimits.resize.maxBytes` the snapshot carried becomes the `imageInputMaxBytes` config key.
+- **iter:** v40
+
+### ADR-088 — REQ-227/230: the engine owns the HTTP boundary (`options.fetch` seam) and the retry loop (`maxRetries: 0`)
+- **status:** draft
+- **traces:** REQ-227, REQ-230
+- **note:** **Context** — pi-ai's `classify` retries internally (`maxRetries ?? 2`) on a set (408/409/429/≥500/undefined status, `x-should-retry`) that differs from REQ-227's (429/5xx/timeout); its retries are invisible; its failures resolve with `stopReason:'error'` and the status only inside a display string; its backoff would sit inside "provider time". **Options** — (A) let pi-ai retry, regex the status out of `errorMessage`; (B) `maxRetries: 0` + engine loop + fetch seam. **Decision** — (B); both lenses proposed it independently. **Runner-up** lost: REQ-227's per-retry log lines and REQ-230's measurement are not implementable through (A), and a regex couples the engine to a vendor's message format. **Consequences** — ~30 lines of loop with injected `sleep`; retry policy cannot drift when pi-ai or the SDK it mirrors changes.
+- **iter:** v40
+
+### ADR-089 — REQ-220/221/228/230: one module with injected deps — no `DecisionBackend`/`ImageBackend` port
+- **status:** draft
+- **traces:** REQ-220, REQ-221, REQ-228, REQ-230
+- **note:** **Context** — quality-dimensions R-1 proposed an engine port with pi-ai as one adapter, arguing the stub providers REQ-228/230 require are a second implementation. **Options** — (A) port + adapter + stub implementation; (B) one module, the stub is a stub `fetch`. **Decision** — (B). **Runner-up** lost on the Karpathy tie-break: with a stub `fetch` the port has exactly one implementation, and (B) keeps the real pi-ai codec inside every NFR test (better fidelity — catches wire drift that a port-level stub would hide). Vocabulary isolation (R-3) is kept without the port: nothing outside `src/direct-models/` imports a pi-ai type. **Consequences** — the Won't-listed Cloudflare/llama.cpp classifiers would add a `provider→api` map entry, not a new layer.
+- **iter:** v40
+
+### ADR-090 — REQ-226/229: the journal key is a digest, and an image replay verifies existence AND sha256
+- **status:** draft
+- **traces:** REQ-226, REQ-229
+- **note:** **Context** — `CallKey.prompt` is compared byte-for-byte and persisted; keyed on raw `state` it puts the exact string REQ-229 forbids into `journal.jsonl` (`run-manager.ts` already names "persist a keyHash" as a future option). REQ-226 says a missing image file is a miss. **Decision** — key = `kind + ':' + sha256(canonicalJson(inputs))` (input images by their sha256, so same path / different bytes misses); a replayed image value is a hit only if every file exists, is contained, and matches its journaled sha256 — a modified file is a miss too, which goes beyond REQ-226's literal "missing" because returning a path whose bytes contradict the returned `bytes`/`sha256` breaks REQ-221's invariant (both lenses: adversarial R6, quality S-4). Writes are tmp+rename so a crash cannot leave a truncated file that verifies. **Runner-up** — plaintext key + redaction (DES-088's posture): rejected, a redacted key misses on hard-crash resume and still stores the data. A dictionary attack on a low-entropy `state` is moot: the digest is never served. **Consequences** — hashing a large image on resume costs milliseconds, resume-only; the guide states the "changed file regenerates" rule.
+- **iter:** v40
+
+### ADR-091 — REQ-225: cost sources — wire-reported, else ModelBook estimate (`FourRates` + new `imageOutPerM`), else absent; pi-ai's `usage.cost` is used for nothing
+- **status:** draft
+- **traces:** REQ-225
+- **note:** **Context** — the owner's precedence (V40-Q12: provider-reported first, then catalog, refuse/absent) assumed pi-ai's `usage.cost` is provider-reported; both lenses verified it is computed from pi-ai's own snapshot price (`parseUsage` → `model.cost`), and with the synthesized model (ADR-087) it would be $0. **Decision** — the owner's precedence stands; only the source mapping is corrected: "reported" = a numeric `usage.cost` the fetch seam reads off the wire body; "estimated" = the admission pin (tokens × rates; image output tokens × `imageOutPerM` when present); else absent. **Runner-up** — trusting pi-ai's `usage.cost`: rejected, it would price 37 image models as known $0, the v31 violation REQ-225 itself cites. **Consequences** — nothing *requires* tier 1 (unverified whether `/systemone` returns it); Gate 7.5 (US$1 cap, V40-Q19) records what actually came back and the unit of `image_output` on an image-only row. This is a realization of the owner's ruling, not a change to it.
+- **iter:** v40
+
+### ADR-092 — REQ-228: process-wide per-kind semaphores; no per-run slot, no spend reservation, no circuit breaker
+- **status:** draft
+- **traces:** REQ-228, REQ-225, REQ-227
+- **note:** **Context** — where decide/image concurrency is bounded. **Options** — per-run caps vs process-wide; take `RunGuard.acquireSlot()` or not; reserve budget before send or not; a per-model breaker (quality S-6, default off) or not. **Decision** — two process-wide semaphores (the shared key's rate limit is the real bottleneck); **no** per-run agent slot (quality S-3 over the adversarial constraint table's "reuse guard slot": REQ-228's "agent semaphore 全被佔滿時 decide 仍可進行" is about not being starved by agent work, and the per-run slot is agent work too); **no** reservation (document overshoot ≤ `slots × maxPerCallCost`, same as `agent()`); **no** breaker. **Runners-up** lost: per-run fairness and the breaker are speculative until observed failing, and the breaker sits next to the "no uptime/recommend" ruling (#104 lineage) — both filed as v41 candidates. **Consequences** — a single run with `parallel()` over 200 decides can delay other runs' decides (named risk, adversarial P1).
+- **iter:** v40
+
+### ADR-093 — REQ-229: provider error bodies never leave the fetch seam; the script's error message is body-free
+- **status:** draft
+- **traces:** REQ-229, REQ-227
+- **note:** **Context** — pi-ai's `errorMessage` embeds up to 4000 chars of the provider's error body, and a 400 validation body can echo request fields, i.e. `state`. Adversarial S4 put the full message on the error thrown to the script ("the script owns that data"); quality O-3 made every surface body-free. **Decision** — body-free everywhere: `PRIMITIVE_FAILED`'s message is `<primitive> '<label>' failed: <reason> [HTTP <status>] after <n> attempt(s)` plus `detail {status, attempts, retryable, reason}`. **Why the adversarial position lost** — an uncaught script error is persisted engine-side (`runs.error`, served by `run_status` and the dashboard API — the v35 failure capture), so "the script owns it" stops being true the moment the script doesn't catch; REQ-229's sentinel must hold by construction on every sink. **Consequences** — diagnosis of a provider 400 loses the provider's wording; mitigated by host-side pre-flight validation (ARCH-187) catching the shape errors that would produce most 400s, and by the event's `status`.
+- **iter:** v40
+
+### ADR-094 — REQ-225/229: primitives produce `AgentRecord`s with a `kind` discriminator — not a new node type, and never a `message` transcript event
+- **status:** draft
+- **traces:** REQ-225, REQ-229
+- **note:** **Context** — run usage is folded from `AgentExecutor.getAllRecords()` (`foldUsageFromRecords`) and on resume from `usage` transcript events (`foldUsage`); a call that produces neither is invisible to the budget. **Options** — (A) a new record/node type with its own folds; (B) `AgentRecord.kind` + one `usage` event; (C) `guard.addUsage` only. **Decision** — (B), both lenses' recommendation: the existing folds, snapshot, swimlane and resume re-arm work unchanged; (C) loses the spend from the run summary and on resume. **Consequences** — consumers that assume a harness (the agent slide-in panel) render empty harness cards for a primitive node until the v41 candidate lands; run-level metrics do not inflate (they fold per run). No `kind:'message'` event is written for a primitive (INV-V40-3).
+- **iter:** v40
+
+### ADR-095 — REQ-223: `images.<label>` requires `modelType: 'image-gen'` exactly as REQ-223 is written — image+text models catalogued `chat` are refused until the owner says otherwise
+- **status:** draft
+- **traces:** REQ-223, REQ-222
+- **note:** **Context** — REQ-222 keeps every row whose outputs include `text` as `chat` (its last clause forbids changing existing chat rows), so OpenRouter's image+text models (e.g. `google/gemini-2.5-flash-image`, `output_modalities:['image','text']`) are `chat`, and REQ-223 refuses them for `images.<label>`. pi-ai's `openrouter-images` api can drive them. **Options** — (A) literal: require `image-gen`; (B) for `images.<label>` accept any row whose `modalities.out` includes `image` (the V40-Q17 spirit "only refuse known-and-certainly-wrong"). **Decision built** — (A), because it is the owner-confirmed text; (B) is a one-line change in `checkPrimitiveModelType` if the owner chooses it. This is a product call about which models authors may use, so it is deferred, not taken here.
+- **owner_decision:** pending — Should `meta.params.images.<label>` also accept OpenRouter models whose output modalities include image AND text (e.g. google/gemini-2.5-flash-image, catalogued modelType 'chat'), or stay strictly modelType 'image-gen' as REQ-223 is written (current build: strictly 'image-gen'; such models are refused with MODEL_TYPE_MISMATCH)?
+- **iter:** v40
+
+### Invariants introduced by v40
+
+- **INV-V40-1 (agent() untouched).** `_handleAgentRequest`, `AGENT_CALL_RE`/`scanAgentCalls`, `priceCall`, the agent journal entry shape and the pi gateway's key resolution order are byte-for-byte behaviour-identical; the existing agent test suites pass without edits (REQ-220's last clause).
+- **INV-V40-2 (refuse before spend).** Every pre-flight refusal (`PRIMITIVE_INPUT_INVALID`, `IMAGE_PATH_REFUSED`, `PRICE_UNKNOWN`, `BUDGET_EXCEEDED`) leaves the stub `fetch` call count at 0.
+- **INV-V40-3 (metadata only).** No durable or served sink — event log, journal, transcripts, snapshot, `runs.error`, dashboard API, observed stats — can hold `state`, `prompt`, question text, input-image bytes or a provider error body; enforced by type shape, digest keys and ADR-093, and proven by the REQ-229 sentinel test.
+- **INV-V40-4 (no image bytes over IPC).** The child sends paths and receives metadata; base64 exists only inside the host between the seam and `writeImages`.
+- **INV-V40-5 (unknown is not zero).** A primitive call with no reported and no estimable cost is recorded unpriced, never `costUSD: 0`.
+- **INV-V40-6 (one callSeq, one journal entry).** Every primitive call consumes exactly one callSeq from the shared counter and is journaled exactly as `agent()` is, so replay alignment of later calls holds.
+- **INV-V40-7 (no link-following deputy).** The host never reads or writes a path whose realpath leaves the run workspace, for `inputImages` or `outDir`.
+
+### v41 candidates (filed so the next round starts from evidence, NOT actioned in v40)
+
+- Kind-aware agent slide-in panel for `decide`/`image` records (model, latency, cost, answers / files) — quality C-6; no v40 REQ asks for it.
+- Per-model circuit breaker for primitives (quality S-6) and a manual `models_probe({modelType:'decision'})` — both near the "no uptime/recommend" ruling; need an owner ask before any build.
+- Per-run fairness on `decideSlots`/`imageSlots` (adversarial P1) — only if starvation is observed.
+- Returning text blocks from image+text models (`text?` on the result) — tied to ADR-095's owner answer.
+- Cloudflare / llama.cpp classifier providers; URL/base64 image inputs — owner Won't for v40.
+
+### Decision rationale — v40 (ARCH-183..194, ADR-087..095; ARCH-026/064/074/116 amended in place)
+
+- **Converged, no ruling needed** (both r1 documents, independently): own the fetch seam + `maxRetries: 0` (ADR-088); model object from ModelBook, never pi-ai's snapshot (ADR-087); digest journal key (ADR-090); extend `reachableModels` and carry `modelType` through `toModelCatalogSnapshot` (ARCH-189); one event kind + `AgentRecord.kind` + own observed-stats buckets (ARCH-192, ADR-094); low `imageSlots` default; no spend reservation.
+- **Module shape — quality-dimensions conceded by tie-break.** Its `DecisionBackend` port is justified only if the stub is a second port implementation; a stub `fetch` makes the port single-implementation and keeps the real codec under test (ADR-089).
+- **Per-run slot — adversarial's constraint-table line conceded.** Its own P1 already argued process-wide per-kind caps; the residual "reuse guard slot" line contradicts REQ-228's intent (ADR-092).
+- **Script-facing error text — adversarial S4 conceded.** "The script owns the data" fails on the uncaught path, which the engine persists and serves (ADR-093).
+- **Config surface — simpler of two equal proposals.** Key names mirror `agentSlots` (`decideSlots`/`imageSlots`, not `decideConcurrency`); `decideStateMaxBytes` (quality C-5) became a constant — one fewer key on the thrice-bitten wiring path, and the provider's own context limit backs it up.
+- **Breaker (quality S-6) and decision probe — refused this round**, filed as v41 candidates; quality itself offered both as optional and config-off.
+- **sha256-mismatch = miss — decided here** (both lenses), not deferred: it is an integrity rule that keeps REQ-221's returned metadata true, not a product choice.
+- **Near-misses deliberately NOT deferred to the owner, so Gate 8 sees they were not silent:** `answers` in the event log (already owner-ruled, V40-Q11); proceeding unpriced with no USD budget (already owner-ruled, V40-Q12; risk recorded on ARCH-191); `retries` on images may double-bill (guidance in the guide, author still declares it per V40-Q14); the `sha256` field added to REQ-221's return shape (additive, lets a consumer verify against `workspace_list` without a second read). **One owner_decision is pending**: ADR-095.

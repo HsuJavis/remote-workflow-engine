@@ -1,323 +1,427 @@
-# Quality-dimensions lens — Architecture round 1 (independent proposal)
+# Quality-dimensions lens — Architecture round 1 (independent proposal) — v40
 
-**Scope:** `send_back = [architecture, impl, validation]` from **v37 GATE 8 ROUND 3 — RE-REVIEW
-(2026-09-24)**. Round 3 reviewed two un-gated commits (`3e3c331` claim() re-stamp, `2cf5f32` monotonic
-fix) that shipped ADR-086's SECOND owner ruling ("在 `claim()` 時重新蓋章") with no ledger entry. Eight
-items are architecture's to carry: **C1** (`02-architecture.md:5683,5691,5413,5704-5710` — ARCH-182
-still reads "written once, never re-stamped," false since `3e3c331`), **C2** (the sixth INV-V37-5
-forward — `call-tool.ts:212` → `mcp-facade.ts:358/392` → `claim()` — shipped with zero test coverage
-and no hop lock), **C4/QD-1** (the whole slice invisible to `06-impl-log.md`/`05-tests.md`/`rtm.md`,
-and `02-architecture.md:5899-5920/6146` now interleaves three inconsistent states of one decision in
-one entry), **C3** (the pre-v24 legacy-bound cohort — a trigger already attached to a workflow that is
-never re-registered — sits outside the self-heal boundary `scheduler.ts:536`/`webhook-registry.ts:229`
-name), **C5** (the re-stamp is monotonic — `webhook-registry.ts:242-243`, `scheduler.ts:548-549`, both
-`if (createdRemote !== true) return` — with no un-stamp path anywhere in `src/`, and this host's own
-stated production reality is that its entire trigger catalog is remotely registered), **C6/QD-4**
-(`DEPLOY.md:908` tells the operator delete-and-recreate is the only remedy and is now backwards, and
-omits C5's irreversibility entirely), **QD-2** (the local→remote transition writes no timestamp/actor
-— unlike every other state transition this same subsystem tracks), **QD-3** (`TriggerClaimStore.claim()`
-at `mcp-facade.ts:69` is declared as a bivariantly-checked method, not a strictly-checked function
-property — the implementer's own comment on that line names the hazard; `UT-335` covers
-`SqliteSchedulerPort` only). This lens does not re-litigate ADR-083/ADR-086's answered product
-questions (本機發起的 run 仍不受限制; 選 `claim()` 重新蓋章而非只改文字) — both stand. **This file
-supersedes the round-2 `quality-dimensions.r1.md` this same path held** — that round's content is not
-lost, `git status --short` on this path is clean at `2a760bd`, so `git show 2a760bd:<path>` reaches it,
-per this repo's own read-a-commit rule (CLAUDE.md). **Verified
-directly against source, not accepted from the round-3 panel text**: `src/webhook-registry.ts`
-(claim/deliver/list, lines 176-243, 340-370), `src/scheduler.ts` (claim/trigger, 294-390, 529-550),
-`src/mcp-facade.ts` (`TriggerClaimStore`, `workflowRegister`, 55-70, 354-405), `src/call-tool.ts`
-(102-130, 210-272), `src/run-manager.ts` (170-195, admission predicate), `DEPLOY.md:860-912`,
-`02-architecture.md` ARCH-182/ADR-086 rows (5670-6160) and INV-V37-5 (5974-6000).
+**Scope:** iteration **v40 — 經 pi-ai 接上兩類非 chat 模型**, REQ-220..REQ-230
+(`01-requirements.md:3026-3213`), full Gate 2→8 path, QM. Inputs read: the v40 requirements section and
+its Round v40 interview table (V40-Q1..Q19), `state.yaml` tech_stack (`:47-140`), the Gate 0 as-is map
+(`v40-gate0-asis-map.md`, all ten sections), and — verified directly, not taken from the as-is map —
+the pi-ai 1.0.0 implementation this round builds on: `node_modules/@earendil-works/pi-ai/dist/api/
+system-one-shared.js` (classify), `api/openrouter-images.js` (generateImages), `utils/provider-retry.js`,
+`utils/error-body.js`, `types.d.ts:57-75, 289-310, 900-953`, `providers/data/openrouter.json`; and the
+engine seams each dimension lands on: `src/run-guard.ts`, `src/resume-cache.ts`, `src/run-manager.ts:
+445-460, 2915-2965`, `src/event-log.ts:1-55`, `src/models/{model-catalog,model-book,models-query,
+observed-stats}.ts`, `src/providers.ts:159-209`, `src/agent-semaphore.ts`, `src/main.ts:145, 347,
+595-630`, `src/server.ts:1650-1665`, `src/dashboard.ts:57-181`, `src/types.ts:125-204, 266, 734-758,
+895-918`, `src/sandbox/host.ts:425-455`, `src/gateway/client.ts:248-285`, `src/tool-specs.ts:1444-1564`.
+
+**Supersession note:** this path held the v37 round-1 proposal. `git status --short` on it is clean at
+`764a48f`, so `git show 764a48f:<this path>` reaches that content per CLAUDE.md's read-a-commit rule.
+Nothing is checked out, restored or stashed.
 
 ## Altitude call
 
-Both altitudes apply, at different seams of the same finding set — same split this lens drew in the
-prior two rounds and re-confirmed here on the corrected code. The **engine's control plane** (the
-migration/ledger drift in C1/C4, the DEPLOY.md operator doc in C6, the type-checking gap in QD-3) is a
-conventional distributed system's documentation-as-interface and type-system problem, argued at system
-altitude. But every one of these seams gates **whether Bash-capable `agent()` work is admitted on an
-unconfined host** — C5 in particular is not a generic state-machine bug, it is the system's only
-mechanism for attesting, to itself, whether the *script an agent is about to run* traces to a party the
-confinement decision trusts, and a one-way attestation with no recovery transition is an agent-altitude
-self-sustainability question, not a system-altitude bug-fix. I apply system altitude to C1/C4/C6/QD-3
-and agent altitude to C2/C3/C5/QD-2.
+Both altitudes apply, but with a correction the other lenses may not make: **`decide()` and
+`generateImage()` are not agents.** They are stateless model function calls — one request, one typed
+answer, no tool loop, no chain-of-thought, no session (`ClassifierResult.answers`, `AssistantImages.
+output`; `types.d.ts:437-497`). So the agent-altitude reading of each dimension shifts:
+
+- *Observability (agent):* "chain-of-thought must be inspectable" collides head-on with REQ-229 (只記
+  中繼資料, never `state`/prompt, owner V40-Q11). The reconciliation is that a classifier's inspectable
+  output **is** its `probabilities`/`confidence`, and an image call's **is** its file metadata; the owner
+  chose input-privacy over input-transparency, and the design's job is to make metadata-only
+  *sufficient* for diagnosis — which it is not today unless the engine records the facts pi-ai discards
+  (§1, O-1/O-2).
+- *Replaceability (agent):* applies in full — "GPT↔Claude↔local is a config change" is literally
+  `meta.params.decisions.<label>.model.default`, and the owner's Won't list (Cloudflare / llama.cpp
+  classifier providers) is exactly the next adapter.
+- *Consumability (agent):* applies in full — V40-Q3 says agents write these calls, so the typed I/O +
+  guide **are** the SDK.
+- *Self-sustainability (agent):* memory metabolism is **N/A** (nothing accumulates across calls — flagged
+  as a negative so no round re-spends budget on it); tool-liveness and bounded retry apply.
+
+System altitude applies throughout: catalog, IPC, budget, resume journal, config wiring, dashboard.
 
 ## Summary
 
-Round 2 sent back a *premise* error (ADR-086 keyed admission on the wrong event). Round 3's eight
-findings are not a premise error — the owner's corrected ruling shipped and does what it says — they
-are the **four quality dimensions independently generating the same kind of defect from four different
-seams of the same repair**: the fix went dark to the ledger the moment it landed (Observability: C1,
-C4/QD-1, QD-2), the fix's own contract is not compiler-enforced across its two implementations
-(Replaceability: QD-3), the fix's own operator-facing remedy documentation is now backwards
-(Consumability: C6/QD-4), and the fix closes one hole by opening a new one-way failure mode with no
-recovery transition (Self-sustainability: C5, and its bounded cousin C3). None of the four needs new
-product decisions beyond what ADR-086 already answered — they are the "document/lock/audit/recover"
-half of shipping that answer, not a re-opening of it. **The load-bearing recommendation is C5**: give
-the monotonic stamp a defined recovery transition before this ships again, because a "protection" whose
-own routine operation (an ordinary remote `workflow_register`) drives the entire trigger population
-into a state only human intervention can leave — and whose documented intervention is itself now wrong
-— is the exact "control that looks like it protects but doesn't, which is worse than no control"
-finding the owner used to overturn round 2's premise. That same reasoning applies one level further
-here.
+The owner's intent for all eleven requirements is sound and I do not re-open any V40 ruling. Four
+findings change *how* Gate 2 must realize them, and one changes a requirement's stated premise:
+
+1. **REQ-225's tier 1 ("先用 provider 回報 usage.cost") has no implementation in pi-ai 1.0.0.** Both
+   `parseUsage` functions compute `usage.cost` from pi-ai's *own static snapshot* price
+   (`system-one-shared.js` → `calculateCost(model, usage)`; `openrouter-images.js` → `(model.cost.input /
+   1e6) * input` …), never from anything OpenRouter returned. 37 of the 57 image rows in that snapshot
+   carry `cost: {0,0,0,0}` (`providers/data/openrouter.json`, counted), so trusting `usage.cost` would
+   price 37 models as *known $0* — the exact v31/v32 "未量到的用量是缺席,不是零" violation REQ-225 itself
+   cites. The owner's precedence (reported > estimated > refuse/absent) stands; only the **source
+   mapping** needs correcting at Gate 2: "reported" can only mean a cost field the engine itself reads
+   off the wire (unverifiable without a paid call — design so nothing depends on it), "estimated" means
+   the engine's ModelBook pin, and pi-ai's `usage.cost` is used for nothing.
+2. **One seam serves three dimensions.** pi-ai returns failure as `stopReason:'error'` + a *string*
+   `errorMessage` (`formatProviderError(normalizeProviderError(error))`); the HTTP status survives only
+   inside that string, and `onResponse` fires only on success. An engine-owned `fetch` wrapper passed via
+   `ProviderRequestOptions.fetch` (`types.d.ts:62-67`; both call paths forward it) recovers status,
+   `retry-after`, wall-clock provider latency and the raw body. That is the observable seam (REQ-227's
+   429/5xx discrimination, REQ-230 measurable in production), the replaceability seam (no regex over a
+   vendor message), and the only place a genuinely *reported* cost could ever be read.
+3. **The engine must own the retry loop.** pi-ai retries internally: classify defaults to `maxRetries ??
+   2`, generateImages to `0` (`retryProviderRequest`'s `options.maxRetries ?? 0`), and its retryable set
+   (`x-should-retry` header, undefined status, 408/409/429/≥500 — `provider-retry.js`) differs from
+   REQ-227's (429/5xx/timeout only). Unless the engine passes `maxRetries: 0` and loops itself, REQ-227's
+   "每次重試…都出現在事件 log" is unimplementable and the p95 the owner cares about hides up to three
+   silent attempts.
+4. **Two seams the as-is map found but did not connect to REQ-223/225:** `reachableModels` pins only
+   `params.model` and `agents[*].model` (`model-book.ts:194-197`), and `toModelCatalogSnapshot` drops
+   `modelType` before `checkModelRef` sees a row (`:210-227`). The pre-flight price check and the type
+   check have nothing to read until the admission pin covers `decisions.*`/`images.*` and carries type.
+5. **Journal key as digest.** `CallKey.prompt` is the raw prompt and `sameKey` compares it byte-for-byte
+   (`resume-cache.ts:13-15`); a decide keyed on raw `state` puts the very string REQ-229 forbids into
+   `journal.jsonl`. `run-manager.ts:2938-2940` already names the fix as "Future option, not built:
+   persist a keyHash". v40 is where it stops being future.
+
+The load-bearing recommendation is #2 + #3 together: **own the HTTP boundary, own the retry loop.**
+Everything in §1 and §4 either follows from it or is impossible without it.
 
 ## 1. Observability
 
-**System altitude — the ledger (C1, C4/QD-1) and the missing audit trail (QD-2) are the same defect
-wearing three faces: internal state changed and nothing that watches this project's own state changed
-with it.**
+### System altitude
 
-- **C4/QD-1 — the fix is invisible to the traceability chain.** `06-impl-log.md` ends at IMPL-385,
-  whose own note states the *opposite* of what `3e3c331`/`2cf5f32` do; there is no `05-tests.md` entry
-  for `UT-335`; `rtm.md` is unmoved; `trace --check` reports the same 2113/77 it reported before these
-  commits landed, because the drift carries no ledger id for the scanner's `ITEM_RE` to see at all.
-  This is not a paperwork complaint — this project's own traceability chain **is** its observability
-  mechanism for architectural decisions (the same role logs/traces play for a running system): a
-  decision that lands without an id is a decision the next architect, the next reviewer, and `trace.py`
-  itself cannot see, which is structurally identical to a service whose state change emits no log line.
-  **Fix:** the two commits get a real `IMPL-386`/`UT-335` pair in `06-impl-log.md`/`05-tests.md` in the
-  SAME repair that closes C1, and ARCH-182/ADR-086 get ONE current-state paragraph, not three
-  interleaved ones (see C1 below) — `02-architecture.md:5899-5920` and `:6146` read today as if the
-  round-2 amendment, the round-2 owner ruling, and the round-3 correction all describe the present, when
-  only the last does.
-- **C1 — the architecture doc, this project's primary observability channel for "why did this get
-  refused," is itself now wrong.** `02-architecture.md:5683,5691,5413,5704-5710` still assert
-  `createdRemote` is "written ONCE at creation and never re-stamped by any later attachment event" —
-  false since `3e3c331`. A human or agent reading ARCH-182 to answer "will re-registering my workflow
-  fix this refusal" gets the answer this doc gave BEFORE the fix, which is worse than no doc: it is a
-  confidently wrong one. **Fix:** update the four cited spans to state the current mechanism (`claim()`
-  re-stamps monotonically toward `remote`) in the same commit as the ledger fix above — doc and code
-  changing in the same commit is this project's own stated living-document contract, not a new rule.
-- **QD-2 — the local→remote transition itself is unaudited, unlike its sibling transition one field
-  over.** `ScheduleStatus`/`WebhookView` already carry `refusalCount`/`lastRefusedAt`/
-  `lastRefusalReason` (DES-150) — a *refusal* is a state transition this codebase already treats as
-  worth a timestamp and a reason, discoverable via `schedule_list`/`webhook_list` with no sqlite access
-  needed. The *cause* of that refusal — a trigger crossing from `createdRemote:false` to `:true` — gets
-  none of that: no `remoteStampedAt`, no actor, not even a boot-log line. An operator who sees a webhook
-  suddenly start 403-ing has the SAME visibility DEPLOY.md's own troubleshooting table promises for
-  refusals (§5, `run_result`'s durable `error` field, the journal line) and NONE for the stamp event
-  that caused it. **Fix:** apply the DES-150 pattern this codebase already uses one field over —
-  `remoteStampedAt?: string` alongside `createdRemote`, written by the same `claim()`/`INSERT` sites,
-  surfaced on the same `WebhookView`/`ScheduleStatus` reads. This is additive, touches the same two
-  `try { ALTER TABLE … } catch {}` idempotent-migration sites C5's fix will already touch, and turns "a
-  value that decides whether code executes and cannot be explained" (this codebase's own words for why
-  `createdRemote` needed to be on `webhook_list` at all, `webhook-registry.ts:63-64`) into one that can.
+- **O-1 — the `fetch` seam.** Both pi-ai call paths accept `options.fetch` and use it for the actual
+  request (`system-one-shared.js`: `const requestFetch = options.fetch ?? globalThis.fetch`;
+  `openrouter-images.js`: `createClient(model, apiKey, headers, fetch)` → `new OpenAI({fetch})`). An
+  engine wrapper records per attempt: `t0/t1` (→ `providerMs`), `response.status`, `retry-after`,
+  request/response byte counts, and — via `response.clone().json()` — the raw body so any `usage.cost`
+  OpenRouter does return can be read. This is the ONLY faithful source for three things the
+  requirements need: the status class for REQ-227 (pi-ai's `errorMessage` is `"System One API error
+  (429): <body>"` — parseable only by regex), `providerMs` for REQ-230's "(script 端耗時 − provider 端耗
+  時)" — which the wrapper makes a *production* metric (`engineOverheadMs = totalMs − Σ providerMs`),
+  not just a stub-test quantity — and the wire-level cost for REQ-225 tier 1. **Design:** `src/direct-
+  models/observed-fetch.ts`, pure, injectable, unit-tested without pi-ai.
+- **O-2 — per-attempt events require engine-owned retries.** With `maxRetries: 0` passed to pi-ai, each
+  attempt is one wrapper observation and one engine event. REQ-227's acceptance ("每次重試與最終失敗都
+  出現在事件 log") is then a direct consequence of the loop, not a separate feature. Also required for
+  REQ-230: pi-ai's internal backoff (`0.5·2^i`s capped 8s, or server `retry-after` up to 60s —
+  `provider-retry.js` `DEFAULT_MAX_RETRY_DELAY_MS`) would otherwise sit *inside* "provider time" and
+  make the p95 meaningless.
+- **O-3 — the event shape.** `EngineEvent` is a closed union by design ("a v37 kind is a v37 edit",
+  `event-log.ts:1-4`); add ONE kind, `primitive.call`, not two, with a `primitive: 'decide' | 'image'`
+  discriminator:
+  `{kind:'primitive.call', runId, callSeq, primitive, label, model, attempt, outcome:'ok'|'retry'|
+  'failed'|'refused', status?, errorCode?, providerMs, engineMs, tokens?, costUSD: number|null,
+  costSource:'reported'|'estimated'|'absent', answers? (decide, the typed answers object), files?
+  (image, `[{path, mimeType, bytes, sha256}]`)}`. Never `state`, `questions.instructions`, `prompt`,
+  or input-image bytes/paths' content. It rides `createEventSink`'s redaction like every other kind.
+  The REQ-229 sentinel test is then a property of the type, not of discipline at eight emit sites.
+  **One more leak path the type alone does not close:** pi-ai's `errorMessage` embeds up to 4000 chars
+  of the provider's error *body* (`error-body.js` `MAX_PROVIDER_ERROR_BODY_CHARS`), and a 400
+  validation body can echo request fields — i.e. `state`. Provider error bodies are therefore untrusted
+  for privacy: the O-3 event, `PRIMITIVE_FAILED`'s script-facing message, and the refusals ledger
+  (`captureFailure`, `run-manager.ts:2952-2958`) carry `status` + a bounded, body-free message; the raw
+  body goes nowhere durable — the same posture `agent.stderr` takes (bounded tail, redacted,
+  failure-only).
+- **O-4 — journal key as digest.** `CallKey.prompt := 'decide:' + sha256(canonicalJSON({state,
+  questions}))` and `'image:' + sha256(canonicalJSON({prompt, inputImages:[{path, sha256}]}))`, `opts`
+  := the per-call tunables actually applied (model, timeoutMs, retries). `sameKey` works unchanged on
+  a digest; REQ-226 equality holds; REQ-229's at-rest constraint holds for `journal.jsonl`; the
+  DES-088 caveat (a redacted key MISSes on hard-crash resume) disappears for these two primitives
+  because a digest has nothing to redact. Input-image sha256s in the key make "same path, different
+  bytes" a MISS — the correct answer.
+- **O-5 — the at-rest record.** Persist one `kind:'usage'` transcript event per settled call (the
+  shape `foldUsage` reads, `run-guard.ts:47+`) with `tokens` (System One returns
+  `input_tokens`/`output_tokens`; images return completions `usage`), `costUSD`, `unpriced`, plus a
+  `primitive` field — so the resume-time fold (`run-manager.ts:2058-2067`) re-arms the USD limit with
+  decide/image spend included (REQ-225 "計入 run 用量"), and `deriveAgentRecords` reconstructs a record
+  after a restart. **No `kind:'message'` events** for these calls (that is where an agent's prompt lives
+  today and the only transcript route by which `state` could reach `run_agent_log`). Add
+  `AgentRecord.kind?: 'agent'|'decide'|'image'` (absent = agent, same "absent, never defaulted"
+  convention as `agentKey`, `types.ts:266-296`). `buildDagModel` groups `view.agents` by frame
+  (`dashboard.ts:57-85`), so decide/image nodes appear in the swimlane for free — desirable — while
+  `WorkflowMetrics` folds per *run* (`:132-181`), so home-card success/avg-duration do **not** inflate.
+  What does change: `run_status.agents[]` and the agent slide-in panel (REQ-135's six cards assume a
+  harness) — the `kind` field is what lets those consumers filter (see C-6).
+- **O-6 — observed stats.** `loadFacts` buckets by `kind: descriptorTools.length > 0 ? 'tools' :
+  'prose'` (`observed-stats.ts:171-176`); a decide record has no harness event and would land in
+  `prose`, mixing 200ms classifier latencies into chat statistics — the thing REQ-225's last clause
+  forbids. Add `'decide' | 'image'` to `AgentCallFact.kind`, read from the record's `kind` (O-5), and
+  give `ObservedForRef` matching buckets; a decision model's row in `models_list` then shows *its*
+  success rate and p95, which is the only "calibration" signal an author has for picking one.
+- **O-7 — make the type check and the price check able to see.** (a) `reachableModels` must include
+  `decisions[*].model` and `images[*].model` so the admission pin (`run-manager.ts:1260-1266`) holds
+  their price and type; (b) `toModelCatalogSnapshot` must carry `modelType`+`modelTypeSource` through
+  (`model-book.ts:210-227`) so `checkModelRef`'s successor can return the REQ-223 verdict. (c) The
+  warning arm already exists in shape (`providers.ts:189-197` returns `{ok:true, warning}`); REQ-223's
+  `unknown`/`id-heuristic` → "放行並附警告" reuses it, and the warning must name label, model, type and
+  `modelTypeSource` so a cold client can see *why* it was not refused. (d) Add `image_output` to
+  `openRouterPricingDetail`/`ratesFromOpenRouterPricing` (`model-catalog.ts:240, 378-394` — today
+  `image` there is the *input*-image price) so an image model's estimate exists at all.
+- **O-8 — gauges and the Gate 7.5 ledger.** Two new `createSemaphore` instances (REQ-228) expose
+  `gauge()` exactly like `agentSemaphore` on `/api/status` (`server.ts:1659-1665`) and in
+  `system_info`'s engine section. V40-Q19 requires the real-tier spend to be *recorded*: the
+  `primitive.call` events with `costUSD`/`costSource` ARE that record — the validation gate sums them,
+  no side ledger.
 
-**Agent altitude — none of the three above is about `agent()`'s own chain-of-thought/token/tool-call
-observability, which this iteration did not touch and which stays sound** (REQ-136's system-prompt
-seam, `run_agent_log`, `harness.effortApplied` are all unaffected by this slice). Flagging the negative
-so the next round does not spend budget re-verifying it: agent-altitude observability is not in this
-finding set.
+### Agent altitude
+
+Per-call inspectability without inputs: O-3's `answers` (choice → `{choice, probabilities,
+confidence}`, score → `{score, confidence}`, bool → `{probability}`) is the classifier's whole
+reasoning surface and the owner asked for it in the log (V40-Q11 "答案"). Token usage: both paths
+report tokens, O-5 records them. "Tool-call sequence" is N/A — there is none. The one agent-altitude
+gap worth naming: when a `decide()` fails after retries, the script gets a named error, but the
+*operator* must be able to answer "which status, how many attempts, how long each" from the events
+alone — O-1/O-2 are what make a `primitive.call failed` line sufficient without ever logging `state`.
 
 ## 2. Replaceability
 
-**System altitude — QD-3, and only QD-3; this is the dimension where the fix's OWN code comment already
-names the defect, which is the strongest evidence a lens can ask for.**
+### System altitude
 
-- **`mcp-facade.ts:69`'s `TriggerClaimStore.claim(id, workflow, createdRemote?)` is declared with
-  method-shorthand syntax, which TypeScript checks bivariantly regardless of `strict`/
-  `strictFunctionTypes` (a documented, deliberate TS carve-out for method syntax, distinct from
-  property-typed functions).** `SqliteSchedulerPort` and `WebhookRegistry` are this port's whole reason
-  to exist — DES-149's own comment calls it "the structural port both … satisfy," i.e. the mechanism
-  that makes the two trigger stores swappable behind one contract. Bivariant checking means an
-  implementation can satisfy the port while its parameter's TYPE is narrower than the port declares
-  (e.g. `createdRemote?: true` in place of `?: boolean`) and the compiler stays silent — which is a
-  **Replaceability defect in the literal textbook sense**: a "pluggable module via an interface" whose
-  interface is not actually enforced is pluggable in name only.
-  **Correction to the implementer's own comment at `mcp-facade.ts:60-63`, checked before proposing a
-  fix on it**: that comment attributes the round-3 hole to bivariance, but the shape round 3 actually
-  found — an implementation whose `claim()` simply omits the third parameter — is not a bivariance
-  question at all. I verified this directly (`npx tsc --noEmit --strict` against a minimal port +
-  impl pair with a property-typed, non-method member): TypeScript accepts a function with FEWER
-  parameters as satisfying a wider function type under **any** declaration style, method or property —
-  the same rule that lets `arr.map(x => x)` ignore `index`. **So a type change alone does not close the
-  "an implementation silently ignores/drops the param" hole** — no syntax stops that, since it is not
-  what variance rules are for. **What the type change DOES close**: a future implementation that
-  receives the third parameter but narrows or mis-types it (e.g. re-declares it as a different type, or
-  a required rather than optional one) — a real but narrower class than round 3's finding. **What
-  actually closes round 3's finding is a test**, and it is the SAME test C2 below already needs:
-  drive `claim()` on BOTH stores with `createdRemote:true` and assert the persisted column flips on
-  both — this is a coverage gap, not a type-system gap, and QD-3 and C2 collapse to one fix.
-  **Fix:** (i) add the property-typed redeclaration anyway — it is free, correct as far as it goes, and
-  closes the narrower type-mismatch class — but do not describe it as closing the drop-the-parameter
-  hole; (ii) the load-bearing fix is the test named in C2's Key Point below, driving
-  `workflow_register`'s `claim()` call against a REAL `WebhookRegistry`, not only
-  `SqliteSchedulerPort` (`UT-335`'s current, narrower coverage).
-- **Adjacent, not blocking:** `ownerOf`, `release`, and the optional `get?`/`claimedIdsFor?` members on
-  the same interface are ALL method-shorthand today. This proposal fixes `claim()` only (the member
-  round 3 actually found drifting); I flag the other four as the same latent class, worth the same
-  one-line treatment in the same commit since the port is being touched anyway, but not itself a round-3
-  finding — noting it here so it is not silently re-discovered as a "new" issue next round.
+- **R-1 — an engine-owned port, pi-ai behind it.** `GatewayClient` is a chat-session port
+  (`invoke({prompt, opts, …})`, `gateway/client.ts:248-285`) and does not fit; the as-is map rightly
+  says bypass it. But "call pi-ai directly from `_handleDecideRequest`" re-creates the coupling the
+  gateway abstraction exists to avoid. **Design:** `src/direct-models/port.ts` with
+  `DecisionBackend { classify(req: DecideRequest, io: BackendIO): Promise<DecideOutcome> }` and
+  `ImageBackend { generate(req: ImageRequest, io): Promise<ImageOutcome> }`, engine-owned request /
+  outcome types; `src/direct-models/pi-ai-backend.ts` is the one adapter. The stub backend REQ-228
+  ("以 stub provider 計數證明") and REQ-230 ("provider 以固定延遲回應的 stub") both *require* is then a
+  second implementation of the same port — the port is not speculative abstraction, it is the test seam
+  the acceptance criteria already demand.
+- **R-2 — one catalog of record; build the pi-ai model object from it.** `getModelOfType('classifier',
+  'openrouter', id)` reads pi-ai's frozen snapshot (9 classifiers, 57 images at 1.0.0). `BaseModel`
+  needs only `id, name, api, provider, baseUrl, input, cost` (`types.d.ts:900-911`); `ClassifierModel`
+  adds `contextWindow`, `ImageModel` adds `output` (`:936-945`). The adapter can construct that object
+  from the engine's own ModelBook row (`contextWindow`, `modalities.in/out` already present —
+  `model-catalog.ts:409-470`) with `api` chosen by an adapter-owned map (`decision → 'typesafe-system-
+  one'`, `image-gen → 'openrouter-images'`), `baseUrl = 'https://openrouter.ai/api/v1'`, `cost` zeroed
+  (pi-ai's cost is ignored per Summary #1), and call `classify`/`generateImages` from
+  `@earendil-works/pi-ai/api/*` directly (exported subpath, Gate 0 §9). Result: a classifier OpenRouter
+  lists live but pi-ai's snapshot lacks still works; REQ-222's `?output_modalities=all` listing and the
+  executable set are the same set. **What is lost and must move to config:** the snapshot's
+  `inputLimits.images.resize.maxBytes` (4718592 on the image rows) — REQ-221's size cap must be an
+  engine config key, not inherited.
+- **R-3 — vocabulary stays engine-owned at the boundary.** pi-ai: `'classifier' | 'image'`
+  (`types.d.ts:947-953`); engine: `'decision' | 'image-gen'` (REQ-222, extending `ModelType` at
+  `model-catalog.ts:26` and the `models_list` enum at `tool-specs.ts:1528`). The adapter maps; nothing
+  outside `src/direct-models/` imports a pi-ai type. Same for results: `DecideResult`/`ImageResult` are
+  engine types that *mirror* `ClassifierAnswer`/`ImageContent` today, so a pi-ai 2.0 rename reaches one
+  adapter file, never a registered script.
+- **R-4 — key resolution shared, not re-typed.** `resolveOpenrouterKey` is module-private in
+  `pi-gateway-client.ts:528-530`; lift it to `src/gateway/openrouter-key.ts` and pass `apiKey`
+  explicitly (`ProviderRequestOptions.apiKey`). Never pi-ai's `env?: ProviderEnv` or any credential
+  discovery of its own (V40-Q6: 走同一把 key, 不新增 secret).
+- **R-5 — independent of `GatewayChoice`, dependent on the engine's primitives.** The primitives must
+  work under `gateway:"sdk"` (production) where `PiGatewayClient` does not exist (REQ-220 "不論 gateway
+  設為 sdk 或 pi"). They reuse, not reimplement: `createSemaphore` (`agent-semaphore.ts`), `codedError`/
+  `ERROR_CATALOG`, `redact`, `isPathContained`, `RunGuard.assertBudget/addUsage`, the journal site.
+- **R-6 — retry policy decoupled from a vendor's.** pi-ai's `isRetryableProviderError` "mirrors the
+  pinned OpenAI/Anthropic SDK retry policy; review when either SDK is upgraded" (its own comment). With
+  `maxRetries: 0` the engine's REQ-227 policy (429/5xx/timeout, caller-set count) cannot drift when
+  pi-ai or the SDK it mirrors changes.
+- **R-7 — price source decoupled from the snapshot.** `FourRates` is token-only (`types.ts:176-181`,
+  `priceCall` `run-guard.ts:23`); image models price per output image. Add an optional
+  `perImage?: number` column (absent ≠ 0, same rule as `rates: null`) and a `priceImageCall(n, rates)`
+  beside `priceCall`. Precedence per call: (1) wire-reported cost read by O-1's wrapper, if the body has
+  one; (2) ModelBook pin estimate (tokens × rates, or images × perImage), flagged `estimated`; (3)
+  `absent` → `unpriced` (REQ-225 clause 4) or, with a USD budget armed, pre-flight refusal
+  `PRICE_UNKNOWN` before the provider is called (clause 3).
 
-**Agent altitude:** the LLM-backend replaceability seam (`GatewayClient`, LiteLLM↔direct-fetch↔local
-Ollama) is untouched by this slice and stays sound; not re-argued here.
+### Agent altitude
+
+Backend swap is a config change by construction: the model is `meta.params.decisions.<label>.model.
+default`, overridable per run within the contract (REQ-091/110 machinery, unchanged). The Won't-listed
+Cloudflare / llama.cpp classifiers are pi-ai apis (`cloudflare-workers-ai-system-one`, `llama-cpp-
+classify` exist in `dist/api/`) — a later round adds a `provider → api` row to R-2's map and a key
+resolver; the script contract does not move. Scripts never see pi-ai's `noul` wire type (pi-ai hides it;
+the engine keeps `bool`).
 
 ## 3. Consumability
 
-**System altitude — C6/QD-4: `DEPLOY.md` is this system's operator-facing interface with the same
-standing this dimension gives a REST API's OpenAPI doc, and it currently tells the operator to do the
-wrong, more expensive thing.**
+### System altitude
 
-- **`DEPLOY.md:908`'s remedy row is now backwards.** It reads: "要拿回覆蓋率：對每一個需要被這道控制
-  保護的觸發器，用遠端呼叫者刪除、重新 `webhook_create`/`schedule_create`…；`claim()`／
-  `workflow_register`／`workflow_publish` 都不會重新蓋章這個欄位——認領一個既有 id 不會補上覆蓋率，只
-  有重新「建立」觸發器才會" — every clause after "claim()" is false since `3e3c331`: a plain remote
-  `workflow_register` onto the existing trigger id now DOES re-stamp `createdRemote`. Following this
-  row's advice today costs the operator strictly more than the fix requires: a webhook's secret is
-  single-reveal-at-creation (`webhook-registry.ts:7-10`'s own header), so delete-and-recreate forces a credential
-  rotation and every downstream caller's URL/secret re-wiring, when a same-id remote re-register would
-  do. A doc that makes the correct remedy look more expensive than it is raises integration/operational
-  cost exactly where this dimension asks it to be minimized — the opposite of the doc's own job.
-- **§6 omits C5 entirely — the doc's "known limitations" table describes the pre-fix world.** The
-  adjacent row already in that table (line 908 itself) sets the right PATTERN — name the mechanism, name
-  who it affects, name the check (`webhook_list`/`schedule_list` for `createdRemote:true`), name the
-  fix — but the monotonic direction (C5) is a materially different limitation from the one documented
-  (zero-coverage-on-legacy) and needs its own row: once a trigger reads `createdRemote:true`, NOTHING in
-  `src/` moves it back, so on a host that is entirely remotely-registered, every routine future
-  `workflow_register` is a one-way ratchet toward permanent refusal, and today's DEPLOY.md gives the
-  operator no way to learn that until they hit it.
-  **Fix, gate-routed rather than commit-routed** (round 2's own architecture gate already ruled on this
-  shape — `02-architecture.md:6130-6140`: "No `src/`, `tests/`, `DEPLOY.md` or `docs/` file was touched
-  by this gate: two other gates are repairing the same tree in the same round," and round 3 itself
-  labels C6 "a validation-gate finding per this contract's own rule"): **architecture's job here is
-  the corrected ARCH-182/ADR-086 rows** (C1's fix) **stating the current mechanism precisely enough
-  that whichever gate executes C6 is rewriting `DEPLOY.md:908` against a ledger that is already right,
-  not against a review comment** — the same division this repair used for B1/B3/B4/QD-MED in round 2.
-  I specify the corrected `DEPLOY.md:908` wording here (remote `workflow_register` naming the existing
-  trigger id now suffices — no delete/recreate needed) and the new-row content for C5's irreversibility
-  as a **prescription for the validation gate to execute**, not as an architecture-commit edit.
+- **C-1 — a declaration type of its own.** `AgentParamSpec` requires `effort` and allows `appendPrompt`/
+  `skills`/`mcp` (`params/contract.ts:62-69`); none applies here. Define `PrimitiveParamSpec = {model,
+  timeoutMs, retries}` (each required with `.default`, per V40-Q14), `ParamContract.decisions?` /
+  `.images?`, and `parsePrimitiveContract` with the same two refusals as agents (undeclared label /
+  declared-not-used), under their own names (`DECISION_UNDECLARED`, `IMAGE_UNDECLARED`, …) rather than
+  reusing `AGENT_UNDECLARED` with a `kind` detail — a cold client reading an error must not have to
+  read `detail` to learn which primitive it misdeclared. Static side: `scanPrimitiveCalls` with the same
+  literal-label + literal-options rule as `scanAgentCalls`; `CALLABLE_API_NAMES` gains both names
+  (`script-checks.ts:96`, REQ-224's alias refusal); `SANDBOX_GLOBALS` gains both (`guards.ts:90`) and the
+  guide's sandbox-API sentence updates itself (`authoring-guide.ts:842`).
+- **C-2 — the error vocabulary, in one place.** New `ERROR_CATALOG` keys, each with `see:
+  'workflow_authoring_guide'`: `MODEL_TYPE_MISMATCH` (register, REQ-223 — message names label, model,
+  its type, the type required), `DECISION_UNDECLARED` / `DECISION_DECLARED_NOT_IN_SCRIPT` and the
+  `IMAGE_*` pair (C-1), `DECIDE_QUESTIONS_INVALID` (pre-flight schema), `DECIDE_STATE_TOO_LARGE`,
+  `IMAGE_INPUT_ESCAPE` (or reuse `WorkspaceEscapeError`'s code, `errors.ts:550`), `IMAGE_INPUT_TOO_LARGE`,
+  `IMAGE_NO_OUTPUT` (stopReason `stop` with zero image blocks — real for text-capable image models),
+  `PRICE_UNKNOWN` (REQ-225 clause 3), `PRIMITIVE_FAILED` with `detail: {primitive, status, attempts,
+  retryable}` (REQ-227 terminal), and `BUDGET_EXCEEDED` reused as-is (REQ-225 clause 5, "與 agent 相
+  同"). Which of these fold to `null` inside `parallel()`/`pipeline()` vs re-throw is decided ONCE and
+  written into all three sets — `guards.ts` `ENGINE_REFUSAL_CODES`, `run-manager.ts` `RECORDED_REFUSAL_
+  CODES` (`:451`), `errors.ts` — with `tests/unit/sandbox-refusal-provenance.test.ts` already pinning
+  the first two equal. Recommendation: `BUDGET_EXCEEDED`, `PRICE_UNKNOWN`, `MODEL_TYPE_MISMATCH` are
+  *engine refusals* (fold); `PRIMITIVE_FAILED` is a *provider outcome* (re-throw so the script can
+  degrade, REQ-227's own words).
+- **C-3 — `models_list` grows, and that is fine.** `?output_modalities=all` lifts the OpenRouter listing
+  from 459 to 662 rows (Gate 0 §0.1). `models-query.ts` pages by `limit` (clamped, `:146`) AND by
+  `PAGE_BYTE_BUDGET` (`:8-9`) with a cursor, so REQ-210's response-size contract holds — more pages, no
+  cliff. The schema text at `tool-specs.ts:1528` ("Use 'chat' for agent() models") must become "'chat'
+  for agent(), 'decision' for decide(), 'image-gen' for generateImage()", and the enum gains
+  `'decision'`.
+- **C-4 — every explain surface shows the new contract.** `workflow_describe`/`workflow_get` project
+  `params.agents` (`workflow-view.ts:204, 336`); they must project `decisions`/`images` the same way,
+  or a user who may run-but-not-read (REQ-100/101) cannot see what a decide label accepts. The guide's
+  worked `decide` example must be one that registers — REQ-209's "印出來的範例必須是真的註冊得過的" test
+  already exists; the new examples join it, not a prose promise.
+- **C-5 — config keys through the known-key list and `composeConfig`.** `decideSlots`, `imageSlots`
+  (mirroring `agentSlots`), `imageInputMaxBytes`, `decideStateMaxBytes` go into `KNOWN_FILE_CONFIG_KEYS`
+  (`main.ts:145`) and are forwarded in `composeConfig` (`:347`, `:595-630`). This is the thrice-bitten
+  bug class (`:610-616`'s own comment); UT-219 (`tests/unit/compose-config-v2-wiring.test.ts`) "sweeps
+  the whole key list", so a key added to the list but not forwarded fails a test — the implementer
+  should rely on that, and the design should say so.
+- **C-6 — `run_status.agents[]` consumers.** With O-5's `kind`, a consumer that today assumes every
+  entry has a harness can filter; without it, the agent slide-in panel (REQ-135/166's six cards) renders
+  empty tool/MCP/skill columns for a decide node. The dashboard needs a `kind`-aware panel variant
+  (model, latency, cost, answers summary / file list) — small, but it is a consumability regression if
+  skipped.
 
-**Agent altitude:** the MCP tool surface itself — `workflow_register`'s schema, `ERROR_CATALOG`,
-`workflow_authoring_guide` — is unaffected and stays a well-typed, low-integration-cost interface for a
-cold caller; `CONFINEMENT_UNAVAILABLE` is already catalogued with a `see` pointer (`errors.ts:91`) and
-already reachable from both tools' `errors:` arrays per round 2's own C-1 fix. The gap this round is
-confined to the human-operator document, not the machine-facing contract.
+### Agent altitude
+
+The SDK is the typed I/O plus the guide:
+- `await decide(label, {state, questions})` → `{answers: Record<id, Answer>, model: string, latencyMs:
+  number}`; `questions` validated **pre-flight** against an engine JSON schema (choice/score/bool,
+  `instructions`, `criteria` shapes — `types.d.ts:448-466`) so a cold agent gets `DECIDE_QUESTIONS_
+  INVALID` naming the question id and field, not a provider 400 string after a network round-trip.
+  The guide must show the bool idiom (`answers.order.probability >= 0.7`) because REQ-220 returns a
+  probability, not a boolean, and a cold author will otherwise write `if (answers.order)`.
+- `await generateImage(label, {prompt, inputImages?, outDir?})` → `{files: [{path, mimeType, bytes,
+  sha256}], text?: string}` — `sha256` so a consumer can verify against `workspace_list` without a
+  second read; `text` because text-capable image models (e.g. `google/gemini-2.5-flash-image`, `output:
+  ['image','text']`) return text blocks pi-ai preserves (`openrouter-images.js` pushes both). Paths are
+  workspace-relative in and out (V40-Q15). `state` crosses IPC child→host (fine, small); image bytes
+  never do (host writes the file, V40-Q4).
+- REQ-224's cold-client acceptance ("一個只讀過 guide 的冷客端 agent 能寫出一次註冊成功的 decide workflow")
+  is the acceptance test of this entire dimension; nothing here should be judged by review alone.
 
 ## 4. Self-sustainability
 
-**Agent altitude — C5 is the load-bearing finding of this whole proposal, and C3 is its bounded, already
-correctly-scoped cousin.**
+### System altitude
 
-- **C5 — the monotonic stamp has no recovery transition, and this host's own stated production reality
-  (every trigger remotely registered) means its normal, intended operation is what drives the whole
-  catalog toward permanent refusal.** `webhook-registry.ts:242-243` and `scheduler.ts:548-549` are both
-  `if (createdRemote !== true) return;` — deliberately one-directional, which is the CORRECT shape for
-  what ADR-086's second ruling asked (a local claim must never launder a remote-tainted row back to
-  trusted). But self-sustainability is about the system's ability to survive and adapt **without human
-  intervention where that is possible, and with a defined, bounded intervention where it is not** — a
-  circuit breaker that trips and never resets is not a circuit breaker, it is a fuse, and this repo's own
-  requirement set explicitly wants "graceful degradation," not permanent lockout, as the shape of a
-  self-sustaining failure response. Today: (1) there is no in-band way for an operator to move a
-  wrongly- or no-longer-remote trigger back to local short of destroying and rebuilding it (secret
-  rotation + downstream re-wiring, per C6 above); (2) even that remedy is now mis-documented (C6); (3)
-  nothing tells the operator the ratchet just advanced (QD-2). Stacked, an ordinary lifecycle event —
-  the SAME author re-publishing a routine bugfix version of their own workflow — is what closes the door
-  behind them, permanently, on a host whose owner already stated this is the normal path every workflow
-  takes.
-  **This is an owner-gated remedy choice, not an architecture-gate decision** — round 3's own finding
-  text says so, and I agree: trading "no recovery transition exists" against "give unconfined hosts a
-  narrow, audited re-arm tool" is a security-posture cost the owner should set, the same shape as
-  ADR-083/086 before it. What this lens proposes architecturally is the SHAPE of the two live options,
-  costed the way ADR-086's own decision row costs its alternatives, so the owner is not asked to invent
-  the option space from scratch a third time:
-  - **(a) A defined, narrow, LOCAL-only recovery tool** — e.g. `webhook_reclaim_local`/
-    `schedule_reclaim_local`, admitted only under the same loopback/local-submission test
-    `call-tool.ts:124` already applies to the door itself (so the recovery action inherits the SAME
-    trust boundary the refusal is protecting — a remote caller cannot self-pardon), explicitly
-    re-stamping `createdRemote:false` and (per QD-2's fix) recording the reversal's own timestamp/actor.
-    This gives the system a genuine self-healing loop: a human-in-the-loop action, but an ordinary tool
-    call rather than delete/recreate's credential-rotation cost, and it is auditable by construction
-    since it reuses machinery this proposal is already adding.
-  - **(b) Accept the one-way ratchet as designed, and treat DEPLOY.md's §6 (this proposal's C6 fix) as
-    the whole remedy** — cheaper (no new tool, no new admission door to get right), consistent with
-    ADR-086's own Karpathy tie-break against adding surface for a one-time cohort, but it means this
-    system's answer to "an unconfined host's entire trigger catalog eventually permanently refuses" is
-    "operators know it, budget for periodic delete/recreate as routine maintenance" — a real answer, not
-    a silent gap, but a materially different one from what "self-sustaining" usually means for a
-    circuit-breaker-shaped mechanism.
-  I do not rank these here — costing them for the owner, per the finding's own instruction, is the
-  contribution; ADR-086 is the right row to carry whichever the owner picks, same as its first two
-  rulings.
-- **C3 — the pre-v24 legacy-bound cohort sits outside the self-heal boundary, and this is a correctly
-  BOUNDED gap, not a new defect, worth naming precisely so it is not re-litigated as one.**
-  `scheduler.ts:536`/`webhook-registry.ts:229`'s own comments state the self-heal contract: a legacy row
-  "self-heals … the next time it is claimed." `claim()` only fires when a trigger id is named in a
-  `workflow_register({triggers:[...]})` call — i.e., when it is being newly attached (or its owning
-  workflow gets a new version). A trigger that was ALREADY bound before v24 and whose workflow has not
-  been re-registered since never calls `claim()` again, so it never self-heals; its `createdRemote`
-  stays at the `DEFAULT 0` migration value forever, regardless of the trigger's actual provenance. Round
-  3 independently confirmed the CREATE-time door for genuinely new rows is closed (`call-tool.ts:180-
-  184`), so this is not an admission bypass — it is a self-healing mechanism whose trigger condition
-  ("gets claimed again") some rows structurally never meet. **This does not need a code fix**: it needs
-  exactly what C5/QD-2 already add — visibility (so an operator can query which rows are in this state,
-  same `webhook_list`/`schedule_list` surface) — and a one-line note on the self-heal comments
-  themselves naming the boundary explicitly, so the NEXT reader of `scheduler.ts:536` does not have to
-  re-derive "self-heals on next claim" implies "never heals if never claimed again" from first
-  principles, the way round 3 had to.
+- **S-1 — the engine retry loop, bounded.** `maxRetries: 0` to pi-ai; engine loop up to `retries`
+  (declared default, run-overridable — REQ-227); retry only on wrapper-observed 429/≥500/timeout
+  (`AbortSignal.timeout(timeoutMs)` composed with the run's abort via `AbortSignal.any`, exactly as
+  `system-one-shared.js` does internally — suspend/stop cancels an in-flight call, D-F9a); honour
+  `retry-after` but cap backoff (e.g. `min(retryAfter, 5s)`, config) so one 60-second server hint
+  cannot hold a semaphore slot for a minute under V40-Q5's per-DM load; every attempt emits O-3's event.
+- **S-2 — refuse before you call.** Four pre-flight checks that spend nothing: price-known (REQ-225
+  clause 3), `state` size vs `decideStateMaxBytes` (default derived from the row's `contextWindow`,
+  32000 for jev), `inputImages` containment (`isPathContained` + realpath, REQ-221) and size vs
+  `imageInputMaxBytes`, and the `BUDGET_EXCEEDED` door (`RunGuard.assertBudget`, the one door —
+  `run-guard.ts:266-272`). Each is a named refusal (C-2), each is an O-3 `outcome:'refused'` event.
+- **S-3 — two more semaphores, same semantics.** `createSemaphore(decideSlots)` / `(imageSlots)`
+  (REQ-228: 不佔 agent semaphore); `acquireSlot` *queues* at the cap rather than refusing
+  (`run-guard.ts:177`) — keep that for the primitives, so a burst of webhook runs degrades to latency,
+  not to failures. Note the per-run `RunGuard.concurrency` slot is a *separate* cap: decide calls should
+  **not** take a per-run agent slot either (REQ-228's intent extends to it), so `_handleDecideRequest`
+  calls `assertBudget` without `acquireSlot`. Gauges per O-8.
+- **S-4 — resume that verifies, and writes that cannot half-succeed.** `Plan.replay(callSeq, key)` has
+  no value-validation hook (`resume-cache.ts:30-38`); REQ-226's "圖檔不在 → 視為未命中" needs
+  `replay(callSeq, key, validate?: (value) => boolean)` where the image validator checks existence AND
+  sha256 of every `files[i]`, then sets `_missed` exactly as a key mismatch does (the existing
+  "first miss → all miss" rule, V40-Q18). Write images to `<path>.tmp` and `rename` — a crash mid-write
+  then leaves a sha mismatch (→ MISS, regenerate), never a plausible-looking truncated file served as a
+  hit. Workspace growth from images is already covered by REQ-026 TTL GC.
+- **S-5 — catalog degradation stays graceful.** Switching to `?output_modalities=all` is still one
+  fetch; `ModelBook` keeps last-good on failure (`model-book.ts:105-136`), and REQ-223's
+  `unknown`→warn rule means a catalog outage can never *block* registration of a decide workflow —
+  only downgrade it to a warning. That is the right fail posture for a registration door.
+- **S-6 — a per-model breaker (bounded, config-off).** Under V40-Q5 (每則私訊一個 run) a provider outage
+  becomes N runs × `retries` × backoff, all queued on one semaphore, each ending in `PRIMITIVE_FAILED`
+  after the maximum delay. A breaker keyed on `provider/model` for primitives only (open after K
+  consecutive retryable failures in a window, half-open probe, `PROVIDER_CIRCUIT_OPEN` + an event) makes
+  the failure fast and the fallback (`try/catch` → `agent()`, REQ-227's own "降級") immediate. I
+  propose it as a small module, default off, and list it under expected disagreements rather than
+  letting it dominate — S-1's capped backoff is the uncontroversial half.
 
-**System altitude:** the supervisor-level self-sustainability seam (systemd `Restart=on-failure`,
-LiteLLM subprocess lifecycle, sandbox SIGKILL) is unaffected by this slice and stays the deliberately
-"no in-process watchdog, restart is the supervisor's job" design this project settled at v1/v3 — not
-re-argued here.
+### Agent altitude
 
-## Key points
+- **Memory metabolism: N/A.** Nothing accumulates across calls; the journal grows by one digest+answer
+  entry per call, bounded by the run.
+- **Tool-liveness.** `models_probe` exists for chat (`tool-specs.ts:1564`, `toolUseVerified`). A decision
+  probe is cheap (jev: $0.042/M input); an image probe is not. Owner ruled "不做 recommend/uptime" at
+  #104, so: no periodic prober for these types; an *admin-manual* `models_probe({modelType:'decision'})`
+  is defensible and I would accept its deferral. The breaker (S-6) is the runtime liveness signal if
+  the owner takes it.
+- **Self-calibration.** The analogue here is O-6: per-decision-model observed success/latency on its
+  `models_list` row, so authors (agents, per V40-Q3) pick a model that is *measured* to work. No prompt
+  calibration applies — there is no prompt.
+- **Budget overshoot bound.** The "stop-dispatching, overshoot ≤ concurrency × one call" rule
+  (`run-guard.ts` header) holds; decide calls are small, image calls are the ones to watch —
+  `imageSlots` default should be low (2–4).
 
-1. **C1 (Observability) is architecture's own fix; C6 (Consumability) is validation's, executed against
-   C1's corrected rows** — `02-architecture.md`'s mechanism description ships this gate, alongside the
-   missing `06-impl-log.md`/`05-tests.md`/`rtm.md` entries (C4/QD-1); `DEPLOY.md:908`'s operator-remedy
-   rewrite is specified here but belongs to the validation gate, per round 2's own gate-routing ruling.
-2. **QD-3 and C2 collapse into ONE test, not a type fix** — the property-typed redeclaration is worth
-   doing (it closes a real, narrower type-mismatch class) but does not close round 3's actual finding
-   (an implementation that drops the parameter entirely); what closes that is driving `claim()` on BOTH
-   `SqliteSchedulerPort` and `WebhookRegistry` with `createdRemote:true` and asserting the column flips
-   — verified against source with `tsc --strict` before proposing this, not assumed from the
-   implementer's own comment.
-3. **C5 (Self-sustainability) is the one genuine owner-gated decision in this set** — costed above as
-   (a) a narrow local-only recovery tool vs (b) accept-and-document the one-way ratchet — and should go
-   to ADR-086 as a THIRD ruling, not be silently resolved by whichever gate touches it next.
-4. **C3 is scope, not a defect** — name the self-heal boundary explicitly in the code comments and give
-   it the same visibility C5/QD-2 add; no new mechanism needed.
-5. **C2's "sixth forward"** is INV-V37-5's own enumeration falling one hop short of its own prescription
-   — the fix is adding row (6) `call-tool.ts:212 → mcp-facade.ts:358/392 → claim()` to the existing hop-
-   lock table, plus the one missing test named in Key Point 2 above (which is QD-3's fix too — there is
-   one test here, not two).
+## Key points (ranked)
+
+1. **Own the HTTP boundary (O-1) and the retry loop (O-2/S-1):** `options.fetch` wrapper + `maxRetries:
+   0`. Without both, REQ-227's per-retry events and REQ-230's measurement are not implementable.
+2. **Correct REQ-225's tier-1 source** (Summary #1): pi-ai `usage.cost` is a snapshot estimate (37/57
+   image rows zero); "reported" = wire body via O-1 only; "estimated" = ModelBook pin with a new
+   `perImage` column (R-7); never $0 for unknown.
+3. **Extend the admission pin and carry `modelType`** (O-7): `reachableModels` + `toModelCatalogSnapshot`
+   are the two seams REQ-223/225 silently depend on.
+4. **Journal key as digest** (O-4): the only design under which REQ-226 and REQ-229 are both true.
+5. **Engine-owned port with a pi-ai adapter** (R-1..R-3); build the pi-ai model object from the engine's
+   catalog, not pi-ai's snapshot (R-2); vocabulary mapped at the adapter.
+6. **One `primitive.call` event kind** through the redacting sink (O-3); `AgentRecord.kind` + `usage`
+   event per call (O-5); own observed-stats buckets (O-6).
+7. **Resume `validate` hook + atomic file writes** (S-4).
+8. **Named pre-flight refusals before any provider call** (S-2, C-2), with the three refusal sets and
+   their drift test updated in one commit.
+9. **Config keys via `KNOWN_FILE_CONFIG_KEYS` + `composeConfig`, relying on UT-219's sweep** (C-5);
+   gauges on `/api/status` (O-8).
+10. **Separate `PrimitiveParamSpec`, own error names, explain surfaces updated, guide example that
+    registers** (C-1, C-4).
 
 ## Risks
 
-- **Sequencing risk:** C1/C4/C6's doc fixes are cheap and could ship without C5's owner decision, but if
-  they ship the DEPLOY.md/architecture-doc correction BEFORE the owner picks (a) or (b) on C5, the
-  "known limitations" row this proposal asks for (C6, second row) would need a second edit once the
-  owner rules — acceptable, but worth sequencing consciously rather than by accident.
-- **The QD-3/C2 test could surface latent drift immediately.** Driving `claim()` against a real
-  `WebhookRegistry` with `createdRemote:true` may fail RED on first run if round 3's finding is broader
-  than the one call site it named (the whole point of writing the test) — expected and desirable, but
-  the repairing gate should not read that RED as a NEW regression this proposal caused.
-- **The C5 option-costing above is this lens's read, not the adversarial lens's** — I expect at least
-  partial disagreement on which of (a)/(b) is cheaper or more consistent with ADR-086's own Karpathy
-  tie-break; see below.
-- **This proposal does not re-verify round 3's underlying claims** (that the two commits are genuinely
-  un-gated, that `UT-335` genuinely only imports `SqliteSchedulerPort`) beyond the direct source reads
-  listed in Scope — it treats round 3's own measurements as reliable, consistent with this codebase's
-  own convention of trusting a prior gate's independently-verified-on-disk findings rather than
-  re-deriving them.
+- **Unverified wire behaviour of `/systemone`** (Gate 0 "Unknowns"): whether its body carries any cost
+  field, and whether OpenRouter's error bodies/`retry-after` arrive as the wrapper assumes. Mitigation:
+  precedence (R-7) never *requires* tier 1; Gate 7.5's US$1 real-tier budget (V40-Q19) exercises jev +
+  one cheap image model and the events record what actually came back.
+- **Image pricing semantics.** OpenRouter prices FLUX by `pricing.image_output` (Gate 0 §0.4); whether
+  every image row uses that field, and whether text-capable image models bill tokens *and* images, is
+  not known. `perImage` + token rates together, with `estimated` flagged, is the honest shape; a wrong
+  estimate is still better labelled than a confident zero.
+- **Constructing pi-ai model objects (R-2) against pi-ai's typed `api` unions.** `ClassifierApi`/
+  `ImageApi` are closed string unions; the adapter must satisfy them exactly and a pi-ai minor bump
+  could tighten `BaseModel`. Pin pi-ai (already `1.0.0` exact) and cover the adapter with a
+  construct-and-call test against the stub backend.
+- **`AgentRecord` reuse** (O-5): swimlane, `run_status.agents[]`, slide-in panel, `run_agent_log`
+  consumers all see new `kind`s. Run-level metrics do not inflate (verified, `dashboard.ts:132-181`),
+  but any fold I did not read (`src/dashboard/ui` was not read by Gate 0 either) might assume harness
+  fields. A fold audit belongs in Gate 3 tasks.
+- **Catalog growth** (C-3): 459→662 rows is paginated, but any consumer that calls `models_list` with
+  no filter and iterates to exhaustion now does ~45% more pages. Documented, not blocking.
+- **Breaker scope creep** (S-6): if accepted, it must be config-off and primitives-only, or it becomes
+  the uptime feature the owner declined at #104.
+- **IPC payload**: no explicit per-call cap on `agentResult` values (Gate 0 §1). `answers` are small;
+  `files[]` metadata is small; the risk is a future "return the text block too" growing unbounded —
+  cap `text` at a few KB in the host.
 
 ## Expected disagreements with other lenses
 
-- **On C5's option-costing:** adversarial's prior rounds have preferred the smaller-surface,
-  no-new-admission-door option on security-relevant seams (its own r1 conceded to trigger-columns over a
-  version-row precisely on "no new surface" grounds in ADR-086's history) — I expect it to favor (b)
-  accept-and-document over (a) a new recovery tool, on the grounds that (a) is itself a sixth-plus
-  admission door needing its own hop lock, test, and audit, i.e. more of exactly the class of gap this
-  whole round is about. I would not be surprised to concede this one if adversarial frames (a)'s own
-  attack surface concretely — a narrow local-only reclaim tool is still a NEW tool, and "no new surface"
-  has won this ADR's tie-breaks twice already.
-- **On whether C3 needs any code change at all:** I read it as scope (comment + visibility only);
-  adversarial may argue the self-heal boundary is itself a latent security gap (a legacy row's TRUE
-  provenance is simply never re-measured, which is a different shape of "coverage is zero" than C5's
-  "coverage regresses") and press for an active sweep rather than passive documentation — worth debating,
-  since my read treats "never re-measured" as acceptable exactly because the create-time door already
-  independently closes the exploitable path for genuinely NEW rows.
-- **On sequencing:** I have not ranked C1/C4/C6 (cheap, no owner input needed) against C5 (owner-gated)
-  against QD-3 (cheap, mechanical) — another lens may argue QD-3 should ship FIRST and alone, ahead of
-  this whole repair, on the grounds that a compiler-enforced port is infrastructure the other fixes
-  should be built on top of rather than alongside.
+- **Adversarial / security lens** will push harder than I do on `inputImages` containment (symlink
+  races, realpath at open time, not at check time) and on writing generated images into the
+  git-baselined workspace (diff noise, `workspace-git.ts:47`). I agree with both and defer to them on
+  mechanism. They may question putting `answers` into the event log at all (an answer derived from
+  private `state` can be sensitive); the owner asked for it explicitly (V40-Q11 "答案"), so I keep it
+  and expect the ruling to stand.
+- **Simplicity / performance lens** will call owning the retry loop YAGNI ("pi-ai already retries") and
+  the `DecisionBackend` port speculative. Counter: REQ-227's per-attempt events are *impossible* with
+  pi-ai's internal loop, and REQ-228/230's stub providers *are* a second port implementation — the
+  abstraction is paid for by the acceptance criteria, not by future hopes. They may also prefer regexing
+  the status out of `errorMessage`; that couples the engine to a vendor's display-string format.
+- **Catalog / data lens** may prefer `getModelOfType` from pi-ai's snapshot for simplicity. Counter: two
+  catalogs of record (ModelBook live vs a frozen 9/57-row snapshot), 37 zero-cost rows, and a type
+  vocabulary mismatch — the engine already has every field `BaseModel` needs.
+- **Dashboard / UX lens** may want a distinct node type rather than `AgentRecord.kind`. I prefer the
+  discriminator because `buildDagModel`/`run_status` consumers get swimlane placement for free; the
+  cost is the panel variant in C-6, which they would own either way.
+- **Owner-level**: the breaker (S-6) and the manual decision probe (agent-altitude S) sit near the
+  "no uptime/recommend" ruling (#104). I present both as optional and config-off; if either is
+  declined, nothing else in this proposal depends on them.
