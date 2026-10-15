@@ -2518,3 +2518,140 @@ No two concurrently-runnable tasks share a `files:` entry.
   (6) 復原形狀被測試釘住:本機 `workflow_register`(照列原本的 `triggers[]`)+ `workflow_publish` ⇒ 同一個 webhook id/secret 恢復送達(IT-306,以原始 secret 簽章取得 202 為證,非欄位相等斷言)。
 - **estimate:** M
 - **iter:** v37
+
+## v40 — REQ-220..230: `decide()` / `generateImage()` via pi-ai (ARCH-183..194 · ADR-087..095) — TASK-260..273
+
+**Order.** TASK-260 (shared vocabulary: types, error codes, event type, refusal sets) is first and
+blocking — every other task compiles against it. Then three parallel leaves: TASK-261 → TASK-263;
+TASK-262; TASK-264; TASK-265 → TASK-266 → TASK-267 → TASK-268. TASK-269 and TASK-270 after TASK-260.
+TASK-271 (handlers) after TASK-262..264, 267, 269, 270. TASK-272 after TASK-271 (shares
+`run-manager.ts`'s constructor deps only through the defaults TASK-271 writes). TASK-273 last (its
+printed examples must register through TASK-268's gate). **TASK-265 must be committed before
+TASK-266 touches `model-catalog.ts`** — a golden generated after the change proves nothing.
+No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is in 04-design.md §v40.
+
+### TASK-260 — shared v40 vocabulary: engine-owned primitive types, `AgentRecord.kind`, `BookEntry.price.imageOutPerM`, the `primitive.call` event type, 12 error codes, `PRICE_UNKNOWN` in both refusal sets
+- **status:** draft
+- **traces:** ARCH-194, ARCH-192, ARCH-190
+- **files:** src/types.ts, src/event-log.ts, src/errors.ts, src/sandbox/guards.ts, src/run-manager.ts, tests/unit/sandbox-refusal-provenance.test.ts, tests/unit/v40-vocabulary.test.ts
+- **des:** DES-264
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/sandbox-refusal-provenance.test.ts tests/unit/v40-vocabulary.test.ts` → green: every new code is in `ERROR_CATALOG` with `see:'workflow_authoring_guide'`; `PRICE_UNKNOWN` ∈ `ENGINE_REFUSAL_CODES` ∩ `RECORDED_REFUSAL_CODES`; `PRIMITIVE_FAILED`/`PRIMITIVE_INPUT_INVALID`/`IMAGE_PATH_REFUSED` ∈ neither; the two sets stay equal. In `guards.ts` only the set literal changes (no import).
+- **estimate:** S
+- **iter:** v40
+
+### TASK-261 — lift `resolveOpenrouterKey` to `src/gateway/openrouter-key.ts` (pure move)
+- **status:** draft
+- **traces:** ARCH-184
+- **files:** src/gateway/openrouter-key.ts, src/gateway/pi-gateway-client.ts, tests/unit/openrouter-key.test.ts
+- **des:** DES-265
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/openrouter-key.test.ts tests/unit/pi-gateway` → green: resolution order secretSource → `RWE_SECRET_OPENROUTER_API_KEY` → `OPENROUTER_API_KEY`; missing → `undefined`; existing pi-gateway suites pass with no edits.
+- **estimate:** S
+- **iter:** v40
+
+### TASK-262 — pure input layer `src/direct-models/inputs.ts`: `validateDecideInput`, `validateImageInput`, `normalizeOutDir`, `canonicalJson`, `primitiveCallKey`, `checkAnswers`
+- **status:** draft
+- **traces:** ARCH-187, ARCH-183
+- **files:** src/direct-models/inputs.ts, tests/unit/direct-models-inputs.test.ts
+- **des:** DES-266
+- **dod:** `npx vitest run tests/unit/direct-models-inputs.test.ts` → green on DES-266's boundary table, including: a sentinel placed in a `state` KEY and VALUE never appears in any `PRIMITIVE_INPUT_INVALID` message; `out/ig` ≡ `out/ig/` ≡ `./out/ig` key; key-order-independent `canonicalJson`; `checkAnswers` rejects a choice outside `criteria` and a bool probability outside [0,1].
+- **estimate:** S
+- **iter:** v40
+
+### TASK-263 — `src/direct-models/call.ts`: fetch seam, `classifyAttempt`, `backoffMs`, `toPiAiModel`, engine retry loop, `runDecide`/`runImage`; plus `tests/helpers/stub-fetch.ts`
+- **status:** draft
+- **traces:** ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093
+- **files:** src/direct-models/call.ts, tests/helpers/stub-fetch.ts, tests/unit/direct-models-call.test.ts, tests/unit/direct-models-import-boundary.test.ts
+- **des:** DES-267
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/direct-models-call.test.ts tests/unit/direct-models-import-boundary.test.ts` → green, real pi-ai 1.0.0 codec in the loop (no module mocks): 429→retry, 503→retry, 400→no retry, timeout (stub fetch that only settles on abort)→`retry` then `PRIMITIVE_FAILED` reason `timeout`, run abort→no retry and no `failed` attempt, network error→not retried, over-cap body→`response_too_large`, `retry-after` over cap→fail fast `retryable:true`; attempt count = `retries+1`; every `pi` call got `maxRetries:0` and no `timeoutMs`; the `/systemone` request body for a bool question carries pi-ai's wire mapping (golden); zero real-time waits (injected `sleep`/`attemptSignal`/`random`). Import-boundary: no file outside `src/direct-models/` imports `@earendil-works/pi-ai/api/*`.
+- **estimate:** L
+- **iter:** v40
+
+### TASK-264 — `src/direct-models/image-files.ts`: contained input read, sniffed mime, `outDir` resolution, tmp+rename write, `verifyFiles`
+- **status:** draft
+- **traces:** ARCH-185, ADR-090
+- **files:** src/direct-models/image-files.ts, tests/unit/image-files.test.ts
+- **des:** DES-268
+- **dod:** `npx vitest run tests/unit/image-files.test.ts` (real tmp dir) → green incl. **planted symlink** in `inputImages` (→ `rwe.env` outside root) AND as an `outDir` component → `IMAGE_PATH_REFUSED{escape}`; `..`/absolute/dot-segment/`''` refused; FIFO → `not_regular`; > maxBytes → `too_large`; SVG/garbage → `unsupported_type`; output names `<label>-<callSeq>-<i>.<ext>` with ext from the sniffed mime; planted symlink at the final name is replaced, not followed; `verifyFiles` false on missing, on sha mismatch, and on a symlinked file.
+- **estimate:** M
+- **iter:** v40
+
+### TASK-265 — golden snapshot of the CURRENT chat rows (written and committed before TASK-266)
+- **status:** draft
+- **traces:** ARCH-190
+- **files:** tests/fixtures/models/openrouter-models-all.json, tests/fixtures/models/chat-rows-golden.json, tests/unit/model-catalog-chat-golden.test.ts
+- **des:** DES-269
+- **dod:** `npx vitest run tests/unit/model-catalog-chat-golden.test.ts` → green against the UNCHANGED `model-catalog.ts` (fixture = a recorded `?output_modalities=all` body incl. `typesafe/jev-1.13`, a FLUX-style image-only row and `google/gemini-2.5-flash-image`; golden = today's parser output for every row whose outputs include `text`). Commit hash recorded in the task note before TASK-266 starts.
+- **estimate:** S
+- **iter:** v40
+
+### TASK-266 — catalog: `?output_modalities=all`, `ModelType` += `'decision'`, `imageOutPerM` from `pricing.image_output`, `models_list` filter
+- **status:** draft
+- **traces:** ARCH-190
+- **files:** src/models/model-catalog.ts, src/models/models-query.ts, tests/unit/model-catalog-decision.test.ts
+- **des:** DES-269
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/model-catalog-chat-golden.test.ts tests/unit/model-catalog-decision.test.ts tests/unit/models-query` → green: TASK-265's golden still deep-equal; jev row is `decision`/`openrouter-modalities`; image-only row is `image-gen`; `imageOutPerM` absent when `image_output` absent (never 0); fetch URL carries `?output_modalities=all`; `models_query({modelType:'decision'})` returns only decision rows.
+- **estimate:** M
+- **iter:** v40
+
+### TASK-267 — registration type gate `checkPrimitiveModelType` + admission pin carries `modelType`/`modelTypeSource` + `reachableModels` covers `decisions`/`images`
+- **status:** draft
+- **traces:** ARCH-189, ADR-095
+- **files:** src/providers.ts, src/models/model-book.ts, tests/unit/primitive-model-type.test.ts
+- **des:** DES-270
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-model-type.test.ts tests/unit/model-book` → green on DES-270's truth table (mismatch / `unknown` warn / `id-heuristic` warn / catalog-unavailable warn / ok); `reachableModels` includes declared defaults AND run overrides of `decisions[*]`/`images[*]`; existing model-book suites unedited.
+- **estimate:** M
+- **iter:** v40
+
+### TASK-268 — params contract + scanners + mermaid + registration wiring for `decisions`/`images`
+- **status:** draft
+- **traces:** ARCH-188, ARCH-189
+- **files:** src/params/contract.ts, src/params/resolve.ts, src/workflow-meta.ts, src/script-checks.ts, src/check-mermaid.ts, src/workflow-catalog.ts, tests/unit/primitive-contract.test.ts, tests/unit/scan-primitive-calls.test.ts
+- **des:** DES-271
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-contract.test.ts tests/unit/scan-primitive-calls.test.ts tests/unit/scan-agent-calls.test.ts` → green: declared⇔used per block with its OWN code; non-literal label / non-literal options / tunable key in options / alias `const d = decide` refused; `retries` > 5 refused naming `maxRetries 5`; non-`openrouter/` model → `PRIMITIVE_PROVIDER_UNSUPPORTED`; type mismatch refused / unverified warned (via TASK-267) at register only; a primitive label appearing as a mermaid node is accepted and never required; `scan-agent-calls` suite unedited (INV-V40-1).
+- **estimate:** M
+- **iter:** v40
+
+### TASK-269 — sandbox surface: `decide`/`generateImage` globals, `{t:'decide'}`/`{t:'image'}` IPC, host cases
+- **status:** draft
+- **traces:** ARCH-186
+- **files:** src/sandbox/guards.ts, src/sandbox/child-entry.ts, src/sandbox/host.ts, src/ipc/protocol.ts, tests/unit/sandbox-primitives.test.ts, tests/integration/primitive-ipc-real-child.test.ts
+- **des:** DES-272
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/sandbox-primitives.test.ts tests/integration/primitive-ipc-real-child.test.ts tests/unit/sandbox-guards.test.ts` → green: real forked child; `agent`,`decide`,`generateImage` interleaved draw consecutive callSeqs from ONE counter; `agentThrow` re-realms `{code,message}` for a primitive; absent host handler → coded fallback; uncoded primitive throw → `INTERNAL_ERROR` (never `AGENT_ERROR`). **Rule restated: no local value import in `guards.ts`/`child-entry.ts`** (the child does not resolve `.js→.ts`); type-only imports allowed.
+- **estimate:** M
+- **iter:** v40
+
+### TASK-270 — usage accounting: `pricePrimitiveCall`/`primitivePriceKnowable`, `foldUsage` guard, `deriveAgentRecords` harness-less branch, observed-stats buckets
+- **status:** draft
+- **traces:** ARCH-191, ARCH-192, ADR-091, ADR-094
+- **files:** src/run-guard.ts, src/run-store.ts, src/models/observed-stats.ts, tests/unit/primitive-pricing.test.ts, tests/integration/derived-equals-snapshot.test.ts, tests/integration/unmapped-column-folds.test.ts, tests/unit/observed-stats-primitive.test.ts
+- **des:** DES-273
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-pricing.test.ts tests/integration/derived-equals-snapshot.test.ts tests/integration/unmapped-column-folds.test.ts tests/unit/observed-stats-primitive.test.ts` → green: reported > estimated > absent, absent never 0; live fold ≡ at-rest fold over a run with one agent, one tokenless reported-cost decide, one absent-cost image; derived ≡ snapshot for a decide and an image record (label/agentKey/phase/frame/startedAt/kind from the usage event); decide/image facts land in their own buckets, never `tools`/`prose`; every pre-existing case in those files unedited.
+- **estimate:** M
+- **iter:** v40
+
+### TASK-271 — `RunManager._handleDecideRequest` / `_handleImageRequest`, `ResumePlan.invalidate()`, `AgentExecutor.recordPrimitive`, semaphore defaults; the NFR integration tests
+- **status:** draft
+- **traces:** ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094
+- **files:** src/run-manager.ts, src/resume-cache.ts, src/agent-executor.ts, tests/unit/resume-cache-invalidate.test.ts, tests/integration/primitive-handlers.test.ts, tests/integration/primitive-resume.test.ts, tests/integration/primitive-sentinel-sweep.test.ts, tests/integration/primitive-latency.test.ts
+- **des:** DES-274
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/resume-cache-invalidate.test.ts tests/integration/primitive-handlers.test.ts tests/integration/primitive-resume.test.ts tests/integration/primitive-sentinel-sweep.test.ts tests/integration/primitive-latency.test.ts` → green, real forked child + stub fetch: DES-274's order (every pre-flight refusal leaves stub-fetch count 0 and `inUse` unchanged); REQ-226 2×decide+1×image stop/resume → 0 provider calls, same answers/paths; deleted image → regenerate + every later call MISS; REQ-228 concurrency ≤ N with the agent semaphore saturated; REQ-229 sweep with positive control; REQ-230 p95 ≤ 200 ms both measures. Then `npm test` green with no edit to any pre-existing agent test (INV-V40-1).
+- **estimate:** L
+- **iter:** v40
+
+### TASK-272 — composition root: `decideSlots`/`imageSlots`/`imageInputMaxBytes` through `composeConfig()`, two gauges
+- **status:** draft
+- **traces:** ARCH-193
+- **files:** src/main.ts, src/server.ts, tests/unit/compose-config-v2-wiring.test.ts, rwe.config.example.json
+- **des:** DES-275
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/compose-config-v2-wiring.test.ts` → green: the three keys in `KNOWN_FILE_CONFIG_KEYS`, `assertPositiveInteger`-checked, forwarded by `composeConfig()` and PROBED (not excluded) by the UT-219 sweep — deleting the forward line turns it red; `/api/status` and `system_info` show `decideSemaphore`/`imageSemaphore` `{total,inUse,queued}`.
+- **estimate:** S
+- **iter:** v40
+
+### TASK-273 — served text: guide sections, `GUIDE_EXAMPLES`, `tools/list` text, `workflow_describe`/`workflow_get` projection, README/DEPLOY
+- **status:** draft
+- **traces:** ARCH-194
+- **files:** src/authoring-guide.ts, src/tool-specs.ts, src/workflow-view.ts, docs/AUTHORING.md, README.md, DEPLOY.md, tests/unit/authoring-guide.test.ts, tests/integration/guide-examples-register.test.ts
+- **des:** DES-276
+- **dod:** `npm run gen:authoring && npx tsc --noEmit && npx vitest run tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts tests/integration/guide-examples-register.test.ts` → green: the decide and image examples register against the booted engine with no `MODEL_TYPE_MISMATCH`; the guide lists every v40 code with one cause + one fix line; the printed `PRIMITIVE_FAILED` message examples match DES-267's grammar regex; no issue numbers, no version history in served text; `models_list` enum includes `'decision'`.
+- **estimate:** M
+- **iter:** v40

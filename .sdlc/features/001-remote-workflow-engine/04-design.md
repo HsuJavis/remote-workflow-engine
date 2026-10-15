@@ -10371,3 +10371,427 @@ classDiagram
   cannot exist; a transcript scanner for denials; a second containment helper; a read-back endpoint; a
   replacement fence test; locking for a shared granted path (filed to v38 with its trigger); the
   author-side grant *request* contract (ADR-084 option (C), with its trigger).
+
+## v40 design entries (REQ-220..230 — ARCH-183..194, ADR-087..095) — DES-264..276
+
+### Real-tier validation paths & per-tier mock policy — v40
+
+**Mock policy.** *Unit*: mock freely through the declared seams (`DirectDeps`, pure functions); no
+module mocking of pi-ai — the stub is a stub `fetch`, so the real 1.0.0 codec runs in every unit and
+integration test (ADR-089). `image-files` tests use a real tmp dir (symlink/containment bugs are what
+an in-memory fs hides). *Integration*: real forked sandbox child, real RunManager, real SQLite, real
+event sink; only OpenRouter is a stub `fetch` injected at the composition root
+(`RunManagerDeps.directDeps`). *E2E/acceptance*: no mock of the engine's own boundaries — real MCP
+HTTP, real `rwe.config.json`, real OpenRouter with the production key under the owner's **US$1 cap**
+(V40-Q19); spend summed from the operator log `primitive.call` `ok` lines and written to
+08-validation.md together with the wire facts the design deliberately does not require: does
+`/systemone` return `usage.cost` / token counts; does the image route accept `usage:{include:true}`
+(DES-267 `IMAGE_USAGE_INCLUDE`); `retry-after` format; the unit of `pricing.image_output` on an
+image-only row. Sanitized bodies become the stub fixtures afterwards.
+
+| REQ | Real-tier path (real entrypoint + real wiring) |
+|---|---|
+| REQ-220 | Register (real MCP `workflow_register`) a workflow declaring `decisions.gate` → `openrouter/typesafe/jev-1.13`; `run_start`; script's `decide('gate',…)` returns `answers.order.probability ∈ [0,1]`; repeat with engine `gateway:'pi'` and `'sdk'`. Undeclared/unused label → registration refused with the label named. |
+| REQ-221 | Same, `images.hero` → a cheap `image-gen` row; `generateImage('hero',{prompt})` → `workspace_list` shows `generated/hero-<seq>-0.<ext>`, `workspace_pull` bytes decode as the mime; second run with `inputImages:['ref/a.png']` (pushed via `workspace_push`); `../x.png` → `IMAGE_PATH_REFUSED`, 0 spend in the log. |
+| REQ-222 | Real boot, catalog sync against live OpenRouter: `models_list({query:'typesafe'})` → `modelType:'decision'`; `models_list({modelType:'decision'})` only decision rows; a known chat row's fields equal the pre-v40 production `models_list` capture. |
+| REQ-223 | Real `workflow_register` with `agents.x` → an embedding model ⇒ `MODEL_TYPE_MISMATCH`; with an `unknown`-type model ⇒ success + `MODEL_TYPE_UNVERIFIED` warning; a pre-v40 registered version still `run_start`s. |
+| REQ-224 | Cold-client probe: a fresh agent with only `workflow_authoring_guide` (real MCP) writes and registers a decide workflow first try; alias `const d = decide` refused. |
+| REQ-225 | Real run with `budget.usd` and the jev decide: `run_status.usage.costUSD > 0` (reported or estimated, event `costSource` shows which); a model with no catalog price under `budget.usd` ⇒ `PRICE_UNKNOWN`, 0 provider calls in the log; budget exhausted ⇒ `BUDGET_EXCEEDED`. |
+| REQ-226 | Real run 2×decide + 1×image, `workflow_stop`, `run_resume`: log shows 0 new `primitive.call ok` lines for the replayed prefix; then delete the image via the workspace and resume again ⇒ regenerate. |
+| REQ-227 | `baseUrl` is a constant (no redirect knob), so provider faults are injected only at the `fetch` seam: integration through the real child with stub `fetch` (429×2 then 200 ⇒ two `retry` lines + `ok`; 400 ⇒ one `failed`, script `catch` sees `e.code==='PRIMITIVE_FAILED'`; never-settling fetch ⇒ `timeout` retries). Real tier adds the Gate 7.5 run's per-attempt `primitive.call` lines. |
+| REQ-228 | Integration through the real child: stub `fetch` latency 200 ms, `decideSlots:2`, script `parallel()` of 10 decides with `agentSlots` saturated by a hung agent ⇒ max concurrent stub requests = 2 and decides complete. Real tier: `system_info` shows `decideSemaphore` from `rwe.config.json`. |
+| REQ-229 | Integration sentinel sweep (DES-274 §Sentinel) through the real child; real tier: grep the production operator log + `run_status` + dashboard `/api/runs/:id` of the Gate 7.5 run for the sentinel placed in `state`/`prompt`. |
+| REQ-230 | **Interpretation recorded (binds Gate 5):** the script's clock is determinism-guarded, so "script 端觀測到的耗時" is measured at the host IPC boundary. Integration: 100 sequential decides through the real child, stub latency L; assert `p95(engineMs) ≤ 200` AND `p95(e2e_i) ≤ 200` where `e2e_i = engineMs_i + gap_i`, `gap_i` = host time from reply-send of call i−1 to receipt of call i. Real tier: `engineMs` p95 over the Gate 7.5 run's `primitive.call` lines. |
+
+**Seam consistency.** Every function in `src/direct-models/call.ts` that waits, times, randomizes or
+does I/O takes it from `DirectDeps` — `fetch`, `now` (monotonic `performance.now`, used for
+`providerMs`/`engineMs`), `sleep(ms, signal)`, `attemptSignal(ms)`, `random()`, `resolveKey()`,
+`onAttempt()`; none reads `Date.now`, `Math.random`, `AbortSignal.timeout` or `globalThis.fetch`
+directly (production defaults are bound once in `defaultDirectDeps()`). Event timestamps stay on the
+existing `isoNow`/sink path. The two RunManager handlers read the clock only through the
+`DirectDeps.now` they pass down and the existing executor clock. `image-files.ts` takes no fs seam on
+purpose (real tmp dir).
+
+### DES-264 — shared v40 vocabulary
+- **status:** draft
+- **traces:** ARCH-194, ARCH-192, ARCH-190, TASK-260
+- **signature:**
+  ```ts
+  // src/types.ts (type-only importable from guards.ts)
+  export type PrimitiveKind = 'decide' | 'image';
+  export type DecideQuestion =
+    | { type: 'bool'; instructions: string; criteria: { true: string; false: string } }
+    | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+    | { type: 'score'; instructions: string; criteria: string[] };
+  export type DecideAnswer =
+    | { type: 'bool'; probability: number }
+    | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
+    | { type: 'score'; score: number; confidence: number };
+  export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+  export interface ImageFile { path: string; mimeType: ImageMime; bytes: number; sha256: string }
+  AgentRecord.kind?: PrimitiveKind;          // absent = agent(); never defaulted
+  BookEntry.price.imageOutPerM?: number;     // absent ≠ 0
+  // src/event-log.ts — EngineEvent +=
+  | { kind: 'primitive.call'; runId: string; agentId?: string; callSeq: number; primitive: PrimitiveKind;
+      label: string; model: string; attempt: number /* 0 on refused */;
+      outcome: 'ok' | 'retry' | 'failed' | 'refused'; reason?: AttemptReason; status?: number;
+      errorCode?: string; providerMs?: number; backoffMs?: number /* retry only */;
+      engineMs?: number /* terminal only */; costUSD?: number | null; costSource?: 'reported'|'estimated'|'absent';
+      tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number }
+  // NO field may hold state / questions / prompt / inputImages / a provider body (INV-V40-3).
+  export type AttemptReason = 'http'|'timeout'|'aborted'|'network'|'no_output'|'malformed'|'response_too_large';
+  ```
+  `ErrorCode`/`ERROR_CATALOG` += `DECISION_UNDECLARED`, `DECISION_DECLARED_NOT_IN_SCRIPT`,
+  `IMAGE_UNDECLARED`, `IMAGE_DECLARED_NOT_IN_SCRIPT`, `MODEL_TYPE_MISMATCH`,
+  `PRIMITIVE_PROVIDER_UNSUPPORTED`, `MODEL_TYPE_UNVERIFIED` (warning), `PRIMITIVE_INPUT_INVALID`,
+  `IMAGE_PATH_REFUSED`, `PRICE_UNKNOWN`, `PRIMITIVE_FAILED`; all `see:'workflow_authoring_guide'`.
+  `ENGINE_REFUSAL_CODES` (guards.ts:356) and `RECORDED_REFUSAL_CODES` (run-manager.ts:451) each
+  `+= 'PRICE_UNKNOWN'` and nothing else.
+- **boundary:** `costUSD: null` exists only on this event (absent price); records and usage events use
+  the existing `{costUSD: 0, unpriced: true}` collapse (DES-273).
+- **iter:** v40
+
+### DES-265 — `resolveOpenrouterKey(secretSource)` in `src/gateway/openrouter-key.ts`
+- **status:** draft
+- **traces:** ARCH-184, TASK-261
+- **signature:** `export function resolveOpenrouterKey(secretSource: SecretSource): string | undefined` — body moved verbatim from `pi-gateway-client.ts:528-530`; that file imports it. Caller on a primitive: `undefined` → throw `codedError('OPENROUTER_AUTH_MISSING', …)` before any slot (DES-274 step 5). Key passed only as pi-ai `options.apiKey`; never `model.headers`, never logged.
+- **iter:** v40
+
+### DES-266 — `src/direct-models/inputs.ts` (pure)
+- **status:** draft
+- **traces:** ARCH-187, ARCH-183, TASK-262
+- **signature:**
+  ```ts
+  export const MAX_DECIDE_QUESTIONS = 32, MAX_DECIDE_STATE_BYTES = 131_072,
+    MAX_IMAGE_PROMPT_BYTES = 16_384, MAX_INPUT_IMAGES = 4, MAX_OUTDIR_BYTES = 255;
+  const QUESTION_ID_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+  export function validateDecideInput(label: string, opts: unknown):
+    { state: JsonObject; questions: Record<string, DecideQuestion> };            // throws PRIMITIVE_INPUT_INVALID
+  export function validateImageInput(label: string, opts: unknown):
+    { prompt: string; inputImages: string[]; outDir: string | undefined };       // throws PRIMITIVE_INPUT_INVALID / IMAGE_PATH_REFUSED
+  export function normalizeOutDir(outDir: string | undefined): string | undefined; // posix-normalize, strip trailing '/'
+  export function canonicalJson(v: unknown): string;                             // sorted keys, recursive, no whitespace
+  export function primitiveCallKey(kind: PrimitiveKind, label: string, model: string, inputs: unknown): CallKey;
+    // → { prompt: `${kind}:${sha256hex(canonicalJson(inputs))}`, opts: { label, model } }
+    // decide inputs = {state, questions}; image inputs = {prompt, inputImages:[{path, sha256}], outDir: normalized ?? null}
+  export function checkAnswers(questions: Record<string, DecideQuestion>, answers: Record<string, DecideAnswer>): boolean;
+  ```
+- **boundary:** opts keys closed (`state,questions` / `prompt,inputImages,outDir`), unknown key → invalid. `state`: plain object (not array/null), `Buffer.byteLength(JSON.stringify(state)) ≤ cap`. `questions`: 1..32 entries, id matches `QUESTION_ID_RE`; per type: bool `criteria` exactly `{true:string,false:string}`, choice ≥ 2 string-valued keys, score ≥ 2 strings, `instructions` non-empty string. `prompt` non-empty ≤ cap. `inputImages`: array of strings, ≤ 4, absent ≡ `[]`, duplicates allowed. `outDir`: string ≤ 255 bytes; `''` → invalid; absolute, any `..` segment, or any segment starting with `.` (other than a lone `.`) → `IMAGE_PATH_REFUSED{reason:'escape'}`; `'.'` → workspace root. **Message:** `PRIMITIVE_INPUT_INVALID` → `<decide|generateImage> '<label>': <fieldPath> <rule>`; `fieldPath` is structural only (`state`, `questions.<id>.criteria`, `prompt`, `inputImages[2]`, `outDir`) — never a value and never a key inside `state`; question ids may appear. `checkAnswers`: every asked id present; choice ∈ `Object.keys(criteria)`; bool probability finite ∈ [0,1]; score finite. Normalization happens before `primitiveCallKey`.
+- **iter:** v40
+
+### DES-267 — `src/direct-models/call.ts`: seam, classification, retry loop
+- **status:** draft
+- **traces:** ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093, TASK-263
+- **signature:**
+  ```ts
+  import { classify } from '@earendil-works/pi-ai/api/typesafe-system-one';
+  import { generateImages } from '@earendil-works/pi-ai/api/openrouter-images';
+  export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';   // constant, never config/catalog/script
+  export const BACKOFF_BASE_MS = 250, RETRY_AFTER_CAP_MS = 10_000,
+    MAX_DECIDE_RESPONSE_BYTES = 1_048_576, MAX_IMAGE_RESPONSE_BYTES = 33_554_432,
+    IMAGE_USAGE_INCLUDE = true;                                       // Gate 7.5 may flip; not a key
+  export interface DirectDeps {
+    fetch: typeof fetch; now: () => number; sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+    attemptSignal: (ms: number) => { signal: AbortSignal; fired(): boolean };
+    random: () => number; resolveKey: () => string | undefined; onAttempt: (o: AttemptObservation) => void;
+  }
+  export function defaultDirectDeps(secretSource: SecretSource): DirectDeps;
+  export interface SeamRecord { invoked: boolean; status?: number; retryAfterMs: number | null;
+    providerMs: number; truncated: boolean; wireCostUSD: number | null }
+  export function makeObservedFetch(deps: Pick<DirectDeps,'fetch'|'now'>, maxBodyBytes: number):
+    { fetch: typeof fetch; last(): SeamRecord | null };
+  export function classifyAttempt(i: { runAborted: boolean; timeoutFired: boolean; seam: SeamRecord | null;
+    piStop: 'stop'|'error'|'aborted'; hasOutput: boolean }):
+    { outcome: 'ok' } | { outcome: 'fail'; reason: AttemptReason; retryable: boolean; status?: number };
+  export function backoffMs(attempt: number, retryAfterMs: number | null, rand: number): number | 'over_cap';
+  export function toPiAiModel(row: { id: string; modelType: 'decision' | 'image-gen'; modalitiesIn?: string[];
+    contextWindow?: number }): PiClassifierModel | PiImageModel;
+  export type PiClassifierModel = ClassifierModel<'typesafe-system-one'>;   // pi-ai types, used only inside src/direct-models/
+  export type PiImageModel = ImageModel<'openrouter-images'>;
+  export interface AttemptObservation { attempt: number; outcome: 'ok'|'retry'|'failed'; reason?: AttemptReason;
+    status?: number; providerMs: number; backoffMs?: number }
+  export function runDecide(req: { model: PiClassifierModel; state: JsonObject; questions: Record<string, DecideQuestion>;
+    timeoutMs: number; retries: number; runSignal: AbortSignal }, deps: DirectDeps):
+    Promise<{ answers: Record<string, DecideAnswer>; tokens?: Tokens; wireCostUSD: number | null;
+              attempts: number; providerMsTotal: number; backoffMsTotal: number }>;
+  export function runImage(req: { model: PiImageModel; prompt: string; inputImages: { data: Buffer; mimeType: ImageMime }[];
+    timeoutMs: number; retries: number; runSignal: AbortSignal }, deps: DirectDeps):
+    Promise<{ images: { data: Buffer; mimeType: string }[]; tokens?: Tokens; wireCostUSD: number | null;
+              attempts: number; providerMsTotal: number; backoffMsTotal: number }>;
+  ```
+- **flow (per attempt a = 1..retries+1):** `{signal: tSig, fired} = deps.attemptSignal(timeoutMs)`; `signal = AbortSignal.any([tSig, runSignal])`; call pi-ai with `{fetch: seam.fetch, apiKey: deps.resolveKey(), signal, maxRetries: 0}` — **never** `timeoutMs`/`maxRetryDelayMs`/`headers`; image call adds `onPayload: p => IMAGE_USAGE_INCLUDE ? {...p, usage: {include: true}} : undefined`. Then `classifyAttempt({runAborted: runSignal.aborted, timeoutFired: fired(), seam: seam.last(), piStop: res.stopReason, hasOutput})`. `ok` (decide: also `checkAnswers` true, else `fail malformed`) → return. `fail` & (`!retryable` or `a > retries`) → `onAttempt({outcome:'failed'})`, throw. Else `b = backoffMs(a, seam.retryAfterMs, deps.random())`; `'over_cap'` → throw with `retryable:true`; `onAttempt({outcome:'retry', backoffMs:b})`; `await deps.sleep(b, runSignal)`.
+- **classifyAttempt precedence (one UT row each):** `runAborted` → `aborted` (not retryable; handler takes the run-stop path, no `failed` event); `timeoutFired` → `timeout` (retryable); `seam.truncated` → `response_too_large` (no); `status 429 | ≥500` → `http` (yes); other `status ≥ 400` → `http` (no); seam invoked, no status, `piStop==='error'` → `network` (**not** retryable — V40-Q9 names only 429/5xx/timeout); seam never invoked & `error` → `malformed` (no; an engine/codec bug); `stop` & `!hasOutput` → `no_output` (no); `error` with 2xx → `malformed` (no); else `ok`. pi-ai's `stopReason`/`errorMessage` never decide abort-vs-timeout and are never copied anywhere.
+- **seam:** `invoked=true` on entry; time `now()` around fetch **including** the body read; read body through a reader that stops at `maxBodyBytes` (→ `truncated`, throw a seam-local error); `retryAfterMs` from `retry-after-ms`, else `retry-after` seconds or HTTP-date; `wireCostUSD` only if 2xx and JSON body has finite `usage.cost ≥ 0`; return `new Response(buf, {status, statusText, headers})`. Accepts `string | URL | Request`.
+- **backoffMs:** `retryAfterMs > RETRY_AFTER_CAP_MS` → `'over_cap'`; `retryAfterMs` present → it; else `min(CAP, BASE × 2^(a−1) × (0.75 + 0.25·rand))`.
+- **toPiAiModel:** `api` from `{decision:'typesafe-system-one', 'image-gen':'openrouter-images'}`; `provider:'openrouter'`; `baseUrl: OPENROUTER_BASE_URL`; `cost` all 0 (pi-ai `usage.cost` never read, ADR-091); `input` = `['text']` (+`'image'` if `modalitiesIn` has it); classifier `contextWindow: row.contextWindow ?? 32768`; image `output:['image']`; result `satisfies` pi-ai's types. Cached per (run, model) by the caller.
+- **images out:** each output `ImageContent` → `{data: Buffer.from(b64,'base64'), mimeType}`; mime trust happens in DES-268 (sniff). Text blocks ignored.
+- **error thrown:** `codedError('PRIMITIVE_FAILED', "<decide|generateImage> '<label>' failed: <cause> after <n> attempt(s)")`, `<cause>` = `HTTP <status>` for reason `http`, else the reason word. Grammar regex (UT + guide): `/^(decide|generateImage) '[A-Za-z_][\w-]*' failed: (HTTP \d{3}|timeout|network|no_output|malformed|response_too_large) after \d+ attempts?$/`. No provider text, ever. `detail {reason,status,attempts,retryable}` is returned to the handler for the event only — it does not cross IPC.
+- **iter:** v40
+
+### DES-268 — `src/direct-models/image-files.ts`
+- **status:** draft
+- **traces:** ARCH-185, ADR-090, TASK-264
+- **signature:**
+  ```ts
+  export const DEFAULT_OUT_DIR = 'generated';
+  export function sniffMime(buf: Buffer): ImageMime | null;          // PNG 89504E47, JPEG FFD8FF, WEBP RIFF....WEBP, GIF GIF87a/GIF89a
+  export function readContainedInput(root: string, rel: string, maxBytes: number):
+    Promise<{ data: Buffer; mimeType: ImageMime; sha256: string }>;
+  export function resolveOutDir(root: string, outDir: string | undefined): Promise<string>;   // abs, created, contained
+  export function writeImages(root: string, absDir: string, label: string, callSeq: number,
+    images: { data: Buffer }[]): Promise<{ files: ImageFile[]; dropped: number }>;
+  export function verifyFiles(root: string, files: ImageFile[]): Promise<boolean>;
+  ```
+- **boundary:** errors are `codedError('IMAGE_PATH_REFUSED', …)` with message `generateImage: <inputImages[i]|outDir> <reason>`, reason ∈ `escape|not_regular|too_large|unsupported_type` — the path itself is author structure and may appear. Input: lexical reject absolute/`..` → `realpath(root)` + `realpath(candidate)` + `isPathContained` → `lstat` regular → `open(O_RDONLY|O_NOFOLLOW)` → `fstat(fd).size ≤ maxBytes` → read → `sniffMime` non-null. Output dir: `mkdir -p` under root, then realpath + containment re-check (a symlinked component → `escape`). Write: per image `sniffMime` (null → `dropped++`, skip); name `<label>-<callSeq>-<i>.<ext>` (`png|jpg|webp|gif` from the sniffed mime, `i` counts written files); tmp `.<name>.tmp-<pid>-<rand>` opened `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW` (`wx` + nofollow), write, close, `rename` over final. `path` returned workspace-relative posix. `verifyFiles`: each path contained, `lstat` regular (symlink → false), size = `bytes`, sha256 = journaled. Residual (named, not tested): realpath→open component-swap race (Node has no `openat`).
+- **iter:** v40
+
+### DES-269 — catalog: all output modalities, `decision`, `imageOutPerM`
+- **status:** draft
+- **traces:** ARCH-190, TASK-265, TASK-266
+- **signature:** `ModelType` += `'decision'`; fetch `'https://openrouter.ai/api/v1/models?output_modalities=all'`; `openRouterModelType`: existing branches first (`text` in outputs → `chat`, unchanged), then outputs containing `'decisions'` → `{modelType:'decision', modelTypeSource:'openrouter-modalities'}`; image-only stays `image-gen`. Price parser: `imageOutPerM` = `Number(pricing.image_output) × 1e6` only when finite ≥ 0, else field omitted. `models_query` / `models_list` enum gain `'decision'` (filter code unchanged).
+- **boundary:** TASK-265 golden = today's parser over the fixture, filtered to rows whose outputs include `text`; TASK-266 must leave it deep-equal (REQ-222 last clause). Row count grows; paging (`PAGE_BYTE_BUDGET`) unchanged.
+- **iter:** v40
+
+### DES-270 — `checkPrimitiveModelType` + pin reach
+- **status:** draft
+- **traces:** ARCH-189, ADR-095, TASK-267
+- **signature:**
+  ```ts
+  // src/providers.ts — pure
+  export function checkPrimitiveModelType(kind: 'agent' | 'decision' | 'image', label: string, model: string,
+    row: { modelType: ModelType; modelTypeSource: ModelTypeSource } | undefined, catalogAvailable: boolean):
+    | { ok: true }
+    | { ok: true; warning: { code: 'MODEL_TYPE_UNVERIFIED'; label: string; model: string; modelTypeSource: string } }
+    | { ok: false; code: 'MODEL_TYPE_MISMATCH'; label: string; model: string; actual: ModelType; required: ModelType };
+  // required: agent→'chat', decision→'decision', image→'image-gen' (strict, ADR-095)
+  ```
+  `toModelCatalogSnapshot` rows carry `modelType`, `modelTypeSource`; `reachableModels(contract, overrides)` += every `decisions[*].model` and `images[*].model` (declared default and run override).
+- **boundary:** truth table — `!catalogAvailable` → existing warning arm (`providers.ts:189-197`), never refuse; `row` undefined → existing unknown-model path unchanged; `modelType==='unknown'` or `modelTypeSource==='id-heuristic'` → ok+warning; known & ≠ required → mismatch, message `<block>.<label> requires a model catalogued '<required>'; <model> is catalogued '<actual>'`; else ok. Called from registration only (DES-271), never from admission/resume.
+- **iter:** v40
+
+### DES-271 — params contract, scanners, mermaid, registration wiring
+- **status:** draft
+- **traces:** ARCH-188, ARCH-189, TASK-268
+- **signature:**
+  ```ts
+  // src/params/contract.ts
+  export interface PrimitiveParamSpec { model: ParamSpec; timeoutMs: ParamSpec; retries: ParamSpec }  // all required, no effort
+  ParamContract.decisions?: Record<string, PrimitiveParamSpec>; ParamContract.images?: Record<string, PrimitiveParamSpec>;
+  export const MAX_PRIMITIVE_RETRIES = 5;          // code constant, NOT a Ceilings field (no config wiring)
+  ParamSpec.ceilingKey += 'maxRetries';
+  // src/params/resolve.ts
+  RunParams.decisions?: Record<string, { model: string; timeoutMs: number; retries: number }>; RunParams.images?: same;
+  // src/workflow-meta.ts
+  const DECIDE_CALL_RE = /(?<!\.)\bdecide\s*\(/g, IMAGE_CALL_RE = /(?<!\.)\bgenerateImage\s*\(/g;
+  export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; errors: Err[] };
+  // src/script-checks.ts: CALLABLE_API_NAMES += 'decide', 'generateImage'
+  ```
+- **boundary:** label: string literal, `AGENT_LABEL_FORMAT_RE` and ≤ 64 chars; lookups via `Object.hasOwn`. Arg 2: literal object whose keys ⊆ the closed set (values may be runtime); `model|timeoutMs|retries` key → `PARAM_IN_SCRIPT`. Declared ⇔ used per block: `DECISION_UNDECLARED` / `DECISION_DECLARED_NOT_IN_SCRIPT` / `IMAGE_UNDECLARED` / `IMAGE_DECLARED_NOT_IN_SCRIPT`, label in message. `timeoutMs` via existing `boundMax(…, maxTimeoutMs)`; `retries` integer 0..`MAX_PRIMITIVE_RETRIES` (declared and override), refusal message names `maxRetries 5`. `model.default` must start `openrouter/` → else `PRIMITIVE_PROVIDER_UNSUPPORTED`; `harnessProviders` not applied. `WorkflowCatalog` registration calls `checkPrimitiveModelType` for every `agents`/`decisions`/`images` label → mismatch refuses, warnings appended to the response `warnings[]`. `checkMermaid`: primitive labels accepted as node ids, never required, excluded from `deriveExpectedGraph` and `AGENT_BEFORE_PHASE`. Same label in `agents` and `decisions`/`images` is allowed (records carry `kind`; see rationale). Override of an undeclared primitive label → existing unknown-label refusal path. `scanAgentCalls`/`AGENT_CALL_RE` untouched.
+- **iter:** v40
+
+### DES-272 — sandbox surface
+- **status:** draft
+- **traces:** ARCH-186, TASK-269
+- **signature:**
+  ```ts
+  // src/ipc/protocol.ts — ChildMsg +=
+  | { t: 'decide'; runId: string; callSeq: number; label: string; state: unknown; questions: unknown }
+  | { t: 'image';  runId: string; callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown }
+  // replies: existing agentResult (value = {answers} | {files}, spent) / agentThrow {code, message} — unchanged shapes
+  // src/sandbox/host.ts
+  SandboxHostConfig.onDecideRequest?: (msg, phase) => Promise<unknown>; onImageRequest?: (msg, phase) => Promise<unknown>;
+  // src/sandbox/guards.ts / child-entry.ts
+  SANDBOX_GLOBALS += 'decide', 'generateImage'; SandboxApi.decide?, SandboxApi.generateImage?
+  ```
+- **boundary:** child: both take `nextCallSeq()` from the one shared counter and register in `pendingAgent`; built from the `makeAgent` template (`wrap → toCtxPromise → reRealm → sanitizeThrownError`); the opts object is structured-cloned as-is (validation is host-side, DES-266). Host: `case 'decide'`/`case 'image'` mirror `case 'agent'` (sync `currentPhase()` snapshot, deferred handler); absent handler → same fallback as `case 'workflow'`; thrown error code via `ipcErrorCode(err, 'INTERNAL_ERROR')`. No image bytes in either direction. `DETERMINISM_GUARDED[].why` text covers all three primitives. **No local value import in `guards.ts`/`child-entry.ts`.**
+- **iter:** v40
+
+### DES-273 — primitive usage accounting and reconstruction
+- **status:** draft
+- **traces:** ARCH-191, ARCH-192, ADR-091, ADR-094, TASK-270
+- **signature:**
+  ```ts
+  // src/run-guard.ts — pure, beside priceCall (untouched)
+  export function primitivePriceKnowable(entry: BookEntry | undefined, kind: PrimitiveKind): boolean;
+    // decide: entry?.price has finite in & out; image: finite in & (imageOutPerM ?? out)
+  export function pricePrimitiveCall(i: { wireCostUSD: number | null; tokens?: Tokens; entry?: BookEntry; kind: PrimitiveKind }):
+    { costUSD: number; source: 'reported' | 'estimated' } | { absent: true };
+    // reported if wireCostUSD!==null; estimated if tokens && knowable: decide priceCall(tokens, rates);
+    // image tokens.input×in + tokens.output×(imageOutPerM ?? out); else absent
+  // foldUsage guard (one line):  if (!data.tokens && typeof data.costUSD !== 'number') continue;
+  ```
+  Primitive usage transcript event `data` (written by DES-274's `recordPrimitive`): `{primitive, label, agentKey: label, phase?, phaseIndex?, frame?, startedAt, provider:'openrouter', model, costUSD, unpriced, tokens?}` — `tokens` present iff the wire reported usage (an unmeasured count stays absent, v31 rule); `costUSD:0, unpriced:true` when absent.
+  `deriveAgentRecords` (run-store.ts): when the usage event has `data.primitive` and no harness event exists, take `label/agentKey/phase/phaseIndex/frame/startedAt/model/provider` from `data`, `kind = data.primitive`, `tokens = data.tokens` (absent stays absent).
+  `observed-stats.loadFacts`: `kind = data.primitive` when present (checked before the harness-descriptor rule); `AgentCallFact.kind` += `'decide'|'image'`; `ObservedForRef` gains `decide`/`image` buckets.
+- **boundary:** agent usage events always carry `costUSD` together with `tokens` (verified agent-executor.ts:581/:728), so the guard widening is a no-op for agents — the existing IT-156/DES-188 cases stay unedited. Locks extended: live fold ≡ at-rest fold and derived ≡ snapshot with one tokenless reported-cost decide and one absent-cost image.
+- **iter:** v40
+
+### DES-274 — `RunManager._handleDecideRequest` / `_handleImageRequest`
+- **status:** draft
+- **traces:** ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271
+- **signature:**
+  ```ts
+  // src/resume-cache.ts — replay() unchanged
+  ResumePlan.invalidate(): void;               // sets _missed; every later replay() → MISS
+  // src/agent-executor.ts
+  recordPrimitive(runId: string, r: { agentId: string; kind: PrimitiveKind; label: string; model: string;
+    phase?: {title: string; index: number}; frame?: string; tokens?: Tokens; costUSD: number; unpriced: boolean;
+    state: 'done' | 'failed'; failReason?: 'timeout'|'unreachable'|'terminal'|'aborted'; startedAt: string; endedAt: string }): Promise<void>;
+    // writes the AgentRecord (provider 'openrouter', kind) + ONE kind:'usage' event (DES-273); never a 'message' event
+  // src/run-manager.ts
+  RunManagerDeps.decideSemaphore?: Semaphore  // ?? createSemaphore(16)
+  RunManagerDeps.imageSemaphore?: Semaphore   // ?? createSemaphore(2)
+  RunManagerDeps.imageInputMaxBytes?: number  // ?? 4_718_592
+  RunManagerDeps.directDeps?: DirectDeps      // ?? defaultDirectDeps(secretSource)
+  private _handleDecideRequest(runId, framePath, callSeq, msg): Promise<{answers}>;
+  private _handleImageRequest(runId, framePath, callSeq, msg): Promise<{files: ImageFile[]}>;
+  // wired in _newSandbox AND the nested host of _handleWorkflowRequest (callSeq = frameBase + n, as agent)
+  ```
+- **order (one call):** (1) `validateDecideInput`/`validateImageInput` → `PRIMITIVE_INPUT_INVALID`/`IMAGE_PATH_REFUSED`; image: `readContainedInput(root, p, imageInputMaxBytes)` for each input (its sha256 feeds the key) and `resolveOutDir(root, outDir ?? DEFAULT_OUT_DIR)` — all before any spend. Any refusal here emits a `refused` event (`attempt:0`, `errorCode`) and throws; no record. (2) effective `{model,timeoutMs,retries}` = contract default ⊕ run override (`Object.hasOwn`). (3) `key = primitiveCallKey(...)`; `v = plan.replay(callSeq, key)`; image hit → `await verifyFiles(root, v.files)` false → `plan.invalidate(); v = MISS`; hit → reply `v` (no event, no record, no spend). (4) `resolveKey()` undefined → `OPENROUTER_AUTH_MISSING`. (5) `agentId = guard.nextAgentId()` (shares `AGENT_CAP`); `markQueued(agentId, {label, agentKey: label, frame, phase})`. (6) `!primitivePriceKnowable(pin, kind) && budget.usd != null` → `markRefused(PRICE_UNKNOWN)`, `refused` event, throw. (7) `guard.assertBudget()` (pre-check) → on throw `markRefused(BUDGET_EXCEEDED)`, `refused` event. (8) `semaphore.withSlot(async () => { guard.assertBudget() /* v25 position */; markRunning; runDecide|runImage })` — slot held across that call's retries, released in `finally`. (9) image: `writeImages(root, absDir /* from step 1 */, label, callSeq, images)`; 0 written → `PRIMITIVE_FAILED` `no_output` (still priced). (10) `pricePrimitiveCall` → `guard.addUsage(tokens ?? ZERO_TOKENS, cost ?? 0, absent)`; `recordPrimitive(state:'done')`. (11) journal push `{callSeq, key, value: {answers}|{files}}` exactly as agent's success path. (12) terminal `primitive.call ok` with `engineMs = (now() − t0) − providerMsTotal − backoffMsTotal`, `t0` = handler entry. `onAttempt` maps to `retry`/`failed` events as they happen.
+- **failure paths:** `PRIMITIVE_FAILED` (after the slot) → price what the wire reported (if anything) → `recordPrimitive(state:'failed', failReason: timeout→timeout, network→unreachable, aborted→aborted, else terminal)` → `failed` event → throw; **no journal row**. Run abort mid-call → `failReason:'aborted'`, no journal row, no `PRIMITIVE_FAILED` (run-stop path). Pre-flight refusals: no journal row. On resume any un-journaled callSeq MISSes and every later call re-runs live (existing longest-unchanged-prefix rule). INV-V40-6 is realized as "one callSeq per call; journaled iff it returned".
+- **hot path (REQ-230):** pi-ai model object from `toPiAiModel(pinRow)` cached on the run entry; no `await` on ModelBook; the only non-provider I/O is the sync journal write and event emits.
+- **Sentinel sweep (REQ-229 IT):** sentinels in a `state` value, a `state` key, a question `instructions`, and `prompt`; stub first attempt returns 400 whose body echoes all of them, then 200; one run catches, one does not (populates `runs.error`); also one input-validation failure. Grep raw bytes of: operator event-log file, `journal.jsonl`, SQLite DB + WAL, `run_status`, `run_agent_log`, `/api/runs/:id`, `/api/runs/:id/agents/:agentId`, observed-stats facts, `workspace_list`, host-captured `agentThrow` messages, host stderr. **Positive control:** the stub's captured request bodies DO contain the sentinels.
+- **Overshoot bound (documented, not engineered):** concurrent calls may each pass step 8's `assertBudget` → overshoot ≤ `slots × maxPerCallCost`.
+- **iter:** v40
+
+### DES-275 — composition root: config keys, semaphores, gauges
+- **status:** draft
+- **traces:** ARCH-193, TASK-272
+- **signature:** `FileConfig.decideSlots?`, `imageSlots?`, `imageInputMaxBytes?` — in `KNOWN_FILE_CONFIG_KEYS`, each `assertPositiveInteger(..., CONFIG_PREFIX)`, forwarded in `composeConfig()` to `ServerConfig`, then `createSemaphore(cfg.decideSlots ?? 16)` / `createSemaphore(cfg.imageSlots ?? 2)` / `imageInputMaxBytes ?? 4_718_592` into `RunManagerDeps`. `/api/status` and `system_info` engine section: `decideSemaphore`, `imageSemaphore` = `semaphore.gauge()` (`{total, inUse, queued}`), beside `agentSemaphore`.
+- **boundary:** UT-219 sweep lists all three as probed entries (never excluded) — removing a forward line fails it. Caps for state/questions/body/retry-after are code constants (DES-266/267), not keys. `rwe.config.example.json` documents the three keys.
+- **iter:** v40
+
+### DES-276 — served text
+- **status:** draft
+- **traces:** ARCH-194, TASK-273
+- **signature:** `workflow_authoring_guide` gains sections `decide` and `generateImage`: declaration block (`meta.params.decisions.<label>` / `images.<label>`: `model`/`timeoutMs`/`retries` defaults, no `effort`), the two call signatures and return shapes from DES-264, the full v40 code table (one cause + one fix line each, plus `BUDGET_EXCEEDED`, `PARAM_IN_SCRIPT`, `OPENROUTER_AUTH_MISSING`), the `PRIMITIVE_FAILED` message grammar, the bool idiom `answers.<id>.probability >= 0.7`, wall time ≤ `(retries+1)×timeoutMs + retries×10s`, suggested defaults (decide `timeoutMs 5000, retries 2`; image `timeoutMs 120000, retries 0` — a timed-out image may still be billed), "a changed or missing image file regenerates that call and every later one on resume", "an error message never contains the provider's response", "with a USD budget a model the catalog could not price is refused `PRICE_UNKNOWN`", "decide/generateImage count toward the 1000 model calls per run". `GUIDE_EXAMPLES` += a decide gate (bool → fallback to `agent()`) and an image example. `tool-specs.ts`: `workflow_register` mentions both blocks; `models_list` `modelType` enum + description `'chat'` for agent(), `'decision'` for decide(), `'image-gen'` for generateImage(); `run_status` documents `agents[].kind`; `system_info` the two gauges. `workflow-view.ts`: `workflow_describe`/`workflow_get` project `decisions`/`images` (model/timeoutMs/retries). README/DEPLOY: the three config keys. `npm run gen:authoring` regenerates `docs/AUTHORING.md`.
+- **boundary:** served text = current behaviour only, no issue numbers, no version history. Examples registered by IT-118 must not hit `MODEL_TYPE_MISMATCH` (CI catalog is static → warning arm, which the test must not treat as refusal).
+- **iter:** v40
+
+### v40 class diagram
+
+```mermaid
+classDiagram
+  class RunManager {
+    -_handleDecideRequest(runId, framePath, callSeq, msg)
+    -_handleImageRequest(runId, framePath, callSeq, msg)
+  }
+  class DirectDeps {
+    fetch
+    now()
+    sleep(ms, signal)
+    attemptSignal(ms)
+    random()
+    resolveKey()
+    onAttempt(obs)
+  }
+  class CallModule {
+    runDecide(req, deps)
+    runImage(req, deps)
+    classifyAttempt(i)
+    backoffMs(a, retryAfterMs, rand)
+    toPiAiModel(row)
+    makeObservedFetch(deps, cap)
+  }
+  class Inputs {
+    validateDecideInput()
+    validateImageInput()
+    primitiveCallKey()
+    checkAnswers()
+  }
+  class ImageFiles {
+    readContainedInput()
+    resolveOutDir()
+    writeImages()
+    verifyFiles()
+  }
+  class ResumePlan {
+    replay(callSeq, key)
+    invalidate()
+  }
+  class RunGuard {
+    assertBudget()
+    addUsage(tokens, costUSD, unpriced)
+    nextAgentId()
+  }
+  class Pricing {
+    primitivePriceKnowable(entry, kind)
+    pricePrimitiveCall(i)
+  }
+  class AgentExecutor {
+    markQueued()
+    markRefused()
+    recordPrimitive(runId, r)
+  }
+  class Semaphore {
+    withSlot(fn)
+    gauge()
+  }
+  class PiAiCodec {
+    classify(model, ctx, opts)
+    generateImages(model, ctx, opts)
+  }
+  RunManager --> Inputs
+  RunManager --> ImageFiles
+  RunManager --> ResumePlan
+  RunManager --> RunGuard
+  RunManager --> Pricing
+  RunManager --> AgentExecutor
+  RunManager --> Semaphore : decideSemaphore / imageSemaphore
+  RunManager --> CallModule
+  CallModule --> DirectDeps
+  CallModule --> PiAiCodec : fetch seam, maxRetries 0
+  CallModule --> Inputs : checkAnswers
+```
+
+## Decision rationale — v40 (DES-264..276; two panel groups, round 1 only, synthesized here)
+
+- **Round 2 not run:** the two r1 documents converged on the five defects that mattered (timeout
+  reported as `aborted`; `detail` not crossing IPC; tokenless cost lost at rest; sync `replay`;
+  pre-flight-vs-slot order) and differed only on rulings below. The `*.r2.md` on disk are v37's.
+- **Timeout vs run-stop — converged (both HIGH):** engine-owned signals decide (`classifyAttempt`),
+  pi-ai's `stopReason` never does; pi-ai's own `timeoutMs` is never passed.
+- **`network` errors — not retried.** Quality proposed retryable; V40-Q9 (owner) names exactly
+  429/5xx/timeout, so the literal reading stands. One line in `classifyAttempt` if it is ever widened.
+- **Script error contract — message grammar only (adversarial A1(ii) = quality C-3 P1); P2 dropped.**
+  Quality itself called P2 separable; widening `agentThrow` touches the agent envelope (INV-V40-1) and
+  adds a script-forgeable field. `detail` lives on the `primitive.call` event.
+- **Tokenless priced events — quality's `foldUsage` widening over adversarial's zero-fill.** Zero-filled
+  tokens would record an unmeasured count as a measured zero (the v31 rule). The adversarial objection
+  (touches the agent fold) was checked against code: every agent usage event carries `costUSD` only
+  together with `tokens`, so the widening is a strict no-op for agents. Adversarial conceded in advance
+  on that condition (§5 "if they prefer changing foldUsage … I'd oppose" was premised on an agent effect
+  that does not exist).
+- **Restart reconstruction (quality #3) — adopted, adversarial silent.** Without it a primitive record
+  vanishes on restart (no harness event); one branch in `deriveAgentRecords` + one in `loadFacts`, in
+  the same task as the folds.
+- **Replay validation — `invalidate()` (adversarial A2) over `replayValidated()` (quality S-4).** Equal
+  value; `invalidate()` is three lines and duplicates no `sameKey` logic.
+- **Journal on throw — no row (adversarial A3) over a `thrown` journal value (quality S-5).** REQ-226
+  covers returned calls; mirroring the agent catch path adds no journal surface and no re-throw replay
+  branch. Cost accepted: a resumed run whose script caught a `PRIMITIVE_FAILED` re-runs that call and
+  every later one live. INV-V40-6 is realized as "journaled iff it returned" (ARCH-187 (8)'s "every
+  call … is journaled" read this way; no row is ever written for a refusal or abort).
+- **Pre-flight vs slot — both, merged.** Pure refusals and `PRICE_UNKNOWN` before the slot (quality #7,
+  adversarial B5); `assertBudget` both before (cheap fast refusal, adversarial) and inside the slot (the
+  v25 load-bearing position, quality). `markQueued` before the slot so a waiting call is visible.
+- **`retries` bound — code constant `MAX_PRIMITIVE_RETRIES = 5`, not a `Ceilings` field.** Quality C-1's
+  bound is needed (unbounded wall time otherwise); `Ceilings` is config-fed via server/facade, which
+  would put a fourth key on the composeConfig wiring path.
+- **Cross-kind label collision — allowed (adversarial A4.3 yielded on its own condition).** Records are
+  keyed by `agentId` and carry `kind`; observed stats key on model + kind; file names include callSeq;
+  mermaid treats an `agents` label structurally either way. No new error code.
+- **Shared `AGENT_CAP` (adversarial A4.1)** — one counter for all paid calls; the guide states it.
+- **Post-hoc `checkAnswers` (adversarial B3)** — REQ-220's acceptance demands choice ∈ options and
+  probability ∈ [0,1]; pi-ai checks neither. `malformed`, not retried, still priced.
+- **`onPayload → usage:{include:true}` for images (quality O-4)** — adopted as a constant so the owner's
+  tier-1 cost source (V40-Q12) can actually fire; Gate 7.5 flips it if the route rejects the field.
+  `/systemone` payload untouched.
+- **Constants** (state 128 KiB, 32 questions, prompt 16 KiB, 4 input images, 1 MiB / 32 MiB response
+  caps, backoff 250 ms base / 10 s retry-after cap) — quality C-2/S-1 numbers, adversarial agreed they
+  stay constants, not keys.
+- **Refused primitive visibility:** refusals after the replay miss go through `markQueued` +
+  `markRefused` like agent's budget refusal; input-validation refusals (before the key exists) are
+  visible only as the thrown error and a `refused` event — they cost nothing and need no record.
+- **Owner decisions:** none new. The one pending question (image+text models for `images.<label>`)
+  stays on ADR-095 and is built strictly (`image-gen`); not duplicated here.
