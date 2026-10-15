@@ -1,0 +1,46 @@
+{
+  "data": [
+    {
+      "id": "anthropic/claude-sonnet-5",
+      "name": "Claude Sonnet 5",
+      "description": "Anthropic's Claude Sonnet 5 via OpenRouter",
+      "created": 1735689600,
+      "context_length": 200000,
+      "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text"] },
+      "pricing": { "prompt": "0.000003", "completion": "0.000015" },
+      "supported_parameters": ["tools", "tool_choice", "reasoning"],
+      "top_provider": { "max_completion_tokens": 64000 }
+    },
+    {
+      "id": "typesafe/jev-1.13",
+      "name": "TypeSafe Jev 1.13",
+      "description": "TypeSafe's decision/classification model, System One protocol",
+      "created": 1735689600,
+      "context_length": 16384,
+      "architecture": { "input_modalities": ["text"], "output_modalities": ["decisions"] },
+      "pricing": { "prompt": "0.0000005", "completion": "0.000001" },
+      "supported_parameters": []
+    },
+    {
+      "id": "black-forest-labs/flux-1.1-pro",
+      "name": "FLUX 1.1 Pro",
+      "description": "Image generation, image output only",
+      "created": 1735689600,
+      "context_length": 0,
+      "architecture": { "input_modalities": ["text"], "output_modalities": ["image"] },
+      "pricing": { "prompt": "0", "completion": "0", "image": "0.04" },
+      "supported_parameters": []
+    },
+    {
+      "id": "google/gemini-2.5-flash-image",
+      "name": "Gemini 2.5 Flash Image",
+      "description": "Chat model that can also emit image output",
+      "created": 1735689600,
+      "context_length": 32768,
+      "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text", "image"] },
+      "pricing": { "prompt": "0.0000003", "completion": "0.0000025", "image_output": "0.00003" },
+      "supported_parameters": ["tools"],
+      "top_provider": { "max_completion_tokens": 8192 }
+    }
+  ]
+}

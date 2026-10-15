@@ -454,6 +454,14 @@ const PROBES: Record<string, unknown> = {
   // `toEqual` to what went in.
   casQuota: { user: 1000, author: 2000, admin: null },
   diskFloor: { percent: 10, bytes: 4096 },
+  // UT-354 (v40, DES-275, ARCH-193, TASK-272): decide/generateImage's own slots + the image input
+  // byte cap — SAME wiring-gap bug class (v11 updateFlagPath / v15 auth / v26 agentSlots) this
+  // file's whole sweep exists to catch. Red reason: none of the three keys is in
+  // `KNOWN_FILE_CONFIG_KEYS` yet, so the totality assertion below fails before composeConfig() is
+  // even called.
+  decideSlots: 16,
+  imageSlots: 2,
+  imageInputMaxBytes: 4_718_592,
 };
 
 describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defect D7)', () => {

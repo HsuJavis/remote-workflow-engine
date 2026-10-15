@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
-import { foldUsage } from '../../src/run-guard.js';
+import { foldUsage, ZERO_TOKENS } from '../../src/run-guard.js';
 import { startScript } from '../helpers/workflow-fixtures.js';
 
 async function pollStatus(mgr: RunManager, runId: string, ms = 20, maxIter = 100): Promise<any> {
@@ -188,5 +188,33 @@ describe('unpricedCalls counts a FAILED call carrying tokens too, live and at re
     // The falsifying assertion: BOTH calls are unpriced (no price book entry for either model), and
     // the failed one must count exactly like the done one — `state === 'done'` would under-count this to 1.
     expect(foldUsage(events as any).unpricedCalls).toBe(2);
+  });
+});
+
+// IT-310 (DES-273, ARCH-191/192, TASK-270): `foldUsage`'s one-line widened guard — a TOKENLESS usage
+// event with a REPORTED `costUSD` (a decide/image call whose provider never returned a token count,
+// only a wire cost) must still fold its cost in, not be skipped by the pre-existing
+// `if (!data.tokens) continue` guard, which today drops it on the floor entirely (0 tokens AND the
+// reported cost silently lost).
+// Red reason: the guard has not been widened to `if (!data.tokens && typeof data.costUSD !== 'number') continue`
+// yet — a tokenless-but-costed event is skipped, so `costUSD` stays 0 instead of the reported amount.
+describe('foldUsage widened guard: a tokenless reported-cost event is still counted (IT-310, DES-273)', () => {
+  it('a tokenless decide usage event with costUSD reported contributes to costUSD, not dropped', () => {
+    const events = [{
+      ts: '2026-10-01T00:00:00Z', kind: 'usage',
+      data: { primitive: 'decide', label: 'gate', provider: 'openrouter', model: 'typesafe/jev-1.13', costUSD: 0.002, unpriced: false },
+    }];
+    const result = foldUsage(events as any);
+    expect(result.costUSD).toBeCloseTo(0.002, 6);
+    expect(result.tokens).toEqual(ZERO_TOKENS);
+  });
+
+  it('an absent-cost image usage event (no tokens, unpriced) still counts as one unpriced call, not silently dropped', () => {
+    const events = [{
+      ts: '2026-10-01T00:00:00Z', kind: 'usage',
+      data: { primitive: 'image', label: 'hero', provider: 'openrouter', model: 'black-forest-labs/flux-1.1-pro', costUSD: 0, unpriced: true },
+    }];
+    const result = foldUsage(events as any);
+    expect(result.unpricedCalls).toBe(1);
   });
 });

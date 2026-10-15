@@ -1083,3 +1083,28 @@ describe('issue #116 reverify round-6 finding 1: NOT_TRIGGER_OWNER is not advert
     expect(section).not.toMatch(/`NOT_TRIGGER_OWNER`/);
   });
 });
+
+// UT-355 (v40, DES-276, ARCH-194, TASK-273): the guide gains `decide`/`generateImage` sections — the
+// declaration block shape, call signature/return shape, and at least one GUIDE_EXAMPLES entry for
+// each primitive (registered against the real engine at Gate 7.5 — this file checks the served
+// text + example inventory only).
+// Red reason: `buildAuthoringGuide`'s output has no "decide" nor "generateImage" section heading
+// yet, and no GUIDE_EXAMPLES entry calls either primitive.
+describe('v40: decide/generateImage served text (UT-355, DES-276)', () => {
+  it('the guide documents meta.params.decisions.<label> and meta.params.images.<label>', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/meta\.params\.decisions\.<label>/);
+    expect(text).toMatch(/meta\.params\.images\.<label>/);
+  });
+
+  it('the guide states the PRIMITIVE_FAILED message grammar matching DES-267\'s own regex', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/\(decide\|generateImage\) '.*' failed:/);
+  });
+
+  it('at least one GUIDE_EXAMPLES entry calls decide(...), at least one calls generateImage(...)', () => {
+    const scripts = (GUIDE_EXAMPLES as Array<{ script: string }>).map((e) => e.script);
+    expect(scripts.some((s) => /\bdecide\s*\(/.test(s))).toBe(true);
+    expect(scripts.some((s) => /\bgenerateImage\s*\(/.test(s))).toBe(true);
+  });
+});

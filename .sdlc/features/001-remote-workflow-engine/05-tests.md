@@ -16647,3 +16647,533 @@ File: `tests/integration/resume-legacy-substitution-admission.test.ts`(**四個�
 (c) **同一個 run 仍可 `stop()`**(round 5 finding R5-F1 的鎖 —— 判定曾被放進共用的 `_requireLive()`,連 `stop()` 一起擋掉,run 永遠無法終結);(d) **訊息所規定的復原在同一個行程內真的有效**(round 6 finding R6-F1 的鎖 —— 拒絕曾被快取記憶住,操作者照著做仍永遠被拒到行程重啟;必須在同一個 `RunManager` 實例上測,換新實例即使有 bug 也會通過)。
 **紅燈皆已驗證**:移除判定 ⇒ (a) 轉紅(`promise resolved "undefined" instead of rejecting`);還原成 round-4 的放法 ⇒ (c) 轉紅(`promise rejected … instead of resolving`);移除快取驅逐 ⇒ (d) 轉紅(復原後仍 `CONFINEMENT_UNAVAILABLE`)。四個案例全綠。
 
+
+## v40 (Gate 5, test-first RED): decide()/generateImage() via pi-ai
+
+Scope note (Karpathy — representative, not combinatorial): DES-266/267/268's boundary tables list
+~15 rows each; the UT files below pin the SHAPE of every rule family (cap, closed-key-set,
+per-type criteria, path escape, retry classification) with one-to-few cases each, not the full
+combinatorial closure. Further per-row cases may accrete at Gate 6.5/7 if a boundary proves
+under-covered. `tests/unit/model-catalog-chat-golden.test.ts` (UT-345) is Mode C (characterization,
+not RED) — written GREEN against today's parser, per the verifier contract's Mode C.
+
+Interface note: UT-348 (`parseParamContract`'s 4th-argument extension) and UT-351/UT-354's exact
+helper names are this ledger's own proposed interface — DES-271/273/274 name the data shapes, not
+every helper's call signature; TDD's test author fills that gap. A Gate 6 implementer finding a
+cleaner shape should feel free to adjust the test alongside the code, same as any other RED test.
+
+Reduction (disclosed, not silently dropped): TASK-271's four integration files (IT-311..314) and
+the VAL-261 "resume" case are reduced to their PRECONDITION ("the run completes once") rather than
+the full stop/resume/concurrency/latency claim, because none of those claims are exercisable until
+decide()/generateImage() can complete at all (TASK-269's sandbox wiring). IT-312/VAL-261 do not yet
+assert "0 further provider calls after resume" as a separate case; IT-313/VAL-264's sentinel sweep
+and VAL-265/IT-314's p95 measurement DO carry their full real assertions (positive control /
+percentile math) because those are independent of resume. E2E-011 carries the full stop/resume
+assertion since it is the one place this ledger needs the whole journey end to end.
+
+### UT-339 — v40 shared vocabulary: PRICE_UNKNOWN joins both refusal sets; 11 new ERROR_CATALOG entries
+- **status:** red
+- **traces:** DES-264, ARCH-194, ARCH-192, ARCH-190, TASK-260
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+Files: `tests/unit/sandbox-refusal-provenance.test.ts` (one new case: PRICE_UNKNOWN ∈
+`ENGINE_REFUSAL_CODES` ∩ `RECORDED_REFUSAL_CODES`), `tests/unit/v40-vocabulary.test.ts` (new file:
+the 11 codes DES-264 enumerates are keys of `ERROR_CATALOG`, each `see:'workflow_authoring_guide'`;
+`MODEL_TYPE_UNVERIFIED`'s hint reads as a warning; `OPENROUTER_AUTH_MISSING` regression anchor).
+Type-only additions (`PrimitiveKind`, `AgentRecord.kind`, `BookEntry.price.imageOutPerM`, the
+`primitive.call` EngineEvent variant) are erased by vitest's transform and are NOT asserted here —
+they are red via `npx tsc --noEmit` instead (confirmed: 13 `tests/` files red on that command, see
+report). Red confirmed: 13 new assertions fail (undefined entries / missing set members); 8
+pre-existing sandbox-refusal-provenance cases stay green.
+
+### UT-340 — `resolveOpenrouterKey(secretSource)` lifted to `src/gateway/openrouter-key.ts`
+- **status:** red
+- **traces:** DES-265, ARCH-184, TASK-261
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/openrouter-key.test.ts` (new). Resolution order secretSource -> `RWE_SECRET_OPENROUTER_API_KEY`
+-> `OPENROUTER_API_KEY` -> undefined. Red confirmed: module-not-found (`src/gateway/openrouter-key.ts`
+does not exist).
+
+### UT-341 — pure input layer `src/direct-models/inputs.ts`
+- **status:** red
+- **traces:** DES-266, ARCH-187, ARCH-183, TASK-262
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/../unit/direct-models-inputs.test.ts` (new). `validateDecideInput`/
+`validateImageInput`/`normalizeOutDir`/`canonicalJson`/`primitiveCallKey`/`checkAnswers` — caps,
+closed-key sets, per-question-type criteria, path-escape refusals, sentinel-free messages (TASK-262
+dod), `out/ig`≡`out/ig/`≡`./out/ig` key equivalence, key-order-independent `canonicalJson`. Red
+confirmed: module-not-found.
+
+### UT-342 — `src/direct-models/call.ts`: fetch seam, classifyAttempt, backoffMs, toPiAiModel, runDecide/runImage
+- **status:** red
+- **traces:** DES-267, ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093, TASK-263
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/direct-models-call.test.ts` (new) + `tests/helpers/stub-fetch.ts` (new helper,
+shared by every TASK-271 IT below). Full `classifyAttempt` precedence table (pure); `backoffMs`
+cap/jitter formula; `toPiAiModel` mapping; `makeObservedFetch` seam (SeamRecord capture,
+truncation, retry-after parsing, wireCostUSD); `runDecide`/`runImage` integration cases exactly
+TASK-263's own dod enumeration (429/503 retry, 400 no-retry, timeout-then-fail, run-abort no-retry,
+network not-retried, over-cap body, retry-after-over-cap fail-fast, maxRetries:0 hermetic). Real
+pi-ai 1.0.0 codec throughout (no module mocks) — verified against the installed package's actual
+wire shape (`node_modules/@earendil-works/pi-ai/dist/api/system-one-shared.js` /
+`openrouter-images.js`, read directly to confirm request/response shapes before writing the stub).
+Red confirmed: module-not-found.
+
+### UT-343 — direct-models import boundary (positive + negative arm)
+- **status:** red
+- **traces:** DES-267, TASK-263
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/direct-models-import-boundary.test.ts` (new). Negative arm (no file outside
+`src/direct-models/` imports `@earendil-works/pi-ai/api/*`) is vacuously true today; the POSITIVE
+arm (`call.ts` itself imports both entrypoints) is what makes this a real lock — it fails today
+(`call.ts` does not exist), so the lock cannot be satisfied by never building the feature. Red
+confirmed.
+
+### UT-344 — `src/direct-models/image-files.ts`: contained read, sniff, outDir resolution, atomic write, verifyFiles
+- **status:** red
+- **traces:** DES-268, ARCH-185, ADR-090, TASK-264
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/image-files.test.ts` (new, real tmp dir, real fs). Magic-byte sniffing;
+containment (`..`/absolute/planted-symlink-escape, incl. a symlinked outDir component); FIFO
+(not_regular); over-cap (too_large); garbage bytes (unsupported_type); atomic tmp+rename write with
+a planted symlink at the FINAL name replaced not followed; `verifyFiles` false on missing/
+sha-mismatch/symlinked. Red confirmed: module-not-found.
+
+### UT-345 — chat-rows golden (Mode C characterization, NOT red-by-design)
+- **status:** green
+- **traces:** DES-269, ARCH-190, TASK-265
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+Files: `tests/fixtures/models/openrouter-models-all.json` (new fixture, hand-built from the
+OpenRouter `?output_modalities=all` response shape — includes `typesafe/jev-1.13`, a FLUX-style
+image-only row, and `google/gemini-2.5-flash-image`), `tests/fixtures/models/chat-rows-golden.json`
+(new, machine-generated by actually running today's UNCHANGED `model-catalog.ts` parser over the
+fixture), `tests/unit/model-catalog-chat-golden.test.ts` (new). Per the verifier contract's Mode C:
+written GREEN intentionally, to be committed at this Gate-5 WIP commit BEFORE TASK-266 touches the
+parser, so TASK-266's own golden-stays-deep-equal claim (UT-346) has a committed "before".
+Confirmed green: 2/2 passing.
+
+### UT-346 — catalog: `?output_modalities=all`, `ModelType += 'decision'`, `imageOutPerM`
+- **status:** red
+- **traces:** DES-269, ARCH-190, TASK-266
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/model-catalog-decision.test.ts` (new), over the SAME fixture as UT-345. Red
+confirmed (4/7 fail): fetch URL carries no `output_modalities=all` query yet — wait, confirmed
+failing: jev row comes back `modelType:'unknown'` not `'decision'`; `imageOutPerM` absent on the
+gemini row; `models_query({modelType:'decision'})` returns no rows. The URL-query and
+"stays absent, never 0" and "golden unaffected" cases pass today (no-op until TASK-266 lands).
+
+### UT-347 — `checkPrimitiveModelType` truth table + `reachableModels` covers decisions/images
+- **status:** red
+- **traces:** DES-270, ARCH-189, ADR-095, TASK-267
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-model-type.test.ts` (new). ok / mismatch / unknown-warn /
+id-heuristic-warn / catalog-unavailable-warn / row-undefined truth table; `reachableModels`
+declared-default + run-override coverage for `decisions[*]`/`images[*]`. Red confirmed: 10/10 fail
+(`checkPrimitiveModelType` undefined; `reachableModels` doesn't read the new blocks).
+
+### UT-348 — params contract: decisions/images declared<=>used, model prefix, retries bound
+- **status:** red
+- **traces:** DES-271, ARCH-188, ARCH-189, TASK-268
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-contract.test.ts` (new). Proposes a 4th, optional
+`parseParamContract(metaParams, scriptLabels, catalog, primitiveLabels)` argument (backward
+compatible — every existing 3-arg call site untouched). `MAX_PRIMITIVE_RETRIES`;
+DECISION_UNDECLARED/DECISION_DECLARED_NOT_IN_SCRIPT/IMAGE_UNDECLARED; `model.default` must start
+`openrouter/` -> PRIMITIVE_PROVIDER_UNSUPPORTED; retries 0..5, message names "maxRetries 5". Red
+confirmed: 8/10 fail (the 2 passing cases are the deliberate backward-compat regression guard).
+
+### UT-349 — `scanPrimitiveCalls` + decide/generateImage join CALLABLE_API_NAMES aliasing refusal
+- **status:** red
+- **traces:** DES-271, ARCH-188, ARCH-189, TASK-268
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/scan-primitive-calls.test.ts` (new). `scanPrimitiveCalls(script): {decide,
+generateImage, errors}` — literal-call detection, member-expression exclusion, alias-blindness (by
+design, same gap `agent()` has); `validateScriptEntry` refuses an aliased
+`const d = decide; d(...)` the same way agent aliasing is refused (via `checkSandboxApiAliasing`
+once `CALLABLE_API_NAMES` gains the two names). Red confirmed: 12/12 fail.
+
+### UT-350 — sandbox surface: `decide`/`generateImage` as SANDBOX_GLOBALS + evaluateScript wiring
+- **status:** red
+- **traces:** DES-272, ARCH-186, TASK-269
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/sandbox-primitives.test.ts` (new). Same injected-`SandboxApi` mock policy as
+UT-304 (no fork, no real IPC — the real-fork callSeq-sharing case is IT-308). `SANDBOX_GLOBALS`
+membership; a script calling `decide()`/`generateImage()` resolves via the handler's return value;
+a rejection sanitizes the same way `agent()`'s does. Red confirmed: 4/4 fail (today: ReferenceError
+-> `SCRIPT_ERROR`, not the handler's own return/throw).
+
+### UT-351 — `primitivePriceKnowable`/`pricePrimitiveCall` (pure, run-guard.ts)
+- **status:** red
+- **traces:** DES-273, ARCH-191, ARCH-192, ADR-091, ADR-094, TASK-270
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-pricing.test.ts` (new). reported > estimated > absent; absent NEVER
+`{costUSD:0}` (v31 rule); decide estimate = `priceCall(tokens,rates)`; image estimate =
+`tokens.input×in + tokens.output×(imageOutPerM ?? out)`. Red confirmed: 11/11 fail (neither
+function exported).
+
+### UT-352 — `loadFacts` kind bucket for decide/image usage events
+- **status:** red
+- **traces:** DES-273, ARCH-191, ARCH-192, TASK-270
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/observed-stats-primitive.test.ts` (new). `kind = data.primitive` when present,
+checked before the harness-descriptor tools/prose rule; a chat agent event (no `data.primitive`)
+still falls back to prose/tools unchanged. Red confirmed: 2/3 fail (the backward-compat case
+passes, as it must).
+
+### UT-353 — `ResumePlan.invalidate()`
+- **status:** red
+- **traces:** DES-274, ARCH-187, TASK-271
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/resume-cache-invalidate.test.ts` (new). Poisons every LATER `replay()` call
+regardless of key match; idempotent. Red confirmed: 3/4 fail (the pre-invalidate "matching key
+still replays" case passes, as it must — the existing `replay()` behavior is untouched).
+
+### UT-354 — composeConfig: `decideSlots`/`imageSlots`/`imageInputMaxBytes` wiring
+- **status:** red
+- **traces:** DES-275, ARCH-193, TASK-272
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/compose-config-v2-wiring.test.ts` (3 new PROBES rows, same UT-219 sweep
+mechanism). Red confirmed: 4 new failures (the totality assertion + each of the 3 forwarding
+probes), 136 pre-existing cases in this file stay green. `/api/status`/`system_info` gauge
+rendering (server.ts) is NOT separately covered in this slice — reduction noted; TASK-272's own
+`rwe.config.example.json` doc update is deferred to Gate 6 (no test gates prose).
+
+### UT-355 — served text: decide/generateImage guide sections + GUIDE_EXAMPLES
+- **status:** red
+- **traces:** DES-276, ARCH-194, TASK-273
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/authoring-guide.test.ts` (3 new cases). `meta.params.decisions.<label>` /
+`images.<label>` documented; `PRIMITIVE_FAILED` grammar example present; at least one
+GUIDE_EXAMPLES entry calls `decide(...)`, one calls `generateImage(...)`. Red confirmed: 3/3 fail,
+106 pre-existing cases stay green. The full ERROR_CATALOG-code-row coverage for the 11 new codes is
+NOT separately tested here — it is already covered structurally once UT-339 lands (the guide's
+"Authoring rules this engine enforces" section is generated FROM `ERROR_CATALOG`, per
+`authoringErrorRows()`, so no additional guide-side code is needed for that part).
+
+### IT-308 — real forked child: callSeq sharing + decide/image IPC routing
+- **status:** red
+- **traces:** DES-272, ARCH-186, TASK-269
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-ipc-real-child.test.ts` (new). Real `node:child_process.fork`.
+`agent`/`decide`/`generateImage` interleaved draw consecutive callSeqs from ONE shared counter;
+absent `onDecideRequest` -> coded fallback (same shape as absent `onWorkflowRequest`); an uncoded
+throw from `onImageRequest` -> `INTERNAL_ERROR`, never `AGENT_ERROR`. Red confirmed: 3/3 fail
+(today: `decide is not defined` ReferenceError inside the child, for every case).
+
+### IT-309 — `deriveAgentRecords`: decide/image usage event with no harness event
+- **status:** red
+- **traces:** DES-273, ARCH-191, ARCH-192, TASK-270
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/derived-equals-snapshot.test.ts` (one new case, appended to the existing
+IT-152 file). Exercises `deriveAgentRecords` directly (pure) over a decide/image usage event with
+NO harness event — DES-273's own branch condition. Red confirmed: new case fails (no
+`data.primitive` branch yet); the pre-existing IT-152 case stays green.
+
+### IT-310 — `foldUsage`'s widened tokenless-but-costed guard
+- **status:** red
+- **traces:** DES-273, ARCH-191, ARCH-192, TASK-270
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/unmapped-column-folds.test.ts` (2 new cases, appended to the existing
+IT-156 file). A tokenless, reported-cost decide event must still fold its cost (today's
+`if (!data.tokens) continue` guard drops it entirely); an absent-cost image event still counts as
+one unpriced call. Red confirmed: 2/2 new cases fail; the 4 pre-existing cases in this file stay
+green.
+
+### IT-311 — `RunManager._handleDecideRequest`: pre-flight refusal order
+- **status:** red
+- **traces:** DES-274, ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-handlers.test.ts` (new). Real RunManager + real
+InMemoryRunStore + real sandbox fork; OpenRouter stubbed at `RunManagerDeps.directDeps` (the
+designed third-party seam). Asserts the SPECIFIC refusal code (`PRIMITIVE_INPUT_INVALID`), not
+merely "it failed" — a bare ReferenceError satisfies "fetch never called" vacuously, which this
+test's code-specific assertion does not. Red confirmed.
+
+### IT-312 — resume replay precondition: a decide+image run completes once
+- **status:** red
+- **traces:** REQ-226, DES-274, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-resume.test.ts` (new). Reduction (disclosed): the full "stop
+then resume -> 0 further provider calls" claim cannot be exercised until a first run can complete
+at all; this pins that precondition with a strong (non-vacuous) `status==='completed'` assertion.
+The full resume claim is carried by E2E-011. Red confirmed.
+
+### IT-313 — sentinel sweep with positive control
+- **status:** red
+- **traces:** REQ-229, DES-274, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-sentinel-sweep.test.ts` (new). ONE test, control-gated: the
+positive control (the stub provider actually received both sentinels) is asserted BEFORE the
+leak-free sweep, in the SAME test — a run that never reaches the provider would otherwise pass the
+leak-free check vacuously. Red confirmed (fails at the control).
+
+### IT-314 — engine overhead precondition: 100 decide() calls each complete
+- **status:** red
+- **traces:** REQ-230, DES-274, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-latency.test.ts` (new). Reduction (disclosed): pins the
+precondition (100 calls each complete) with a strong assertion; the real p95 percentile
+measurement is carried by VAL-265 (acceptance tier), not duplicated here. Red confirmed.
+
+### IT-315 — GUIDE_EXAMPLES decide/image entries register over real MCP HTTP
+- **status:** red
+- **traces:** DES-276, ARCH-194, TASK-273
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/guide-examples-register.test.ts` (UNCHANGED — the existing
+`it.each(GUIDE_EXAMPLES)` loop automatically picks up the two new entries UT-355 requires
+`GUIDE_EXAMPLES` to contain, once they exist). Red confirmed TRANSITIVELY: `GUIDE_EXAMPLES` has no
+decide/image entry yet (UT-355), so this file's `it.each` has nothing new to iterate over today —
+it will go red the moment UT-355's `scripts.some(...)` assertions force a GUIDE_EXAMPLES entry to
+exist, and this file's own `it.each` is what then proves that entry actually registers for real.
+
+### VAL-255 — REQ-220: decide(label, {state, questions}) returns a typed answer under sdk AND pi gateways
+- **status:** red
+- **traces:** REQ-220
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Real `createServer()` + real HTTP MCP
+(`workflow_register`/`workflow_publish`/`run_start`/`run_status`); OpenRouter stubbed at
+`directDeps.fetch` (the designed seam, not a mock of the SUT). Boots BOTH `gateway:'sdk'` (default)
+and `gateway:'pi'` servers and runs the identical script against each, per the owner's acceptance
+clause. Undeclared-label registration refusal case included. Red confirmed: 3/3 fail.
+
+### VAL-256 — REQ-221: generateImage(label, {prompt, inputImages?, outDir?}) — real files, no base64 in the reply
+- **status:** red
+- **traces:** REQ-221
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Asserts the reply contains no
+`data:image/`/base64 text anywhere, the file is listable via `workspace_list`, and an escaping
+`inputImages` entry is refused `IMAGE_PATH_REFUSED` before any provider call. Red confirmed: 2/2
+fail.
+
+### VAL-257 — REQ-222: catalog recognizes decision models
+- **status:** red
+- **traces:** REQ-222
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. `models_list({query:'typesafe'})` over
+real MCP HTTP against the live/static catalog wiring. Red confirmed: fails (the real catalog has no
+fixture-seeded jev row at acceptance tier today — same underlying cause as UT-346, exercised
+end-to-end).
+
+### VAL-258 — REQ-223: registration-time model-type gate (new registrations only)
+- **status:** red
+- **traces:** REQ-223
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. A `decisions.<label>.model.default`
+typed chat refuses registration naming `MODEL_TYPE_MISMATCH`, over real `workflow_register`. Red
+confirmed: registration resolves instead of rejecting today.
+
+### VAL-259 — REQ-224: static checks + served text cover decide/generateImage
+- **status:** red
+- **traces:** REQ-224
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Real `workflow_authoring_guide` tool
+call documents both signatures; an aliased `decide` call is refused at registration. The
+cold-client-authoring clause (REQ-224's last sentence) is Gate 7.5 scope (a real, unbriefed client
+agent) — this VAL covers the structural clauses only; noted, not silently dropped. Red confirmed:
+2/2 fail.
+
+### VAL-260 — REQ-225: cost accounting + USD budget
+- **status:** red
+- **traces:** REQ-225
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. An unpriceable model under a USD budget
+is refused `PRICE_UNKNOWN` BEFORE the provider is called (`stub.calls` stays empty). Red confirmed.
+
+### VAL-261 — REQ-226: resume replay precondition
+- **status:** red
+- **traces:** REQ-226
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Reduction (disclosed, same class as
+IT-312): pins "a decide+image run completes on the first attempt" at the acceptance tier; the full
+stop/resume/0-provider-calls claim is carried end-to-end by E2E-011. Red confirmed.
+
+### VAL-262 — REQ-227: limited retries then a named error; 4xx (not 429) never retries
+- **status:** red
+- **traces:** REQ-227
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-nfr.test.ts`. 429 then 400 over real MCP HTTP: one retry, then
+`PRIMITIVE_FAILED` naming HTTP 400, exactly 2 provider calls. Red confirmed.
+
+### VAL-263 — REQ-228: independent, configurable concurrency caps
+- **status:** red
+- **traces:** REQ-228
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-nfr.test.ts`. `decideSlots:1` caps two concurrent `decide()` calls
+at 1 in-flight, measured via a wrapped stub fetch that tracks live concurrency. Red confirmed.
+
+### VAL-264 — REQ-229: event log carries metadata only (positive-control-gated)
+- **status:** red
+- **traces:** REQ-229
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-nfr.test.ts`. Same control-gating discipline as IT-313: the positive
+control (stub received the sentinel) is asserted before the `/api/runs/:id` leak-free check, in the
+same test. Red confirmed: fails at the control.
+
+### VAL-265 — REQ-230: engine overhead p95 <= 200ms over 100 decide() calls (real percentile math)
+- **status:** red
+- **traces:** REQ-230
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/acceptance/val-v40-nfr.test.ts`. The one genuinely new, non-derivative measurement in
+this ledger slice (IT-314 only pins the precondition): script-observed elapsed minus a FIXED
+injected provider delay, p95 over 100 calls, computed with real nearest-rank percentile math. Red
+confirmed: fails before the percentile is ever computed (the run never completes).
+
+### E2E-011 — register -> run -> stop -> resume -> workspace_list/pull -> run_status.agents[].kind
+- **status:** red
+- **traces:** REQ-220, REQ-221, REQ-225, REQ-226, REQ-229
+- **tier:** e2e
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/e2e/decide-image-journey.test.ts` (new). The full user journey over real MCP HTTP:
+register a workflow declaring `decisions`+`images` blocks, run it to completion, confirm
+`run_status.agents[].kind` surfaces `'decide'`/`'image'`, pull the generated file via
+`workspace_list`/`workspace_pull`, then register+run a SECOND instance, `run_stop` it mid-flight,
+`run_resume` it, and confirm it completes with ZERO additional provider contact. The
+`status==='completed'` assertion on the first run is the load-bearing, non-vacuous gate — everything
+after it (kind surfacing, file pull, stop/resume replay) is correctly unreachable until the feature
+exists. Red confirmed.

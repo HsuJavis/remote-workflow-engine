@@ -95,6 +95,23 @@ describe('UT-304: sandbox refusal provenance — a WeakMap the vm cannot reach, 
     expect(parse(guardsMatch![1]!)).toEqual(parse(rmMatch![1]!));
   });
 
+  // UT-339 (v40, DES-264, ARCH-194/192/190, TASK-260): PRICE_UNKNOWN joins BOTH refusal sets (it is
+  // an engine-side pre-flight refusal a decide()/generateImage() script can legitimately catch, the
+  // same footing as BUDGET_EXCEEDED) — a direct check on the source text, not just the DRIFT GUARD's
+  // set-equality above, so the red reason names the missing code instead of "sets differ".
+  // Red reason: `guards.ts`'s `ENGINE_REFUSAL_CODES` literal does not contain 'PRICE_UNKNOWN' yet.
+  it('v40/UT-339: PRICE_UNKNOWN is a member of ENGINE_REFUSAL_CODES (guards.ts) and RECORDED_REFUSAL_CODES (run-manager.ts)', () => {
+    const guardsSrc = readFileSync(join(__dirname, '..', '..', 'src', 'sandbox', 'guards.ts'), 'utf8');
+    const runManagerSrc = readFileSync(join(__dirname, '..', '..', 'src', 'run-manager.ts'), 'utf8');
+    const guardsMatch = guardsSrc.match(/ENGINE_REFUSAL_CODES\s*=\s*new Set\(\[([^\]]*)\]\)/);
+    const rmMatch = runManagerSrc.match(/RECORDED_REFUSAL_CODES\s*=\s*new Set\(\[([^\]]*)\]\)/);
+    expect(guardsMatch).not.toBeNull();
+    expect(rmMatch).not.toBeNull();
+    const parse = (s: string) => s.split(',').map((x) => x.trim().replace(/['"]/g, '')).filter(Boolean);
+    expect(parse(guardsMatch![1]!)).toContain('PRICE_UNKNOWN');
+    expect(parse(rmMatch![1]!)).toContain('PRICE_UNKNOWN');
+  });
+
   it('FORGERY OF CODE (the v25 inheritance, not v36): a script that forges name:\'PARAM_UNKNOWN\' on a FRESH error gets the code and NO marker', async () => {
     // The *code* can always be forged (refusalCode() matches e.code OR e.name) — only the *ref* is
     // protected by the WeakMap's object identity. DES-248/DES-249's attestation-boundary sentence

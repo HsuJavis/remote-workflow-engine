@@ -1,0 +1,117 @@
+[
+  {
+    "provider": "openrouter",
+    "model": "anthropic/claude-sonnet-5",
+    "description": "Anthropic's Claude Sonnet 5 via OpenRouter",
+    "modalities": {
+      "in": [
+        "text",
+        "image"
+      ],
+      "out": [
+        "text"
+      ]
+    },
+    "contextWindow": 200000,
+    "price": {
+      "in": "$3/1M",
+      "out": "$15/1M"
+    },
+    "toolUse": true,
+    "location": "remote",
+    "ratesPerM": {
+      "in": 0.000003,
+      "out": 0.000015,
+      "cacheRead": 0.000003,
+      "cacheWrite": 0.000003
+    },
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "supported_parameters": [
+      "tools",
+      "tool_choice",
+      "reasoning"
+    ],
+    "modelType": "chat",
+    "modelTypeSource": "openrouter-modalities",
+    "maxOutputTokens": 64000,
+    "capabilities": {
+      "toolChoice": true,
+      "structuredOutput": false,
+      "promptCaching": false,
+      "vision": true,
+      "reasoning": {
+        "supported": true,
+        "efforts": null,
+        "defaultEffort": null,
+        "mandatory": null
+      }
+    },
+    "pricingDetail": {},
+    "local": null,
+    "lifecycle": {
+      "releasedAt": "2025-01-01T00:00:00.000Z",
+      "knowledgeCutoff": null,
+      "expiresAt": null
+    },
+    "benchmarks": null,
+    "ref": "openrouter/anthropic/claude-sonnet-5"
+  },
+  {
+    "provider": "openrouter",
+    "model": "google/gemini-2.5-flash-image",
+    "description": "Chat model that can also emit image output",
+    "modalities": {
+      "in": [
+        "text",
+        "image"
+      ],
+      "out": [
+        "text",
+        "image"
+      ]
+    },
+    "contextWindow": 32768,
+    "price": {
+      "in": "$0.3/1M",
+      "out": "$2.5/1M"
+    },
+    "toolUse": true,
+    "location": "remote",
+    "ratesPerM": {
+      "in": 3e-7,
+      "out": 0.0000025,
+      "cacheRead": 3e-7,
+      "cacheWrite": 3e-7
+    },
+    "effortDeclared": false,
+    "declaredSource": "upstream",
+    "supported_parameters": [
+      "tools"
+    ],
+    "modelType": "chat",
+    "modelTypeSource": "openrouter-modalities",
+    "maxOutputTokens": 8192,
+    "capabilities": {
+      "toolChoice": false,
+      "structuredOutput": false,
+      "promptCaching": false,
+      "vision": true,
+      "reasoning": {
+        "supported": false,
+        "efforts": null,
+        "defaultEffort": null,
+        "mandatory": null
+      }
+    },
+    "pricingDetail": {},
+    "local": null,
+    "lifecycle": {
+      "releasedAt": "2025-01-01T00:00:00.000Z",
+      "knowledgeCutoff": null,
+      "expiresAt": null
+    },
+    "benchmarks": null,
+    "ref": "openrouter/google/gemini-2.5-flash-image"
+  }
+]

@@ -58,4 +58,26 @@ describe('derived AgentRecords deep-equal the terminal snapshot, minus lastActiv
     expect(refused).toBeDefined();
     expect(refused.reasonCode).toBe('BUDGET_EXCEEDED');
   }, 20000);
+
+  // IT-309 (DES-273, ARCH-191/192, TASK-270): the SAME deriveAgentRecords shape-equality claim, for
+  // a decide/image usage event that has NO harness event at all (DES-273's own branch condition:
+  // "when the usage event has data.primitive and no harness event exists"). Exercises
+  // `deriveAgentRecords` directly — real pure function, no RunManager required for this slice.
+  // Red reason: `deriveAgentRecords` has no branch reading `data.primitive`; a usage event with no
+  // harness event and no `label`/`model` resolution falls through to the existing fallback shape,
+  // which carries neither `kind` nor the primitive's label/model.
+  it('IT-309: a tokenless reported-cost decide record and an absent-cost image record derive label/agentKey/model/kind from the usage event alone', () => {
+    const decideEvents: any[] = [
+      { ts: '2026-10-01T00:00:00Z', kind: 'usage', data: { primitive: 'decide', label: 'gate', agentKey: 'gate', provider: 'openrouter', model: 'typesafe/jev-1.13', startedAt: '2026-10-01T00:00:00Z', costUSD: 0.002, unpriced: false } },
+    ];
+    const imageEvents: any[] = [
+      { ts: '2026-10-01T00:00:00Z', kind: 'usage', data: { primitive: 'image', label: 'hero', agentKey: 'hero', provider: 'openrouter', model: 'black-forest-labs/flux-1.1-pro', startedAt: '2026-10-01T00:00:00Z', costUSD: 0, unpriced: true } },
+    ];
+    const transcripts = new Map<string, any>([['agent-decide', decideEvents], ['agent-image', imageEvents]]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const decideRec = records.find((r: any) => r.agentId === 'agent-decide');
+    const imageRec = records.find((r: any) => r.agentId === 'agent-image');
+    expect(decideRec).toMatchObject({ kind: 'decide', label: 'gate', model: 'typesafe/jev-1.13', costUSD: 0.002, unpriced: false });
+    expect(imageRec).toMatchObject({ kind: 'image', label: 'hero', model: 'black-forest-labs/flux-1.1-pro', unpriced: true });
+  });
 });
