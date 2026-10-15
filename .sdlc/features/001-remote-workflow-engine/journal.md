@@ -10435,3 +10435,12 @@ tsc 乾淨;乾淨全套 3391 passed / 0 failed;trace 2128/77。
 trace 2128/77 且 77 個缺口裡沒有任何 v37 id;真跑 VAL-259 五項(含巢狀 `workflow()` 那道門,
 以及「復原不輪換 secret」的結構性證明)。ledger 活的 `owner_decision: pending` 歸零。
 全程未動 8899、未動 `rwe.config.json`、未使用 `git checkout`/`restore`/`stash`。
+
+
+## 2026-10-13 — v40 Gate 1(需求釐清)
+
+起點 issue #167(Jev 1.13 無法註冊)。triage 判定非 bug:decision 模型無法經 harness 驅動,且 OpenRouter
+預設 `/models` 不列它。盤點後擁有者裁決只接 pi-ai 支援的兩類(classifier → `decide()`、image → `generateImage()`)。
+Gate 0 由 explorer 唯讀盤點(`v40-gate0-asis-map.md`)。五輪 AskUserQuestion、19 題,擁有者以「正確」確認回放;
+REQ-220..226(功能)+ REQ-227..230(nfr)。Gate 7.5 真打花費上限 US$1。迭代取 v40(程式碼註解已用 v38/v39)。
+環境備註:`/tmp` tmpfs 的 usrquota 已滿(另一專案 session 暫存 8.4G),Gate 5–7.5 跑測試前須處理或 TMPDIR 移出 /tmp。

@@ -3022,3 +3022,192 @@ REQ-215 因含 IPC 契約與安全評估,走完整七閘(含 architecture);其�
 **路徑**:REQ-218 的機制選擇有真實取捨且影響對外安全姿態,走完整七閘並開 panel。
 REQ-219 依 REQ-218 的裁決可能連動(若選 OS 層封閉,`session-options-builder` 的角色會變),
 故同輪處理、同一個 panel 一起看。
+
+## 迭代 v40 — 2026-10-13:經 pi-ai 接上兩類非 chat 模型(decision 分類器、image 生成)
+
+**迭代編號說明**:ledger 上一輪是 v37;程式碼註解裡已出現 ledger 未記錄的 "v38"/"v39" 字樣,
+為避免撞號,本輪取 **v40**。
+
+**起點**:issue #167(agent-reported,`ig-intent-eval`)—— `openrouter/typesafe/jev-1.13` 無法註冊
+(`UNKNOWN_MODEL`)。triage 查證:不是 bug。Jev 是 decision 模型(`text->decisions`),不產生文字,
+`agent()` 的 harness(sdk / pi-coding-agent)本質上無法驅動它;且 OpenRouter `GET /api/v1/models`
+(459 筆)根本不列它。進一步盤點發現:引擎的 `modelType` 只用於 `models_list` 標示與篩選,
+**除 chat 外沒有任何類型能在 script 裡執行**,註冊時也**不檢查** modelType。
+`@earendil-works/pi-ai` 1.0.0(已是直接依賴)內建 `classify()`(`typesafe-system-one` →
+OpenRouter `/systemone`)與 `generateImages()`(`openrouter-images`),其內建清單已將 `typesafe/jev-1.13`
+標為 `type:"classifier"`。擁有者裁決:**只接 pi-ai 支援的這兩類**。Gate 0 as-is 地圖:
+`v40-gate0-asis-map.md`。
+
+### Round v40 — 2026-10-13(Gate 1 訪談,擁有者在 session 中作答)
+
+| # | 問題 | 擁有者回答 | 改變了什麼 |
+|---|---|---|---|
+| V40-Q1 | Why:接 decision 模型要解決什麼? | **快又便宜的判斷 gate**(Jev 70–500ms、$0.042/M vs chat 4–10s) | 延遲與成本成為 NFR 主軸;回傳型別化答案 |
+| V40-Q2 | Why:image-gen 有具體情境嗎? | **有**;追問後:**純文字生圖與帶參考圖兩者都有可能** | REQ-221 必須支援參考圖輸入 |
+| V40-Q3 | Who:誰寫 decide()/generateImage()? | **agent 代寫為主** | guide / tools/list / 錯誤訊息須足以讓冷客端 agent 自行寫對(REQ-224) |
+| V40-Q4 | What:圖片怎麼交給後續步驟? | **寫進 workspace 檔、回傳路徑** | 不把 base64 塞進 IPC / resume-cache / log |
+| V40-Q5 | When:使用量? | **大量/即時**(webhook 每則私訊一個 run) | 並行上限、重試、引擎額外延遲成為 NFR |
+| V40-Q6 | How:哪些不能變?(複選) | **agent() 行為完全不變;既有註冊版本不被新檢查擋住;走同一把 OpenRouter key** | REQ-223 只在新註冊生效;不新增 secret |
+| V40-Q7 | How much:優先序? | **兩個都是 Must** | decide 與 generateImage 同輪交付 |
+| V40-Q8 | NFR 延遲目標? | **只要 decide 本身快就好**(引擎額外延遲 p95 ≤ 200ms;run 啟動開銷無硬目標) | REQ-230;run 啟動加速列 Won't |
+| V40-Q9 | NFR 失敗處理? | **引擎有限重試後拋錯**(只重試 429/5xx/逾時,次數可設,之後以具名錯誤拋給 script) | REQ-227 |
+| V40-Q10 | NFR 並行? | **各自獨立上限**(不佔 agent semaphore,可設定) | REQ-228 |
+| V40-Q11 | NFR 可觀測性/隱私? | **只記中繼資料,不記 state**(label/model/延遲/成本/答案;不記 state 與 prompt 本文) | REQ-229 |
+| V40-Q12 | 成本來源與算不出時? | **先用 provider 回報(usage.cost),其次 catalog 估價;run 有 USD 預算而價格完全算不出 → 拒絕該次呼叫** | REQ-225;不得把未知價格當 $0 |
+| V40-Q13 | catalog 要不要改抓 `?output_modalities=all`? | **抓 all,全部列出**(一律標 modelType) | REQ-222;`models_list` 對所有人多出非 chat 列 |
+| V40-Q14 | 命名? | **`decide()` / `generateImage()`**;宣告 `meta.params.decisions.<label>`、`meta.params.images.<label>`(model / timeoutMs / retries 必填 default,無 effort) | REQ-220/221/224 |
+| V40-Q15 | 圖片輸入/輸出路徑? | **都用 workspace 相對路徑**(參考圖不可越界、有大小上限;輸出可指定 outDir,否則引擎決定) | REQ-221;URL 與 base64 輸入列 Won't |
+| V40-Q16 | 清單回放(Round 2)正確嗎? | **正確** | REQ-220..226、REQ-227..230 與 Won't 清單定案 |
+| V40-Q17 | modelType 為 unknown/id-heuristic 時註冊怎麼辦? | **放行並附警告**(只拒「類型已知且確定不符」) | REQ-223 |
+| V40-Q18 | resume 重播 generateImage 時檔案不見? | **視為未命中、重新生成**(沿用「首次未命中後一律未命中」規則) | REQ-226 |
+| V40-Q19 | Gate 7.5 可否用正式 key 真打? | **可以,總花費上限 US$1** | 真實層驗證用 Jev + 一個便宜的圖片模型,花費需記錄 |
+
+**擁有者確認**:「正確」(V40-Q16,2026-10-13,對 REQ-220..REQ-230 及 Won't 清單的回放)。
+
+**Won't(本輪明確不做)**:embedding / rerank / tts / stt / moderation 的執行;Cloudflare 與 llama.cpp
+分類器 provider(本輪只 OpenRouter);以 URL 或 base64 傳入參考圖;回傳 base64 給 script;
+run 啟動開銷優化;把 decide/generateImage 經 harness(sdk/pi gateway)轉發。
+
+**設計限制(由 Gate 0 查證,Gate 2 必須處理,非擁有者問題)**:pi-ai 根匯出不含 `classify`/`generateImages`,
+須經 `createModels().setProvider(openrouterProvider())` + `getModelOfType()`;pi-ai 呼叫失敗不 reject,
+而是 `stopReason:'error'`;`guards.ts`/`child-entry.ts` 不能有本地 value import;新 primitive 與 agent
+共用 `callSeq`;tamper check 會拒 `scanAgentCalls` 沒看到的 label,故不得走 `_handleAgentRequest`;
+三組 refusal code 集合須同步;圖片模型多以每張計價,現行 `priceCall` 只算 token。
+
+### REQ-220 — script 可呼叫 decision 模型:`decide(label, {state, questions})`
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-037(provider-native routing / OpenRouter)、issue #167
+- **acceptance:**
+  **Given** workflow 宣告 `meta.params.decisions.gate = {model:{default:'openrouter/typesafe/jev-1.13'}, timeoutMs:{default:…}, retries:{default:…}}`
+  且 script 執行 `await decide('gate', {state:'…', questions:{order:{type:'bool', …}}})`
+  **Then** script 拿到的值含 `answers.order`,其型別與題型相符(bool 題為 0..1 的機率值,choice 題為宣告選項之一,score 題為數值),
+  且呼叫由 engine host 經 pi-ai `classify()` 發出,**不論**引擎 gateway 設為 `sdk` 或 `pi` 都可用;
+  **And Given** `decide` 用了未在 `meta.params.decisions` 宣告的 label **Then** 註冊被拒並指名該 label;
+  **And Given** 宣告了卻沒有任何 `decide()` 使用 **Then** 註冊被拒;
+  **And** 既有只用 `agent()` 的 workflow 行為與輸出逐位元不變。
+- **iter:** v40
+
+### REQ-221 — script 可呼叫圖片模型:`generateImage(label, {prompt, inputImages?, outDir?})`
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-022(workspace byte-transport)
+- **acceptance:**
+  **Given** 宣告 `meta.params.images.hero` 且 script 執行 `await generateImage('hero', {prompt:'…'})`
+  **Then** 回傳 `{files:[{path, mimeType, bytes}, …]}`,每個 `path` 是 workspace 相對路徑,該檔實際存在、
+  位元組數等於 `bytes`、內容可被解碼為宣告的 `mimeType`;回傳值中**不含**任何 base64 影像資料;
+  **And** 該檔可由 `workspace_list` 列出並以 `workspace_pull` 取回;
+  **And Given** `inputImages:['ref/a.png']`(workspace 相對路徑)**Then** 該圖被當作參考影像送出;
+  **And Given** `inputImages` 含越出 workspace 的路徑(如 `../x.png` 或絕對路徑)或超過大小上限 **Then** 呼叫以具名錯誤拒絕,provider 未被呼叫;
+  **And Given** `outDir:'out/ig'` **Then** 檔案落在該目錄下;未指定時落在引擎決定的固定前綴下。
+- **iter:** v40
+
+### REQ-222 — catalog 收錄所有輸出類型,並辨識 decision 類型
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-039、REQ-040(models_list catalog)、REQ-078(modalities / modelType)
+- **acceptance:**
+  **Given** catalog 從 OpenRouter 同步 **Then** 使用 `?output_modalities=all`,`models_list({query:'typesafe'})` 會列出 `openrouter/typesafe/jev-1.13`,且 `modelType:'decision'`;
+  **And** 輸出為 `['decisions']` 的模型一律標為 `decision`;純圖片輸出標為 `image-gen`;
+  **And** `models_list` 的 `modelType` filter 可接受 `decision`,`models_list({modelType:'decision'})` 只回 decision 列;
+  **And** 先前就存在的 chat 列的 modelType 與欄位不因改抓 all 而改變。
+- **iter:** v40
+
+### REQ-223 — 註冊時檢查模型類型與 primitive 相符(只對新註冊)
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-088(註冊參數)、REQ-078
+- **acceptance:**
+  **Given** 新註冊的 `params.agents.<label>.model.default` 是 catalog 確定為 `embedding`(或其他非 chat 已知類型)的模型
+  **Then** 註冊以具名 refusal code 拒絕,訊息指出 label、模型、其類型與 `agent()` 需要的類型;
+  **And** 同理 `decisions.<label>` 須為 `decision`、`images.<label>` 須為 `image-gen`;
+  **And Given** 模型的 modelType 為 `unknown` 或來源為 `id-heuristic` **Then** 註冊成功,但回應中帶有指出該 label 的警告;
+  **And Given** 一個在本輪之前已註冊、模型類型不符的既有版本 **Then** 它的 admission 與 resume 不被這項新檢查拒絕。
+- **iter:** v40
+
+### REQ-224 — 靜態檢查與 served text 涵蓋新 primitive
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-112(Mermaid 詞彙)、REQ-061(meta.phases)
+- **acceptance:**
+  **Given** script 以別名引用(`const d = decide; d(...)`) **Then** 註冊被拒,與 `agent` 別名的既有行為相同;
+  **And** 註冊時對 `decide`/`generateImage` 的 label 做與 `agent` 相同的「宣告即使用、使用即宣告」檢查;
+  **And** 作者提供的 mermaid 圖若標示 decide/generateImage 的 label,label 檢查視其為合法節點;
+  **And** `tools/list` 與 authoring guide 描述兩個 primitive 的簽名、宣告方式、回傳形狀與錯誤碼,只寫現行行為;
+  一個只讀過 guide 的冷客端 agent 能寫出一次註冊成功的 decide workflow(Gate 7.5 以實際 MCP 呼叫證明)。
+- **iter:** v40
+
+### REQ-225 — decide / generateImage 的成本計入 run 用量並受預算約束
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-127(依價格算花費、budget 以花費計)、REQ-120
+- **相關:** v31 的「未量到的用量是缺席,不是零」裁定同樣適用 —— 算不出的成本不得記成 0
+- **acceptance:**
+  **Given** provider 回報了 `usage.cost` **Then** 該值計入 run usage 與預算;
+  **And Given** provider 沒回報但 catalog 有每張或每 token 價格 **Then** 以 catalog 估價計入,並標示為估算;
+  **And Given** run 設有 USD 預算且該模型完全算不出價格 **Then** 該次呼叫在送出前以具名錯誤拒絕,provider 未被呼叫;
+  **And Given** run 未設 USD 預算且價格算不出 **Then** 呼叫照常進行,成本記為缺席(不是 0),run 摘要顯示該次未計價;
+  **And Given** 已達預算 **Then** 下一次 decide/generateImage 以 `BUDGET_EXCEEDED` 拒絕,與 agent 相同;
+  **And** 它們的觀測統計不混入 chat 的 tools/prose 統計桶。
+- **iter:** v40
+
+### REQ-226 — resume 時重播 decide / generateImage,不重複呼叫 provider
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-059(journal 重播)、REQ-044(resume-safe journal)
+- **acceptance:**
+  **Given** 一個 run 完成了 2 次 decide 和 1 次 generateImage 後被 stop 再 resume
+  **Then** 重播期間 provider 呼叫次數為 0,script 拿到與原先相同的答案與相同的檔案路徑;
+  **And Given** resume 時某張先前產生的圖檔已不在 workspace **Then** 該次視為未命中、重新生成,其後所有呼叫依既有規則一律未命中。
+- **iter:** v40
+
+### REQ-227 — (nfr) 有限重試後拋出具名錯誤
+
+- **status:** draft
+- **kind:** nfr
+- **acceptance:**
+  **Given** provider 回 429 / 5xx 或逾時 **Then** 引擎重試至多 `retries` 次(宣告值,可被 run 覆寫),然後以具名錯誤碼拋給 script,script 可 `try/catch` 並降級;
+  **And Given** 4xx(429 以外)**Then** 不重試、立即拋錯;
+  **And** 每次重試與最終失敗都出現在事件 log。
+- **iter:** v40
+
+### REQ-228 — (nfr) 獨立、可設定的並行上限
+
+- **status:** draft
+- **kind:** nfr
+- **acceptance:**
+  **Given** decide 並行上限設為 N **Then** 同時進行中的 decide 呼叫不超過 N(以 stub provider 計數證明),
+  且 agent semaphore 全被佔滿時 decide 仍可進行;generateImage 同理,有自己的上限;
+  **And** 上限可由設定檔調整,不需改程式。
+- **iter:** v40
+
+### REQ-229 — (nfr) 事件 log 只記中繼資料
+
+- **status:** draft
+- **kind:** nfr
+- **acceptance:**
+  **Given** 一次 decide 的 `state` 含一段唯一的哨兵字串,generateImage 的 `prompt` 含另一段
+  **Then** run 結束後,事件 log、dashboard API、run 的觀測輸出中**都搜不到**這兩段字串;
+  **And** 每次呼叫的事件含 label、model、延遲、成本(或估算標記)、decide 的答案、generateImage 的檔案路徑。
+- **iter:** v40
+
+### REQ-230 — (nfr) 引擎加在單次 decide 上的額外延遲 p95 ≤ 200ms
+
+- **status:** draft
+- **kind:** nfr
+- **acceptance:**
+  **Given** provider 以固定延遲回應的 stub,連續 100 次 decide
+  **Then** (script 端觀測到的耗時 − provider 端耗時)的 p95 ≤ 200ms。
+- **iter:** v40
+
+**路徑**:新整合(pi-ai 函式庫進 engine host)、新 primitive、新 IPC 型別、catalog 抓取方式變更,
+影響面跨 sandbox / IPC / run-manager / params / catalog / 預算 / resume / served text,
+走完整 Gate 2→8。Gate 1.5:QM(開發工具,無安全或實體影響),不需安全工作產物;
+但 REQ-221 的路徑約束與 REQ-229 的個資邊界由 Gate 2 panel 的安全視角審查。
