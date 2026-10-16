@@ -3230,7 +3230,7 @@ export class RunManager {
       const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
       const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
@@ -3250,7 +3250,7 @@ export class RunManager {
     const unpriced = 'absent' in priced;
     entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
     if (entry.spawner instanceof AgentExecutor) {
-      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
     }
     // step (11): journal push, exactly as agent()'s own success path.
     const value = { answers: outcome.answers };
@@ -3399,7 +3399,7 @@ export class RunManager {
       const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
       const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
@@ -3421,7 +3421,7 @@ export class RunManager {
     entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
     if (written.files.length === 0) {
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
       }
       const noOutputErr = codedError('PRIMITIVE_FAILED', `PRIMITIVE_FAILED: generateImage('${label}') produced no usable image output after ${written.dropped} dropped`, { reason: 'no_output', attempts: outcome.attempts });
       this._recordPrimitiveRefusal(entry, framePath, callSeq, noOutputErr);
@@ -3432,7 +3432,7 @@ export class RunManager {
       throw noOutputErr;
     }
     if (entry.spawner instanceof AgentExecutor) {
-      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
     }
     const value = { files: written.files };
     const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };

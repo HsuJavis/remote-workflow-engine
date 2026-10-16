@@ -40,7 +40,7 @@ afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
 describe('VAL-262: REQ-227 — limited retries then a named error; 4xx (not 429) never retries', () => {
   it('a 429 then a 400: retries the 429 once, then fails fast on the 400 — naming HTTP 400, never retried further', async () => {
     const stub = makeStubFetch([{ status: 429 }, { status: 400 }]);
-    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r227'), directDeps: { fetch: stub.fetch } } as never);
+    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r227'), directDeps: { fetch: stub.fetch, resolveKey: () => 'sk-test' } } as never);
     try {
       const script = `
         export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 2000 }, retries: { type: 'number', default: 3 } } } } };
@@ -63,9 +63,11 @@ describe('VAL-263: REQ-228 — independent, configurable concurrency caps', () =
     const originalFetch = stub.fetch;
     const trackedFetch = (async (...args: Parameters<typeof fetch>) => {
       inFlight++; maxConcurrent = Math.max(maxConcurrent, inFlight);
-      try { return await originalFetch(...args); } finally { inFlight--; }
+      // v40 Gate 6 R-32: hold each provider leg 50ms so two uncapped calls really overlap — without
+      // it an instantly-resolving stub makes `maxConcurrent <= 1` hold even with no cap at all.
+      try { await new Promise((r) => setTimeout(r, 50)); return await originalFetch(...args); } finally { inFlight--; }
     }) as typeof fetch;
-    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r228'), decideSlots: 1, directDeps: { fetch: trackedFetch } } as never);
+    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r228'), decideSlots: 1, directDeps: { fetch: trackedFetch, resolveKey: () => 'sk-test' } } as never);
     try {
       const script = `
         export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
@@ -78,6 +80,7 @@ describe('VAL-263: REQ-228 — independent, configurable concurrency caps', () =
       const started: any = await runScriptVia(callerFor(s), script, {});
       const view = await poll(s, started.runId ?? started.result?.runId);
       expect(view.status).toBe('completed');
+      expect(stub.calls).toHaveLength(2); // both decides really reached the provider
       expect(maxConcurrent).toBeLessThanOrEqual(1);
     } finally { await s.close(); }
   });
@@ -87,7 +90,7 @@ describe('VAL-264: REQ-229 — event log carries metadata only', () => {
   it('a sentinel in state never appears in /api/runs/:id or the agent log, over real HTTP', async () => {
     const SENTINEL = 'val264-sentinel-7b2c';
     const stub = makeStubFetch([{ status: 200, body: { answers: { ok: { type: 'noul', noul: 0.5 } } } }]);
-    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r229'), directDeps: { fetch: stub.fetch } } as never);
+    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r229'), directDeps: { fetch: stub.fetch, resolveKey: () => 'sk-test' } } as never);
     try {
       const script = `
         export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };

@@ -16671,11 +16671,11 @@ percentile math) because those are independent of resume. E2E-011 carries the fu
 assertion since it is the one place this ledger needs the whole journey end to end.
 
 ### UT-339 — v40 shared vocabulary: PRICE_UNKNOWN joins both refusal sets; 11 new ERROR_CATALOG entries
-- **status:** red
+- **status:** green
 - **traces:** DES-264, ARCH-194, ARCH-192, ARCH-190, TASK-260
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 Files: `tests/unit/sandbox-refusal-provenance.test.ts` (one new case: PRICE_UNKNOWN ∈
@@ -16689,11 +16689,11 @@ report). Red confirmed: 13 new assertions fail (undefined entries / missing set 
 pre-existing sandbox-refusal-provenance cases stay green.
 
 ### UT-340 — `resolveOpenrouterKey(secretSource)` lifted to `src/gateway/openrouter-key.ts`
-- **status:** red
+- **status:** green
 - **traces:** DES-265, ARCH-184, TASK-261
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/openrouter-key.test.ts` (new). Resolution order secretSource -> `RWE_SECRET_OPENROUTER_API_KEY`
@@ -16701,11 +16701,11 @@ File: `tests/unit/openrouter-key.test.ts` (new). Resolution order secretSource -
 does not exist).
 
 ### UT-341 — pure input layer `src/direct-models/inputs.ts`
-- **status:** red
+- **status:** green
 - **traces:** DES-266, ARCH-187, ARCH-183, TASK-262
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/../unit/direct-models-inputs.test.ts` (new). `validateDecideInput`/
@@ -16715,11 +16715,11 @@ dod), `out/ig`≡`out/ig/`≡`./out/ig` key equivalence, key-order-independent `
 confirmed: module-not-found.
 
 ### UT-342 — `src/direct-models/call.ts`: fetch seam, classifyAttempt, backoffMs, toPiAiModel, runDecide/runImage
-- **status:** red
+- **status:** green
 - **traces:** DES-267, ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093, TASK-263
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/direct-models-call.test.ts` (new) + `tests/helpers/stub-fetch.ts` (new helper,
@@ -16734,11 +16734,11 @@ wire shape (`node_modules/@earendil-works/pi-ai/dist/api/system-one-shared.js` /
 Red confirmed: module-not-found.
 
 ### UT-343 — direct-models import boundary (positive + negative arm)
-- **status:** red
+- **status:** green
 - **traces:** DES-267, TASK-263
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/direct-models-import-boundary.test.ts` (new). Negative arm (no file outside
@@ -16748,11 +16748,11 @@ arm (`call.ts` itself imports both entrypoints) is what makes this a real lock �
 confirmed.
 
 ### UT-344 — `src/direct-models/image-files.ts`: contained read, sniff, outDir resolution, atomic write, verifyFiles
-- **status:** red
+- **status:** green
 - **traces:** DES-268, ARCH-185, ADR-090, TASK-264
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/image-files.test.ts` (new, real tmp dir, real fs). Magic-byte sniffing;
@@ -16762,11 +16762,11 @@ a planted symlink at the FINAL name replaced not followed; `verifyFiles` false o
 sha-mismatch/symlinked. Red confirmed: module-not-found.
 
 ### UT-345 — chat-rows golden (Mode C characterization, NOT red-by-design)
-- **status:** red
+- **status:** green
 - **traces:** DES-269, ARCH-190, TASK-265
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **delta (v40 Gate 6, ruling R-23):** the fixture's retired `black-forest-labs/flux-1.1-pro` image-only row is replaced by the LIVE `black-forest-labs/flux-3-image` row (copied verbatim from `https://openrouter.ai/api/v1/models?output_modalities=all`, 2026-10-16); it is image-only, so not a chat row and the golden is untouched. The `google/gemini-2.5-flash-image` row is left as-is (it is a text-output row inside the golden; re-copying the live row would change the golden). The sanity case now expects `flux-3-image`. Measured green (2/2) after the swap.
 - **delta (v40 Gate 6, 2026-10-16):** RED since 0c31a63 — the Gate 6 WIP placed `imageOutPerM` INSIDE gemini's display `price` object, changing a pre-existing chat row (REQ-222 last clause). The comparison now strips only the additive TOP-LEVEL `imageOutPerM` key (DES-269/DES-279 deltas); the golden file (provenance `0e19fae`, R-1) is unchanged. Green again when TASK-275 moves the field.
 - **iter:** v40
@@ -16781,11 +16781,11 @@ parser, so TASK-266's own golden-stays-deep-equal claim (UT-346) has a committed
 Confirmed green: 2/2 passing.
 
 ### UT-346 — catalog: `?output_modalities=all`, `ModelType += 'decision'`, `imageOutPerM`
-- **status:** red
+- **status:** green
 - **traces:** DES-269, ARCH-190, TASK-266
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **delta (v40 Gate 6, ruling R-23):** the image-only case reads `black-forest-labs/flux-3-image` (live row) instead of the retired `flux-1.1-pro`. Measured green (7/7) after the swap.
 - **delta (v40 Gate 6, R-4):** the gemini assertion now reads the TOP-LEVEL `imageOutPerM` (and asserts the display `price` does NOT carry it); the absent case also asserts no top-level key; the golden case strips only the additive top-level `imageOutPerM` (same rule as UT-345). Red (2/7) for the right reason: the 0c31a63 impl puts the rate inside `price`.
 - **iter:** v40
@@ -16797,11 +16797,11 @@ gemini row; `models_query({modelType:'decision'})` returns no rows. The URL-quer
 "stays absent, never 0" and "golden unaffected" cases pass today (no-op until TASK-266 lands).
 
 ### UT-347 — `checkPrimitiveModelType` truth table + `reachableModels` covers decisions/images
-- **status:** red
+- **status:** green
 - **traces:** DES-270, ARCH-189, ADR-095, TASK-267
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-model-type.test.ts` (new). ok / mismatch / unknown-warn /
@@ -16810,11 +16810,11 @@ declared-default + run-override coverage for `decisions[*]`/`images[*]`. Red con
 (`checkPrimitiveModelType` undefined; `reachableModels` doesn't read the new blocks).
 
 ### UT-348 — params contract: decisions/images declared<=>used, model prefix, retries bound
-- **status:** red
+- **status:** green
 - **traces:** DES-271, ARCH-188, ARCH-189, TASK-268
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-contract.test.ts` (new). Proposes a 4th, optional
@@ -16825,11 +16825,11 @@ DECISION_UNDECLARED/DECISION_DECLARED_NOT_IN_SCRIPT/IMAGE_UNDECLARED; `model.def
 confirmed: 8/10 fail (the 2 passing cases are the deliberate backward-compat regression guard).
 
 ### UT-349 — `scanPrimitiveCalls` + decide/generateImage join CALLABLE_API_NAMES aliasing refusal
-- **status:** red
+- **status:** green
 - **traces:** DES-271, ARCH-188, ARCH-189, TASK-268
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **delta (v40 Gate 6, R-10):** the two `r.errors` assertions were renamed `r.violations` (DES-271 delta renames the field); red until TASK-268 returns `violations`.
 - **iter:** v40
 
@@ -16840,11 +16840,11 @@ design, same gap `agent()` has); `validateScriptEntry` refuses an aliased
 once `CALLABLE_API_NAMES` gains the two names). Red confirmed: 12/12 fail.
 
 ### UT-350 — sandbox surface: `decide`/`generateImage` as SANDBOX_GLOBALS + evaluateScript wiring
-- **status:** red
+- **status:** green
 - **traces:** DES-272, ARCH-186, TASK-269
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/sandbox-primitives.test.ts` (new). Same injected-`SandboxApi` mock policy as
@@ -16854,11 +16854,11 @@ a rejection sanitizes the same way `agent()`'s does. Red confirmed: 4/4 fail (to
 -> `SCRIPT_ERROR`, not the handler's own return/throw).
 
 ### UT-351 — `primitivePriceKnowable`/`pricePrimitiveCall` (pure, run-guard.ts)
-- **status:** red
+- **status:** green
 - **traces:** DES-273, ARCH-191, ARCH-192, ADR-091, ADR-094, TASK-270
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **delta (v40 Gate 6, R-4):** `IMAGE_ENTRY_WITH_IMAGE_OUT` had `imageOutPerM` BESIDE `price` (nothing reads it there — red for the wrong reason); moved INSIDE `price`, and the image estimate recomputed in DES-279's unit (`tokens.output × imageOutPerM / 1e6`, 1290 output tokens). Red now for the right reason: the impl multiplies by the per-M figure (38700 vs 0.0387).
 - **iter:** v40
 
@@ -16868,11 +16868,11 @@ File: `tests/unit/primitive-pricing.test.ts` (new). reported > estimated > absen
 function exported).
 
 ### UT-352 — `loadFacts` kind bucket for decide/image usage events
-- **status:** red
+- **status:** green
 - **traces:** DES-273, ARCH-191, ARCH-192, TASK-270
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/observed-stats-primitive.test.ts` (new). `kind = data.primitive` when present,
@@ -16881,11 +16881,11 @@ still falls back to prose/tools unchanged. Red confirmed: 2/3 fail (the backward
 passes, as it must).
 
 ### UT-353 — `ResumePlan.invalidate()`
-- **status:** red
+- **status:** green
 - **traces:** DES-274, ARCH-187, TASK-271
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/resume-cache-invalidate.test.ts` (new). Poisons every LATER `replay()` call
@@ -16893,11 +16893,11 @@ regardless of key match; idempotent. Red confirmed: 3/4 fail (the pre-invalidate
 still replays" case passes, as it must — the existing `replay()` behavior is untouched).
 
 ### UT-354 — composeConfig: `decideSlots`/`imageSlots`/`imageInputMaxBytes` wiring
-- **status:** red
+- **status:** green
 - **traces:** DES-275, ARCH-193, TASK-272
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/compose-config-v2-wiring.test.ts` (3 new PROBES rows, same UT-219 sweep
@@ -16907,11 +16907,11 @@ rendering (server.ts) is NOT separately covered in this slice — reduction note
 `rwe.config.example.json` doc update is deferred to Gate 6 (no test gates prose).
 
 ### UT-355 — served text: decide/generateImage guide sections + GUIDE_EXAMPLES
-- **status:** red
+- **status:** green
 - **traces:** DES-276, ARCH-194, TASK-273
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/authoring-guide.test.ts` (3 new cases). `meta.params.decisions.<label>` /
@@ -16923,11 +16923,11 @@ NOT separately tested here — it is already covered structurally once UT-339 la
 `authoringErrorRows()`, so no additional guide-side code is needed for that part).
 
 ### IT-308 — real forked child: callSeq sharing + decide/image IPC routing
-- **status:** red
+- **status:** green
 - **traces:** DES-272, ARCH-186, TASK-269
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/primitive-ipc-real-child.test.ts` (new). Real `node:child_process.fork`.
@@ -16937,11 +16937,11 @@ throw from `onImageRequest` -> `INTERNAL_ERROR`, never `AGENT_ERROR`. Red confir
 (today: `decide is not defined` ReferenceError inside the child, for every case).
 
 ### IT-309 — `deriveAgentRecords`: decide/image usage event with no harness event
-- **status:** red
+- **status:** green
 - **traces:** DES-273, ARCH-191, ARCH-192, TASK-270
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/derived-equals-snapshot.test.ts` (one new case, appended to the existing
@@ -16950,11 +16950,11 @@ NO harness event — DES-273's own branch condition. Red confirmed: new case fai
 `data.primitive` branch yet); the pre-existing IT-152 case stays green.
 
 ### IT-310 — `foldUsage`'s widened tokenless-but-costed guard
-- **status:** red
+- **status:** green
 - **traces:** DES-273, ARCH-191, ARCH-192, TASK-270
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/unmapped-column-folds.test.ts` (2 new cases, appended to the existing
@@ -16964,11 +16964,11 @@ one unpriced call. Red confirmed: 2/2 new cases fail; the 4 pre-existing cases i
 green.
 
 ### IT-311 — `RunManager._handleDecideRequest`: pre-flight refusal order
-- **status:** red
+- **status:** green
 - **traces:** DES-274, ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/primitive-handlers.test.ts` (new). Real RunManager + real
@@ -17018,11 +17018,11 @@ File: `tests/integration/primitive-latency.test.ts` (new). Originally pinned onl
 (100 calls each complete); since ruling R-19 it carries the REQ-230 p95 bound itself (see delta).
 
 ### IT-315 — GUIDE_EXAMPLES decide/image entries register over real MCP HTTP
-- **status:** red
+- **status:** green
 - **traces:** DES-276, ARCH-194, TASK-273
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/guide-examples-register.test.ts` (UNCHANGED — the existing
@@ -17033,12 +17033,13 @@ it will go red the moment UT-355's `scripts.some(...)` assertions force a GUIDE_
 exist, and this file's own `it.each` is what then proves that entry actually registers for real.
 
 ### VAL-255 — REQ-220: decide(label, {state, questions}) returns a typed answer under sdk AND pi gateways
-- **status:** red
+- **status:** green
 - **traces:** REQ-220
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-32):** test defects fixed, intent kept: `directDeps.resolveKey` injected; ONE endpoint-routed stub per server (sdk and pi no longer share an ordered stub); the return value is read from `run_result` (run_status carries no script value), now also asserting `answers.order.type === 'bool'`; R-27 `state` fixture is an object. Positive control: dropping `outcome.answers` in `_handleDecideRequest` turns it red. GREEN.
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Real `createServer()` + real HTTP MCP
 (`workflow_register`/`workflow_publish`/`run_start`/`run_status`); OpenRouter stubbed at
@@ -17047,12 +17048,13 @@ and `gateway:'pi'` servers and runs the identical script against each, per the o
 clause. Undeclared-label registration refusal case included. Red confirmed: 3/3 fail.
 
 ### VAL-256 — REQ-221: generateImage(label, {prompt, inputImages?, outDir?}) — real files, no base64 in the reply
-- **status:** red
+- **status:** green
 - **traces:** REQ-221
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-32):** `resolveKey` + per-server stub; files read from `run_result` (non-empty); refusal read at `result.error`, now pinning the reason (`/ escape$/`) and zero image-provider calls. Positive controls: writing 0 images turns the bare-prompt case red; removing BOTH escape checks in `readContainedInput` turns the escape case red (removing only the lexical one does not — the realpath check still catches it). GREEN.
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Asserts the reply contains no
 `data:image/`/base64 text anywhere, the file is listable via `workspace_list`, and an escaping
@@ -17060,11 +17062,11 @@ File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Asserts the reply co
 fail.
 
 ### VAL-257 — REQ-222: catalog recognizes decision models
-- **status:** red
+- **status:** green
 - **traces:** REQ-222
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. `models_list({query:'typesafe'})` over
@@ -17073,11 +17075,11 @@ fixture-seeded jev row at acceptance tier today — same underlying cause as UT-
 end-to-end).
 
 ### VAL-258 — REQ-223: registration-time model-type gate (new registrations only)
-- **status:** red
+- **status:** green
 - **traces:** REQ-223
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. A `decisions.<label>.model.default`
@@ -17085,11 +17087,11 @@ typed chat refuses registration naming `MODEL_TYPE_MISMATCH`, over real `workflo
 confirmed: registration resolves instead of rejecting today.
 
 ### VAL-259 — REQ-224: static checks + served text cover decide/generateImage
-- **status:** red
+- **status:** green
 - **traces:** REQ-224
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Real `workflow_authoring_guide` tool
@@ -17099,11 +17101,11 @@ agent) — this VAL covers the structural clauses only; noted, not silently drop
 2/2 fail.
 
 ### VAL-260 — REQ-225: cost accounting + USD budget
-- **status:** red
+- **status:** green
 - **traces:** REQ-225
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **delta (v40 Gate 6 follow-up):** the old ref `openrouter/typesafe/unpriced-model` was unlisted, so registration refused `UNKNOWN_MODEL` before the budget path. No live decision model is unpriced, so the test now uses a CONTROLLED catalog stub (`modelCatalog` → `buildCatalog` over a listed `typesafe/unpriced-decider` row, `output_modalities:['decisions']`, no `pricing`), `budget:{usd:1}`, `directDeps:{fetch, resolveKey}`; also fixed the error read path (`run_status` carries it at `result.error`, not top-level `error`). Intent kept: PRICE_UNKNOWN, stub fetch count 0. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` into RunManager (TASK-272 note). With `OPENROUTER_API_KEY=sk-test` in env it passes (diagnostic only), so the pricing/refusal path itself works.
 - **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-260 already has it) the case is green; see IMPL-407 note 7.
 - **iter:** v40
@@ -17112,57 +17114,61 @@ File: `tests/acceptance/val-v40-decide-image-core.test.ts`. An unpriceable model
 is refused `PRICE_UNKNOWN` BEFORE the provider is called (`stub.calls` stays empty). Red confirmed.
 
 ### VAL-261 — REQ-226: resume replay precondition
-- **status:** red
+- **status:** green
 - **traces:** REQ-226
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-32):** the question is named `order` to match the stub's answer (was `ok` → `malformed`); `resolveKey` + per-server stub. Positive control: a throwing decide handler turns it red. GREEN.
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Reduction (disclosed, same class as
 IT-312): pins "a decide+image run completes on the first attempt" at the acceptance tier; the full
 stop/resume/0-provider-calls claim is carried end-to-end by E2E-011. Red confirmed.
 
 ### VAL-262 — REQ-227: limited retries then a named error; 4xx (not 429) never retries
-- **status:** red
+- **status:** green
 - **traces:** REQ-227
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-32):** `directDeps.resolveKey` injected. Positive control: classifying 4xx as retryable turns it red. GREEN.
 
 File: `tests/acceptance/val-v40-nfr.test.ts`. 429 then 400 over real MCP HTTP: one retry, then
 `PRIMITIVE_FAILED` naming HTTP 400, exactly 2 provider calls. Red confirmed.
 
 ### VAL-263 — REQ-228: independent, configurable concurrency caps
-- **status:** red
+- **status:** green
 - **traces:** REQ-228
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-32):** `resolveKey` injected; each stub leg now waits 50ms so two uncapped calls genuinely overlap, and both calls must reach the provider. Positive control: `createSemaphore(16)` ignoring `decideSlots` turns it red. GREEN.
 
 File: `tests/acceptance/val-v40-nfr.test.ts`. `decideSlots:1` caps two concurrent `decide()` calls
 at 1 in-flight, measured via a wrapped stub fetch that tracks live concurrency. Red confirmed.
 
 ### VAL-264 — REQ-229: event log carries metadata only (positive-control-gated)
-- **status:** red
+- **status:** green
 - **traces:** REQ-229
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-32):** `resolveKey` injected (the positive control on provider contact now actually sees the sentinel). Positive control: leaking `state` into the primitive record's label turns it red. GREEN.
 
 File: `tests/acceptance/val-v40-nfr.test.ts`. Same control-gating discipline as IT-313: the positive
 control (stub received the sentinel) is asserted before the `/api/runs/:id` leak-free check, in the
 same test. Red confirmed: fails at the control.
 
 ### VAL-265 — REQ-230: engine overhead p95 <= 200ms over 100 decide() calls (real percentile math)
-- **status:** red
+- **status:** green
 - **traces:** REQ-230
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **delta (v40 Gate 6 follow-up):** the in-script `Date.now()` is removed (the sandbox determinism guard refuses it, so the case could never pass). Now measured as IT-314: 101 calls, fixed 20ms stub delay, stub-side `performance.now()` timestamps, overhead_i = `start[i+1] − end[i]`, 100 samples, p95 ≤ 200ms; `directDeps:{fetch, resolveKey}`. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` (TASK-272 note).
 - **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-260 already has it) the case is green; see IMPL-407 note 7.
 - **iter:** v40
@@ -17172,13 +17178,14 @@ this ledger slice (IT-314 only pins the precondition): script-observed elapsed m
 injected provider delay, p95 over 100 calls, computed with real nearest-rank percentile math. Red
 confirmed: fails before the percentile is ever computed (the run never completes).
 
-### E2E-011 — register -> run -> stop -> resume -> workspace_list/pull -> run_status.agents[].kind
-- **status:** red
+### E2E-011 — register -> run -> suspend -> resume -> workspace_list/pull -> run_status.agents[].kind
+- **status:** green
 - **traces:** REQ-220, REQ-221, REQ-225, REQ-226, REQ-229
 - **tier:** e2e
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
+- **delta (v40 Gate 6 round 4, R-33 — step 4 redesigned):** `run_stop` is terminal, so the journey now uses `run_suspend`. The script is d1 → image → d2 → `agent('hold')`; a fake gateway holds that agent call only when the test arms it, and the test suspends only once run_status shows all 3 primitive records done (no timers). Step 1 is the negative control (no suspend: baseline 2 decide + 1 image calls). Step 4: resume → 0 further provider calls, `run_result` deep-equal to the uninterrupted run (same answers, same paths). Step 5 (REQ-226 regenerate-then-MISS): a fresh copy, suspended the same way, has its image deleted → resume makes exactly +1 image and +1 decide (d2 MISS after invalidate; d1 still replays) and the file exists again. Positive controls: disabling decide replay, skipping `verifyFiles`, or making `ResumePlan.invalidate()` a no-op each turn it red. GREEN.
 
 File: `tests/e2e/decide-image-journey.test.ts` (new). The full user journey over real MCP HTTP:
 register a workflow declaring `decisions`+`images` blocks, run it to completion, confirm
@@ -17210,11 +17217,11 @@ compiled with call-tool.ts's own ajv construction. CHARACTERIZATION (enum gained
 0c31a63); guard: `{modelType:'bogus'}` is refused by the same compiled schema.
 
 ### UT-357 — per-image rate survives a 0/0 token price, end to end to the estimate (R-4)
-- **status:** red
+- **status:** green
 - **traces:** DES-279, TASK-275
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-image-price.test.ts`. Inline row `prompt:'0', completion:'0',
@@ -17223,11 +17230,11 @@ image_output:'0.00004'` → real `buildCatalog` → real `ModelBook` pin → `pr
 `price.imageOutPerM` undefined; estimate `costUSD` 0 instead of 0.0516.
 
 ### UT-358 — a failed decide's usage event carries `reason`, so it derives as `failed` (R-6)
-- **status:** red
+- **status:** green
 - **traces:** DES-273, DES-274, TASK-271
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-record-failed.test.ts`. Real `AgentTranscriptSink.recordPrimitive` into a
@@ -17247,11 +17254,11 @@ landed in 0c31a63 untested): decide-only facts fill `decide` with `prose/tools/i
 ref; guard — a prose fact lands in `prose` and leaves `decide` null.
 
 ### UT-360 — `scanPrimitiveCalls` returns AgentCallViolation-shaped `violations`; registration throws generic `SCAN_VIOLATION` (R-10)
-- **status:** red
+- **status:** green
 - **traces:** DES-271, TASK-268
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/scan-primitive-calls.test.ts` (appended). `AGENT_LABEL_NOT_LITERAL` (with line +
@@ -17261,11 +17268,11 @@ each of model/timeoutMs/retries; shorthand `{state, questions}` → no violation
 undefined; registration succeeds. Guard (green): the literal script registers.
 
 ### UT-361 — OD-1: `checkPrimitiveModelType` accepts any image-output row for `images` (pure)
-- **status:** red
+- **status:** green
 - **traces:** DES-270, TASK-267
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-model-type.test.ts` (4 cases appended). Red (1/4): a gemini-style `chat`
@@ -17273,11 +17280,11 @@ row with output `['text','image']` is refused for `image` today. Guards (green):
 for images; the same gemini row refused for `decision`; ok for `agent`.
 
 ### UT-362 — mermaid: primitive labels accepted as nodes, never required; skeleton excludes them (R-12)
-- **status:** red
+- **status:** green
 - **traces:** DES-271, TASK-268
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/check-mermaid-primitive-labels.test.ts`. Red (2/8): `checkMermaid` with
@@ -17287,11 +17294,11 @@ diagram refuses `DIAGRAM_MISMATCH`. Characterization (green, each with a perturb
 before `phase()` is not `AGENT_BEFORE_PHASE` (an agent() there is); no slot carries `gate`.
 
 ### UT-363 — run-time `overrides.decisions/images`: validation + `resolvePrimitiveParams` (R-13)
-- **status:** red
+- **status:** green
 - **traces:** DES-277, TASK-274
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-overrides.test.ts`. Red (12/13): every `overrides.decisions`/`images` is
@@ -17301,22 +17308,37 @@ undeclared-label (`UNKNOWN_AGENT_LABEL{block, known}`), `maxRetries 5`, `maxTime
 the wrong code/detail; `resolvePrimitiveParams` is not exported. Guard (green): `{}`/`{agents:{}}`.
 
 ### UT-364 — `workflow_describe` projects `decisions`/`images` (R-16)
-- **status:** red
+- **status:** green
 - **traces:** DES-278, TASK-273
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/primitive-served-surface.test.ts`. Red (2/3): `view.params.decisions`/`images`
 undefined. Guard (green): a contract with neither block projects exactly `{agents, args}`.
 
+
+### UT-365 — primitive AgentRecord.model has the agent() form; no doubled provider in unpricedModels (R-34)
+- **status:** green
+- **traces:** DES-273, DES-274, TASK-271
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/unit/primitive-record-model-form.test.ts` (new). Real RunManager + sandbox child + McpFacade
+(shared store); OpenRouter stubbed at `directDeps`. Asserts the decide/image records carry
+`provider:'openrouter'` + the provider-less id, and `run_result.meta.budgetEnforceable.unpricedModels`
+names `openrouter/google/gemini-2.5-flash-image`, never `openrouter/openrouter/…`. RED first (record
+`model` was the full ref); GREEN after the 5 `recordPrimitive` call sites pass `resolvedModel.model`.
+Positive control: reverting the image sites turns it red.
 ### IT-316 — registration-time model-type gate wired for agents/decisions/images; stored versions untouched (R-11, OD-1)
-- **status:** red
+- **status:** green
 - **traces:** DES-270, DES-271, ARCH-189, TASK-268
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/primitive-registration-type-gate.test.ts`. Real WorkflowCatalog (SQLite) +
@@ -17328,11 +17350,11 @@ gemini under images registers; a version stored via `insertVersion` with an embe
 `run_start`s and `validateStoredVersion` stays ok.
 
 ### IT-317 — primitive refusals cannot evict an agent() refusal; label in PRIMITIVE_FAILED; retries override folds (R-14, R-8, R-13)
-- **status:** red
+- **status:** green
 - **traces:** DES-274, DES-277, ARCH-187, TASK-271, TASK-274
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/integration/primitive-refusal-ledger.test.ts`. Real RunManager + forked child; fake

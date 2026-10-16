@@ -26,6 +26,7 @@ import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 
 let server: Server;
 let serverPi: Server;
+let serverStub: ReturnType<typeof routedStub>;
 let tmpDir: string;
 
 async function call(s: Server, name: string, args: unknown): Promise<any> {
@@ -49,12 +50,20 @@ async function poll(s: Server, runId: string): Promise<any> {
 
 const DECIDE_OK_STUB = { status: 200, body: { answers: { order: { type: 'noul', noul: 0.82 } } } };
 const IMAGE_OK_STUB = { status: 200, body: { id: 'g1', choices: [{ message: { content: '', images: [{ image_url: 'data:image/png;base64,iVBORw0KGgo=' }] } }] } };
+function routedStub(): { fetch: typeof fetch; decideCalls: () => number; imageCalls: () => number } {
+  const decide = makeStubFetch([DECIDE_OK_STUB]);
+  const image = makeStubFetch([IMAGE_OK_STUB]);
+  return { decideCalls: () => decide.calls.length, imageCalls: () => image.calls.length, fetch: ((i: Parameters<typeof fetch>[0], n?: Parameters<typeof fetch>[1]) => (String(i).includes('/systemone') ? decide.fetch(i, n) : image.fetch(i, n))) as typeof fetch };
+}
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val-v40-'));
-  const stub = makeStubFetch([DECIDE_OK_STUB, IMAGE_OK_STUB]);
-  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir, directDeps: { fetch: stub.fetch } } as never);
-  serverPi = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'pi'), gateway: 'pi', directDeps: { fetch: stub.fetch } } as never);
+  // v40 Gate 6 R-32: ONE stub per server, routed by endpoint (`/systemone` → decide reply, anything
+  // else → image reply) — a single ordered stub shared by both servers handed the pi server's decide
+  // the image body. `resolveKey` injected: the test env has no OpenRouter key.
+  serverStub = routedStub();
+  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir, directDeps: { fetch: serverStub.fetch, resolveKey: () => 'sk-test' } } as never);
+  serverPi = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'pi'), gateway: 'pi', directDeps: { fetch: routedStub().fetch, resolveKey: () => 'sk-test' } } as never);
 });
 
 afterAll(async () => {
@@ -73,7 +82,10 @@ describe('VAL-255: REQ-220 — decide(label, {state, questions}) returns a typed
     const started: any = await runScriptVia(callerFor(server), script, {});
     const view = await poll(server, started.runId ?? started.result?.runId);
     expect(view.status).toBe('completed');
-    expect(typeof view.result?.answers?.order?.probability).toBe('number');
+    // the script's return value is on run_result (run_status carries status/agents, not the value)
+    const rr = await call(server, 'run_result', { runId: view.runId });
+    expect(rr.result?.answers?.order?.type).toBe('bool');
+    expect(typeof rr.result?.answers?.order?.probability).toBe('number');
   });
 
   it('the SAME decide() call also works under gateway:pi', async () => {
@@ -109,9 +121,11 @@ describe('VAL-256: REQ-221 — generateImage(label, {prompt, inputImages?, outDi
     const runId = started.runId ?? started.result?.runId;
     const view = await poll(server, runId);
     expect(view.status).toBe('completed');
-    const files = view.result?.files as Array<{ path: string; bytes: number; mimeType: string }> | undefined;
+    const rr = await call(server, 'run_result', { runId });
+    const files = rr.result?.files as Array<{ path: string; bytes: number; mimeType: string }> | undefined;
     expect(Array.isArray(files)).toBe(true);
-    expect(JSON.stringify(view.result)).not.toMatch(/data:image\/|base64/);
+    expect(files!.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rr.result)).not.toMatch(/data:image\/|base64/);
     const listed = await call(server, 'workspace_list', { runId });
     expect(JSON.stringify(listed)).toContain(files?.[0]?.path ?? '__none__');
   });
@@ -122,10 +136,13 @@ describe('VAL-256: REQ-221 — generateImage(label, {prompt, inputImages?, outDi
       const r = await generateImage('hero', { prompt: 'x', inputImages: ['../escape.png'] });
       return r;
     `;
+    const imageCallsBefore = serverStub.imageCalls();
     const started: any = await runScriptVia(callerFor(server), script, {});
     const view = await poll(server, started.runId ?? started.result?.runId);
     expect(view.status).toBe('failed');
-    expect(view.error?.code ?? view.code).toBe('IMAGE_PATH_REFUSED');
+    expect(view.result?.error?.code).toBe('IMAGE_PATH_REFUSED');
+    expect(view.result?.error?.message).toMatch(/ escape$/); // the refusal REASON is 'escape' (not e.g. not_regular)
+    expect(serverStub.imageCalls()).toBe(imageCallsBefore); // refused BEFORE the provider // run_status carries the terminal error at result.error
   });
 });
 
@@ -210,7 +227,7 @@ describe('VAL-261: REQ-226 — resume replays decide/generateImage without re-ca
         decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } },
         images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
       } };
-      const d = await decide('gate', { state: {}, questions: { ok: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } });
+      const d = await decide('gate', { state: {}, questions: { order: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } });
       const img = await generateImage('hero', { prompt: 'p' });
       return { d, img };
     `;

@@ -10850,3 +10850,30 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   (6) Authorised test fixes: R-25 (new wire-body golden in direct-models-call.test.ts, perturbation `noul`→`bool` turns it red), R-27 (VAL-255 `state:'pending'` → `{status:'pending'}`; VAL-261 already used `{}`), R-28 (UT-348: 8 calls get `undefined` for the `catalog` slot so `primitiveLabels` is the 4th arg), R-29 (non-empty catalogSnapshot with the two example openrouter models; that file — `tests/unit/register-bash-subsumption-warning.test.ts`, issue #78(b) — has no ledger test id).
   (7) NOT fixed — v40 test defects outside the authorised list (all 3 files are new in v40: `git ls-tree 0e19fae^` is empty for them). VAL-262/263/264 (`val-v40-nfr.test.ts` L43/68/90) and VAL-255/256/261 (`val-v40-decide-image-core.test.ts` L56-57) and E2E-011 inject `directDeps.fetch` without `resolveKey` → `OPENROUTER_AUTH_MISSING`. Additionally in val-v40-decide-image-core: script return value read from `run_status` (`view.result.answers`/`.files`) instead of `run_result`; `view.error?.code` instead of `view.result.error.code`; one sequential stub `[DECIDE, IMAGE]` shared across sdk+pi servers (pi decide receives the image body → `malformed`); VAL-261 asks `ok` while the stub answers only `order` → `malformed`. E2E-011: same key/stub/read-path defects, `firstView.agents` → `firstView.result.agents`, and step 4 uses `run_stop` (terminal; resume → `ILLEGAL_TRANSITION`) and suspends before any primitive call has settled, so the resume legitimately calls the provider again (4 vs 2) — step 4 needs a redesign (wait for both calls to settle before `run_suspend`), not a token swap. Proof: corrected scratch copies (deleted afterwards) ran 11/11 (core), 4/4 (nfr), and E2E-011 green through step 3.
   (8) Non-blocking product observation, no RED test pins it: primitive `AgentRecord.model` / usage-event `data.model` carry the FULL ref (`openrouter/typesafe/jev-1.13`) while `provider:'openrouter'` is separate, unlike agent() records (post-split id). Visible effect: `run_result.meta.budgetEnforceable.unpricedModels` shows `openrouter/openrouter/google/gemini-2.5-flash-image`, and observed-stats facts from real runs would key on the double-prefixed id (UT-352's hand-built events use the post-split id). DES-273/274 do not state which. Suggested: Gate 5 adds a UT, then TASK-271 passes `parseModelRef(model).model` to the 5 `recordPrimitive` call sites.
+
+### IMPL-408 — v40 Gate 6 round 4 R-32: acceptance test defects fixed (VAL-255/256/261/262/263/264), positive controls proven
+- **status:** done
+- **traces:** TASK-271, TASK-272, DES-274, DES-275
+- **greens:** VAL-255, VAL-256, VAL-261, VAL-262, VAL-263, VAL-264
+- **files:** tests/acceptance/val-v40-decide-image-core.test.ts, tests/acceptance/val-v40-nfr.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v40
+- **note:** `resolveKey` injected everywhere; one endpoint-routed stub per server; return values via `run_result`; errors at `result.error`; VAL-261 question renamed to the stub's `order`; VAL-263 stub legs hold 50ms so uncapped calls truly overlap; VAL-256 escape case pins reason + zero provider calls. Each test perturbed in product code (answers dropped / 0 images written / both escape checks removed / decide throws / 4xx retryable / decideSlots ignored / state leaked into record) → red; restored → green. Finding: removing ONLY the lexical `..` check leaves the case green because the realpath containment check catches it too (defence in depth, by design).
+
+### IMPL-409 — v40 Gate 6 round 4 R-33: E2E-011 step 4 redesigned (suspend after the journal holds the 3 primitive rows; regenerate-then-MISS)
+- **status:** done
+- **traces:** TASK-271, DES-274
+- **greens:** E2E-011
+- **files:** tests/e2e/decide-image-journey.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v40
+- **note:** d1 → image → d2 → held agent() (fake gateway, armed per run); suspend gated on 3 done primitive records; resume → 0 provider calls + identical run_result; fresh copy with deleted image → +1 image, +1 decide (d2), d1 replayed, file restored; no-suspend baseline run is the negative control. Perturbations (decide replay off, verifyFiles skipped, invalidate no-op) each → red.
+
+### IMPL-410 — v40 Gate 6 round 4 R-34: primitive AgentRecord.model in agent() form (TDD)
+- **status:** done
+- **traces:** TASK-271, DES-273, DES-274
+- **greens:** UT-365
+- **files:** src/run-manager.ts, tests/unit/primitive-record-model-form.test.ts, .sdlc/features/001-remote-workflow-engine/04-design.md
+- **commit:** (uncommitted at write time)
+- **iter:** v40
+- **note:** UT-365 written first and RED (record `model` = `openrouter/typesafe/jev-1.13`); the 5 `recordPrimitive` call sites now pass `resolvedModel.model`; `primitive.call` operator events keep the full ref. DES-274 delta line (also binds DES-273's usage event). Full suite after: 6275/6275.
