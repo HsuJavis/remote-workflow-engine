@@ -67,7 +67,7 @@ describe('VAL-255: REQ-220 — decide(label, {state, questions}) returns a typed
   it('a declared decide() call returns answers.order of the declared bool type (gateway:sdk)', async () => {
     const script = `
       export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
-      const r = await decide('gate', { state: 'pending', questions: { order: { type: 'bool', instructions: 'is it ready', criteria: { true: 'yes', false: 'no' } } } });
+      const r = await decide('gate', { state: { status: 'pending' }, questions: { order: { type: 'bool', instructions: 'is it ready', criteria: { true: 'yes', false: 'no' } } } });
       return r;
     `;
     const started: any = await runScriptVia(callerFor(server), script, {});
@@ -79,7 +79,7 @@ describe('VAL-255: REQ-220 — decide(label, {state, questions}) returns a typed
   it('the SAME decide() call also works under gateway:pi', async () => {
     const script = `
       export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
-      const r = await decide('gate', { state: 'pending', questions: { order: { type: 'bool', instructions: 'is it ready', criteria: { true: 'yes', false: 'no' } } } });
+      const r = await decide('gate', { state: { status: 'pending' }, questions: { order: { type: 'bool', instructions: 'is it ready', criteria: { true: 'yes', false: 'no' } } } });
       return r;
     `;
     const started: any = await runScriptVia(callerFor(serverPi), script, {});

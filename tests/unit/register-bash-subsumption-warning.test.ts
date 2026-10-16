@@ -15,7 +15,8 @@ import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { RunManager } from '../../src/run-manager.js';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { TOOL_SPECS } from '../../src/tool-specs.js';
-import { GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
+import { GUIDE_EXAMPLES, EXAMPLE_DECISION_MODEL, EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
+import type { ModelCatalogSnapshot } from '../../src/providers.js';
 import type { Principal } from '../../src/authz.js';
 
 const CLOCK = new FixedClock(new Date('2026-09-25T10:00:00.000Z'));
@@ -82,8 +83,20 @@ describe('#78(b) — workflow_register warns when Bash sits beside the file tool
   });
 
   it("the authoring guide's own examples trip no warning", async () => {
+    // v40 Gate 6 round 3 (R-29): a NON-EMPTY catalog snapshot holding the examples' openrouter models
+    // (the decide/image examples), so the empty-catalog MODEL_CATALOG_UNVERIFIED warning — which says
+    // nothing about the examples themselves — cannot mask (or cause) a real warning here.
+    const snapshot = {
+      source: 'live',
+      entries: [
+        { provider: 'openrouter', model: EXAMPLE_DECISION_MODEL.replace(/^openrouter\//, ''), modelType: 'decision', modelTypeSource: 'openrouter-modalities', modalities: { in: ['text'], out: ['decisions'] } },
+        { provider: 'openrouter', model: EXAMPLE_IMAGE_MODEL.replace(/^openrouter\//, ''), modelType: 'chat', modelTypeSource: 'openrouter-modalities', modalities: { in: ['text', 'image'], out: ['text', 'image'] } },
+      ],
+    } as unknown as ModelCatalogSnapshot;
+    const catalog = new WorkflowCatalog(join(workRoot, 'guide'), CLOCK, { catalogSnapshot: async () => snapshot });
+    const guideFacade = new McpFacade({ runManager: new RunManager({ catalog, clock: CLOCK }), clock: CLOCK });
     for (const [i, ex] of (GUIDE_EXAMPLES as Array<{ title: string; script: string; mermaid: string }>).entries()) {
-      const r = (await facade.workflowRegister({ name: `guide-${i}`, script: ex.script, mermaid: ex.mermaid }, OPEN)) as Reply;
+      const r = (await guideFacade.workflowRegister({ name: `guide-${i}`, script: ex.script, mermaid: ex.mermaid }, OPEN)) as Reply;
       expect(r.result?.version, `${ex.title}: ${JSON.stringify(r.error)}`).toBeDefined();
       expect(r.result?.warnings, ex.title).toBeUndefined();
     }

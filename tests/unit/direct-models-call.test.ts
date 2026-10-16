@@ -239,6 +239,22 @@ describe('UT-342: runDecide retry loop (DES-267, TASK-263 dod)', () => {
     // Zero real-time waits: `sleep` above resolves instantly, `attemptSignal` never arms a real timer.
     expect(deps.onAttempt).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: 'retry' }));
   });
+
+  // v40 Gate 6 round 3 (R-25): the golden for the `/systemone` wire body of a bool question — the
+  // REAL pi-ai codec's mapping (public `bool` → wire-level `noul`), read off the stub-captured request.
+  it("the /systemone request body for a bool question carries pi-ai's wire mapping (bool -> noul)", async () => {
+    const stub = makeStubFetch([{ status: 200, body: SYSTEMONE_OK }]);
+    const deps = { ...fakeDeps({ fetchSteps: [] }), fetch: stub.fetch };
+    await runDecide({ model: DECIDE_MODEL, state: { stage: 'review' }, questions: QUESTIONS, timeoutMs: 1000, retries: 0, runSignal: new AbortController().signal }, deps);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]!.url).toMatch(/\/systemone$/);
+    const body = JSON.parse(String(stub.calls[0]!.init?.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      model: DECIDE_MODEL.id,
+      state: { stage: 'review' },
+      questions: { ok: { type: 'noul', instructions: 'is it ready', criteria: { true: 'yes', false: 'no' } } },
+    });
+  });
 });
 
 describe('UT-342: runImage (DES-267, real openrouter-images codec)', () => {

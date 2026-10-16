@@ -177,7 +177,7 @@ export function makeObservedFetch(
   maxBodyBytes: number,
 ): { fetch: typeof fetch; last(): SeamRecord | null } {
   let record: SeamRecord | null = null;
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const start = deps.now();
     try {
       const res = await deps.fetch(input, init);
@@ -195,7 +195,7 @@ export function makeObservedFetch(
         truncated: false,
         wireCostUSD: readWireCostUSD(res.status, buf),
       };
-      return new Response(buf as BodyInit, { status: res.status, statusText: res.statusText, headers: res.headers });
+      return new Response(buf as ConstructorParameters<typeof Response>[0], { status: res.status, statusText: res.statusText, headers: res.headers });
     } catch (err) {
       if (record === null) {
         record = { invoked: true, status: undefined, retryAfterMs: null, providerMs: deps.now() - start, truncated: false, wireCostUSD: null };

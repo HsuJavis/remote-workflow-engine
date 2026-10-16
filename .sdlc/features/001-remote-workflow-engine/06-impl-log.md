@@ -10704,3 +10704,149 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   (2) 我提的快取假說(cached entry 沒有 `legacySubstitution` 會跳過判定)確實存在,但**是安全的** ——
   那條路不會發生替換,`resume()` 跑的是原本已通過接納的 `entry.script`。
 
+
+### IMPL-391 — v40 TASK-260: shared v40 vocabulary (primitive types, AgentRecord.kind, primitive.call event, refusal codes)
+- **status:** done
+- **traces:** TASK-260, DES-264
+- **greens:** UT-339
+- **files:** src/types.ts, src/event-log.ts, src/errors.ts, src/sandbox/guards.ts, src/run-manager.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-392 — v40 TASK-261: resolveOpenrouterKey lifted to src/gateway/openrouter-key.ts (pure move)
+- **status:** done
+- **traces:** TASK-261, DES-265
+- **greens:** UT-340
+- **files:** src/gateway/openrouter-key.ts, src/gateway/pi-gateway-client.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-393 — v40 TASK-262: pure input layer: validateDecideInput/validateImageInput/normalizeOutDir/canonicalJson/primitiveCallKey
+- **status:** done
+- **traces:** TASK-262, DES-266
+- **greens:** UT-341
+- **files:** src/direct-models/inputs.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-394 — v40 TASK-263: fetch seam, classifyAttempt, backoffMs, toPiAiModel, engine retry loop, runDecide/runImage over the real pi-ai codec; integrator: server-tsconfig DOM-type fix + R-25 wire-body golden
+- **status:** done
+- **traces:** TASK-263, DES-267
+- **greens:** UT-342, UT-343
+- **files:** src/direct-models/call.ts, tests/helpers/stub-fetch.ts, tests/unit/direct-models-call.test.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-395 — v40 TASK-264: contained input read, sniffed mime, outDir resolution, tmp+rename write, verifyFiles
+- **status:** done
+- **traces:** TASK-264, DES-268
+- **greens:** UT-344
+- **files:** src/direct-models/image-files.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-396 — v40 TASK-265: golden snapshot of pre-v40 chat rows (provenance commit 0e19fae, R-1)
+- **status:** done
+- **traces:** TASK-265, DES-269
+- **greens:** UT-345
+- **files:** tests/fixtures/models/openrouter-models-all.json, tests/fixtures/models/chat-rows-golden.json
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-397 — v40 TASK-266: catalog ?output_modalities=all, ModelType decision, models_list modelType filter (R-3 accepted)
+- **status:** done
+- **traces:** TASK-266, DES-269
+- **greens:** UT-346
+- **files:** src/models/model-catalog.ts, src/models/models-query.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-398 — v40 TASK-267: checkPrimitiveModelType (OD-1 image = output includes image) + admission pin carries modelType/modalities
+- **status:** done
+- **traces:** TASK-267, DES-270
+- **greens:** UT-347, UT-361
+- **files:** src/providers.ts, src/models/model-book.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-399 — v40 TASK-268: params contract/scanners/mermaid/registration wiring for decisions/images; type gate at new registration only (R-10/R-11/R-12)
+- **status:** done
+- **traces:** TASK-268, DES-271
+- **greens:** UT-348, UT-349, UT-360, UT-362, IT-316
+- **files:** src/params/contract.ts, src/params/resolve.ts, src/workflow-meta.ts, src/script-checks.ts, src/check-mermaid.ts, src/skeleton-graph.ts, src/workflow-catalog.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-400 — v40 TASK-269: sandbox decide/generateImage globals, {t:decide}/{t:image} IPC, host cases
+- **status:** done
+- **traces:** TASK-269, DES-272
+- **greens:** UT-350, IT-308
+- **files:** src/sandbox/guards.ts, src/sandbox/child-entry.ts, src/sandbox/host.ts, src/ipc/protocol.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-401 — v40 TASK-270: pricePrimitiveCall/primitivePriceKnowable, foldUsage guard, deriveAgentRecords harness-less branch, observed-stats decide/image buckets (R-7)
+- **status:** done
+- **traces:** TASK-270, DES-273
+- **greens:** UT-351, UT-352, UT-359, IT-309, IT-310
+- **files:** src/run-guard.ts, src/run-store.ts, src/models/observed-stats.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-402 — v40 TASK-271: _handleDecideRequest/_handleImageRequest, ResumePlan.invalidate, recordPrimitive (R-6 reason), split refusal cap (R-14), PRICE_UNKNOWN primitive-only (R-18); integrator: engineMs clamped at 0 (R-30)
+- **status:** done
+- **traces:** TASK-271, DES-274
+- **greens:** UT-353, UT-358, IT-311, IT-312, IT-313, IT-314, IT-317
+- **files:** src/run-manager.ts, src/resume-cache.ts, src/agent-executor.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-403 — v40 TASK-272: decideSlots/imageSlots/imageInputMaxBytes through composeConfig; gauges on authenticated /api/status only (R-15, R-20); createServer threads directDeps into RunManager (server.ts, verified)
+- **status:** done
+- **traces:** TASK-272, DES-275
+- **greens:** UT-354
+- **files:** src/main.ts, src/server.ts, rwe.config.example.json
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-404 — v40 TASK-273: served text: guide decide/generateImage sections + examples on EXAMPLE_DECISION_MODEL/EXAMPLE_IMAGE_MODEL (R-21/R-26), models_list decision enum (R-2), workflow_describe projection (R-16), AUTHORING.md regenerated; integrator: R-29 catalog fixture
+- **status:** done
+- **traces:** TASK-273, DES-276
+- **greens:** UT-355, UT-356, UT-364, IT-315
+- **files:** src/authoring-guide.ts, src/tool-specs.ts, src/workflow-view.ts, src/errors.ts, docs/AUTHORING.md, README.md, DEPLOY.md, tests/unit/register-bash-subsumption-warning.test.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-405 — v40 TASK-274: run-time overrides for decisions/images: unknown-label refusal + retries ceiling (R-13)
+- **status:** done
+- **traces:** TASK-274, DES-277
+- **greens:** UT-363, IT-317
+- **files:** src/params/contract.ts, src/params/resolve.ts, src/run-manager.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-406 — v40 TASK-275: per-image-output rate survives a 0/0 token price: ModelEntry.imageOutPerM -> pin -> pricePrimitiveCall (R-4)
+- **status:** done
+- **traces:** TASK-275, DES-279
+- **greens:** UT-357
+- **files:** src/models/model-catalog.ts, src/models/models-query.ts, src/models/model-book.ts, src/run-guard.ts, src/types.ts
+- **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **iter:** v40
+
+### IMPL-407 — v40 Gate 6 integrator pass: typecheck fix, R-30 clamp, authorised test fixes R-25/R-27/R-28/R-29
+- **status:** done
+- **traces:** TASK-263, TASK-271, TASK-273, DES-267, DES-274, DES-276
+- **greens:** UT-342, UT-348
+- **files:** src/direct-models/call.ts, src/run-manager.ts, tests/unit/direct-models-call.test.ts, tests/unit/primitive-contract.test.ts, tests/unit/register-bash-subsumption-warning.test.ts, tests/acceptance/val-v40-decide-image-core.test.ts, .sdlc/features/001-remote-workflow-engine/04-design.md
+- **commit:** (uncommitted at write time)
+- **iter:** v40
+- **note (v40 Gate 6 integrator, 2026-10-16):** integration pass over IMPL-391..406.
+  (1) `npx tsc --noEmit -p tsconfig.server.json` was red: `call.ts` named DOM-only `RequestInfo`/`BodyInit`
+  (server tsconfig has `lib:["ES2022"]`) — replaced by `Parameters<typeof fetch>` / `ConstructorParameters<typeof Response>[0]`.
+  (2) R-30: all four `engineMs` sites in `run-manager.ts` clamped `Math.max(0, …)`; DES-274 delta line added.
+  (3) R-26 verified already done (`EXAMPLE_DECISION_MODEL`, `EXAMPLE_IMAGE_MODEL = openrouter/google/gemini-2.5-flash-image`; guide uses the constants).
+  (4) TASK-272 "inferred blocker" is FALSE: `createServer` already threads `directDeps: config?.directDeps` into `new RunManager` (server.ts ~L1101) → `_directDeps` (run-manager.ts ~L835). The remaining `OPENROUTER_AUTH_MISSING` failures are tests that inject `fetch` but not `resolveKey`.
+  (5) R-20 / R-18 verified in code (anonymous `/api/status` = `{agentSemaphore, version}`; `PRICE_UNKNOWN` only in the primitive handlers).
+  (6) Authorised test fixes: R-25 (new wire-body golden in direct-models-call.test.ts, perturbation `noul`→`bool` turns it red), R-27 (VAL-255 `state:'pending'` → `{status:'pending'}`; VAL-261 already used `{}`), R-28 (UT-348: 8 calls get `undefined` for the `catalog` slot so `primitiveLabels` is the 4th arg), R-29 (non-empty catalogSnapshot with the two example openrouter models; that file — `tests/unit/register-bash-subsumption-warning.test.ts`, issue #78(b) — has no ledger test id).
+  (7) NOT fixed — v40 test defects outside the authorised list (all 3 files are new in v40: `git ls-tree 0e19fae^` is empty for them). VAL-262/263/264 (`val-v40-nfr.test.ts` L43/68/90) and VAL-255/256/261 (`val-v40-decide-image-core.test.ts` L56-57) and E2E-011 inject `directDeps.fetch` without `resolveKey` → `OPENROUTER_AUTH_MISSING`. Additionally in val-v40-decide-image-core: script return value read from `run_status` (`view.result.answers`/`.files`) instead of `run_result`; `view.error?.code` instead of `view.result.error.code`; one sequential stub `[DECIDE, IMAGE]` shared across sdk+pi servers (pi decide receives the image body → `malformed`); VAL-261 asks `ok` while the stub answers only `order` → `malformed`. E2E-011: same key/stub/read-path defects, `firstView.agents` → `firstView.result.agents`, and step 4 uses `run_stop` (terminal; resume → `ILLEGAL_TRANSITION`) and suspends before any primitive call has settled, so the resume legitimately calls the provider again (4 vs 2) — step 4 needs a redesign (wait for both calls to settle before `run_suspend`), not a token swap. Proof: corrected scratch copies (deleted afterwards) ran 11/11 (core), 4/4 (nfr), and E2E-011 green through step 3.
+  (8) Non-blocking product observation, no RED test pins it: primitive `AgentRecord.model` / usage-event `data.model` carry the FULL ref (`openrouter/typesafe/jev-1.13`) while `provider:'openrouter'` is separate, unlike agent() records (post-split id). Visible effect: `run_result.meta.budgetEnforceable.unpricedModels` shows `openrouter/openrouter/google/gemini-2.5-flash-image`, and observed-stats facts from real runs would key on the double-prefixed id (UT-352's hand-built events use the post-split id). DES-273/274 do not state which. Suggested: Gate 5 adds a UT, then TASK-271 passes `parseModelRef(model).model` to the 5 `recordPrimitive` call sites.

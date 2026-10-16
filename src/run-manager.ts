@@ -3236,7 +3236,7 @@ export class RunManager {
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'decide', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
         ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
-        engineMs: this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal, costUSD: 0, costSource: 'absent',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: 0, costSource: 'absent',
       });
       throw err;
     }
@@ -3244,7 +3244,7 @@ export class RunManager {
     // `runWithRetry`'s own complete sums (including the successful final attempt, which never fires
     // `onAttempt` — this handler's local accumulator above only covers retry/failed attempts).
     const endedAt = this._clock.isoNow();
-    const engineMs = this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal;
+    const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
     const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'decide' });
     const costUSD = 'absent' in priced ? 0 : priced.costUSD;
     const unpriced = 'absent' in priced;
@@ -3405,7 +3405,7 @@ export class RunManager {
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'image', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
         ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
-        engineMs: this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal, costUSD: 0, costSource: 'absent',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: 0, costSource: 'absent',
       });
       throw err;
     }
@@ -3417,7 +3417,7 @@ export class RunManager {
     const costUSD = 'absent' in priced ? 0 : priced.costUSD;
     const unpriced = 'absent' in priced;
     const endedAt = this._clock.isoNow();
-    const engineMs = this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal;
+    const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
     entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
     if (written.files.length === 0) {
       if (entry.spawner instanceof AgentExecutor) {

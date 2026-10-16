@@ -17105,6 +17105,7 @@ agent) — this VAL covers the structural clauses only; noted, not silently drop
 - **real:** false
 - **result:** fail
 - **delta (v40 Gate 6 follow-up):** the old ref `openrouter/typesafe/unpriced-model` was unlisted, so registration refused `UNKNOWN_MODEL` before the budget path. No live decision model is unpriced, so the test now uses a CONTROLLED catalog stub (`modelCatalog` → `buildCatalog` over a listed `typesafe/unpriced-decider` row, `output_modalities:['decisions']`, no `pricing`), `budget:{usd:1}`, `directDeps:{fetch, resolveKey}`; also fixed the error read path (`run_status` carries it at `result.error`, not top-level `error`). Intent kept: PRICE_UNKNOWN, stub fetch count 0. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` into RunManager (TASK-272 note). With `OPENROUTER_API_KEY=sk-test` in env it passes (diagnostic only), so the pricing/refusal path itself works.
+- **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-260 already has it) the case is green; see IMPL-407 note 7.
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. An unpriceable model under a USD budget
@@ -17163,6 +17164,7 @@ same test. Red confirmed: fails at the control.
 - **real:** false
 - **result:** fail
 - **delta (v40 Gate 6 follow-up):** the in-script `Date.now()` is removed (the sandbox determinism guard refuses it, so the case could never pass). Now measured as IT-314: 101 calls, fixed 20ms stub delay, stub-side `performance.now()` timestamps, overhead_i = `start[i+1] − end[i]`, 100 samples, p95 ≤ 200ms; `directDeps:{fetch, resolveKey}`. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` (TASK-272 note).
+- **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-260 already has it) the case is green; see IMPL-407 note 7.
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-nfr.test.ts`. The one genuinely new, non-derivative measurement in

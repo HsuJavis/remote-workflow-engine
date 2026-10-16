@@ -10660,6 +10660,7 @@ purpose (real tmp dir).
 - **Overshoot bound (documented, not engineered):** concurrent calls may each pass step 8's `assertBudget` → overshoot ≤ `slots × maxPerCallCost`.
 - **delta (v40 Gate 6, R-8):** `runDecide`/`runImage` keep `label?: string` on `req` (accepted deviation from the signature above); both handlers pass `msg.label`, so the thrown message is always `<primitive> '<label>' failed: …` (IT-317 R-8 case).
 - **delta (v40 Gate 6, R-14):** split cap. `RunEntry` += `primitiveRefusals: Map<number, {code, message}>`, `primitiveRefusalsDropped: number`; `_recordPrimitiveRefusal` writes ONLY there under its own cap `PRIMITIVE_REFUSAL_CAP = 8` (top frame only, unchanged); `_handleAgentRequest`'s 8 slots in `entry.refusals` are never touched by a primitive. `_runLive`: `refusalHit = entry.refusals.get(ref) ?? entry.primitiveRefusals.get(ref)` (callSeqs are unique across both, one shared counter). (R-6) see DES-273 delta. (R-13) step (2) "contract default ⊕ run override" is realised by DES-277's `resolvePrimitiveParams` at admission (`start()` with the validated `overrides.decisions/images`; a nested frame stays default-only).
+- **delta (v40 Gate 6 round 3, R-30):** every `engineMs` (terminal `ok` and `failed` events) is `Math.max(0, (now() − t0) − providerMsTotal − backoffMsTotal)` — a stubbed no-op `sleep` can make the raw difference negative, and a negative overhead is meaningless in the event log.
 - **iter:** v40
 
 ### DES-275 — composition root: config keys, semaphores, gauges

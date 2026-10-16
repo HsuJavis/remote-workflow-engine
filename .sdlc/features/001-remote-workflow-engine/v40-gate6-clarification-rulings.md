@@ -70,3 +70,14 @@ All items were test defects or naming. No owner question. Gate 6 is finished by 
 | R-29 | R-22 premise wrong: the guide examples trip `MODEL_CATALOG_UNVERIFIED` (empty catalog in that test), not a BASH warning | **Re-ruling**: give `register-bash-subsumption-warning.test.ts` a non-empty catalogSnapshot fixture containing the example models, so the test still proves "guide examples register warning-free". Do not narrow it to BASH_* codes. |
 | R-30 | `engineMs` can go negative when `sleep` is stubbed to a no-op | **Clamp at 0** in the handler (`Math.max(0, …)`) and add a DES-274 delta line. A negative overhead is meaningless in the event log. |
 | R-31 | TASK-271 dod clauses carried by E2E-011/VAL-261/VAL-263 rather than its own files | **Accepted as disclosed**: Gate 7.5 must show those tests green at the real tier. |
+
+## Round 4 — integrator report (2026-10-16)
+
+Full suite 6274 / 6265 passed / 9 failed. All 9 are v40-new acceptance/e2e tests with test defects. Fixed
+temp copies proved the product passes (core 11/11, nfr 4/4, E2E-011 through step 3). Both typechecks are clean.
+
+| # | Item | Ruling |
+|---|---|---|
+| R-32 | VAL-255/256/261/262/263/264 test defects: missing `resolveKey`; return value read from `run_status` instead of `run_result`; error at `view.error` instead of `view.result.error`; one ordered stub shared by the sdk+pi servers; VAL-261 question name mismatch | **Authorised** for the integrator to fix, keeping each test's intent and assertions. One stub per server. Each fixed test must fail when its product behaviour is perturbed (positive control). |
+| R-33 | E2E-011 step 4: `run_stop` cannot resume; `run_suspend` fires before the calls complete | **Redesign authorised**: suspend only after the journal shows all 3 primitive rows (wait on the journal/agent records, not a timer), then resume and assert 0 further provider calls, the same answers, and the same image paths. Then delete one image and resume a fresh copy to show REQ-226's regenerate-then-MISS. Keep a negative control (no suspend → baseline call count). |
+| R-34 | Real bug: primitive records store `model` as `openrouter/<id>` beside `provider:'openrouter'`, so ids appear doubled (`openrouter/openrouter/...`) in `unpricedModels` and usage stats | **TDD fix**: first a UT pinning that primitive records match agent() records (`model` without the provider prefix, and no doubled id in `budgetEnforceable.unpricedModels`); then fix the 5 `recordPrimitive` call sites. Add a DES-273/274 delta line. |
