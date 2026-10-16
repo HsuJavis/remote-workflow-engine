@@ -73,3 +73,32 @@ describe('UT-347: reachableModels covers decisions[*]/images[*] (DES-270)', () =
     expect(models).toContain('openrouter/typesafe/jev-override');
   });
 });
+
+// UT-361 (DES-270 v40 Gate 6 delta, owner decision OD-1, ADR-095, TASK-267): `images.<label>`
+// accepts any row whose catalog OUTPUT modalities include `image`, whatever its `modelType` — the
+// row passed to the gate gains `modalitiesOut` (carried on the ModelCatalogSnapshot entry).
+// `decisions` stays strictly `decision`; `agents` stays "not a known non-chat type".
+// Red reason: the image rule is still `modelType === 'image-gen'`, so a gemini-style `chat` row with
+// output ['text','image'] is refused MODEL_TYPE_MISMATCH today.
+describe('UT-361: OD-1 — images accept any image-output row (DES-270 delta)', () => {
+  const GEMINI = { modelType: 'chat' as const, modelTypeSource: 'openrouter-modalities' as const, modalitiesOut: ['text', 'image'] };
+  const EMBED = { modelType: 'embedding' as const, modelTypeSource: 'openrouter-modalities' as const, modalitiesOut: ['embeddings'] };
+
+  it('image: a chat row whose output includes image is ok (no warning)', () => {
+    expect(checkPrimitiveModelType('image', 'hero', 'openrouter/google/gemini-2.5-flash-image', GEMINI as never, true)).toEqual({ ok: true });
+  });
+
+  it('image: an embedding row is refused MODEL_TYPE_MISMATCH naming label/model/actual', () => {
+    expect(checkPrimitiveModelType('image', 'hero', 'openrouter/acme/embed-1', EMBED as never, true))
+      .toMatchObject({ ok: false, code: 'MODEL_TYPE_MISMATCH', label: 'hero', model: 'openrouter/acme/embed-1', actual: 'embedding' });
+  });
+
+  it('decision stays strict: the same image-capable chat row is refused for decisions', () => {
+    expect(checkPrimitiveModelType('decision', 'gate', 'openrouter/google/gemini-2.5-flash-image', GEMINI as never, true))
+      .toMatchObject({ ok: false, code: 'MODEL_TYPE_MISMATCH', required: 'decision' });
+  });
+
+  it('agent: the image-capable chat row is fine for agent() (chat is not a non-chat type)', () => {
+    expect(checkPrimitiveModelType('agent', 'x', 'openrouter/google/gemini-2.5-flash-image', GEMINI as never, true)).toEqual({ ok: true });
+  });
+});

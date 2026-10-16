@@ -7,7 +7,7 @@
 // primitive usage event comes back `kind:'prose'` (no harness tools descriptor), not `'decide'`/
 // `'image'`.
 import { describe, it, expect } from 'vitest';
-import { loadFacts, type ObservedStatsSource } from '../../src/models/observed-stats.js';
+import { loadFacts, aggregateFacts, type ObservedStatsSource, type AgentCallFact } from '../../src/models/observed-stats.js';
 import type { TranscriptEvent } from '../../src/types.js';
 
 function fakeSource(transcripts: Map<string, TranscriptEvent[]>): ObservedStatsSource {
@@ -53,5 +53,38 @@ describe('UT-352: loadFacts kind bucket for primitives (DES-273)', () => {
     const transcripts = new Map([['agent-3', events]]);
     const facts = loadFacts(fakeSource(transcripts), '2026-10-01T00:00:00Z');
     expect(facts[0]?.kind).toBe('prose');
+  });
+});
+
+// UT-359 (DES-273, ARCH-191/192, ruling R-7, TASK-270): `aggregateFacts` buckets decide/image facts
+// into their OWN `decide`/`image` CallStats — never folded into `prose`/`tools`. CHARACTERIZATION
+// (green at the time of writing — the bucketing landed in the Gate 6 WIP commit 0c31a63 without a
+// direct test); the perturbation case proves the assertion can fail.
+describe('UT-359: aggregateFacts decide/image buckets (R-7; characterization)', () => {
+  const fact = (kind: AgentCallFact['kind'], ref = 'openrouter/typesafe/jev-1.13', success = true): AgentCallFact => ({
+    ref, kind, success, startedAt: '2026-10-01T00:00:00.000Z', endedAt: '2026-10-01T00:00:00.400Z',
+    inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001,
+  });
+
+  it('decide-only facts fill `decide`; prose/tools/image stay null', () => {
+    const b = aggregateFacts([fact('decide'), fact('decide', undefined, false)]).get('openrouter/typesafe/jev-1.13');
+    expect(b?.decide?.calls).toBe(2);
+    expect(b?.decide?.successRate).toBe(0.5);
+    expect(b?.prose).toBeNull();
+    expect(b?.tools).toBeNull();
+    expect(b?.image).toBeNull();
+  });
+
+  it('image facts fill `image` only, per ref', () => {
+    const m = aggregateFacts([fact('image', 'openrouter/acme/pixel-1'), fact('prose', 'openrouter/acme/chat-1')]);
+    expect(m.get('openrouter/acme/pixel-1')?.image?.calls).toBe(1);
+    expect(m.get('openrouter/acme/pixel-1')?.prose).toBeNull();
+    expect(m.get('openrouter/acme/chat-1')?.image).toBeNull();
+  });
+
+  it('perturbation guard: a prose fact DOES land in prose (so the null assertions above can fail)', () => {
+    const b = aggregateFacts([fact('prose')]).get('openrouter/typesafe/jev-1.13');
+    expect(b?.prose?.calls).toBe(1);
+    expect(b?.decide).toBeNull();
   });
 });

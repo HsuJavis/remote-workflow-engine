@@ -29,7 +29,16 @@ describe('UT-345: chat-rows golden (Mode C characterization, DES-269)', () => {
       ollamaFetch: (async () => { throw new Error('no ollama in this fixture run'); }) as typeof fetch,
     });
     const chatRows = entries.filter((e) => Array.isArray(e.modalities?.out) && e.modalities.out.includes('text'));
-    expect(chatRows).toEqual(golden);
+    // v40 Gate 6 delta (DES-279, ruling R-4 + OD-1): the ONE additive key a text-output row may gain
+    // is the top-level `imageOutPerM` (an image-capable chat row such as gemini is now a
+    // generateImage() target and must carry its per-image rate). It is stripped before comparing;
+    // every pre-existing key and value — including the display `price` and `ratesPerM` — must still
+    // be deep-equal to the golden committed at 0e19fae.
+    const withoutAdditive = chatRows.map((e) => {
+      const { imageOutPerM: _additive, ...rest } = e as typeof e & { imageOutPerM?: number };
+      return rest;
+    });
+    expect(withoutAdditive).toEqual(golden);
   });
 
   it('the fixture itself contains the three rows TASK-265/266 require (sanity on the fixture, not the parser)', () => {

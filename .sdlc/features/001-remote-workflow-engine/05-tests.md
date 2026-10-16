@@ -16763,11 +16763,12 @@ a planted symlink at the FINAL name replaced not followed; `verifyFiles` false o
 sha-mismatch/symlinked. Red confirmed: module-not-found.
 
 ### UT-345 — chat-rows golden (Mode C characterization, NOT red-by-design)
-- **status:** green
+- **status:** red
 - **traces:** DES-269, ARCH-190, TASK-265
 - **tier:** unit
 - **real:** false
-- **result:** pass
+- **result:** fail
+- **delta (v40 Gate 6, 2026-10-16):** RED since 0c31a63 — the Gate 6 WIP placed `imageOutPerM` INSIDE gemini's display `price` object, changing a pre-existing chat row (REQ-222 last clause). The comparison now strips only the additive TOP-LEVEL `imageOutPerM` key (DES-269/DES-279 deltas); the golden file (provenance `0e19fae`, R-1) is unchanged. Green again when TASK-275 moves the field.
 - **iter:** v40
 
 Files: `tests/fixtures/models/openrouter-models-all.json` (new fixture, hand-built from the
@@ -16785,6 +16786,7 @@ Confirmed green: 2/2 passing.
 - **tier:** unit
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6, R-4):** the gemini assertion now reads the TOP-LEVEL `imageOutPerM` (and asserts the display `price` does NOT carry it); the absent case also asserts no top-level key; the golden case strips only the additive top-level `imageOutPerM` (same rule as UT-345). Red (2/7) for the right reason: the 0c31a63 impl puts the rate inside `price`.
 - **iter:** v40
 
 File: `tests/unit/model-catalog-decision.test.ts` (new), over the SAME fixture as UT-345. Red
@@ -16827,6 +16829,7 @@ confirmed: 8/10 fail (the 2 passing cases are the deliberate backward-compat reg
 - **tier:** unit
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6, R-10):** the two `r.errors` assertions were renamed `r.violations` (DES-271 delta renames the field); red until TASK-268 returns `violations`.
 - **iter:** v40
 
 File: `tests/unit/scan-primitive-calls.test.ts` (new). `scanPrimitiveCalls(script): {decide,
@@ -16855,6 +16858,7 @@ a rejection sanitizes the same way `agent()`'s does. Red confirmed: 4/4 fail (to
 - **tier:** unit
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6, R-4):** `IMAGE_ENTRY_WITH_IMAGE_OUT` had `imageOutPerM` BESIDE `price` (nothing reads it there — red for the wrong reason); moved INSIDE `price`, and the image estimate recomputed in DES-279's unit (`tokens.output × imageOutPerM / 1e6`, 1290 output tokens). Red now for the right reason: the impl multiplies by the per-M figure (38700 vs 0.0387).
 - **iter:** v40
 
 File: `tests/unit/primitive-pricing.test.ts` (new). reported > estimated > absent; absent NEVER
@@ -17177,3 +17181,157 @@ register a workflow declaring `decisions`+`images` blocks, run it to completion,
 `status==='completed'` assertion on the first run is the load-bearing, non-vacuous gate — everything
 after it (kind surfacing, file pull, stop/resume replay) is correctly unreachable until the feature
 exists. Red confirmed.
+
+## v40 Gate 6 delta (test-first RED for the clarification rulings OD-1 + R-1..R-17, 2026-10-16)
+
+Every ruling that says "Needs a test" has one below; each was run once. "RED" = fails today for the
+named reason; "characterization" = green today on purpose, with a perturbation case in the same
+file proving the assertion can fail. Four existing items were edited in place (UT-345 comparison, UT-346 placement + comparison,
+UT-349 field rename, UT-351 fixture) — see their delta bullets. Pre-existing reds NOT caused by this
+delta: UT-348 (8/10), UT-346's golden case, `authoring-guide.test.ts` EXAMPLE_MODEL case, IT-312.
+
+### UT-356 — `models_list({modelType:'decision'})` passes the real tool input schema (R-2)
+- **status:** green
+- **traces:** DES-276, TASK-273
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/unit/primitive-served-surface.test.ts`. Real `TOOL_SPECS` `models_list.inputSchema`
+compiled with call-tool.ts's own ajv construction. CHARACTERIZATION (enum gained `'decision'` in
+0c31a63); guard: `{modelType:'bogus'}` is refused by the same compiled schema.
+
+### UT-357 — per-image rate survives a 0/0 token price, end to end to the estimate (R-4)
+- **status:** red
+- **traces:** DES-279, TASK-275
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-image-price.test.ts`. Inline row `prompt:'0', completion:'0',
+image_output:'0.00004'` → real `buildCatalog` → real `ModelBook` pin → `pricePrimitiveCall`. Red
+(3/3): row `imageOutPerM` undefined (dropped because `displayPrice` returned `'free'`); pin
+`price.imageOutPerM` undefined; estimate `costUSD` 0 instead of 0.0516.
+
+### UT-358 — a failed decide's usage event carries `reason`, so it derives as `failed` (R-6)
+- **status:** red
+- **traces:** DES-273, DES-274, TASK-271
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-record-failed.test.ts`. Real `AgentTranscriptSink.recordPrimitive` into a
+capturing store, real `deriveAgentRecords`. Red (2/3): no `reason` on the event; the rebuilt record
+says `state:'done'` while the live one says `failed`. Guard (green): a done decide derives `done`.
+
+### UT-359 — `aggregateFacts` buckets decide/image facts on their own (R-7)
+- **status:** green
+- **traces:** DES-273, TASK-270
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/unit/observed-stats-primitive.test.ts` (3 cases appended). CHARACTERIZATION (bucketing
+landed in 0c31a63 untested): decide-only facts fill `decide` with `prose/tools/image` null; image per
+ref; guard — a prose fact lands in `prose` and leaves `decide` null.
+
+### UT-360 — `scanPrimitiveCalls` returns AgentCallViolation-shaped `violations`; registration throws generic `SCAN_VIOLATION` (R-10)
+- **status:** red
+- **traces:** DES-271, TASK-268
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/scan-primitive-calls.test.ts` (appended). `AGENT_LABEL_NOT_LITERAL` (with line +
+decide-naming hint), `AGENT_LABEL_REQUIRED`, `AGENT_OPTS_NOT_LITERAL`, `PARAM_IN_SCRIPT{key}` for
+each of model/timeoutMs/retries; shorthand `{state, questions}` → no violations; registration →
+`SCAN_VIOLATION` with `detail.violation`. Red (9 new + the 2 renamed UT-349 asserts): `violations`
+undefined; registration succeeds. Guard (green): the literal script registers.
+
+### UT-361 — OD-1: `checkPrimitiveModelType` accepts any image-output row for `images` (pure)
+- **status:** red
+- **traces:** DES-270, TASK-267
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-model-type.test.ts` (4 cases appended). Red (1/4): a gemini-style `chat`
+row with output `['text','image']` is refused for `image` today. Guards (green): embedding refused
+for images; the same gemini row refused for `decision`; ok for `agent`.
+
+### UT-362 — mermaid: primitive labels accepted as nodes, never required; skeleton excludes them (R-12)
+- **status:** red
+- **traces:** DES-271, TASK-268
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/check-mermaid-primitive-labels.test.ts`. Red (2/8): `checkMermaid` with
+`v2.primitiveLabels:['gate']` still refuses the `a → gate → b` diagram; `catalog.register` of that
+diagram refuses `DIAGRAM_MISMATCH`. Characterization (green, each with a perturbation): without
+`primitiveLabels` → `DIAGRAM_SCRIPT_MISMATCH` naming gate; omitting the node is fine; a decide()
+before `phase()` is not `AGENT_BEFORE_PHASE` (an agent() there is); no slot carries `gate`.
+
+### UT-363 — run-time `overrides.decisions/images`: validation + `resolvePrimitiveParams` (R-13)
+- **status:** red
+- **traces:** DES-277, TASK-274
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-overrides.test.ts`. Red (12/13): every `overrides.decisions`/`images` is
+refused `PARAM_UNKNOWN` at the top level ("overrides has exactly one key: agents"), so the
+undeclared-label (`UNKNOWN_AGENT_LABEL{block, known}`), `maxRetries 5`, `maxTimeoutMs`,
+`PARAM_UNKNOWN{param:'decisions.gate.effort'}` and `PRIMITIVE_PROVIDER_UNSUPPORTED` cases all fail on
+the wrong code/detail; `resolvePrimitiveParams` is not exported. Guard (green): `{}`/`{agents:{}}`.
+
+### UT-364 — `workflow_describe` projects `decisions`/`images` (R-16)
+- **status:** red
+- **traces:** DES-278, TASK-273
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/primitive-served-surface.test.ts`. Red (2/3): `view.params.decisions`/`images`
+undefined. Guard (green): a contract with neither block projects exactly `{agents, args}`.
+
+### IT-316 — registration-time model-type gate wired for agents/decisions/images; stored versions untouched (R-11, OD-1)
+- **status:** red
+- **traces:** DES-270, DES-271, ARCH-189, TASK-268
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-registration-type-gate.test.ts`. Real WorkflowCatalog (SQLite) +
+injected `catalogSnapshot`; real RunManager + ModelBook for the admission case. Red (4/8): embedding
+under `agents`, chat under `decisions`, embedding under `images` all register (expected
+`MODEL_TYPE_MISMATCH`); no `MODEL_TYPE_UNVERIFIED` warning for an `unknown` row. Characterization
+guards (green): positive control (chat under agents, no warning); decision under decisions; OD-1
+gemini under images registers; a version stored via `insertVersion` with an embedding agent still
+`run_start`s and `validateStoredVersion` stays ok.
+
+### IT-317 — primitive refusals cannot evict an agent() refusal; label in PRIMITIVE_FAILED; retries override folds (R-14, R-8, R-13)
+- **status:** red
+- **traces:** DES-274, DES-277, ARCH-187, TASK-271, TASK-274
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/integration/primitive-refusal-ledger.test.ts`. Real RunManager + forked child; fake
+agent gateway (IT-030 pattern) + stub fetch. R-14 red: after 9 caught decide failures (9 stub calls
+asserted — the perturbation took effect) a tampered agent `BUDGET_EXCEEDED` rethrow reports the
+script's forged message (the ledger slot was evicted); the no-decide control (green) reports the
+engine's message. R-8 characterization (green): `e.message === "decide 'gate' failed: HTTP 400 after
+1 attempt"`, anchored DES-267 grammar. R-13 red: `run_start` with `overrides.decisions.gate.retries`
+is refused at admission (expected 3 provider calls).

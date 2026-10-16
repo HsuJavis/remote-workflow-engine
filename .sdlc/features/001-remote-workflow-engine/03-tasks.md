@@ -2529,6 +2529,13 @@ TASK-271 (handlers) after TASK-262..264, 267, 269, 270. TASK-272 after TASK-271 
 printed examples must register through TASK-268's gate). **TASK-265 must be committed before
 TASK-266 touches `model-catalog.ts`** — a golden generated after the change proves nothing.
 No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is in 04-design.md §v40.
+**Order delta (v40 Gate 6, 2026-10-16, rulings OD-1 + R-1..R-17):** TASK-274 (run-time primitive
+overrides) runs after TASK-268 AND TASK-271 (it shares `src/params/contract.ts`/`resolve.ts` with
+the first and `src/run-manager.ts` with the second). TASK-275 (per-image rate) runs after TASK-266,
+TASK-267 and TASK-270 (shares `model-catalog.ts`/`models-query.ts`, `model-book.ts`, `run-guard.ts`;
+`types.ts` after TASK-260). TASK-273 now runs after TASK-274 too (it documents the new `overrides`
+shape) and gains `src/errors.ts` (OD-1 hint text) — TASK-260 is long done, so still no concurrent
+sharer. TASK-268 gains `src/skeleton-graph.ts` (R-12); TASK-267 carries OD-1's `modalitiesOut`.
 
 ### TASK-260 — shared v40 vocabulary: engine-owned primitive types, `AgentRecord.kind`, `BookEntry.price.imageOutPerM`, the `primitive.call` event type, 12 error codes, `PRICE_UNKNOWN` in both refusal sets
 - **status:** draft
@@ -2582,6 +2589,7 @@ No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is i
 - **des:** DES-269
 - **dod:** `npx vitest run tests/unit/model-catalog-chat-golden.test.ts` → green against the UNCHANGED `model-catalog.ts` (fixture = a recorded `?output_modalities=all` body incl. `typesafe/jev-1.13`, a FLUX-style image-only row and `google/gemini-2.5-flash-image`; golden = today's parser output for every row whose outputs include `text`). Commit hash recorded in the task note before TASK-266 starts.
 - **estimate:** S
+- **note (R-1, v40 Gate 6):** golden provenance commit = **`0e19fae`** (Gate 5 WIP; `src/models/model-catalog.ts` untouched at that commit — `git status src` empty). Gate 6 delta: UT-345's comparison strips the one additive top-level `imageOutPerM` key before deep-equal (DES-269/DES-279 deltas); the golden file itself is unchanged.
 - **iter:** v40
 
 ### TASK-266 — catalog: `?output_modalities=all`, `ModelType` += `'decision'`, `imageOutPerM` from `pricing.image_output`, `models_list` filter
@@ -2591,6 +2599,7 @@ No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is i
 - **des:** DES-269
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/model-catalog-chat-golden.test.ts tests/unit/model-catalog-decision.test.ts tests/unit/models-query` → green: TASK-265's golden still deep-equal; jev row is `decision`/`openrouter-modalities`; image-only row is `image-gen`; `imageOutPerM` absent when `image_output` absent (never 0); fetch URL carries `?output_modalities=all`; `models_query({modelType:'decision'})` returns only decision rows.
 - **estimate:** M
+- **delta (v40 Gate 6, R-3/R-4):** the `modelType` filter in `matchesCatalogFilter` is accepted (R-3). `imageOutPerM` must NOT live inside the display `price` object (the 0c31a63 placement turns UT-345 red and drops the rate on a 0/0 row) — moved by TASK-275 (DES-279).
 - **iter:** v40
 
 ### TASK-267 — registration type gate `checkPrimitiveModelType` + admission pin carries `modelType`/`modelTypeSource` + `reachableModels` covers `decisions`/`images`
@@ -2600,15 +2609,17 @@ No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is i
 - **des:** DES-270
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-model-type.test.ts tests/unit/model-book` → green on DES-270's truth table (mismatch / `unknown` warn / `id-heuristic` warn / catalog-unavailable warn / ok); `reachableModels` includes declared defaults AND run overrides of `decisions[*]`/`images[*]`; existing model-book suites unedited.
 - **estimate:** M
+- **delta (v40 Gate 6, OD-1):** `checkPrimitiveModelType` `row` += `modalitiesOut`; `image` kind = ok iff output modalities include `image` (any modelType), `required:'image-output'` on mismatch; `toModelCatalogSnapshot` carries `modalities` (DES-270 delta). Extra dod: `npx vitest run tests/unit/primitive-model-type.test.ts` → UT-361's 4 cases green.
 - **iter:** v40
 
 ### TASK-268 — params contract + scanners + mermaid + registration wiring for `decisions`/`images`
 - **status:** draft
 - **traces:** ARCH-188, ARCH-189
-- **files:** src/params/contract.ts, src/params/resolve.ts, src/workflow-meta.ts, src/script-checks.ts, src/check-mermaid.ts, src/workflow-catalog.ts, tests/unit/primitive-contract.test.ts, tests/unit/scan-primitive-calls.test.ts
+- **files:** src/params/contract.ts, src/params/resolve.ts, src/workflow-meta.ts, src/script-checks.ts, src/check-mermaid.ts, src/skeleton-graph.ts, src/workflow-catalog.ts, tests/unit/primitive-contract.test.ts, tests/unit/scan-primitive-calls.test.ts, tests/unit/check-mermaid-primitive-labels.test.ts, tests/integration/primitive-registration-type-gate.test.ts
 - **des:** DES-271
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-contract.test.ts tests/unit/scan-primitive-calls.test.ts tests/unit/scan-agent-calls.test.ts` → green: declared⇔used per block with its OWN code; non-literal label / non-literal options / tunable key in options / alias `const d = decide` refused; `retries` > 5 refused naming `maxRetries 5`; non-`openrouter/` model → `PRIMITIVE_PROVIDER_UNSUPPORTED`; type mismatch refused / unverified warned (via TASK-267) at register only; a primitive label appearing as a mermaid node is accepted and never required; `scan-agent-calls` suite unedited (INV-V40-1).
 - **estimate:** M
+- **delta (v40 Gate 6, R-10/R-11/R-12):** dod extended — `npx tsc --noEmit && npx vitest run tests/unit/scan-primitive-calls.test.ts tests/unit/check-mermaid-primitive-labels.test.ts tests/integration/primitive-registration-type-gate.test.ts tests/unit/check-mermaid.test.ts tests/unit/check-mermaid-v2.test.ts tests/unit/workflow-catalog.test.ts` → green: UT-360 (`violations` AgentCallViolation-shaped, registration throws generic `SCAN_VIOLATION`), UT-362 (primitive stadium node accepted via `v2.primitiveLabels`, never required, non-agent intermediate; skeleton unchanged), IT-316 (MODEL_TYPE_MISMATCH for agents/decisions/images per OD-1, MODEL_TYPE_UNVERIFIED warning, stored version still admits + `validateStoredVersion` ok); the pre-existing registration/mermaid suites pass with NO edit. `skeleton-graph.ts` is expected to need no change (CALL_RE never matches the primitives) — it is listed so UT-362's lock has an owner.
 - **iter:** v40
 
 ### TASK-269 — sandbox surface: `decide`/`generateImage` globals, `{t:'decide'}`/`{t:'image'}` IPC, host cases
@@ -2627,15 +2638,17 @@ No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is i
 - **des:** DES-273
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-pricing.test.ts tests/integration/derived-equals-snapshot.test.ts tests/integration/unmapped-column-folds.test.ts tests/unit/observed-stats-primitive.test.ts` → green: reported > estimated > absent, absent never 0; live fold ≡ at-rest fold over a run with one agent, one tokenless reported-cost decide, one absent-cost image; derived ≡ snapshot for a decide and an image record (label/agentKey/phase/frame/startedAt/kind from the usage event); decide/image facts land in their own buckets, never `tools`/`prose`; every pre-existing case in those files unedited.
 - **estimate:** M
+- **delta (v40 Gate 6, R-7):** UT-359 (`aggregateFacts` decide/image buckets, characterization) appended to `tests/unit/observed-stats-primitive.test.ts` — must stay green.
 - **iter:** v40
 
 ### TASK-271 — `RunManager._handleDecideRequest` / `_handleImageRequest`, `ResumePlan.invalidate()`, `AgentExecutor.recordPrimitive`, semaphore defaults; the NFR integration tests
 - **status:** draft
 - **traces:** ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094
-- **files:** src/run-manager.ts, src/resume-cache.ts, src/agent-executor.ts, tests/unit/resume-cache-invalidate.test.ts, tests/integration/primitive-handlers.test.ts, tests/integration/primitive-resume.test.ts, tests/integration/primitive-sentinel-sweep.test.ts, tests/integration/primitive-latency.test.ts
+- **files:** src/run-manager.ts, src/resume-cache.ts, src/agent-executor.ts, tests/unit/resume-cache-invalidate.test.ts, tests/integration/primitive-handlers.test.ts, tests/integration/primitive-resume.test.ts, tests/integration/primitive-sentinel-sweep.test.ts, tests/integration/primitive-latency.test.ts, tests/unit/primitive-record-failed.test.ts, tests/integration/primitive-refusal-ledger.test.ts
 - **des:** DES-274
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/resume-cache-invalidate.test.ts tests/integration/primitive-handlers.test.ts tests/integration/primitive-resume.test.ts tests/integration/primitive-sentinel-sweep.test.ts tests/integration/primitive-latency.test.ts` → green, real forked child + stub fetch: DES-274's order (every pre-flight refusal leaves stub-fetch count 0 and `inUse` unchanged); REQ-226 2×decide+1×image stop/resume → 0 provider calls, same answers/paths; deleted image → regenerate + every later call MISS; REQ-228 concurrency ≤ N with the agent semaphore saturated; REQ-229 sweep with positive control; REQ-230 p95 ≤ 200 ms both measures. Then `npm test` green with no edit to any pre-existing agent test (INV-V40-1).
 - **estimate:** L
+- **delta (v40 Gate 6, R-6/R-8/R-14):** (R-6) `recordPrimitive` writes `reason: failReason` on a failed usage event; (R-8) handlers keep passing `msg.label`; (R-14) primitive refusals go to their own `primitiveRefusals` map/cap/counter, `_runLive` reads both (DES-274 delta). Extra dod: `npx vitest run tests/unit/primitive-record-failed.test.ts tests/integration/primitive-refusal-ledger.test.ts -t "R-14|R-8|R-6"` → UT-358 and IT-317's R-14/R-8 cases green (IT-317's R-13 case belongs to TASK-274).
 - **iter:** v40
 
 ### TASK-272 — composition root: `decideSlots`/`imageSlots`/`imageInputMaxBytes` through `composeConfig()`, two gauges
@@ -2643,15 +2656,34 @@ No two concurrently-runnable tasks share a `files:` entry. Every TASK's DES is i
 - **traces:** ARCH-193
 - **files:** src/main.ts, src/server.ts, tests/unit/compose-config-v2-wiring.test.ts, rwe.config.example.json
 - **des:** DES-275
-- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/compose-config-v2-wiring.test.ts` → green: the three keys in `KNOWN_FILE_CONFIG_KEYS`, `assertPositiveInteger`-checked, forwarded by `composeConfig()` and PROBED (not excluded) by the UT-219 sweep — deleting the forward line turns it red; `/api/status` and `system_info` show `decideSemaphore`/`imageSemaphore` `{total,inUse,queued}`.
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/compose-config-v2-wiring.test.ts` → green: the three keys in `KNOWN_FILE_CONFIG_KEYS`, `assertPositiveInteger`-checked, forwarded by `composeConfig()` and PROBED (not excluded) by the UT-219 sweep — deleting the forward line turns it red; `/api/status` shows `decideSemaphore`/`imageSemaphore` `{total,inUse,queued}` (R-15: `system_info` deliberately does NOT — ~~and `system_info`~~ withdrawn 2026-10-16).
 - **estimate:** S
 - **iter:** v40
 
 ### TASK-273 — served text: guide sections, `GUIDE_EXAMPLES`, `tools/list` text, `workflow_describe`/`workflow_get` projection, README/DEPLOY
 - **status:** draft
 - **traces:** ARCH-194
-- **files:** src/authoring-guide.ts, src/tool-specs.ts, src/workflow-view.ts, docs/AUTHORING.md, README.md, DEPLOY.md, tests/unit/authoring-guide.test.ts, tests/integration/guide-examples-register.test.ts
+- **files:** src/authoring-guide.ts, src/tool-specs.ts, src/workflow-view.ts, src/errors.ts, docs/AUTHORING.md, README.md, DEPLOY.md, tests/unit/authoring-guide.test.ts, tests/integration/guide-examples-register.test.ts, tests/unit/primitive-served-surface.test.ts
 - **des:** DES-276
 - **dod:** `npm run gen:authoring && npx tsc --noEmit && npx vitest run tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts tests/integration/guide-examples-register.test.ts` → green: the decide and image examples register against the booted engine with no `MODEL_TYPE_MISMATCH`; the guide lists every v40 code with one cause + one fix line; the printed `PRIMITIVE_FAILED` message examples match DES-267's grammar regex; no issue numbers, no version history in served text; `models_list` enum includes `'decision'`.
 - **estimate:** M
+- **delta (v40 Gate 6, R-2/R-16/R-13/OD-1/R-15/R-17):** `tool-specs.ts` — `models_list` enum keeps `'decision'` (R-2, UT-356), `run_start.overrides` description gains `decisions`/`images` (R-13, DES-277), every "'image-gen' drives generateImage()" wording becomes "output modalities include image" (OD-1), no `system_info` gauge text (R-15); `workflow-view.ts` — `projectPrimitiveParams` (R-16, DES-278); `errors.ts` — `MODEL_TYPE_MISMATCH` hint per OD-1. Extra dod: `npx vitest run tests/unit/primitive-served-surface.test.ts tests/unit/workflow-describe-projection.test.ts` → UT-356 + UT-364 green, existing describe suite unedited. Runs after TASK-274.
+- **iter:** v40
+
+### TASK-274 — run-time overrides for `decisions`/`images`: `validateUserOverrides` widening, `resolvePrimitiveParams`, admission fold (R-13)
+- **status:** draft
+- **traces:** ARCH-188, ARCH-189
+- **files:** src/params/contract.ts, src/params/resolve.ts, src/run-manager.ts, tests/unit/primitive-overrides.test.ts
+- **des:** DES-277
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-overrides.test.ts tests/integration/primitive-refusal-ledger.test.ts tests/unit/params-overrides.test.ts tests/unit/params-contract.test.ts tests/integration/params-admission.test.ts` → green: UT-363 (undeclared label → `UNKNOWN_AGENT_LABEL{block}`, `retries` > 5 → `PARAM_OUT_OF_RANGE` naming `maxRetries 5`, `timeoutMs` > ceiling, foreign key → `PARAM_UNKNOWN{param:'<block>.<label>.<key>'}`, non-openrouter model → `PRIMITIVE_PROVIDER_UNSUPPORTED`, `resolvePrimitiveParams` override › default per key) and IT-317's R-13 case (a `retries:2` override → 3 provider calls); `buildPrimitiveParamsSlice` deleted; agents-only override suites unedited.
+- **estimate:** S
+- **iter:** v40
+
+### TASK-275 — per-image-output rate survives a 0/0 token price: `ModelEntry.imageOutPerM` → pin → `pricePrimitiveCall` (R-4)
+- **status:** draft
+- **traces:** ARCH-190, ARCH-191
+- **files:** src/models/model-catalog.ts, src/models/models-query.ts, src/models/model-book.ts, src/run-guard.ts, src/types.ts, tests/unit/primitive-image-price.test.ts
+- **des:** DES-279
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-image-price.test.ts tests/unit/primitive-pricing.test.ts tests/unit/model-catalog-chat-golden.test.ts tests/unit/model-catalog-decision.test.ts tests/unit/model-book` → green: UT-357 (0/0 row with `image_output` → row `imageOutPerM` 40, pin `price.imageOutPerM` 40, estimate `tokens.output × 40/1e6 > 0`), UT-351 (corrected fixture, per-M unit), UT-345 (golden deep-equal modulo the additive top-level `imageOutPerM` — i.e. the display `price` object is back to its pre-v40 shape).
+- **estimate:** S
 - **iter:** v40

@@ -10550,6 +10550,7 @@ purpose (real tmp dir).
 - **traces:** ARCH-190, TASK-265, TASK-266
 - **signature:** `ModelType` += `'decision'`; fetch `'https://openrouter.ai/api/v1/models?output_modalities=all'`; `openRouterModelType`: existing branches first (`text` in outputs → `chat`, unchanged), then outputs containing `'decisions'` → `{modelType:'decision', modelTypeSource:'openrouter-modalities'}`; image-only stays `image-gen`. Price parser: `imageOutPerM` = `Number(pricing.image_output) × 1e6` only when finite ≥ 0, else field omitted. `models_query` / `models_list` enum gain `'decision'` (filter code unchanged).
 - **boundary:** TASK-265 golden = today's parser over the fixture, filtered to rows whose outputs include `text`; TASK-266 must leave it deep-equal (REQ-222 last clause). Row count grows; paging (`PAGE_BYTE_BUDGET`) unchanged.
+- **delta (v40 Gate 6, R-3 / R-4 / OD-1 — see §v40 Gate 6 delta, DES-279):** (R-3, accepted deviation) `CatalogFilter.modelType` + one line in `matchesCatalogFilter` is the filter code `models_list({modelType})` needs — "filter code unchanged" above is superseded. (R-4) the per-image-output rate is NOT part of the display `price` object any more: it is the top-level `ModelEntry.imageOutPerM` (and `FourRates.imageOutPerM` on the pin), present whenever `pricing.image_output` parses, independent of whether `displayPrice` returned an object, `'free'` or `'unknown'` — signature and unit in DES-279. Boundary amended: the TASK-265 golden is deep-equal after stripping exactly the additive top-level `imageOutPerM` key (OD-1 makes an image-capable chat row such as gemini a generateImage() target, so it must carry its rate); every pre-existing key/value — including `price` and `ratesPerM` — stays byte-identical. The Gate 6 WIP's `{...basePrice, imageOutPerM}` (inside `price`) is the defect UT-345 now reports.
 - **iter:** v40
 
 ### DES-270 — `checkPrimitiveModelType` + pin reach
@@ -10567,6 +10568,7 @@ purpose (real tmp dir).
   ```
   `toModelCatalogSnapshot` rows carry `modelType`, `modelTypeSource`; `reachableModels(contract, overrides)` += every `decisions[*].model` and `images[*].model` (declared default and run override).
 - **boundary:** truth table — `!catalogAvailable` → existing warning arm (`providers.ts:189-197`), never refuse; `row` undefined → existing unknown-model path unchanged; `modelType==='unknown'` or `modelTypeSource==='id-heuristic'` → ok+warning; known & ≠ required → mismatch, message `<block>.<label> requires a model catalogued '<required>'; <model> is catalogued '<actual>'`; else ok. Called from registration only (DES-271), never from admission/resume.
+- **delta (v40 Gate 6, OD-1 + R-11):** `row` gains `modalitiesOut?: readonly string[]` (from the snapshot entry's `modalities.out`; `toModelCatalogSnapshot` carries `modalities` through like `modelType`). Rules per kind: `agent` → refuse iff `modelType` is a KNOWN non-chat type (unchanged result shape, `required:'chat'`); `decision` → strictly `modelType==='decision'` (unchanged); `image` → **ok iff `modalitiesOut` includes `'image'`** (whatever `modelType`), else — when `modelType` is known — `{ok:false, code:'MODEL_TYPE_MISMATCH', actual: modelType, required:'image-output'}` (`required` widens to `ModelType | 'image-output'`); message `images.<label> requires a model whose catalog output includes 'image'; <model> is catalogued '<actual>' with output [<mods>]`. The unknown/id-heuristic warn arm and catalog-unavailable/row-undefined arms are evaluated first and are unchanged. A snapshot entry with **no `modelType` field** (hand-built test rows) is passed as `row: undefined` — silent, never a warning — so no pre-existing registration test changes. `ModelCatalogSnapshot.entries[]` += `modalities?: {out: readonly string[]}`. Tests: UT-361 (pure), IT-316 (wired).
 - **iter:** v40
 
 ### DES-271 — params contract, scanners, mermaid, registration wiring
@@ -10587,6 +10589,9 @@ purpose (real tmp dir).
   // src/script-checks.ts: CALLABLE_API_NAMES += 'decide', 'generateImage'
   ```
 - **boundary:** label: string literal, `AGENT_LABEL_FORMAT_RE` and ≤ 64 chars; lookups via `Object.hasOwn`. Arg 2: literal object whose keys ⊆ the closed set (values may be runtime); `model|timeoutMs|retries` key → `PARAM_IN_SCRIPT`. Declared ⇔ used per block: `DECISION_UNDECLARED` / `DECISION_DECLARED_NOT_IN_SCRIPT` / `IMAGE_UNDECLARED` / `IMAGE_DECLARED_NOT_IN_SCRIPT`, label in message. `timeoutMs` via existing `boundMax(…, maxTimeoutMs)`; `retries` integer 0..`MAX_PRIMITIVE_RETRIES` (declared and override), refusal message names `maxRetries 5`. `model.default` must start `openrouter/` → else `PRIMITIVE_PROVIDER_UNSUPPORTED`; `harnessProviders` not applied. `WorkflowCatalog` registration calls `checkPrimitiveModelType` for every `agents`/`decisions`/`images` label → mismatch refuses, warnings appended to the response `warnings[]`. `checkMermaid`: primitive labels accepted as node ids, never required, excluded from `deriveExpectedGraph` and `AGENT_BEFORE_PHASE`. Same label in `agents` and `decisions`/`images` is allowed (records carry `kind`; see rationale). Override of an undeclared primitive label → existing unknown-label refusal path. `scanAgentCalls`/`AGENT_CALL_RE` untouched.
+- **delta (v40 Gate 6, R-10 option (a)):** `scanPrimitiveCalls(script): { decide: string[]; generateImage: string[]; violations: AgentCallViolation[] }` — field renamed from `errors` (UT-349's two assertions renamed with it). Same codes as the agent scan, no new vocabulary: no label → `AGENT_LABEL_REQUIRED`; non-literal label → `AGENT_LABEL_NOT_LITERAL`; literal failing `AGENT_LABEL_FORMAT_RE`/64 chars → `AGENT_LABEL_FORMAT`; arg 2 not an object literal → `AGENT_OPTS_NOT_LITERAL`; spread entry → `AGENT_OPTS_SPREAD`; key `model`/`timeoutMs`/`retries` → `PARAM_IN_SCRIPT{key}`; any other key outside the closed set → `PARAM_UNKNOWN{key}`; shorthand `{state, questions}` is FINE (values may be runtime). `hint` names the primitive (`decide()`/`generateImage()`), `line` is the call's line; the same `nonCodeSpans` oracle as `scanAgentCalls` (fail closed → `SCRIPT_UNSCANNABLE`). `validateRegistration` throws the existing `SCAN_VIOLATION` (`detail {line, key, violation}`) for `[...scan.violations, ...primitives.violations][0]` at the existing throw site — agent violations first. No new `ErrorCode`.
+- **delta (v40 Gate 6, R-11 + OD-1):** registration wiring — inside `validateRegistration`, after `parseMetaParams` succeeds and with the SAME fresh `catalog` snapshot: for every label of `params.agents`/`params.decisions`/`params.images` (kind `agent`/`decision`/`image`), look up `catalog.entries.find(provider, model)` for the declared `model.default`, call `checkPrimitiveModelType(kind, label, model, row, catalogAvailable)` (`catalogAvailable` = the existing `checkModelRef` notion: `source !== 'static'` and the provider has rows); first `ok:false` → `codedError('MODEL_TYPE_MISMATCH', message, {label, model, actual, required})`; each warning → appended to the returned `warnings[]` as `{code:'MODEL_TYPE_UNVERIFIED', label, model, message}` (the `ModelRefWarning.code` union widens). **New registration only:** never in `validateStoredVersion`, never at `RunManager.start`/`resume`/nested admission (V40-Q6). Run overrides are NOT type-gated (admission path). The whole pre-existing registration suite stays unedited and green.
+- **delta (v40 Gate 6, R-12):** `checkMermaid(src, scriptLabels, agentDefaults, limits, v2: { expected: ExpectedGraph; primitiveLabels?: readonly string[] })` — `validateRegistration` passes `[...primitives.decide, ...primitives.generateImage]`. A stadium node whose label ∈ `primitiveLabels` and ∉ `scriptLabels`: excluded from `diagramLabels` (so never `onlyInDiagram`), never added to the required set, skipped by the VALUE triple, and treated as a NON-agent intermediate by `pathThroughNonAgents` (rule 13a) and ignored by rule 13b. A label in BOTH (an agent and a primitive share it) stays an agent node. `primitiveLabels` absent ≡ `[]` ≡ today. `skeleton-graph.ts`: `deriveExpectedGraph` is unchanged — `parseWorkflowSkeleton`'s `CALL_RE` never matches `decide`/`generateImage`, so no slot and no `AGENT_BEFORE_PHASE`; the file joins TASK-268 only so its UT-362 characterization lock has an owner. Override of an undeclared primitive label: DES-277.
 - **iter:** v40
 
 ### DES-272 — sandbox surface
@@ -10624,6 +10629,7 @@ purpose (real tmp dir).
   `deriveAgentRecords` (run-store.ts): when the usage event has `data.primitive` and no harness event exists, take `label/agentKey/phase/phaseIndex/frame/startedAt/model/provider` from `data`, `kind = data.primitive`, `tokens = data.tokens` (absent stays absent).
   `observed-stats.loadFacts`: `kind = data.primitive` when present (checked before the harness-descriptor rule); `AgentCallFact.kind` += `'decide'|'image'`; `ObservedForRef` gains `decide`/`image` buckets.
 - **boundary:** agent usage events always carry `costUSD` together with `tokens` (verified agent-executor.ts:581/:728), so the guard widening is a no-op for agents — the existing IT-156/DES-188 cases stay unedited. Locks extended: live fold ≡ at-rest fold and derived ≡ snapshot with one tokenless reported-cost decide and one absent-cost image.
+- **delta (v40 Gate 6, R-6):** the usage event `recordPrimitive` writes carries `reason: failReason` whenever `state === 'failed'` (absent on `done`) — `deriveAgentRecords` keys `state` on `data.reason`, so without it a failed primitive rebuilds as `done` after a restart. (R-4) image estimate unit: see DES-279 — `tokens.output × imageOutPerM / 1e6`.
 - **iter:** v40
 
 ### DES-274 — `RunManager._handleDecideRequest` / `_handleImageRequest`
@@ -10652,6 +10658,8 @@ purpose (real tmp dir).
 - **hot path (REQ-230):** pi-ai model object from `toPiAiModel(pinRow)` cached on the run entry; no `await` on ModelBook; the only non-provider I/O is the sync journal write and event emits.
 - **Sentinel sweep (REQ-229 IT):** sentinels in a `state` value, a `state` key, a question `instructions`, and `prompt`; stub first attempt returns 400 whose body echoes all of them, then 200; one run catches, one does not (populates `runs.error`); also one input-validation failure. Grep raw bytes of: operator event-log file, `journal.jsonl`, SQLite DB + WAL, `run_status`, `run_agent_log`, `/api/runs/:id`, `/api/runs/:id/agents/:agentId`, observed-stats facts, `workspace_list`, host-captured `agentThrow` messages, host stderr. **Positive control:** the stub's captured request bodies DO contain the sentinels.
 - **Overshoot bound (documented, not engineered):** concurrent calls may each pass step 8's `assertBudget` → overshoot ≤ `slots × maxPerCallCost`.
+- **delta (v40 Gate 6, R-8):** `runDecide`/`runImage` keep `label?: string` on `req` (accepted deviation from the signature above); both handlers pass `msg.label`, so the thrown message is always `<primitive> '<label>' failed: …` (IT-317 R-8 case).
+- **delta (v40 Gate 6, R-14):** split cap. `RunEntry` += `primitiveRefusals: Map<number, {code, message}>`, `primitiveRefusalsDropped: number`; `_recordPrimitiveRefusal` writes ONLY there under its own cap `PRIMITIVE_REFUSAL_CAP = 8` (top frame only, unchanged); `_handleAgentRequest`'s 8 slots in `entry.refusals` are never touched by a primitive. `_runLive`: `refusalHit = entry.refusals.get(ref) ?? entry.primitiveRefusals.get(ref)` (callSeqs are unique across both, one shared counter). (R-6) see DES-273 delta. (R-13) step (2) "contract default ⊕ run override" is realised by DES-277's `resolvePrimitiveParams` at admission (`start()` with the validated `overrides.decisions/images`; a nested frame stays default-only).
 - **iter:** v40
 
 ### DES-275 — composition root: config keys, semaphores, gauges
@@ -10659,6 +10667,7 @@ purpose (real tmp dir).
 - **traces:** ARCH-193, TASK-272
 - **signature:** `FileConfig.decideSlots?`, `imageSlots?`, `imageInputMaxBytes?` — in `KNOWN_FILE_CONFIG_KEYS`, each `assertPositiveInteger(..., CONFIG_PREFIX)`, forwarded in `composeConfig()` to `ServerConfig`, then `createSemaphore(cfg.decideSlots ?? 16)` / `createSemaphore(cfg.imageSlots ?? 2)` / `imageInputMaxBytes ?? 4_718_592` into `RunManagerDeps`. `/api/status` and `system_info` engine section: `decideSemaphore`, `imageSemaphore` = `semaphore.gauge()` (`{total, inUse, queued}`), beside `agentSemaphore`.
 - **boundary:** UT-219 sweep lists all three as probed entries (never excluded) — removing a forward line fails it. Caps for state/questions/body/retry-after are code constants (DES-266/267), not keys. `rwe.config.example.json` documents the three keys.
+- **delta (v40 Gate 6, R-15):** the two gauges are on **`GET /api/status` only**. `system_info` does NOT show them (it does not show `agentSemaphore` either) — every "and `system_info`" above is withdrawn; DES-276's `system_info` text bullet and TASK-272's dod are amended to match.
 - **iter:** v40
 
 ### DES-276 — served text
@@ -10666,6 +10675,7 @@ purpose (real tmp dir).
 - **traces:** ARCH-194, TASK-273
 - **signature:** `workflow_authoring_guide` gains sections `decide` and `generateImage`: declaration block (`meta.params.decisions.<label>` / `images.<label>`: `model`/`timeoutMs`/`retries` defaults, no `effort`), the two call signatures and return shapes from DES-264, the full v40 code table (one cause + one fix line each, plus `BUDGET_EXCEEDED`, `PARAM_IN_SCRIPT`, `OPENROUTER_AUTH_MISSING`), the `PRIMITIVE_FAILED` message grammar, the bool idiom `answers.<id>.probability >= 0.7`, wall time ≤ `(retries+1)×timeoutMs + retries×10s`, suggested defaults (decide `timeoutMs 5000, retries 2`; image `timeoutMs 120000, retries 0` — a timed-out image may still be billed), "a changed or missing image file regenerates that call and every later one on resume", "an error message never contains the provider's response", "with a USD budget a model the catalog could not price is refused `PRICE_UNKNOWN`", "decide/generateImage count toward the 1000 model calls per run". `GUIDE_EXAMPLES` += a decide gate (bool → fallback to `agent()`) and an image example. `tool-specs.ts`: `workflow_register` mentions both blocks; `models_list` `modelType` enum + description `'chat'` for agent(), `'decision'` for decide(), `'image-gen'` for generateImage(); `run_status` documents `agents[].kind`; `system_info` the two gauges. `workflow-view.ts`: `workflow_describe`/`workflow_get` project `decisions`/`images` (model/timeoutMs/retries). README/DEPLOY: the three config keys. `npm run gen:authoring` regenerates `docs/AUTHORING.md`.
 - **boundary:** served text = current behaviour only, no issue numbers, no version history. Examples registered by IT-118 must not hit `MODEL_TYPE_MISMATCH` (CI catalog is static → warning arm, which the test must not treat as refusal).
+- **delta (v40 Gate 6, R-2 / R-16 / R-13 / OD-1 / R-15 / R-17):** (R-2) `models_list.inputSchema.modelType.enum` contains `'decision'` (present since 0c31a63; UT-356 locks it against the real ajv). (R-16) `workflow_describe` projects `params.decisions`/`params.images` — DES-278; `workflow_get` unchanged. (R-13) `run_start.overrides` description: `{agents:{…}, decisions:{'<label>':{model?,timeoutMs?,retries?}}, images:{…}}`, `retries` ≤ 5, model must be `openrouter/…`, undeclared label → `UNKNOWN_AGENT_LABEL`. (OD-1) every "'image-gen' drives generateImage()" wording becomes "a model whose `modalities.out` includes `image`": `models_list` description + `modelType` enum description (tool-specs.ts), `ERROR_CATALOG.MODEL_TYPE_MISMATCH.hint` (errors.ts), the guide's MODEL_TYPE_MISMATCH fix line (authoring-guide.ts) and the image section; the image example MAY use a chat image model (R-17: live ids drift — accepted risk). (R-15) no `system_info` gauge text. `npm run gen:authoring` after.
 - **iter:** v40
 
 ### v40 class diagram
@@ -10795,3 +10805,92 @@ classDiagram
   visible only as the thrown error and a `refused` event — they cost nothing and need no record.
 - **Owner decisions:** none new. The one pending question (image+text models for `images.<label>`)
   stays on ADR-095 and is built strictly (`image-gen`); not duplicated here.
+
+## v40 Gate 6 delta (2026-10-16) — clarification rulings OD-1 + R-1..R-17 (`v40-gate6-clarification-rulings.md`) — DES-277..279
+
+In-place delta bullets were added to DES-269 (R-3, R-4), DES-270 (OD-1, R-11), DES-271 (R-10, R-11,
+R-12), DES-273 (R-6), DES-274 (R-8, R-14, R-13), DES-275 (R-15) and DES-276 (R-2, R-16, R-13, OD-1,
+R-15, R-17). New rows below. R-1 (golden provenance `0e19fae`) is recorded on TASK-265; R-5
+(`gen:authoring`) and R-9 (accepted ahead-of-test code) need no design. Mock policy unchanged from
+§v40 (unit: seams; integration: real child + RunManager, stub `fetch` and fake agent gateway only).
+Real-tier paths: R-13 → a real `run_start` with `overrides.decisions.<label>.retries` against the
+Gate 7.5 engine (attempt count in the `primitive.call` lines); OD-1 → a real `workflow_register` of
+`images.hero` → `openrouter/google/gemini-2.5-flash-image` succeeds and an embedding model is refused
+`MODEL_TYPE_MISMATCH` (VAL-258's path).
+
+### DES-277 — run-time overrides for `decisions`/`images`: `validateUserOverrides` widening + `resolvePrimitiveParams`
+- **status:** draft
+- **traces:** ARCH-188, ARCH-189, TASK-274
+- **signature:**
+  ```ts
+  // src/params/contract.ts
+  export interface UserOverrides {
+    agents?: Record<string, Partial<{ model: string; effort: Effort; timeoutMs: number; appendPrompt: string }>>;
+    decisions?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
+    images?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
+  }
+  validateUserOverrides(c, raw, catalog?, ceilings?)   // signature unchanged; top level closed to {agents, decisions, images}
+  function validatePrimitiveOverride(block: 'decisions' | 'images', label: string, spec: PrimitiveParamSpec,
+    raw: unknown, ceilings: Ceilings, catalog: ModelCatalogSnapshot, warn: (w: ModelRefWarning) => void):
+    { ok: true; value: Partial<{ model: string; timeoutMs: number; retries: number }> } | Err;   // module-private
+  // src/params/resolve.ts — pure
+  export function resolvePrimitiveParams(
+    specs: Record<string, PrimitiveParamSpec>,
+    overrides?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>,
+  ): Record<string, { model: string; timeoutMs: number; retries: number }>;   // per key: override › spec.default
+  ```
+- **boundary:** block value must be a plain object, each per-label value a plain object (else `PARAM_CONTRACT_INVALID`, same as `agents`). Label not in `c.decisions`/`c.images` (`Object.hasOwn`) → `{code:'UNKNOWN_AGENT_LABEL', message:'"<label>" is not a declared <block> label', detail:{label, known: Object.keys(c[block] ?? {}), block}}` — the existing unknown-label code. Per-label keys closed to `model|timeoutMs|retries`; any other → `PARAM_UNKNOWN{param:'<block>.<label>.<key>'}`. `retries`: integer `0..MAX_PRIMITIVE_RETRIES` → else `PARAM_OUT_OF_RANGE`, message names `maxRetries 5`. `timeoutMs`: integer `1..ceilings.maxTimeoutMs` → else `PARAM_OUT_OF_RANGE` naming `maxTimeoutMs <n>`. `model`: string starting `openrouter/` (else `PRIMITIVE_PROVIDER_UNSUPPORTED`), then the same `checkModelRefOrErr` existence/warning path `agents` overrides use (unknown → `UNKNOWN_MODEL`, unverifiable → warning). No model-type gate on overrides (admission, V40-Q6). Result `value` carries `decisions`/`images` only when the caller supplied them. Wiring: `RunManager.start()` replaces `buildPrimitiveParamsSlice(contract.decisions)` with `resolvePrimitiveParams(contract.decisions, overridesResult.value.decisions)` (same for images) BEFORE `_refuseUnadmittableParams`/the price pin, so `reachableModels` sees the overridden model; the nested `workflow()` frame keeps `resolvePrimitiveParams(childContract.decisions)` (no overrides); `buildPrimitiveParamsSlice` is deleted (orphaned). `run_start.overrides` description: DES-276 delta.
+- **iter:** v40
+
+### DES-278 — `workflow_describe` projection of `decisions`/`images`
+- **status:** draft
+- **traces:** ARCH-194, TASK-273
+- **signature:**
+  ```ts
+  // src/workflow-view.ts
+  WorkflowDescribeView.params: {
+    agents: …; args: …;                                    // unchanged
+    decisions?: Record<string, DescribePrimitiveParams>;   // present iff the stored contract declares the block
+    images?: Record<string, DescribePrimitiveParams>;
+  };
+  export interface DescribePrimitiveParams {
+    model:     { type: 'string'; default: string };
+    timeoutMs: { type: 'number'; default: number; ceiling: 'maxTimeoutMs' };
+    retries:   { type: 'number'; default: number; range: { min: 0; max: typeof MAX_PRIMITIVE_RETRIES }; ceiling: 'maxRetries' };
+  }
+  function projectPrimitiveParams(specs: Record<string, PrimitiveParamSpec>): Record<string, DescribePrimitiveParams>;  // module-private, pure
+  ```
+- **boundary:** `EXPECTED_DESCRIBE_KEYS` (top level) unchanged; a contract without the blocks yields exactly `{agents, args}` (every existing describe test stays deep-equal); legacy (`knobs`) shape → neither key. No `attempts`/`worstCaseMs` on primitives (that ladder is the agent harness's). `workflow_get` (`projectWorkflowForRead`) unchanged.
+- **iter:** v40
+
+### DES-279 — the per-image-output rate: `ModelEntry.imageOutPerM` → `FourRates.imageOutPerM` → `pricePrimitiveCall`
+- **status:** draft
+- **traces:** ARCH-190, ARCH-191, TASK-275
+- **signature:**
+  ```ts
+  // src/models/model-catalog.ts
+  ModelEntry.imageOutPerM?: number;   // TOP-LEVEL sibling of `price`; NEVER inside the display `price` object
+  // set by fetchOpenRouter iff imageOutPerMFrom(m.pricing) !== undefined — regardless of displayPrice()'s
+  // result ('free' | 'unknown' | object); `price` itself stays the token-rate string, byte-identical to pre-v40.
+  ALL_FIELDS (models-query.ts) += 'imageOutPerM'   // full rows / `fields:[…]`; compact row unchanged
+  // src/types.ts
+  FourRates.imageOutPerM?: number;   // doc corrected: USD per 1M IMAGE-OUTPUT TOKENS (not "per million images")
+  // src/models/model-book.ts — priceFromRow(row)
+  const base = row.ratesPerM !== undefined ? row.ratesPerM : ratesFromOpenRouterPricing(row.pricing);
+  return base !== null && row.imageOutPerM !== undefined ? { ...base, imageOutPerM: row.imageOutPerM } : base;
+  CatalogSourceRow.imageOutPerM?: number;
+  // src/run-guard.ts
+  primitivePriceKnowable(entry, 'image') = finite(in) && (finite(imageOutPerM) || finite(out))   // unchanged
+  pricePrimitiveCall image estimate = tokens.input×in + tokens.output×(imageOutPerM !== undefined ? imageOutPerM / 1e6 : out)
+  ```
+- **boundary:** unit = `Number(pricing.image_output) × 1e6` (OpenRouter's `image_output` is USD per image-output token; DES-269's parser already scales ×1e6) — every consumer divides by 1e6 before multiplying by a token count; nothing multiplies a token count by a per-M figure. A 0/0 token-priced row with `image_output > 0` therefore estimates `> 0` (R-4). A row whose `ratesPerM` is `null` stays unpriced even if `image_output` parses (no `in` rate → `primitivePriceKnowable` false → `PRICE_UNKNOWN` under a USD budget). The TASK-265 golden is compared with the top-level `imageOutPerM` stripped (DES-269 delta) — gemini gains exactly that one key. Wire unit on image-only rows (FLUX `pricing.image` vs `image_output`) remains a Gate 7.5 wire fact (§v40 real-tier note); if it differs, only `imageOutPerMFrom` changes.
+- **iter:** v40
+
+### Decision rationale — v40 Gate 6 delta (designer, solo synthesis of owner-accepted rulings; no panel — every contested point was already ruled by the owner)
+- **R-4 placement — top-level `imageOutPerM`, not inside `price`.** Inside `price` it vanished whenever the token rates were 0/0 (`'free'`), which is exactly R-4's row, and it also mutated a pre-existing chat row's `price` object (UT-345 red at 0c31a63). A sibling key survives every `displayPrice` outcome and changes a pre-existing row only additively. That additive key on the gemini row is the one residual against REQ-222's last clause read strictly; it is a direct consequence of OD-1 + R-4 (a chat row that is now a priced generateImage() target) and is surfaced to the orchestrator rather than decided silently.
+- **R-4 unit — per-M tokens, divide at use.** DES-269 already defines `×1e6`; the Gate 6 WIP multiplied a token count by the per-M figure (a 1e6× over-estimate, masked by UT-351's mis-placed fixture). UT-351's fixture is moved inside `price` and its expectation recomputed — the original case was red for the wrong reason.
+- **R-10 — rename `errors` → `violations`.** The ruling names AgentCallViolation-shaped `violations`; keeping `errors` would leave two names for one concept. UT-349's two assertions were renamed in the same edit.
+- **R-11 — absent `modelType` on a snapshot row is silent, not a warning.** The "absent reads as unknown → warn" note on `CatalogSourceRow` would add a `MODEL_TYPE_UNVERIFIED` warning to every hand-built-catalog registration test; production rows always carry `modelType`, so silence on absence costs nothing real and keeps the existing suite unedited (the ruling's requirement).
+- **R-13 — reuse `UNKNOWN_AGENT_LABEL` with `detail.block`.** The ruling says "the existing unknown-label refusal path"; a new code would contradict it. `detail.block` disambiguates.
+- **R-14 — what the split protects is provenance.** A missing ledger entry does not lose the CODE (the child keeps `BUDGET_EXCEEDED` in `ENGINE_REFUSAL_CODES`); it loses attestation — the run then reports whatever the script rethrew. IT-317 therefore tampers `e.message` before rethrowing; the no-decide control proves the mechanism is live today.
+- **Owner decisions:** none new. OD-1 answers ADR-095's pending question; the `owner_decision: pending` line on ADR-095 (02-architecture.md) is the architect's to close — not edited here.

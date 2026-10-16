@@ -50,13 +50,16 @@ describe('UT-346: catalog decision type + imageOutPerM (DES-269)', () => {
     const { entries } = await buildFromFixture();
     const gemini = entries.find((e) => e.model === 'google/gemini-2.5-flash-image');
     expect(gemini?.modelType).toBe('chat');
-    expect((gemini as unknown as { price: { imageOutPerM?: number } }).price?.imageOutPerM).toBeCloseTo(30, 5);
+    // v40 Gate 6 delta (DES-279, R-4): TOP-LEVEL `ModelEntry.imageOutPerM`, never inside the display `price`.
+    expect((gemini as unknown as { imageOutPerM?: number }).imageOutPerM).toBeCloseTo(30, 5);
+    expect((gemini as unknown as { price: Record<string, unknown> }).price).not.toHaveProperty('imageOutPerM');
   });
 
   it('a row with no pricing.image_output never gets imageOutPerM (absent, never 0)', async () => {
     const { entries } = await buildFromFixture();
     const sonnet = entries.find((e) => e.model === 'anthropic/claude-sonnet-5');
     expect((sonnet as unknown as { price: { imageOutPerM?: number } }).price).not.toHaveProperty('imageOutPerM');
+    expect(sonnet).not.toHaveProperty('imageOutPerM');
   });
 
   it('models_query/filterCatalog({modelType:"decision"}) returns only decision rows', async () => {
@@ -70,6 +73,12 @@ describe('UT-346: catalog decision type + imageOutPerM (DES-269)', () => {
     const { entries } = await buildFromFixture();
     const golden: ModelEntry[] = JSON.parse(readFileSync(join(__dirname, '..', 'fixtures', 'models', 'chat-rows-golden.json'), 'utf8'));
     const chatRows = entries.filter((e) => Array.isArray(e.modalities?.out) && e.modalities.out.includes('text'));
-    expect(chatRows).toEqual(golden);
+    // v40 Gate 6 delta (DES-269/DES-279): same rule as UT-345 — only the additive top-level
+    // `imageOutPerM` key is stripped; every pre-existing key/value must still be deep-equal.
+    const withoutAdditive = chatRows.map((e) => {
+      const { imageOutPerM: _additive, ...rest } = e as typeof e & { imageOutPerM?: number };
+      return rest;
+    });
+    expect(withoutAdditive).toEqual(golden);
   });
 });

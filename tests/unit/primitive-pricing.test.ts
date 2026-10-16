@@ -9,7 +9,10 @@ import { primitivePriceKnowable, pricePrimitiveCall } from '../../src/run-guard.
 import type { BookEntry } from '../../src/types.js';
 
 const DECIDE_ENTRY: BookEntry = { price: { in: 0.0000005, out: 0.000001, cacheRead: 0, cacheWrite: 0 }, caps: {} as never };
-const IMAGE_ENTRY_WITH_IMAGE_OUT: BookEntry = { price: { in: 0.0000003, out: 0, cacheRead: 0, cacheWrite: 0 }, caps: {} as never, imageOutPerM: 30 } as never;
+// v40 Gate 6 delta (DES-279, ruling R-4): `imageOutPerM` lives INSIDE `price` (FourRates) — the
+// original fixture put it beside `price`, where nothing reads it, so this case was red for the wrong
+// reason. Unit: USD per 1M image-output tokens (= OpenRouter `image_output` × 1e6).
+const IMAGE_ENTRY_WITH_IMAGE_OUT: BookEntry = { price: { in: 0.0000003, out: 0, cacheRead: 0, cacheWrite: 0, imageOutPerM: 30 }, caps: {} as never };
 const IMAGE_ENTRY_NO_IMAGE_OUT_BUT_PRICED: BookEntry = { price: { in: 0.0000003, out: 0.0000025, cacheRead: 0, cacheWrite: 0 }, caps: {} as never };
 const UNPRICED_ENTRY: BookEntry = { price: null, caps: {} as never };
 
@@ -51,10 +54,11 @@ describe('UT-351: pricePrimitiveCall (DES-273): reported > estimated > absent', 
     expect(r).toEqual({ costUSD: 100 * 0.0000005 + 50 * 0.000001, source: 'estimated' });
   });
 
-  it('estimated: image — tokens.input×in + tokens.output×(imageOutPerM ?? out)', () => {
-    const tokens = { input: 20, output: 1, cacheRead: 0, cacheWrite: 0 };
+  it('estimated: image — tokens.input×in + tokens.output×(imageOutPerM/1e6 ?? out)', () => {
+    const tokens = { input: 20, output: 1290, cacheRead: 0, cacheWrite: 0 };
     const r = pricePrimitiveCall({ wireCostUSD: null, tokens, kind: 'image', entry: IMAGE_ENTRY_WITH_IMAGE_OUT });
-    expect(r).toEqual({ costUSD: 20 * 0.0000003 + 1 * 30, source: 'estimated' });
+    expect(r).toMatchObject({ source: 'estimated' });
+    expect((r as { costUSD: number }).costUSD).toBeCloseTo(20 * 0.0000003 + 1290 * 30 / 1e6, 12);
   });
 
   it('absent: no wire cost, no tokens -> {absent:true}, NEVER {costUSD:0}', () => {

@@ -3114,6 +3114,7 @@ run 啟動開銷優化;把 decide/generateImage 經 harness(sdk/pi gateway)轉�
   **And** 輸出為 `['decisions']` 的模型一律標為 `decision`;純圖片輸出標為 `image-gen`;
   **And** `models_list` 的 `modelType` filter 可接受 `decision`,`models_list({modelType:'decision'})` 只回 decision 列;
   **And** 先前就存在的 chat 列的 modelType 與欄位不因改抓 all 而改變。
+  (v40 Gate 6 解讀,依 OD-1 + R-4:「欄位不變」指既有欄位的值不變;為承載每張計價而**新增**的 `imageOutPerM` 這類附加欄位允許出現,golden 比對時剝除附加欄位後須逐位元相同。)
 - **iter:** v40
 
 ### REQ-223 — 註冊時檢查模型類型與 primitive 相符(只對新註冊)
@@ -3124,9 +3125,11 @@ run 啟動開銷優化;把 decide/generateImage 經 harness(sdk/pi gateway)轉�
 - **acceptance:**
   **Given** 新註冊的 `params.agents.<label>.model.default` 是 catalog 確定為 `embedding`(或其他非 chat 已知類型)的模型
   **Then** 註冊以具名 refusal code 拒絕,訊息指出 label、模型、其類型與 `agent()` 需要的類型;
-  **And** 同理 `decisions.<label>` 須為 `decision`、`images.<label>` 須為 `image-gen`;
+  **And** 同理 `decisions.<label>` 須為 `decision`(嚴格);`images.<label>` 須為 catalog **輸出模態(output modalities)含 `image`** 的模型,不論其 modelType(例:目錄標為 `chat` 的 `google/gemini-2.5-flash-image` 可用;embedding 等輸出不含 image 的列被拒);`agents.<label>` 拒絕「已知且非 chat」的類型;
+  ~~**And** 同理 `decisions.<label>` 須為 `decision`、`images.<label>` 須為 `image-gen`;~~ `[SUPERSEDED by OD-1, 2026-10-16]`
   **And Given** 模型的 modelType 為 `unknown` 或來源為 `id-heuristic` **Then** 註冊成功,但回應中帶有指出該 label 的警告;
   **And Given** 一個在本輪之前已註冊、模型類型不符的既有版本 **Then** 它的 admission 與 resume 不被這項新檢查拒絕。
+- **delta (iter v40, Gate 6 clarification OD-1, owner 「接受」 2026-10-16, `v40-gate6-clarification-rulings.md`):** `images` 的判準由 `modelType === 'image-gen'` 改為「catalog 輸出模態含 `image`」;`decisions` 維持嚴格 `decision`;`agents` 維持「拒絕已知非 chat 類型」。ADR-095 的 owner_decision 由此答覆。
 - **iter:** v40
 
 ### REQ-224 — 靜態檢查與 served text 涵蓋新 primitive
