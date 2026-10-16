@@ -10735,6 +10735,7 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **greens:** UT-342, UT-343
 - **files:** src/direct-models/call.ts, tests/helpers/stub-fetch.ts, tests/unit/direct-models-call.test.ts
 - **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **v40 Gate 6.5 delta (verifier, determinism_check):** two fixes, quality/determinism only, no behavior change for any existing caller. (1) `parseRetryAfterMs` took a direct `Date.now()` read to turn an HTTP-date `retry-after` header into a relative ms value; widened to take `nowMs` (the caller's own `deps.now()`) instead, so a time-travel re-run shifts both sides of the subtraction together — no test exercises the date-string branch today (grep-confirmed), so this is a pure hardening, not a behavior change. (2) `defaultDirectDeps`'s `random: () => Math.random()` (backoff jitter only, production default of the injectable `random` seam) annotated `det:allow` — the checker's clock-seam exemption only recognizes now/time/clock-named arrows, not randomness ones; this is the same class as the pre-existing `now:`/`sleep:` entries in the same literal. Re-ran `tests/unit/direct-models-call.test.ts` (UT-342, 36/36) and `tests/unit/direct-models-import-boundary.test.ts` (UT-343, 2/2) green after both edits. `determinism_check.py src --check`: 15 → 12 hits, the remaining 12 confirmed pre-existing (verified against `git archive 526db75`, outside this closure).
 - **iter:** v40
 
 ### IMPL-395 — v40 TASK-264: contained input read, sniffed mime, outDir resolution, tmp+rename write, verifyFiles
@@ -10743,6 +10744,7 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **greens:** UT-344
 - **files:** src/direct-models/image-files.ts
 - **commit:** 0c31a63, 8c5fad2, 4638ff4 + Gate 6 integrator pass (uncommitted at write time)
+- **v40 Gate 6.5 delta (verifier, determinism_check):** `writeImages`'s tmp-filename `Math.random()` (collision avoidance only — renamed away before return, never part of the final deterministic `<label>-<callSeq>-<i>.<ext>` name or any decision input) annotated `det:allow`. Quality/determinism-lint only, no behavior change; re-ran `tests/unit/image-files.test.ts` (UT-344) green after the edit.
 - **iter:** v40
 
 ### IMPL-396 — v40 TASK-265: golden snapshot of pre-v40 chat rows (provenance commit 0e19fae, R-1)
@@ -10877,3 +10879,20 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **commit:** (uncommitted at write time)
 - **iter:** v40
 - **note:** UT-365 written first and RED (record `model` = `openrouter/typesafe/jev-1.13`); the 5 `recordPrimitive` call sites now pass `resolvedModel.model`; `primitive.call` operator events keep the full ref. DES-274 delta line (also binds DES-273's usage event). Full suite after: 6275/6275.
+
+### IMPL-411 — v40 Gate 6.5 (verifier, coverage gate): IT-318 — nested workflow() frame decide()/generateImage() dispatch, closing a 0%-coverage gap on RunManager's nested onDecideRequest/onImageRequest closures
+- **status:** done
+- **traces:** TASK-269, TASK-271, DES-272, DES-274
+- **greens:** IT-318
+- **files:** tests/integration/nested-primitive-dispatch.test.ts (new)
+- **commit:** uncommitted at write time (Gate 6.5, verifier)
+- **iter:** v40
+
+### IMPL-412 — v40 Gate 6.5 (verifier, coverage gate): IT-319..321 — decide()/generateImage() OPENROUTER_AUTH_MISSING/PRICE_UNKNOWN/BUDGET_EXCEEDED (pre-slot) refusal branches, closing most of `_handleDecideRequest`/`_handleImageRequest`'s 83.9%/70.9% gap toward the 95% bar
+- **status:** done
+- **traces:** TASK-271, DES-274, ARCH-187, ARCH-191
+- **greens:** IT-319, IT-320, IT-321
+- **files:** tests/integration/primitive-budget-auth-refusals.test.ts (new)
+- **commit:** uncommitted at write time (Gate 6.5, verifier)
+- **disclosed gap:** the v25 IN-SLOT `assertBudget()` re-check (DES-274 step 8) stays uncovered — three test constructions all flaked (one reproduced under `v8` coverage instrumentation specifically, two more under plain repeated runs); root-caused to this engine's own documented "overshoot bound (documented, not engineered)" posture on the identical mechanism, not a test-authoring mistake. Not shipped; see 05-tests.md's own disclosure under IT-319..321 and the gate report's coverage section.
+- **iter:** v40

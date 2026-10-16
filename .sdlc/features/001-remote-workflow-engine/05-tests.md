@@ -17364,3 +17364,93 @@ script's forged message (the ledger slot was evicted); the no-decide control (gr
 engine's message. R-8 characterization (green): `e.message === "decide 'gate' failed: HTTP 400 after
 1 attempt"`, anchored DES-267 grammar. R-13 red: `run_start` with `overrides.decisions.gate.retries`
 is refused at admission (expected 3 provider calls).
+
+## v40 Gate 6.5 delta (verifier, coverage gate — new system-level IT written post-implementation)
+
+### IT-318 — nested workflow() frame dispatches decide()/generateImage() through its OWN onDecideRequest/onImageRequest, with the CHILD's own declared contract
+- **status:** green
+- **traces:** DES-272, DES-274, ARCH-186, ARCH-187, TASK-269, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/integration/nested-primitive-dispatch.test.ts` (new). Coverage audit (`coverage-final.json`
+over the v40 diff, tests/unit+tests/integration) found `RunManager._handleWorkflowRequest`'s nested
+`onDecideRequest`/`onImageRequest` closures (new at v40) at 0 invocations — every existing v40 test
+(IT-308/311/312/313/314, VAL-255..265, E2E-011) dispatches `decide()`/`generateImage()` only at the
+TOP level, never from inside a nested `workflow()` frame, mirroring `nested-agent-child-params.test.ts`'s
+own pre-v40 concern (a nested frame must use the CHILD's own declared params, never the parent's) but
+for the two new primitives. Registers an inner workflow declaring both `decisions.gate` and
+`images.hero`, an outer workflow that only calls `workflow('inner', {})`, and asserts: the run
+completes, the stub provider sees exactly 2 calls (one per primitive, proving the nested handlers
+genuinely dispatched rather than resolving to a no-op), and the resulting `AgentRecord`s carry
+`kind:'decide'`/`'image'` with a non-empty `frame` (proving the record came through the nested
+`frameBase + msg.callSeq`/`framePathKey` path, not the top-level one). A second case attempting to
+pin the closures' own `generation.aborted` guard (suspend→resume→suspend racing a delayed decide())
+was written, positive-controlled (temporarily disabled the guard in place, re-ran — still green), and
+DROPPED as vacuous: the nested `SandboxHost` tears down on suspend before the child's IPC round-trip
+resumes regardless of the guard, so the test proved nothing about the line it claimed to. Not kept,
+per the ledger's own "vacuous-green trap" rule — see the test file's own trailing comment for the
+full record. The remaining single `throw new Error(...)` statement inside that 4-line guard stays
+unhit; within the coverage gate's own "≤5-line function: miss ≤ 1 line" allowance, so this is not a
+shortfall. No git checkout/restore/stash used; `src/run-manager.ts`'s guard line was edited in place
+to `if (false)` for the positive-control probe and immediately edited back (via Edit, not checkout).
+
+### IT-319 — decide()/generateImage() OPENROUTER_AUTH_MISSING (DES-274 step 4), both primitives
+- **status:** green
+- **traces:** DES-274, ARCH-187, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+### IT-320 — generateImage() PRICE_UNKNOWN (DES-274 step 6) — VAL-260 covers decide(); no prior test covered generateImage()'s own branch
+- **status:** green
+- **traces:** DES-274, ARCH-187, ARCH-191, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+### IT-321 — decide()/generateImage() BUDGET_EXCEEDED, pre-slot (DES-274 step 7), a PRICED model with an already-exhausted budget
+- **status:** green
+- **traces:** DES-274, ARCH-187, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File (IT-319..321): `tests/integration/primitive-budget-auth-refusals.test.ts` (new). Coverage audit
+(`coverage-final.json`, v40 diff, tests/unit+tests/integration) found `_handleDecideRequest`/
+`_handleImageRequest` (DES-274) at 83.9%/70.9% statement coverage — every other v40 test dispatches
+a model that is either priced-and-under-budget or deliberately unpriced-with-budget (VAL-260's own
+PRICE_UNKNOWN case, decide() only); no test anywhere exercised OPENROUTER_AUTH_MISSING for either
+primitive, generateImage()'s own PRICE_UNKNOWN branch, or a PRICED model whose USD budget is already
+exhausted (the pre-slot door, DES-274 step 7). Pricing injected via a real `ModelBook` whose
+`source()` returns a fixed, already-priced row (`ratesPerM` given directly — no live catalog fetch).
+Mode C (characterization, not RED-then-GREEN): all five cases are written against already-
+implemented v40 code post-Gate-6, same convention as UT-345; run 10x in a row with 10/10 green
+(flakiness check, see below). Each case's error-code assertion is the non-vacuous part (a bare
+crash would NOT satisfy `view.error?.code === 'BUDGET_EXCEEDED'`, unlike a looser "it failed" check
+— the same discipline IT-311/IT-313 already apply). No git checkout/restore/stash used.
+
+**Disclosed, NOT closed: the v25 load-bearing IN-SLOT `assertBudget()` re-check (DES-274 step 8,
+ADR-090's second gate)**, the one remaining >5%-weight offender inside these two functions, stays
+below the coverage bar. Three constructions were tried: (1) two concurrent `decide()` calls racing
+their OWN charges (`decideSlots:1`, budget = one call's cost) — green standalone, red under `v8`
+coverage instrumentation (confirmed: the SAME test, same code, flips on instrumentation-shifted
+timing — a real, reproduced flake, not a one-off); (2) a concurrent `agent()` call (separate
+semaphore/gateway) draining the budget while `decide()` call A holds the sole slot with an
+artificially slow fetch — flaked ~15% over repeated plain runs (no coverage), occasionally refusing
+call A itself before it ever reached the provider; (3) the same construction with an explicit
+synchronization gate (the `agent()`'s fake gateway blocks until call A's own fetch has fired) —
+still flaked at a similar rate. Root cause (diagnosed, not guessed): this engine's own design
+accepts the identical race as unresolved by construction — `src/run-manager.ts`'s own comment on
+the mechanism calls the adjacent overshoot property "documented, not engineered" (DES-274's own
+"Overshoot bound" note) — the relative microtask/IPC ordering between two different dispatch
+pathways through the real sandboxed-child host is not an invariant the implementation holds, so no
+test built on top of it can be deterministic either. A test that passes 80-95% of the time is the
+"fudged test" this ledger's CLAUDE.md and the verifier contract both forbid keeping; none of the
+three drafts is in `tests/`. Routed to the gate report as an accepted coverage gap, not silently
+dropped — see `gate_check`'s coverage section.

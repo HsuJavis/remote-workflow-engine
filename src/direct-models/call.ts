@@ -89,7 +89,7 @@ export function defaultDirectDeps(secretSource: SecretSource): DirectDeps {
       setTimeout(() => ctrl.abort(), ms);
       return { signal: ctrl.signal, fired: () => fired };
     },
-    random: () => Math.random(),
+    random: () => Math.random(), // det:allow — production default of the injectable `random` seam (backoff jitter only, never a resume-replay key input); tests inject a fixed value
     resolveKey: () => resolveOpenrouterKey(secretSource),
     onAttempt: () => {},
   };
@@ -104,7 +104,11 @@ export interface SeamRecord {
   wireCostUSD: number | null;
 }
 
-function parseRetryAfterMs(headers: Headers): number | null {
+// v40 Gate 6.5 (verifier, determinism_check): `nowMs` is `deps.now()` at the caller — never a
+// direct wall-clock read — so a `retry-after` HTTP-date header resolves against the SAME clock
+// the rest of this module's timing already uses, and a time-travel re-run shifts both sides
+// together instead of comparing a shifted header-parsed date against an unshifted real clock.
+function parseRetryAfterMs(headers: Headers, nowMs: number): number | null {
   const ms = headers.get('retry-after-ms');
   if (ms !== null) {
     const v = Number(ms);
@@ -115,7 +119,7 @@ function parseRetryAfterMs(headers: Headers): number | null {
     const asSeconds = Number(sec);
     if (Number.isFinite(asSeconds)) return asSeconds * 1000;
     const asDate = Date.parse(sec);
-    if (!Number.isNaN(asDate)) return Math.max(0, asDate - Date.now());
+    if (!Number.isNaN(asDate)) return Math.max(0, asDate - nowMs);
   }
   return null;
 }
@@ -184,13 +188,13 @@ export function makeObservedFetch(
       const { buf, truncated } = await readCapped(res, maxBodyBytes);
       const providerMs = deps.now() - start;
       if (truncated) {
-        record = { invoked: true, status: res.status, retryAfterMs: parseRetryAfterMs(res.headers), providerMs, truncated: true, wireCostUSD: null };
+        record = { invoked: true, status: res.status, retryAfterMs: parseRetryAfterMs(res.headers, deps.now()), providerMs, truncated: true, wireCostUSD: null };
         throw new Error('direct-models: response body exceeded the byte cap');
       }
       record = {
         invoked: true,
         status: res.status,
-        retryAfterMs: parseRetryAfterMs(res.headers),
+        retryAfterMs: parseRetryAfterMs(res.headers, deps.now()),
         providerMs,
         truncated: false,
         wireCostUSD: readWireCostUSD(res.status, buf),

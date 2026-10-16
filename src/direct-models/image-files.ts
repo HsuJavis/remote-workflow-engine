@@ -93,7 +93,7 @@ export async function writeImages(root: string, absDir: string, label: string, c
     if (!mimeType) { dropped++; continue; }
     const name = `${label}-${callSeq}-${i}.${EXT_FOR[mimeType]}`;
     const finalPath = join(absDir, name);
-    const tmpPath = join(absDir, `.${name}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const tmpPath = join(absDir, `.${name}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`); // det:allow — tmp-filename collision avoidance only, renamed away before return; never a decision input or part of the final (deterministic) file name
     const fh = await open(tmpPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW);
     try {
       await fh.write(img.data, 0, img.data.length, 0);
