@@ -80,7 +80,10 @@ function isNonEmptyString(s: string | undefined): s is string {
 // pi harness v1 (owner decision 2): `harnessProviders` joins `confinementPosture` in this Omit —
 // both are DERIVED (from the probe / from the `gateway` choice), never an independently-declared
 // rwe.config.json key.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor' | 'harnessProviders'>> {
+// v40 (DES-274, TASK-271/272): `directDeps` is omitted for the same reason as `gateway` — it is an
+// injectable fetch/retry/key seam (tests only; `createServer()` callers inject it directly), not a
+// JSON-expressible operator knob.
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor' | 'harnessProviders' | 'directDeps'>> {
   /** Owner decision 2026-10-02: per-role CAS upload quota as written in rwe.config.json —
    *  `{user?, author?, admin?}`, each a byte count, a size string ("5GiB", "500MB") or
    *  "unlimited"/null. Validated + normalized (bytes, defaults filled) by `validateCasQuotaConfig`;

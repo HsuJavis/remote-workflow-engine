@@ -94,7 +94,7 @@ Each needs its OWN declaration block — `meta.params.decisions.<label>` for `de
 ```js
 params: {
   decisions: { ready: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } },
-  images: { poster: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-3-image' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } },
+  images: { poster: { model: { type: 'string', default: 'openrouter/google/gemini-2.5-flash-image' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } },
 }
 ```
 
@@ -839,7 +839,7 @@ end
 export const meta = {
   description: 'Generates a single image from a text prompt',
   phases: [{ title: 'render' }],
-  params: { images: { poster: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-3-image' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } } },
+  params: { images: { poster: { model: { type: 'string', default: 'openrouter/google/gemini-2.5-flash-image' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } } },
 };
 phase('render');
 const { files } = await generateImage('poster', { prompt: 'A lighthouse at sunset, watercolor style' });

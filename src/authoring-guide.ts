@@ -114,16 +114,21 @@ export const EXAMPLE_MODEL_PI = 'openrouter/anthropic/claude-haiku-4.5';
 // above, these two never vary by harness, so buildGuideExamples() uses the SAME ref in both
 // GUIDE_EXAMPLES and GUIDE_EXAMPLES_PI. Real, currently-listed OpenRouter ids, not invented ones —
 // `typesafe/jev-1.13` is also in tests/fixtures/models/openrouter-models-all.json (the fixture
-// tests/unit/model-catalog-decision.test.ts checks, catalogued `'decision'` there); OpenRouter's
+// tests/unit/model-catalog-decision.test.ts checks, catalogued `'decision'` there). OpenRouter's
 // live catalog turned out reachable from THIS host (tests/integration/guide-examples-register.
 // test.ts does a real fetch, not the "CI catalog is static" case DES-276 assumed), so
-// `black-forest-labs/flux-1.1-pro` (the fixture's own image-gen row) had to be swapped for
-// `black-forest-labs/flux-3-image` — genuinely `image-gen` on the LIVE catalog today, but not in
-// the fixture; a future OpenRouter catalog change could retire this id the same way it already
-// retired flux-1.1-pro (see needs_clarification). Exported so a test fixing UT-159's
-// single-EXAMPLE_MODEL invariant can allowlist these two by name rather than by literal string.
-export const EXAMPLE_DECIDE_MODEL = 'openrouter/typesafe/jev-1.13';
-export const EXAMPLE_IMAGE_MODEL = 'openrouter/black-forest-labs/flux-3-image';
+// `black-forest-labs/flux-1.1-pro` (the original image-gen pick, now retired on the live catalog)
+// was swapped for `black-forest-labs/flux-3-image` and then — v40 Gate 6 round 2 (R-21/R-23) —
+// RENAMED/REPOINTED again: each example kind now pins its OWN single constant
+// (EXAMPLE_DECISION_MODEL, renamed from EXAMPLE_DECIDE_MODEL) and the image constant moved to
+// `openrouter/google/gemini-2.5-flash-image` — live-listed 2026-10-16
+// (`output_modalities:["image","text"]`, `pricing.image_output:"0.00003"`), an image-and-text chat
+// model that qualifies for `images.<label>` under OD-1/ADR-095 (ARCH-189's image rule: any
+// catalogued output modalities including 'image', not only `modelType:'image-gen'`). Exported so a
+// test fixing UT-159's single-EXAMPLE_MODEL invariant can allowlist these by name rather than by
+// literal string.
+export const EXAMPLE_DECISION_MODEL = 'openrouter/typesafe/jev-1.13';
+export const EXAMPLE_IMAGE_MODEL = 'openrouter/google/gemini-2.5-flash-image';
 
 /** issue #154 B4 + #153 L2: picks the example model ref for the harness actually in scope at render
  *  time — `undefined` (the static `docs/AUTHORING.md`, built once before any host boots, same "can't
@@ -437,7 +442,7 @@ function buildGuideExamples(exampleModel: string): GuideExample[] {
       `export const meta = {\n` +
       `  description: 'Asks a bool decision whether a draft is ready to publish, falling back to an agent review when the model is not confident',\n` +
       `  phases: [{ title: 'gate' }],\n` +
-      `  params: { decisions: { ready: { model: { type: 'string', default: '${EXAMPLE_DECIDE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } }, agents: { reviewer: ${agentSpec('low', 60000)} } },\n` +
+      `  params: { decisions: { ready: { model: { type: 'string', default: '${EXAMPLE_DECISION_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } }, agents: { reviewer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('gate');\n` +
       `const { answers } = await decide('ready', {\n` +
@@ -926,8 +931,8 @@ function decideImageSectionBody(): string {
       '`.default` (no `effort`; decide/generateImage never take one):\n\n' +
       '```js\n' +
       'params: {\n' +
-      '  decisions: { ready: { model: { type: \'string\', default: \'openrouter/typesafe/jev-1.13\' }, timeoutMs: { type: \'number\', default: 5000 }, retries: { type: \'number\', default: 2 } } },\n' +
-      '  images: { poster: { model: { type: \'string\', default: \'openrouter/black-forest-labs/flux-3-image\' }, timeoutMs: { type: \'number\', default: 120000 }, retries: { type: \'number\', default: 0 } } },\n' +
+      `  decisions: { ready: { model: { type: 'string', default: '${EXAMPLE_DECISION_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } },\n` +
+      `  images: { poster: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } },\n` +
       '}\n' +
       '```\n\n' +
       // declared<=>used + provider gate.

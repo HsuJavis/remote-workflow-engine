@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runListScope, McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
+import type { DirectDeps } from './direct-models/call.js';
 import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
 import { reclaimStaleWorkspaces, gcStatusFromSummary } from './workspace-gc.js';
@@ -254,6 +255,10 @@ export interface ServerConfig {
   decideSlots?: number;
   imageSlots?: number;
   imageInputMaxBytes?: number;
+  // v40 (DES-274, TASK-271/272): the decide()/generateImage() fetch/retry/backoff seam — tests
+  // inject a stub `fetch`/`resolveKey` (no real network, no real key). Omitted -> RunManager's own
+  // production default (`defaultDirectDeps`). Same forwarding convention as `gateway`/`proxyManager`.
+  directDeps?: Partial<DirectDeps>;
 }
 
 export interface Server {
@@ -1093,7 +1098,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // CALLS this function later (on a nested workflow() dispatch), by which point construction has
   // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
   // relies on).
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders, maxRunDurationMs: config?.maxRunDurationMs, decideSemaphore, imageSemaphore, imageInputMaxBytes: config?.imageInputMaxBytes });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders, maxRunDurationMs: config?.maxRunDurationMs, decideSemaphore, imageSemaphore, imageInputMaxBytes: config?.imageInputMaxBytes, directDeps: config?.directDeps });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -1669,11 +1674,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       ingestUpdateResult();
       const statusBody: Record<string, unknown> = {
         agentSemaphore: runManager.semaphoreGauge(),
-        // v40 (DES-275, TASK-272): decide()/generateImage()'s own slot gauges, beside agentSemaphore.
-        decideSemaphore: decideSemaphore.gauge(),
-        imageSemaphore: imageSemaphore.gauge(),
         version: ENGINE_VERSION,
       };
+      // v40 (DES-275, TASK-272, R-20): decide()/generateImage()'s own slot gauges go on the
+      // authenticated/loopback branch only — an anonymous remote caller gets liveness only.
+      if (full) {
+        statusBody['decideSemaphore'] = decideSemaphore.gauge();
+        statusBody['imageSemaphore'] = imageSemaphore.gauge();
+      }
       if (full && lastUpdateOutcome) statusBody['lastUpdate'] = lastUpdateOutcome;
       if (full && interruptedRuns > 0) statusBody['interruptedRuns'] = interruptedRuns;
       sendJson(res, 200, statusBody);
@@ -2189,10 +2197,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return;
     }
     // D-V3M-2 (REQ-020 D-DOS gauge): read-only observability of the process-global agent-slot
-    // semaphore — GET /api/status -> { agentSemaphore, decideSemaphore, imageSemaphore, version,
-    // lastUpdate?, interruptedRuns? }.
+    // semaphore — GET /api/status -> { agentSemaphore, version } always; decideSemaphore/
+    // imageSemaphore/lastUpdate?/interruptedRuns? added only on the authenticated/loopback (`full`)
+    // branch (`sendStatus` above).
     // DES-061 (TASK-064): version + last-update outcome + interrupted-run call-to-action added.
-    // v40 (DES-275, TASK-272): decideSemaphore/imageSemaphore gauges added, same convention.
+    // v40 (DES-275, TASK-272, R-20): decideSemaphore/imageSemaphore gauges added — full branch only.
     if (isStatusRoute) {
       sendStatus(true); // auth disabled: unchanged, full body
       return;

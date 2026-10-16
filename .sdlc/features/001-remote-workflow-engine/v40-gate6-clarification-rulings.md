@@ -55,3 +55,18 @@ The core decide()/generateImage() path still ends `failed` end-to-end, and the r
 | R-22 | `register-bash-subsumption-warning`: a guide example (decide gate with agent fallback) trips a warning | **Fix the example**, not the warning: guide examples must register warning-free. |
 | R-23 | Tests use `openrouter/black-forest-labs/flux-1.1-pro`, which OpenRouter has retired (live catalog → `UNKNOWN_MODEL`) | **Replace** with `EXAMPLE_IMAGE_MODEL` (a live-listed image model; per OD-1 `google/gemini-2.5-flash-image` qualifies), and add that row to `tests/fixtures/models/openrouter-models-all.json`. Tests stop depending on a retired id. |
 | R-24 | Full-suite enumeration was tail-only | **Done by the orchestrator**: the 11 failing files are listed above. Gate 6 closes only when the full suite is green apart from failures proven to predate v40. |
+
+## Round 3 — third Gate 6 stop (run `wf_26004a48-b4d`, 2026-10-16)
+
+All items were test defects or naming. No owner question. Gate 6 is finished by a single integrator
+(Tier-2 dispatch) authorised to fix the listed test defects, then the workflow resumes at `verify`.
+
+| # | Clarification | Ruling |
+|---|---|---|
+| R-25 | TASK-263: no golden pins the `/systemone` wire body for a bool question | **Add one assertion**: the stub-captured request body for a bool question carries pi-ai's wire mapping. The real codec, not a snapshot of our own guess. |
+| R-26 | `EXAMPLE_DECIDE_MODEL` (src) vs `EXAMPLE_DECISION_MODEL` (test, DES-276 delta) | **src renames to `EXAMPLE_DECISION_MODEL`**; `EXAMPLE_IMAGE_MODEL` = `openrouter/google/gemini-2.5-flash-image`. Guide prose must use the constants, not hard-coded ids. |
+| R-27 | VAL-255/261 fixture passes `state: 'pending'` | **Test defect**: pi-ai `ClassifierContext.state` is `JsonObject` (`types.d.ts:468`), and so is DES-266. Fix the fixture to an object. |
+| R-28 | UT-348 call-arity defect (8 cases) | **Test defect**: fix the calls to the real `validateParamsContract` signature; the assertions keep their intent. |
+| R-29 | R-22 premise wrong: the guide examples trip `MODEL_CATALOG_UNVERIFIED` (empty catalog in that test), not a BASH warning | **Re-ruling**: give `register-bash-subsumption-warning.test.ts` a non-empty catalogSnapshot fixture containing the example models, so the test still proves "guide examples register warning-free". Do not narrow it to BASH_* codes. |
+| R-30 | `engineMs` can go negative when `sleep` is stubbed to a no-op | **Clamp at 0** in the handler (`Math.max(0, …)`) and add a DES-274 delta line. A negative overhead is meaningless in the event log. |
+| R-31 | TASK-271 dod clauses carried by E2E-011/VAL-261/VAL-263 rather than its own files | **Accepted as disclosed**: Gate 7.5 must show those tests green at the real tier. |
