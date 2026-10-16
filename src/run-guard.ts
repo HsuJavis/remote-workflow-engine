@@ -1,6 +1,6 @@
 // RunGuard (DES-002). Single-authority caps + budget accounting, shared by orchestration and the agent spawner.
 import { AgentCapError, BudgetExceededError, codedError } from './errors.js';
-import type { Budget, FourRates, RunUsage, Tokens, TranscriptEvent } from './types.js';
+import type { Budget, BookEntry, FourRates, PrimitiveKind, RunUsage, Tokens, TranscriptEvent } from './types.js';
 
 const AGENT_CAP = 1000;
 
@@ -23,6 +23,34 @@ export function sumTokens(t: Tokens): number {
 export function priceCall(tokens: Tokens, rates: FourRates | null): number | null {
   if (rates === null) return null;
   return tokens.input * rates.in + tokens.output * rates.out + tokens.cacheRead * rates.cacheRead + tokens.cacheWrite * rates.cacheWrite;
+}
+
+/** v40 (DES-273, ARCH-191/192, ADR-091, TASK-270): true iff this run's price-book pin can price a
+ *  decide()/generateImage() call for `kind` — decide needs finite `in` AND `out` rates; image needs
+ *  a finite `in` rate and EITHER a finite `imageOutPerM` or (falling back) a finite `out` rate. */
+export function primitivePriceKnowable(entry: BookEntry | undefined, kind: PrimitiveKind): boolean {
+  const rates = entry?.price;
+  if (rates === null || rates === undefined || !Number.isFinite(rates.in)) return false;
+  if (kind === 'decide') return Number.isFinite(rates.out);
+  return Number.isFinite(rates.imageOutPerM ?? rates.out);
+}
+
+export type PrimitivePriceResult = { costUSD: number; source: 'reported' | 'estimated' } | { absent: true };
+
+/** v40 (DES-273, ADR-091): reported (the wire's own cost) > estimated (priced from tokens via the
+ *  pinned rates) > absent — NEVER `{costUSD: 0}` for "we don't know" (the v31 "unmeasured usage is
+ *  absence" rule, REQ-225). `kind:'image'` prices output tokens against `imageOutPerM` (falling back
+ *  to `out` when the catalog carries no per-image rate) instead of `priceCall`'s plain `out` term. */
+export function pricePrimitiveCall(i: { wireCostUSD: number | null; tokens?: Tokens; entry?: BookEntry; kind: PrimitiveKind }): PrimitivePriceResult {
+  if (i.wireCostUSD !== null) return { costUSD: i.wireCostUSD, source: 'reported' };
+  if (i.tokens !== undefined && primitivePriceKnowable(i.entry, i.kind)) {
+    const rates = i.entry!.price!;
+    const costUSD = i.kind === 'decide'
+      ? priceCall(i.tokens, rates)!
+      : i.tokens.input * rates.in + i.tokens.output * (rates.imageOutPerM ?? rates.out);
+    return { costUSD, source: 'estimated' };
+  }
+  return { absent: true };
 }
 
 /** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): pure — the "at rest" `RunUsage`
@@ -60,11 +88,15 @@ export function foldUsage(events: TranscriptEvent[]): RunUsage {
     for (const name of data.unmapped ?? []) {
       unmappedMessages[name] = (unmappedMessages[name] ?? 0) + 1;
     }
-    if (!data.tokens) continue; // failed/no-tokens usage event — moves no token/cost/unpriced counter
-    tokens.input += data.tokens.input ?? 0;
-    tokens.output += data.tokens.output ?? 0;
-    tokens.cacheRead += data.tokens.cacheRead ?? 0;
-    tokens.cacheWrite += data.tokens.cacheWrite ?? 0;
+    // v40 (DES-273, TASK-270): widened from `if (!data.tokens) continue` — a decide()/
+    // generateImage() usage event can report a wire `costUSD` with NO token count at all (the
+    // provider never returned one); dropping it on this guard silently lost that reported cost.
+    // Still skips a genuinely tokenless/costless event (failed/refused, the pre-v40 case), unchanged.
+    if (!data.tokens && typeof data.costUSD !== 'number') continue;
+    tokens.input += data.tokens?.input ?? 0;
+    tokens.output += data.tokens?.output ?? 0;
+    tokens.cacheRead += data.tokens?.cacheRead ?? 0;
+    tokens.cacheWrite += data.tokens?.cacheWrite ?? 0;
     costUSD += data.costUSD ?? 0;
     if (data.unpriced ?? true) unpricedCalls += 1;
   }

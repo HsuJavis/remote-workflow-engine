@@ -23,7 +23,7 @@ export const OBSERVED_NONE: ObservedForRef = { window: '30d', source: 'none', pr
 
 /** Issue #104: what KIND of model a row is — an embedding model listed as text->text chat was the
  *  reported failure. */
-export type ModelType = 'chat' | 'embedding' | 'rerank' | 'image-gen' | 'tts' | 'stt' | 'moderation' | 'unknown';
+export type ModelType = 'chat' | 'embedding' | 'rerank' | 'image-gen' | 'tts' | 'stt' | 'moderation' | 'decision' | 'unknown';
 /** Where `modelType` came from: the provider's own declaration, the static anthropic table, or —
  *  last resort, only when the provider said nothing — a model-id heuristic. */
 export type ModelTypeSource = 'ollama-capabilities' | 'openrouter-modalities' | 'static' | 'id-heuristic' | 'unknown';
@@ -63,7 +63,7 @@ export interface ModelEntry {
   description: string;
   modalities: { in: string[]; out: string[] };
   contextWindow: number | null;
-  price: { in: string; out: string } | 'free' | 'unknown';
+  price: ({ in: string; out: string; imageOutPerM?: number }) | 'free' | 'unknown';
   toolUse: boolean | 'unknown';
   location: 'local' | 'remote';
   /** issue #28 (2026-09-26: no aliases any more — every row is directly usable). The agent-ready
@@ -122,6 +122,8 @@ export interface CatalogFilter {
   query?: string;
   modalityIn?: string;
   modalityOut?: string;
+  /** v40 (DES-269, TASK-266): e.g. `'decision'` for `decide()`-eligible rows. */
+  modelType?: ModelType;
   maxPricePerM?: number;
   minContext?: number;
   /** v26 (DES-179, ARCH-117, TASK-179): renamed from `toolUse` — no alias window (the standing v24
@@ -267,6 +269,16 @@ export function displayPrice(rates: FourRates | null): ModelEntry['price'] {
   return { in: perM(rates.in), out: perM(rates.out) };
 }
 
+/** v40 (DES-269, TASK-266): `pricing.image_output` (USD per image-output token, OpenRouter's own
+ *  unit) scaled ×1e6, same "unknown over invented" rule as every other price parser here — absent
+ *  unless the raw value is finite and ≥ 0 (never defaulted to 0). */
+function imageOutPerMFrom(pricing: OpenRouterRow['pricing']): number | undefined {
+  const raw = pricing?.['image_output'];
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n * 1_000_000 : undefined;
+}
+
 /** Issue #104: last-resort model-type guess from the id, used ONLY when the provider declared
  *  nothing (marked `modelTypeSource:'id-heuristic'`). `null` = no confident guess. */
 function modelTypeFromId(id: string): ModelType | null {
@@ -367,6 +379,7 @@ function openRouterModelType(m: OpenRouterRow): { modelType: ModelType; modelTyp
   const out = m.architecture?.output_modalities;
   if (Array.isArray(out) && out.length > 0) {
     if (out.includes('text')) return { modelType: 'chat', modelTypeSource: 'openrouter-modalities' };
+    if (out.includes('decisions')) return { modelType: 'decision', modelTypeSource: 'openrouter-modalities' };
     if (out.includes('embeddings') || out.includes('embedding')) return { modelType: 'embedding', modelTypeSource: 'openrouter-modalities' };
     if (out.length === 1 && out[0] === 'image') return { modelType: 'image-gen', modelTypeSource: 'openrouter-modalities' };
     if (out.length === 1 && out[0] === 'audio') return { modelType: 'tts', modelTypeSource: 'openrouter-modalities' };
@@ -407,7 +420,7 @@ function openRouterBenchmarks(b: OpenRouterRow['benchmarks']): BenchmarkData | n
 }
 
 async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Promise<ModelEntry[]> {
-  const res = await fetchWithTimeout(fetchImpl, 'https://openrouter.ai/api/v1/models', timeoutMs);
+  const res = await fetchWithTimeout(fetchImpl, 'https://openrouter.ai/api/v1/models?output_modalities=all', timeoutMs);
   if (!res.ok) return [];
   const data = (await res.json()) as { data?: OpenRouterRow[] };
   const models = Array.isArray(data?.data) ? data.data : [];
@@ -418,6 +431,9 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
     const ratesPerM = ratesFromOpenRouterPricing(m.pricing);
     const inMods = Array.isArray(m.architecture?.input_modalities) ? m.architecture!.input_modalities! : null;
     const r = m.reasoning && typeof m.reasoning === 'object' ? m.reasoning : null;
+    const basePrice = displayPrice(ratesPerM);
+    const imageOutPerM = imageOutPerMFrom(m.pricing);
+    const price = imageOutPerM !== undefined && typeof basePrice === 'object' ? { ...basePrice, imageOutPerM } : basePrice;
     out.push({
       provider: 'openrouter',
       model: m.id,
@@ -427,7 +443,7 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
         out: Array.isArray(m.architecture?.output_modalities) ? m.architecture!.output_modalities! : ['text'],
       },
       contextWindow: typeof m.context_length === 'number' ? m.context_length : null,
-      price: displayPrice(ratesPerM),
+      price,
       toolUse: supported ? supported.includes('tools') : 'unknown',
       location: 'remote',
       ratesPerM,
@@ -840,6 +856,7 @@ export function filterCatalog(entries: ModelEntry[], filter: CatalogFilter = {})
  *  `filterCatalog` and issue #104's `models_list` query (which pages instead of capping). */
 export function matchesCatalogFilter(e: ModelEntry, filter: CatalogFilter): boolean {
   if (filter.provider !== undefined && e.provider !== filter.provider) return false;
+  if (filter.modelType !== undefined && e.modelType !== filter.modelType) return false;
   if (filter.location !== undefined && e.location !== filter.location) return false;
   if (filter.toolUseDeclared !== undefined && e.toolUse !== filter.toolUseDeclared) return false;
   if (filter.modalityIn !== undefined && !e.modalities.in.includes(filter.modalityIn)) return false;

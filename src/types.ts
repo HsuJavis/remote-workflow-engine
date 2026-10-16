@@ -178,6 +178,10 @@ export interface FourRates {
   out: number;
   cacheRead: number;
   cacheWrite: number;
+  /** v40 (DES-264, DES-269, ARCH-190, TASK-260/266): USD per million output images, parsed from the
+   *  catalog's `pricing.image_output` for generateImage()'s price pin. Absent means "no such price
+   *  on this model" (PRICE_UNKNOWN territory) — never defaulted to 0, which would mean "free". */
+  imageOutPerM?: number;
 }
 
 /** v26 (DES-178): declared (never probed) per-(provider,model) capability, carried beside price so
@@ -263,8 +267,40 @@ export interface AgentOpts {
   bash?: 'readonly';
 }
 
+/** v40 (DES-264, ARCH-194/192/190, TASK-260): the two engine-owned primitives alongside agent() —
+ *  decide() (a structured-answer question) and generateImage() (a file-producing call). */
+export type PrimitiveKind = 'decide' | 'image';
+
+/** v40 (DES-264, TASK-260): one decide() question, closed on its own `type` (bool/choice/score) —
+ *  `criteria` names the allowed answer shape per type. */
+export type DecideQuestion =
+  | { type: 'bool'; instructions: string; criteria: { true: string; false: string } }
+  | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+  | { type: 'score'; instructions: string; criteria: string[] };
+
+/** v40 (DES-264, TASK-260): decide()'s structured answer to one question, same `type` as the
+ *  question it answers. */
+export type DecideAnswer =
+  | { type: 'bool'; probability: number }
+  | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
+  | { type: 'score'; score: number; confidence: number };
+
+/** v40 (DES-264, TASK-260): the accepted output image mime types for generateImage(). */
+export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+
+/** v40 (DES-264, TASK-260): one file generateImage() wrote to the run/asset workspace. */
+export interface ImageFile {
+  path: string;
+  mimeType: ImageMime;
+  bytes: number;
+  sha256: string;
+}
+
 export interface AgentRecord {
   agentId: string;
+  /** v40 (DES-264, ARCH-194/192/190, TASK-260): absent means this is an agent() record; present
+   *  means it is a decide()/generateImage() primitive call. Never defaulted. */
+  kind?: PrimitiveKind;
   label?: string;
   /** issue #165: this dispatch's agent() call's POSITIONAL label (the literal first argument,
    *  `/^[A-Za-z_][\w-]*$/`, the `meta.params.agents.<key>` contract key `scanAgentCalls`/

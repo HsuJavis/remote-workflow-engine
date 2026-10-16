@@ -10444,3 +10444,32 @@ trace 2128/77 且 77 個缺口裡沒有任何 v37 id;真跑 VAL-259 五項(含�
 Gate 0 由 explorer 唯讀盤點(`v40-gate0-asis-map.md`)。五輪 AskUserQuestion、19 題,擁有者以「正確」確認回放;
 REQ-220..226(功能)+ REQ-227..230(nfr)。Gate 7.5 真打花費上限 US$1。迭代取 v40(程式碼註解已用 v38/v39)。
 環境備註:`/tmp` tmpfs 的 usrquota 已滿(另一專案 session 暫存 8.4G),Gate 5–7.5 跑測試前須處理或 TMPDIR 移出 /tmp。
+
+## 2026-10-15 — v40 Gate 2(架構)
+
+PASSED(architect;panel 已預跑,讀兩份 v40 r1 後綜合,未重派;無 round 2,兩組結論互補)。
+新增 ARCH-183..194、ADR-087..095、INV-V40-1..7;就地修訂 ARCH-026/064/074/116(iter v40,traces 不動)。
+主軸:host 端 `src/direct-models/` 以 pi-ai `./api/*` 當 wire codec、模型物件由 ModelBook pin 合成、引擎自管重試(`maxRetries:0`)與單一 `options.fetch` 縫;
+journal key 改 sha256 摘要;圖檔 realpath/fd/tmp+rename;decideSlots/imageSlots 獨立 semaphore。零 DDL。
+trace 2139/99 → 2160/99,缺口集合逐字相同。**一項 owner_decision 待決(ADR-095)**:images.<label> 是否接受 image+text(目錄標為 chat)的模型。下一步:Gate 3+4。
+
+- 2026-10-15 — **v40 Gate 3+4 (tasks + design) PASSED**(designer;panel 已預跑,讀完 `.panel/design/*.r1.md` 綜合,未重開,無 round 2)。
+TASK-260..273(14 項,每個 ARCH-183..194 至少一項;TASK-260 共用詞彙先行、TASK-265 黃金快照須早於 TASK-266 提交)、
+DES-264..276(13 列精簡設計 + 真實層驗證表 + mock 政策 + classDiagram)。主要裁決:逾時/停止由引擎自有訊號判定;network 錯誤不重試(V40-Q9);
+script 只拿 code + 固定訊息格式;`foldUsage` 守衛放寬(已查證對 agent 無影響)而非把 token 補零;`deriveAgentRecords` 補無 harness 分支;
+`ResumePlan.invalidate()`;拋錯/中止/拒絕都不寫 journal;`MAX_PRIMITIVE_RETRIES=5` 為常數。trace 2160/99 → 2187/113,新增缺口僅 14 個「任務未實作」(Gate 6 關閉),無斷鏈。
+無新 owner_decision(ADR-095 仍待決)。下一步:Gate 5 test-first。
+
+- 2026-10-15 — **v40 Gate 5 (test-first RED) PASSED**(verifier)。
+為 REQ-220..230 寫下 37 個新工作項:UT-339..355(17,對應 DES-264..276)、IT-308..315(8,對應 ARCH-183..194/REQ-226/229/230)、
+VAL-255..265(11,每個 REQ 各一,real:false 待 Gate 7.5)、E2E-011(1,涵蓋 REQ-220/221/225/226/229 的完整旅程)。
+新增 15 個測試檔 + 擴充 6 個既有檔案(sandbox-refusal-provenance、compose-config-v2-wiring、derived-equals-snapshot、
+unmapped-column-folds、authoring-guide、guide-examples-register 透過共用陣列間接涵蓋)。UT-345(chat-rows 黃金快照)依 Mode C
+刻意為綠(非紅),fixture+golden 在本次提交,供 TASK-266 比對。每個案例都實際跑過確認紅:7 個全新模組 module-not-found、
+5 個擴充模組缺 export 的 TypeError、以及 sandbox/IPC/RunManager/acceptance/e2e 各層統一的 `decide is not defined` ReferenceError
+(TASK-269 尚未把 decide/generateImage 接進 sandbox globals)。過程中三處抓到並修正了「假紅即綠」陷阱(IT-311 改斷言具名錯誤碼、
+IT-313/VAL-264 的哨兵清查改成正控制閂門)。公開揭露的縮減:TASK-271 的 4 個 IT 檔 + VAL-261 只釘住「能跑完一次」的前提,
+完整 stop/resume 宣稱由 E2E-011 扛;VAL-265/IT-314 由 VAL 扛真正的 p95 百分位數學,IT-314 只釘前提。
+`npx tsc --noEmit` 先修掉 5 個真測試筆誤後,剩 13 個皆為預期的 module-not-found/missing-export。
+trace 2187/113 → 2219/113(總數不變,逐項核對:REQ-220..230 的 11 個「未驗證」缺口各換成 1 個「未真實驗證」,
+0 新斷鏈/孤兒)。無新 owner_decision(ADR-095 仍待決,原樣帶過)。下一步:Gate 6 implementation。

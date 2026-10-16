@@ -232,6 +232,15 @@
   非 admin 碰到別人資源時被遮住的真正拒絕原因（擁有權不符等）寫進稽核表 `authz_refusals`，回應帶的
   `requestId` 可對到那一筆；admin 用 `audit_refusals_list`（依 actor／tool／since／limit 篩選）查詢。
   見 DEPLOY.md §1b「角色」「服務帳號」。
+- **decide()／generateImage()（v40）**：腳本內兩個新的 sandbox 全域——`decide(label, {state, questions})`
+  → `{answers}`（bool/choice/score 結構化判斷，常見用法 `answers.<id>.probability >= 0.7`）、
+  `generateImage(label, {prompt, inputImages?, outDir?})` → `{files}`（文字生圖，可帶最多 4 張輸入圖）。
+  各自要宣告 `meta.params.decisions.<label>`／`meta.params.images.<label>`（`model`／`timeoutMs`／`retries`，
+  皆必填且要有 `.default`，不含 `effort`）；`model.default` 必須是 `openrouter/...` ref（只走 openrouter
+  閘道，`anthropic`／`ollama` 一律拒絕 `PRIMITIVE_PROVIDER_UNSUPPORTED`）。計入同一份 run 預算與
+  1000 次模型呼叫上限；失敗時丟 `PRIMITIVE_FAILED`（訊息永不含供應商原文）。並行上限各自獨立設定
+  （`decideSlots` 預設 16、`imageSlots` 預設 2、`imageInputMaxBytes` 預設 4.5 MiB）。完整規則見
+  `workflow_authoring_guide`／DEPLOY.md §1b。
 
 共 **48 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 

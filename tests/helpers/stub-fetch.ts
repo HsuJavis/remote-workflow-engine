@@ -43,7 +43,14 @@ export function makeStubFetch(steps: StubFetchStep[]): StubFetchHandle {
     }
     if (step.networkError) return Promise.reject(new TypeError('fetch failed'));
     const bytes = step.bodyBytes ?? new TextEncoder().encode(JSON.stringify(step.body ?? {}));
-    return Promise.resolve(new Response(bytes.slice(), { status: step.status, headers: step.headers }));
+    // A real provider response declares its content-type; without it the OpenAI SDK (used by
+    // pi-ai's openrouter-images codec) can't tell this is JSON and fails to parse the body. Only
+    // stamped for a `body`-shaped (JSON) step — `bodyBytes` stays content-type-free, as a
+    // malformed/oversized-body test wants.
+    const headers = step.bodyBytes === undefined && step.headers?.['content-type'] === undefined
+      ? { 'content-type': 'application/json', ...step.headers }
+      : step.headers;
+    return Promise.resolve(new Response(bytes.slice(), { status: step.status, headers }));
   }) as typeof fetch;
   return { fetch: fetchImpl, calls };
 }

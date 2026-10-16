@@ -37,6 +37,7 @@ import { sweepPlantedConfig, prepareDispatchMountTargets } from './project-confi
 import { resolveMcpConfigs, type ResolveMcpFn } from './mcp-config-resolver.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { SecretSource } from '../secret-resolver.js';
+import { resolveOpenrouterKey } from './openrouter-key.js';
 
 /** Engine tool name -> pi tool name (spec "Tool mapping"). Semantic differences, documented: `Glob`
  *  (gitignore-aware, Claude-shaped globbing) maps to pi's `find` (pi's own docs: "respects
@@ -525,10 +526,6 @@ function safeParse(json: string): unknown {
   try { return JSON.parse(json); } catch { return json; }
 }
 
-function resolveOpenrouterKey(config: PiGatewayConfig): string | undefined {
-  return config.secretSource?.resolve('OPENROUTER_API_KEY') ?? process.env['RWE_SECRET_OPENROUTER_API_KEY'] ?? process.env['OPENROUTER_API_KEY'];
-}
-
 export class PiGatewayClient implements GatewayClient {
   /** issue #138 review L-138-3: a fixed, structural identity property (the SAME literal every
    *  dispatch's own `GatewayResult.transport`/`HarnessDescriptor.transport` carries) — lets a
@@ -713,7 +710,12 @@ export class PiGatewayClient implements GatewayClient {
       parsed.provider === 'ollama'
         ? { provider: 'ollama', model: parsed.model, baseUrl: this._config.ollamaBaseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434' }
         : { provider: 'openrouter', model: parsed.model, reasoningSupported };
-    const apiKey = parsed.provider === 'openrouter' ? resolveOpenrouterKey(this._config) : undefined;
+    // TASK-261: `resolveOpenrouterKey` now takes the full `SecretSource` shape (DES-265) — same tiny
+    // adapter pattern as the MCP `secretSource` below (this._config.secretSource only ever declares
+    // `.resolve()`; `.names()` is never reachable from this path either).
+    const apiKey = parsed.provider === 'openrouter'
+      ? resolveOpenrouterKey({ resolve: (name: string) => this._config.secretSource?.resolve(name), names: () => [] })
+      : undefined;
     if (parsed.provider === 'openrouter' && apiKey === undefined) {
       return { ok: false, provider: 'openrouter', reason: 'terminal', retryable: false, transport: 'pi', detail: 'OPENROUTER_AUTH_MISSING: no OpenRouter API key in the secret store (RWE_SECRET_OPENROUTER_API_KEY) or OPENROUTER_API_KEY env' };
     }

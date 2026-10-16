@@ -4,7 +4,7 @@ This engine has no bundled guidance skill — the tool schemas returned by `tool
 
 ## The sandbox API
 
-A workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`, `Intl`; `Date`/`Math`/`Intl` are GUARDED, see below). The script body IS the function the engine calls — write statements and a `return`, with no `function`/`async function` DECLARATION wrapped around any of it (`const thunk = () => agent(...)`, used for parallel()/pipeline(), is fine — only a top-level `function` STATEMENT is refused, `PARSE_ERROR`). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` DIRECTLY — `agent('label', {...})`, not `const a = agent; a(...)` or `agent.call(...)` — registration can only see a call it can read at the call site; an alias, a `.call`/`.bind`, or any other indirection is refused `SCRIPT_INVALID`.
+A workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `decide`, `generateImage`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`, `Intl`; `Date`/`Math`/`Intl` are GUARDED, see below). The script body IS the function the engine calls — write statements and a `return`, with no `function`/`async function` DECLARATION wrapped around any of it (`const thunk = () => agent(...)`, used for parallel()/pipeline(), is fine — only a top-level `function` STATEMENT is refused, `PARSE_ERROR`). Call `agent`/`phase`/`parallel`/`pipeline`/`workflow` DIRECTLY — `agent('label', {...})`, not `const a = agent; a(...)` or `agent.call(...)` — registration can only see a call it can read at the call site; an alias, a `.call`/`.bind`, or any other indirection is refused `SCRIPT_INVALID`.
 
 - `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string identifier (`/^[A-Za-z_][\w-]*$/`) matching a `meta.params.agents.<label>` declaration; this positional is the call's real contract key — it selects the label's per-agent model/effort/timeoutMs/skills/mcp and is reported back as `run_status.agents[].agentKey` `options.label`, if set, is a SEPARATE, purely cosmetic display name — reported as `agents[].label` (defaulting to the same positional when `options.label` is absent) — that two different agent() calls may share on purpose; it selects nothing. run_agent_log's `label` argument matches `agentKey` FIRST across every call, and only falls back to `label` when none matches — a value that is one call's agentKey always resolves to THAT call even when it also collides with a different call's cosmetic label; pass `agentId` to reach one specific call when several genuinely share the SAME value within the SAME field (agentKey, or failing that, label) — array order then decides. `options` MUST be a literal object: no variable, no spread (`{...x}`), no shorthand property (`{allowedTools}`) — every entry must be written `key: value` at the syntax level so this scan can see each key at all (a spread entry hides every key it carries, a shorthand entry hides its value; both are refused `AGENT_OPTS_SPREAD` / `AGENT_OPTS_SHORTHAND` at registration). That is a rule on the OBJECT'S SHAPE, not on every key's VALUE: `prompt`, `schema`, and every other option may be any runtime expression, read live at dispatch. Only TWO keys additionally require their OWN value to be a literal, checked key-by-key at registration: `allowedTools` (a `[...]` array literal of quoted strings only — `allowedTools: tools` (a variable), `allowedTools: cfg.tools` (a member expression), or `allowedTools: getTools()` (a call) are all refused `AGENT_OPTS_VALUE_NOT_LITERAL` even though the key itself is written literally) and `bash` (only the literal string `'readonly'` — any other value, including a variable, is refused `BASH_MODE_INVALID`). A literal `schema` that can never be a valid JSON Schema (a string/number/array/null/template-literal — `schema: 'not-a-schema'`) is refused `AGENT_OPTS_SCHEMA_INVALID` at registration too; an object literal (checked for real JSON-Schema validity only at dispatch, via ajv — `INVALID_SCHEMA`) or the literal booleans `true`/`false` (valid JSON Schema on their own) are both accepted here, and a NON-literal `schema` value — a variable, a function call building the schema at runtime — registers successfully and is left entirely to that same dispatch-time ajv check.
 - `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each returning `null` on its own thrown error rather than rejecting the whole call.
@@ -81,6 +81,37 @@ A nested `workflow()` call's args are **structured-clone/JSON-like, not a true s
 The engine-owned keys are never written inside an `agent()` call's options literal — `model`, `effort`, `timeoutMs`, `appendPrompt` there are refused `SCAN_VIOLATION`, naming the key and the `meta.params.agents.<label>.<key>.default` it belongs in instead.
 
 The options object is closed. An `agent()` option key that is not one of `prompt`, `label`, `phase`, `schema`, `isolation`, `mcp`, `allowedTools`, `bash` is refused `SCAN_VIOLATION: PARAM_UNKNOWN` at registration, naming the key you wrote and listing the ones that are accepted. It is never silently dropped: an unrecognized key always fails registration rather than being ignored.
+
+## Decisions and image generation (decide(), generateImage())
+
+Two more sandbox globals dispatch a single OpenRouter call each, outside the `agent()` harness loop (no tools, no conversation turns) — a yes/no or structured judgment (`decide`), or an image from a prompt and optional input images (`generateImage`):
+
+- `await decide(label, { state, questions })` → `{ answers }` — `state` is a plain JSON object (your context); `questions` is `{ <id>: { type: 'bool'|'choice'|'score', instructions, criteria } }` (bool: `criteria: {true, false}`; choice: `criteria` a map of option -> description; score: `criteria` an array of level descriptions). `answers` mirrors it 1:1: `{ <id>: { type:'bool', probability } }` / `{ type:'choice', choice, probabilities, confidence }` / `{ type:'score', score, confidence } }` — the common idiom is `answers.<id>.probability >= 0.7` for a bool gate.
+- `await generateImage(label, { prompt, inputImages?, outDir? })` → `{ files }` — `inputImages` (≤ 4) and `files[].path` are workspace-relative paths; `outDir` defaults to `'generated'`. A changed or missing image file on resume regenerates that call and every later one (same resume semantics as a changed input anywhere else in this engine).
+
+Each needs its OWN declaration block — `meta.params.decisions.<label>` for `decide()`, `meta.params.images.<label>` for `generateImage()` — the SAME "no implicit engine default" shape as `meta.params.agents.<label>`: `model`/`timeoutMs`/`retries` all REQUIRED with a `.default` (no `effort`; decide/generateImage never take one):
+
+```js
+params: {
+  decisions: { ready: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } },
+  images: { poster: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-3-image' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } },
+}
+```
+
+Every `decide()`/`generateImage()` label must have a matching `decisions`/`images` entry and vice versa, the SAME shape as `agents`. `retries` is an integer 0..5 (declared and any run override). The codes:
+
+- `DECISION_UNDECLARED`/`IMAGE_UNDECLARED` — a `decide()`/`generateImage()` call uses a label with no `decisions`/`images` entry → fix: add `meta.params.decisions.<label>`/`meta.params.images.<label>`.
+- `DECISION_DECLARED_NOT_IN_SCRIPT`/`IMAGE_DECLARED_NOT_IN_SCRIPT` — a declared label is never called → fix: call it, or delete the declaration.
+- `PRIMITIVE_PROVIDER_UNSUPPORTED` — `model.default` does not start `openrouter/` (decide()/generateImage() only ever dispatch through the openrouter gateway, under either `gateway:"sdk"` or `gateway:"pi"`) → fix: use an `openrouter/<model-id>` ref.
+- `PRIMITIVE_INPUT_INVALID` — AT DISPATCH: the call's own options object carries an unrecognized key (`decide()` accepts only `state`/`questions`; `generateImage()` only `prompt`/`inputImages`/`outDir` — a literal `model`/`timeoutMs`/`retries` there is this error, not a registration-time one) or a malformed `state`/`questions`/`prompt`/`inputImages`/`outDir` shape → fix: move `model`/`timeoutMs`/`retries` to the label's declaration; fix the argument shape.
+- `IMAGE_PATH_REFUSED` — an `inputImages` entry or `outDir` resolves outside the run/asset workspace, or is not a plain regular file of an accepted type/size → fix: use a workspace-relative path to a real small image file.
+- `MODEL_TYPE_MISMATCH` — the declared model IS verifiable against a live catalog but is catalogued as the wrong `modelType` (`decide()` needs `'decision'`, `generateImage()` needs `'image-gen'`) → fix: pick a model models_list reports with the right `modelType`.
+- `MODEL_TYPE_UNVERIFIED` (a non-fatal registration warning, not a refusal) — the catalog could not verify the declared model (unknown, or an id-heuristic guess) — same "warn, never block, when the catalog cannot say" posture `agent()`'s own MODEL_CATALOG_UNVERIFIED warning already has → fix: none required; double-check the id against models_list if unsure.
+- `PRICE_UNKNOWN` — a USD budget is armed and the declared model has no catalogued price → fix: arm a token budget instead, or pick a priced model.
+- `OPENROUTER_AUTH_MISSING` — no OpenRouter key is configured on this engine (checked before anything is spent) → fix: have the operator set `RWE_SECRET_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`).
+- `PRIMITIVE_FAILED` — the call did not succeed after the retry policy; message grammar: `^(decide|generateImage) '[A-Za-z_][\w-]*' failed: (HTTP \d{3}|timeout|network|no_output|malformed|response_too_large) after \d+ attempts?$` — e.g. "decide 'ready' failed: HTTP 429 after 3 attempts" (the provider's own response text never appears in it) → fix: raise `retries`/`timeoutMs`, or retry the run later if the provider is down.
+
+decide()/generateImage() calls count toward the SAME run budget and the same 1000-model-calls-per-run ceiling as every `agent()` call. Worst-case wall time for one call (every attempt timing out) is bounded by `(retries+1) × timeoutMs + retries × 10s` (the per-retry backoff cap); a timed-out image call may still be billed if the provider had already started rendering. Suggested starting defaults: `decide` `timeoutMs: 5000, retries: 2`; `generateImage` `timeoutMs: 120000, retries: 0`.
 
 ## The agent's tool surface
 
@@ -311,6 +342,17 @@ A trigger bound through `triggers:[id]` is PINNED to the HIGHEST-numbered versio
 - `AGENT_BEFORE_PHASE` — under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()
 - `AGENT_UNDECLARED` — a script agent() label has no params.agents.<label> declaration
 - `AGENT_DECLARED_NOT_IN_SCRIPT` — params.agents declares a label no agent() call in the script uses
+- `DECISION_UNDECLARED` — a script decide() label has no params.decisions.<label> declaration
+- `DECISION_DECLARED_NOT_IN_SCRIPT` — params.decisions declares a label no decide() call in the script uses
+- `IMAGE_UNDECLARED` — a script generateImage() label has no params.images.<label> declaration
+- `IMAGE_DECLARED_NOT_IN_SCRIPT` — params.images declares a label no generateImage() call in the script uses
+- `MODEL_TYPE_MISMATCH` — a decisions/images label's model is catalogued as a different modelType than the primitive requires (decide() needs 'decision', generateImage() needs 'image-gen')
+- `PRIMITIVE_PROVIDER_UNSUPPORTED` — a decisions/images label's model.default does not start with 'openrouter/' — decide()/generateImage() only dispatch through the openrouter gateway
+- `MODEL_TYPE_UNVERIFIED` — warning: this model's modelType could not be verified against the catalog; the decide()/generateImage() call proceeds unchecked
+- `PRIMITIVE_INPUT_INVALID` — a decide()/generateImage() call argument (state, questions, prompt, inputImages, or outDir) does not match its required shape
+- `IMAGE_PATH_REFUSED` — a generateImage() inputImages entry or outDir resolves outside the run/asset workspace, or is not a plain regular file of an accepted type/size
+- `PRICE_UNKNOWN` — a decisions/images label's model has no catalogued price (pricing.image_output or the chat price fields are absent) — the engine refused the call rather than dispatch at an unknown cost
+- `PRIMITIVE_FAILED` — a decide()/generateImage() call did not succeed after the engine's retry policy; detail.reason carries http|timeout|aborted|network|no_output|malformed|response_too_large
 - `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds; also returned at run_start admission when overrides.agents (or overrides.agents.<label>) is not an object
 - `PARAM_OUT_OF_RANGE` — a declared or overridden parameter value is outside its allowed range
 - `INVALID_SCHEMA` — an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error
@@ -758,6 +800,58 @@ Mermaid:
 graph LR
 subgraph "judge"
 judge(["judge<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: none"])
+end
+```
+
+### decide gate with agent fallback
+
+```js
+export const meta = {
+  description: 'Asks a bool decision whether a draft is ready to publish, falling back to an agent review when the model is not confident',
+  phases: [{ title: 'gate' }],
+  params: { decisions: { ready: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } }, agents: { reviewer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+};
+phase('gate');
+const { answers } = await decide('ready', {
+  state: { draft: 'The quarterly report is complete.' },
+  questions: { ok: { type: 'bool', instructions: 'Is the draft ready to publish?', criteria: { true: 'ready to publish', false: 'needs more work' } } },
+});
+if (answers.ok.probability >= 0.7) {
+  return { ready: true };
+}
+return await agent('reviewer', { prompt: 'Review and fix the draft' });
+```
+
+Mermaid:
+
+```
+graph LR
+subgraph "gate"
+ready{"ready? (decide)"}
+reviewer(["reviewer<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+ready-->|not confident|reviewer
+end
+```
+
+### generateImage: single image from a prompt
+
+```js
+export const meta = {
+  description: 'Generates a single image from a text prompt',
+  phases: [{ title: 'render' }],
+  params: { images: { poster: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-3-image' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } } },
+};
+phase('render');
+const { files } = await generateImage('poster', { prompt: 'A lighthouse at sunset, watercolor style' });
+return { files };
+```
+
+Mermaid:
+
+```
+graph LR
+subgraph "render"
+poster{{"generateImage: poster"}}
 end
 ```
 

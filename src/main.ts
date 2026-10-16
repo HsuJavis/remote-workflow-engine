@@ -150,6 +150,8 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
   sandbox: true, modelProbe: true, publicBaseUrl: true,
   casQuota: true, diskFloor: true,
+  // v40 (DES-275, ARCH-193, TASK-272): decide()/generateImage()'s own slots + the image input byte cap.
+  decideSlots: true, imageSlots: true, imageInputMaxBytes: true,
 };
 
 // v34 (DES-227, ARCH-139, TASK-229, REQ-203): keys that USED to be forwarded by composeConfig and
@@ -474,6 +476,10 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   assertPositiveInteger(fileConfig.maxTimeoutMs, 'maxTimeoutMs', CONFIG_PREFIX);
   assertPositiveInteger(fileConfig.maxAppendPromptBytes, 'maxAppendPromptBytes', CONFIG_PREFIX);
   assertPositiveInteger(fileConfig.maxWorkflowVersions, 'maxWorkflowVersions', CONFIG_PREFIX);
+  // v40 (DES-275, ARCH-193, TASK-272): same fail-closed convention as the ceilings above.
+  assertPositiveInteger(fileConfig.decideSlots, 'decideSlots', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.imageSlots, 'imageSlots', CONFIG_PREFIX);
+  assertPositiveInteger(fileConfig.imageInputMaxBytes, 'imageInputMaxBytes', CONFIG_PREFIX);
   // Issue audit B21 (owner decision 2026-10-06): an unknown `maxEffort` value used to silently
   // remove EVERY effort level from `resolveHarnessParams`'s ceiling filter (EFFORT_RANK[bad value]
   // is `undefined`, so `EFFORT_RANK[e] <= undefined` is false for every `e`) — the engine still
@@ -682,6 +688,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // `http` transport — same forwarding convention, no validation needed here (an empty/absent
     // allowlist just means no `http` MCP config is ever admitted).
     mcpEgressAllowlist: fileConfig.mcpEgressAllowlist,
+    // v40 (DES-275, ARCH-193, TASK-272): forwarded like the three ceilings above — validated above
+    // (ADR-028 fail-closed), consumer (server.ts) applies its own defaults (16 / 2 / 4_718_592) when
+    // omitted. Same wiring-gap class as every case above (v11 updateFlagPath / v15 auth / v26 agentSlots).
+    decideSlots: fileConfig.decideSlots,
+    imageSlots: fileConfig.imageSlots,
+    imageInputMaxBytes: fileConfig.imageInputMaxBytes,
     modelProbe: modelProbe.value,
     // Owner decision 2026-10-02: validated + normalized above (the composeConfig bug class —
     // compose-config-v2-wiring.test.ts's PROBES rows guard both).

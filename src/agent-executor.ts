@@ -1,7 +1,7 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
 import type { ValidateFunction } from 'ajv';
-import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps, Tokens } from './types.js';
+import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps, Tokens, PrimitiveKind } from './types.js';
 import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
@@ -748,6 +748,46 @@ export class AgentTranscriptSink {
     }
   }
 
+  /** v40 (DES-273/274, ARCH-191/192, ADR-091/092/093/094, TASK-271): the ONE terminal writer for a
+   *  decide()/generateImage() call — writes the `AgentRecord` (`provider:'openrouter'`, `kind` set)
+   *  AND exactly one `kind:'usage'` transcript event (DES-273's shape), never a `kind:'message'`
+   *  event (there is no transcript stream for a primitive the way there is for agent()). Unlike
+   *  `capture()`, this is a single-shot terminal write — a decide()/generateImage() call has no
+   *  queued/running intermediate record worth merging onto (DES-274's handler calls `markQueued`/
+   *  `markRunning` itself, exactly like agent(), but this method does not read them back — label/
+   *  phase/frame/startedAt are the caller's own already-known values, not re-derived from `prev`).
+   *  `tokens` absent means "the wire reported no usage" (the v31 rule), never a defaulted zero. */
+  async recordPrimitive(runId: string, r: {
+    agentId: string; kind: PrimitiveKind; label: string; model: string;
+    phase?: { title: string; index: number }; frame?: string; tokens?: Tokens;
+    costUSD: number; unpriced: boolean; state: 'done' | 'failed';
+    failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+    startedAt: string; endedAt: string;
+  }): Promise<void> {
+    const record: AgentRecord = {
+      agentId: r.agentId, kind: r.kind, label: r.label, agentKey: r.label,
+      phase: r.phase?.title, phaseIndex: r.phase?.index, frame: r.frame,
+      startedAt: r.startedAt, endedAt: r.endedAt,
+      state: r.state, provider: 'openrouter', model: r.model,
+      costUSD: r.costUSD, unpriced: r.unpriced,
+      ...(r.tokens !== undefined ? { tokens: r.tokens } : {}),
+      ...(r.failReason !== undefined ? { failReason: r.failReason } : {}),
+    };
+    this._records.set(r.agentId, record);
+    await this._emit(runId, r.agentId, {
+      ts: r.endedAt,
+      kind: 'usage',
+      data: {
+        primitive: r.kind, label: r.label, agentKey: r.label,
+        ...(r.phase !== undefined ? { phase: r.phase.title, phaseIndex: r.phase.index } : {}),
+        ...(r.frame !== undefined ? { frame: r.frame } : {}),
+        startedAt: r.startedAt, provider: 'openrouter', model: r.model,
+        costUSD: r.costUSD, unpriced: r.unpriced,
+        ...(r.tokens !== undefined ? { tokens: r.tokens } : {}),
+      },
+    });
+  }
+
   getRecord(agentId: string): AgentRecord | undefined {
     return this._records.get(agentId);
   }
@@ -1226,6 +1266,18 @@ export class AgentExecutor implements AgentSpawner {
    *  (RunManager awaits it before re-throwing the refusal). */
   async markRefused(runId: string, agentId: string, reasonCode: ErrorCode, endedAt?: string): Promise<void> {
     await this._sink.markRefused(runId, agentId, reasonCode, endedAt);
+  }
+
+  /** v40 (DES-274, TASK-271): RunManager's one terminal writer for a decide()/generateImage() call
+   *  — see `AgentTranscriptSink.recordPrimitive`'s own doc. */
+  async recordPrimitive(runId: string, r: {
+    agentId: string; kind: PrimitiveKind; label: string; model: string;
+    phase?: { title: string; index: number }; frame?: string; tokens?: Tokens;
+    costUSD: number; unpriced: boolean; state: 'done' | 'failed';
+    failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+    startedAt: string; endedAt: string;
+  }): Promise<void> {
+    await this._sink.recordPrimitive(runId, r);
   }
 
   /** Exposes the captured AgentRecord for a completed/failed agent (DES-008). */

@@ -93,7 +93,10 @@ function parseErrorFor(script: string, err: unknown): ScriptCheckError {
 // check). A reference to one of these names in anything OTHER than its own direct call position
 // hides whatever that reference goes on to do from every one of those text-matching scanners —
 // `const P = phase; P(...)`, `agent.call(...)`, `take(agent)` are all the SAME blind spot.
-const CALLABLE_API_NAMES = new Set(['agent', 'phase', 'parallel', 'pipeline', 'workflow']);
+// v40 (DES-271, ARCH-188/189, TASK-268): `decide`/`generateImage` join the closed set — a renamed
+// alias (`const d = decide; d(...)`) hides the call from `scanPrimitiveCalls` exactly the way it
+// hides an `agent()` call from `scanAgentCalls`.
+const CALLABLE_API_NAMES = new Set(['agent', 'phase', 'parallel', 'pipeline', 'workflow', 'decide', 'generateImage']);
 
 /** Minimal estree walk that also hands the visitor the PARENT node and the property key the current
  *  node was reached through (e.g. `'callee'`, `'params'`, `'id'`) — `script-spans.ts`'s own walker

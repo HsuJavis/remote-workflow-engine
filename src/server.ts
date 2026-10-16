@@ -248,6 +248,12 @@ export interface ServerConfig {
   // `checkModelRef`'s provider gate fires at every model-validation choke point, and to the
   // `models_list`/`/api/models` readers so anthropic models never appear in the catalog listing.
   harnessProviders?: readonly Provider[];
+  // v40 (DES-275, ARCH-193, TASK-272): decide()/generateImage()'s own concurrency caps and the
+  // image-input byte ceiling — independent of agentSlots/runConcurrency above (REQ-228). Defaults
+  // applied where consumed (RunManager: 16 / 2 / 4_718_592) when omitted.
+  decideSlots?: number;
+  imageSlots?: number;
+  imageInputMaxBytes?: number;
 }
 
 export interface Server {
@@ -990,6 +996,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // D-V3M-2 (REQ-020 D-DOS): the ONE process-global agent-slot semaphore, shared by reference into
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
+  // v40 (DES-275, ARCH-193, TASK-272): decide()/generateImage()'s own slots, shared by reference
+  // into the RunManager and surfaced read-only via GET /api/status, same convention as agentSemaphore.
+  const decideSemaphore = createSemaphore(config?.decideSlots ?? 16);
+  const imageSemaphore = createSemaphore(config?.imageSlots ?? 2);
   // v10 Slice 2 (REQ-064/065): the content-addressed store backing efficient seedManifest assembly.
   const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'), { clock: () => clock.now() });
   // Owner decision 2026-10-02: the disk floor over every filesystem the engine writes uploads/run
@@ -1083,7 +1093,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // CALLS this function later (on a nested workflow() dispatch), by which point construction has
   // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
   // relies on).
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders, maxRunDurationMs: config?.maxRunDurationMs });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders, maxRunDurationMs: config?.maxRunDurationMs, decideSemaphore, imageSemaphore, imageInputMaxBytes: config?.imageInputMaxBytes });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -1659,6 +1669,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       ingestUpdateResult();
       const statusBody: Record<string, unknown> = {
         agentSemaphore: runManager.semaphoreGauge(),
+        // v40 (DES-275, TASK-272): decide()/generateImage()'s own slot gauges, beside agentSemaphore.
+        decideSemaphore: decideSemaphore.gauge(),
+        imageSemaphore: imageSemaphore.gauge(),
         version: ENGINE_VERSION,
       };
       if (full && lastUpdateOutcome) statusBody['lastUpdate'] = lastUpdateOutcome;
@@ -2176,8 +2189,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return;
     }
     // D-V3M-2 (REQ-020 D-DOS gauge): read-only observability of the process-global agent-slot
-    // semaphore — GET /api/status -> { agentSemaphore, version, lastUpdate?, interruptedRuns? }.
+    // semaphore — GET /api/status -> { agentSemaphore, decideSemaphore, imageSemaphore, version,
+    // lastUpdate?, interruptedRuns? }.
     // DES-061 (TASK-064): version + last-update outcome + interrupted-run call-to-action added.
+    // v40 (DES-275, TASK-272): decideSemaphore/imageSemaphore gauges added, same convention.
     if (isStatusRoute) {
       sendStatus(true); // auth disabled: unchanged, full body
       return;

@@ -75,6 +75,13 @@ export interface SandboxApi {
   budget: Budget;
   /** Optional: run a named/ref'd workflow inline. Absent (or throwing) at nested levels → NESTING_ERROR. */
   workflow?(nameOrRef: unknown, args?: unknown): Promise<unknown>;
+  /** v40 (DES-272, ARCH-186, TASK-269): called when the script calls decide()/generateImage() —
+   *  marshalled to the parent over the SAME IPC seam agent() uses (DES-272: `{t:'decide'}`/
+   *  `{t:'image'}`, replies via the existing `agentResult`/`agentThrow`). Optional only so a test
+   *  fake that never calls either primitive can omit it — the real child-entry.ts wiring always
+   *  supplies both, exactly as it always supplies `agent`. */
+  decide?(label: string, opts?: unknown): Promise<unknown>;
+  generateImage?(label: string, opts?: unknown): Promise<unknown>;
   /** Optional: forwards phase(title) calls to the parent for observability (DES-006/DES-008). */
   phase?(title: string): void;
 }
@@ -87,7 +94,9 @@ const MAX_ITEMS = 4096;
 // drift from the `sandbox` object literal `evaluateScript` actually constructs below. Exports only
 // — no new value import enters this file, which the sandbox CHILD also loads (see the checkMeta
 // note at the top: it does not resolve `.js`→`.ts` for value imports).
-export const SANDBOX_GLOBALS = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math', 'Intl'] as const;
+// v40 (DES-272, ARCH-186, TASK-269): `decide`/`generateImage` join the exposed globals — the two
+// engine-owned primitives alongside `agent`.
+export const SANDBOX_GLOBALS = ['agent', 'decide', 'generateImage', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math', 'Intl'] as const;
 
 /** One of the three calls `guardedDate`/`guardedMath` above refuse, plus the guide-facing reasoning
  *  DES-187 asks for: WHY it is refused (the resume-replay hazard both guards share) and INSTEAD
@@ -353,7 +362,7 @@ function guardedIntl(CtxIntl: typeof Intl, CtxError: ErrorConstructor, wrap: Wra
 // catalog code (AUTHORING.md: "every engine refusal carries the same e.code ... as
 // run_result.error.code") instead of flattening to SCRIPT_ERROR (which run-manager's `toErrorCode`
 // would then map to INTERNAL_ERROR).
-const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA']);
+const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA', 'PRICE_UNKNOWN']);
 
 // v36 (DES-248, ARCH-165/166, TASK-246, REQ-215): a WeakMap keyed on the Error OBJECT, never a
 // field on it — the object handed to script land is an ordinary mutable Error, so a script writing
@@ -612,6 +621,42 @@ function makeAgent(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value:
     );
 }
 
+/** v40 (DES-272, ARCH-186, TASK-269): `decide()`/`generateImage()` — built from the exact SAME
+ *  template as `makeAgent` above (wrap -> toCtxPromise -> reRealm -> sanitizeThrownError); the
+ *  non-null assertion on the delegate is safe in practice (child-entry.ts always wires both the
+ *  same way it always wires `agent`) — a test fake that omits the field and still calls the
+ *  primitive gets an ordinary (unsanitized-origin, then sanitized-by-the-catch-below) TypeError,
+ *  same as any other missing delegate would. */
+function makeDecide(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
+  return (label: string, opts?: unknown): Promise<unknown> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        try {
+          const raw = await api.decide!(label, opts);
+          return reRealm(raw);
+        } catch (err) {
+          throw sanitizeThrownError(CtxError, err);
+        }
+      })(),
+    );
+}
+
+function makeGenerateImage(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
+  return (label: string, opts?: unknown): Promise<unknown> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        try {
+          const raw = await api.generateImage!(label, opts);
+          return reRealm(raw);
+        } catch (err) {
+          throw sanitizeThrownError(CtxError, err);
+        }
+      })(),
+    );
+}
+
 /** #157 B1: rebuilds the script-visible `budget` object natively in `CtxObject`'s realm. `spent`/
  *  `remaining`/`tokens` stay LIVE closures over the real `api.budget` (so mid-script accounting
  *  updates are still observed exactly as before — this is NOT a one-time snapshot), each with its
@@ -719,6 +764,8 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   Object.defineProperty(CtxError, 'prepareStackTrace', { value: undefined, writable: false, configurable: false, enumerable: false });
 
   const agentFn = makeAgent(api, CtxError, reRealm, CtxPromise);
+  const decideFn = makeDecide(api, CtxError, reRealm, CtxPromise);
+  const generateImageFn = makeGenerateImage(api, CtxError, reRealm, CtxPromise);
   const parallelFn = makeParallel(CtxError, reRealm, CtxPromise);
   const pipelineFn = makePipeline(CtxError, reRealm, CtxPromise);
   const workflowFn = makeWorkflow(api, CtxError, reRealm, CtxPromise);
@@ -740,6 +787,8 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
 
   Object.assign(sandbox, {
     agent: wrap(agentFn),
+    decide: wrap(decideFn),
+    generateImage: wrap(generateImageFn),
     parallel: wrap(parallelFn),
     pipeline: wrap(pipelineFn),
     phase: wrap(phaseFn),

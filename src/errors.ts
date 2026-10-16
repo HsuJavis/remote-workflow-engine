@@ -219,6 +219,30 @@ export const ERROR_CATALOG = {
   AGENT_BEFORE_PHASE: { see: 'workflow_authoring_guide', hint: 'under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()' },
   AGENT_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script agent() label has no params.agents.<label> declaration' },
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
+  // v40 (DES-264, ARCH-194/192/190, TASK-260): decide()/generateImage() share AGENT_UNDECLARED's
+  // declared-vs-used pattern over their own params.decisions/params.images tables.
+  DECISION_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script decide() label has no params.decisions.<label> declaration' },
+  DECISION_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.decisions declares a label no decide() call in the script uses' },
+  IMAGE_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script generateImage() label has no params.images.<label> declaration' },
+  IMAGE_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.images declares a label no generateImage() call in the script uses' },
+  // v40 (DES-270, ADR-095, TASK-267): registration-time model/catalog checks for decide()/generateImage().
+  MODEL_TYPE_MISMATCH: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model is catalogued as a different modelType than the primitive requires (decide() needs 'decision', generateImage() needs 'image-gen')" },
+  PRIMITIVE_PROVIDER_UNSUPPORTED: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model.default does not start with 'openrouter/' — decide()/generateImage() only dispatch through the openrouter gateway" },
+  // WARNING, never a refusal by itself: the catalog could not verify this model's modelType (e.g.
+  // catalog unavailable, or the model is unknown/id-heuristic) — the call proceeds.
+  MODEL_TYPE_UNVERIFIED: { see: 'workflow_authoring_guide', hint: "warning: this model's modelType could not be verified against the catalog; the decide()/generateImage() call proceeds unchecked" },
+  // v40 (DES-266, TASK-262): pure input-layer validation for decide()/generateImage() call args.
+  PRIMITIVE_INPUT_INVALID: { see: 'workflow_authoring_guide', hint: 'a decide()/generateImage() call argument (state, questions, prompt, inputImages, or outDir) does not match its required shape' },
+  // v40 (DES-268, ADR-090, TASK-264): generateImage() file-path/content refusals (traversal,
+  // symlink escape, wrong type, oversize).
+  IMAGE_PATH_REFUSED: { see: 'workflow_authoring_guide', hint: 'a generateImage() inputImages entry or outDir resolves outside the run/asset workspace, or is not a plain regular file of an accepted type/size' },
+  // v40 (DES-264 boundary, TASK-260): pre-flight refusal when a decisions/images label's model has
+  // no catalogued price — joins both ENGINE_REFUSAL_CODES (guards.ts) and RECORDED_REFUSAL_CODES
+  // (run-manager.ts), the same footing as BUDGET_EXCEEDED, so a script can legitimately catch it.
+  PRICE_UNKNOWN: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model has no catalogued price (pricing.image_output or the chat price fields are absent) — the engine refused the call rather than dispatch at an unknown cost" },
+  // v40 (DES-267, TASK-263): the decide()/generateImage() engine retry loop gave up (non-retryable
+  // status, or retries exhausted) and surfaces this terminal code to the script's catch.
+  PRIMITIVE_FAILED: { see: 'workflow_authoring_guide', hint: 'a decide()/generateImage() call did not succeed after the engine\'s retry policy; detail.reason carries http|timeout|aborted|network|no_output|malformed|response_too_large' },
   // issue #156 NEW-2 reverify: also returned at run_start ADMISSION (not only registration) when
   // `overrides.agents`/`overrides.agents.<label>` is the wrong shape (e.g. a bare string/array/null
   // instead of an object) — a reader of this one generic table had no way to learn that case existed.

@@ -261,6 +261,33 @@ async function main(msg: StartMsg): Promise<void> {
       }
       return result;
     },
+    // v40 (DES-272, ARCH-186, TASK-269): `decide`/`generateImage` draw from the SAME `nextCallSeq`
+    // counter and register in the SAME `pendingAgent` map as `agent()` above — interleaved calls
+    // across all three must draw consecutive callSeqs (IT-308), and replies arrive as the existing
+    // `agentResult`/`agentThrow` messages (DES-272: "unchanged shapes"), which already resolve/
+    // reject off `pendingAgent` regardless of which call put the entry there.
+    async decide(label: string, opts?: unknown): Promise<unknown> {
+      const callSeq = nextCallSeq++;
+      const result = new Promise<unknown>((resolve, reject) => pendingAgent.set(callSeq, { resolve, reject }));
+      const o = (opts ?? {}) as { state?: unknown; questions?: unknown };
+      const sent = trySend({ t: 'decide', runId: msg.runId, callSeq, label, state: o.state, questions: o.questions });
+      if (sent !== true) {
+        pendingAgent.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
+      return result;
+    },
+    async generateImage(label: string, opts?: unknown): Promise<unknown> {
+      const callSeq = nextCallSeq++;
+      const result = new Promise<unknown>((resolve, reject) => pendingAgent.set(callSeq, { resolve, reject }));
+      const o = (opts ?? {}) as { prompt?: unknown; inputImages?: unknown; outDir?: unknown };
+      const sent = trySend({ t: 'image', runId: msg.runId, callSeq, label, prompt: o.prompt, inputImages: o.inputImages, outDir: o.outDir });
+      if (sent !== true) {
+        pendingAgent.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
+      return result;
+    },
     // Issue #161 B2: `msg.args` crossed host.ts's own 'start' send, which re-encoded any true
     // own-key `undefined` the host side had just decoded from a nested workflow() request (or, for
     // a top-level run, args that were never an issue in the first place — decode is a no-op then).

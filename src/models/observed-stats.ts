@@ -98,6 +98,13 @@ export interface ObservedForRef {
   source: 'runs' | 'probe' | 'none';
   prose: CallStats | null;
   tools: CallStats | null;
+  /** v40 (DES-273, ARCH-191/192, TASK-270): decide()/generateImage() calls land in their own
+   *  bucket, never folded into `prose`/`tools` — neither primitive resolves a tool surface at all.
+   *  Optional (not widened to required) so every pre-v40 `ObservedForRef` literal elsewhere in this
+   *  codebase (model-catalog.ts, test fixtures) keeps type-checking unchanged; absent reads the same
+   *  as `null` (no observed decide/image calls) to any caller that checks the field at all. */
+  decide?: CallStats | null;
+  image?: CallStats | null;
   probeLatencyMs?: number | null;
 }
 
@@ -119,7 +126,9 @@ export interface ObservedStatsSource {
  *  convention). */
 export interface AgentCallFact {
   ref: string;
-  kind: 'prose' | 'tools';
+  /** v40 (DES-273, TASK-270): 'decide'/'image' — a decide()/generateImage() call, read off the
+   *  record's own `kind` (never derived from a harness descriptor, which a primitive never has). */
+  kind: 'prose' | 'tools' | 'decide' | 'image';
   success: boolean;
   startedAt: string;
   endedAt: string;
@@ -171,9 +180,12 @@ export function loadFacts(source: ObservedStatsSource, sinceIso: string): AgentC
       const harness = [...events].reverse().find((e) => e.kind === 'harness');
       const descriptorTools = (harness?.data as { descriptor?: { tools?: string[] } } | undefined)?.descriptor?.tools ?? [];
       const tokens = rec.tokens;
+      // v40 (DES-273): `rec.kind` ('decide'|'image') is read BEFORE the harness-descriptor tools/
+      // prose rule — a primitive call never has a harness event (no `tools` to resolve) and must
+      // never fall into either of those buckets.
       facts.push({
         ref: `${rec.provider}/${rec.model}`,
-        kind: descriptorTools.length > 0 ? 'tools' : 'prose',
+        kind: rec.kind ?? (descriptorTools.length > 0 ? 'tools' : 'prose'),
         success: rec.state === 'done',
         startedAt: rec.startedAt,
         endedAt: rec.endedAt,
@@ -229,18 +241,20 @@ export function computeStats(facts: AgentCallFact[]): CallStats {
 /** Pure aggregation: buckets `facts` by `ref` then by `kind`, computing `CallStats` per non-empty
  *  bucket (`null` for an empty one). This is the O(n log n) step the performance budget (10k facts
  *  under 200ms) is about — everything above it (file reads) is TTL-cached, not re-run per call. */
-export function aggregateFacts(facts: AgentCallFact[]): Map<string, { prose: CallStats | null; tools: CallStats | null }> {
-  const byRef = new Map<string, { prose: AgentCallFact[]; tools: AgentCallFact[] }>();
+export function aggregateFacts(facts: AgentCallFact[]): Map<string, { prose: CallStats | null; tools: CallStats | null; decide: CallStats | null; image: CallStats | null }> {
+  const byRef = new Map<string, { prose: AgentCallFact[]; tools: AgentCallFact[]; decide: AgentCallFact[]; image: AgentCallFact[] }>();
   for (const f of facts) {
     let bucket = byRef.get(f.ref);
-    if (!bucket) { bucket = { prose: [], tools: [] }; byRef.set(f.ref, bucket); }
+    if (!bucket) { bucket = { prose: [], tools: [], decide: [], image: [] }; byRef.set(f.ref, bucket); }
     bucket[f.kind].push(f);
   }
-  const out = new Map<string, { prose: CallStats | null; tools: CallStats | null }>();
+  const out = new Map<string, { prose: CallStats | null; tools: CallStats | null; decide: CallStats | null; image: CallStats | null }>();
   for (const [ref, bucket] of byRef) {
     out.set(ref, {
       prose: bucket.prose.length > 0 ? computeStats(bucket.prose) : null,
       tools: bucket.tools.length > 0 ? computeStats(bucket.tools) : null,
+      decide: bucket.decide.length > 0 ? computeStats(bucket.decide) : null,
+      image: bucket.image.length > 0 ? computeStats(bucket.image) : null,
     });
   }
   return out;
@@ -267,8 +281,13 @@ export function aggregateFacts(facts: AgentCallFact[]): Map<string, { prose: Cal
  *       actual call volumes (far below the 10k-row benchmark), the disclosed cost is a background
  *       tick well under the interval, not a per-request stall. `start()` is optional — a caller that
  *       never invokes it still gets correct, just lazily-synchronous, answers. */
+/** v40 (DES-273): the per-ref bucket shape shared by `aggregateFacts`'s return map, this class's
+ *  cache, and `_fromBucket`'s parameter — named once so the 'decide'/'image' widening lives in one
+ *  place. */
+type RefBucket = { prose: CallStats | null; tools: CallStats | null; decide: CallStats | null; image: CallStats | null };
+
 export class RunStoreObservedStats implements ObservedStatsProvider {
-  private _cache: { builtAt: number; byRef: Map<string, { prose: CallStats | null; tools: CallStats | null }> } | undefined;
+  private _cache: { builtAt: number; byRef: Map<string, RefBucket> } | undefined;
   private _timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly _deps: {
@@ -301,7 +320,7 @@ export class RunStoreObservedStats implements ObservedStatsProvider {
     this._cache = { builtAt: now, byRef: aggregateFacts(facts) };
   }
 
-  private _byRef(): Map<string, { prose: CallStats | null; tools: CallStats | null }> {
+  private _byRef(): Map<string, RefBucket> {
     const now = this._deps.clock.now();
     const ttl = this._deps.ttlMs ?? DEFAULT_TTL_MS;
     if (this._cache && now - this._cache.builtAt < ttl) return this._cache.byRef;
@@ -312,19 +331,19 @@ export class RunStoreObservedStats implements ObservedStatsProvider {
   /** Shared by `get()`/`getAll()` — takes an ALREADY-LOOKED-UP bucket (never re-reads `_byRef()`
    *  itself) so `getAll()` can snapshot the map once and stay internally consistent even if the TTL
    *  expires mid-iteration (see `getAll()`'s own comment). */
-  private _fromBucket(ref: string, bucket: { prose: CallStats | null; tools: CallStats | null } | undefined): ObservedForRef {
-    if (bucket && (bucket.prose !== null || bucket.tools !== null)) {
-      return { window: '30d', source: 'runs', prose: bucket.prose, tools: bucket.tools };
+  private _fromBucket(ref: string, bucket: RefBucket | undefined): ObservedForRef {
+    if (bucket && (bucket.prose !== null || bucket.tools !== null || bucket.decide !== null || bucket.image !== null)) {
+      return { window: '30d', source: 'runs', prose: bucket.prose, tools: bucket.tools, decide: bucket.decide, image: bucket.image };
     }
     const parsed = parseModelRef(ref);
     const probe = parsed ? this._deps.probes.get(parsed.provider, parsed.model) : undefined;
     if (probe) {
       return {
-        window: '30d', source: 'probe', prose: null, tools: null,
+        window: '30d', source: 'probe', prose: null, tools: null, decide: null, image: null,
         probeLatencyMs: Math.round((probe.latencyMs.prose + probe.latencyMs.tools) / 2),
       };
     }
-    return { window: '30d', source: 'none', prose: null, tools: null };
+    return { window: '30d', source: 'none', prose: null, tools: null, decide: null, image: null };
   }
 
   get(ref: string): ObservedForRef {

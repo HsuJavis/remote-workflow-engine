@@ -3,6 +3,7 @@
 // run-manager.ts) share one audited path. The union is closed on purpose: exactly the four kinds
 // v36 emits; a v37 kind is a v37 edit.
 import { redact, type SecretValueProvider } from './secret-resolver.js';
+import type { PrimitiveKind, DecideAnswer, ImageFile, Tokens } from './types.js';
 
 export type AuditActor = { id: string | null; bypass: boolean; idSource: 'authenticated' | 'claimed' | 'none' };
 
@@ -55,7 +56,20 @@ export type EngineEvent =
   // Agent SDK carries the identical `/tmp/claude` always-writable default pi's own fix already
   // closed, so both gateways share one event shape (`host-shared-tmpdir.ts`'s
   // `hostSharedTmpdirPresent()`), not a pi-only line any more.
-  | { kind: 'agent.host_shared_tmpdir_present'; runId: string; agentId: string; attempt: number; path: string };
+  | { kind: 'agent.host_shared_tmpdir_present'; runId: string; agentId: string; attempt: number; path: string }
+  // v40 (DES-264, ARCH-194/192/190, TASK-260): one line per decide()/generateImage() attempt — the
+  // engine's own retry-loop record, never the provider body/prompt/questions/state (INV-V40-3; no
+  // field here may hold any of those). `attempt` is 0 only on a pre-flight refusal (no dispatch).
+  | { kind: 'primitive.call'; runId: string; agentId?: string; callSeq: number; primitive: PrimitiveKind;
+      label: string; model: string; attempt: number;
+      outcome: 'ok' | 'retry' | 'failed' | 'refused'; reason?: AttemptReason; status?: number;
+      errorCode?: string; providerMs?: number; backoffMs?: number;
+      engineMs?: number; costUSD?: number | null; costSource?: 'reported' | 'estimated' | 'absent';
+      tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number };
+
+/** v40 (DES-264, TASK-260): why a `primitive.call` attempt did not reach `ok` — carried only on
+ *  `retry`/`failed` outcomes. */
+export type AttemptReason = 'http' | 'timeout' | 'aborted' | 'network' | 'no_output' | 'malformed' | 'response_too_large';
 
 export type EventSink = (event: EngineEvent) => void;
 

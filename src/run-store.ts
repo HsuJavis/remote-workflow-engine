@@ -1,7 +1,7 @@
 // RunStore port + InMemoryRunStore (DES-010).
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage, HarnessWarning, RefusalAuditEvent, RefusalAuditFilter } from './types.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage, HarnessWarning, RefusalAuditEvent, RefusalAuditFilter, PrimitiveKind } from './types.js';
 // v26 (DES-183, TASK-183): the "at rest" RunUsage fold — shared by InMemoryRunStore and
 // SqliteRunStore's getRun, mirroring deriveAgentRecords above (both live in run-guard.js/here
 // respectively; no runtime cycle — run-guard.ts imports only errors.js and types.js).
@@ -112,8 +112,28 @@ export function deriveAgentRecords(
         // never conformed (agent-executor.ts `_callAgent`).
         schemaExhausted?: true;
         reaskCount?: number;
+        // v40 (DES-273, ARCH-191/192, TASK-270): a decide()/generateImage() usage event carries its
+        // OWN label/agentKey/phase/phaseIndex/frame/startedAt/model/provider — it never has a
+        // preceding harness event (DES-272/DES-274: primitives emit no 'harness'/'message' event at
+        // all), so `harnessCommon`/`firstHarnessTs` below are always empty for one of these and the
+        // record would otherwise come back with no name/model at all.
+        primitive?: PrimitiveKind;
+        label?: string;
+        agentKey?: string;
+        phase?: string;
+        phaseIndex?: number;
+        frame?: string;
+        startedAt?: string;
       };
-      const startedAt = firstHarnessTs;
+      // v40 (DES-273): present only on a decide()/generateImage() usage event — `undefined` for
+      // every pre-existing agent() usage event, so nothing below changes for those.
+      const primitiveKind = data.primitive;
+      const startedAt = primitiveKind !== undefined ? data.startedAt : firstHarnessTs;
+      // v40 (DES-273): a primitive record's label/agentKey/phase/phaseIndex/frame come from the
+      // usage event itself (no harness event exists to read `harnessCommon` from).
+      const effectiveCommon = primitiveKind !== undefined
+        ? { label: data.label, agentKey: data.agentKey, phase: data.phase, phaseIndex: data.phaseIndex, frame: data.frame }
+        : harnessCommon;
       const endedAt = usage.ts;
       // issue #127: the discriminator CANNOT be `data.tokens` presence any more — a failed call can
       // now carry real tokens too (the gateway-side fix that reports what was spent before an abort/
@@ -123,11 +143,21 @@ export function deriveAgentRecords(
       // result.reason, ...}` literal) — so its presence is what `state` actually keys on, both live
       // and at rest.
       if (data.reason === undefined) {
+        const normalizedTokens = data.tokens
+          ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 }
+          : undefined;
         records.push(withCommon({
           agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '',
-          tokens: data.tokens
-            ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 }
-            : ZERO_TOKENS,
+          // v40 (DES-273): omitted (never defaulted to ZERO_TOKENS) for a decide()/generateImage()
+          // record whose usage event reports no tokens (a tokenless reported-cost call) — the v31
+          // "unmeasured usage is absence" rule, which a TERMINAL agent() record is normally exempt
+          // from (DES-188: a done/failed agent() call always zero-fills, since nobody is still
+          // waiting on its figure) but a primitive explicitly is NOT (DES-273's own text: "tokens =
+          // data.tokens, absent stays absent"). The non-primitive path keeps its unconditional
+          // zero-fill, unchanged.
+          ...(primitiveKind !== undefined
+            ? (normalizedTokens !== undefined ? { tokens: normalizedTokens } : {})
+            : { tokens: normalizedTokens ?? ZERO_TOKENS }),
           // A legacy (pre-v26) usage event carries neither field — the honest reading is "never
           // priced", not "free" (ADR-046).
           costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? true,
@@ -144,16 +174,26 @@ export function deriveAgentRecords(
           ...(data.reaskCount !== undefined ? { reaskCount: data.reaskCount } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
-        }, harnessCommon));
+          // v40 (DES-273): absent on every pre-v40 record — present only when this usage event is
+          // a decide()/generateImage() call's.
+          ...(primitiveKind !== undefined ? { kind: primitiveKind } : {}),
+        }, effectiveCommon));
       } else {
         records.push(withCommon({
-          agentId, state: 'failed', provider: data.provider ?? 'unknown', model: harnessDescriptor?.model ?? '',
+          agentId, state: 'failed', provider: data.provider ?? 'unknown',
+          // v40 (DES-273): a primitive failure carries its own `model` on the usage event (no
+          // harness event exists to read it from) — `data.model` is always absent on a pre-v40
+          // agent() failed usage event, so this falls through to `harnessDescriptor?.model` exactly
+          // as before for every existing case.
+          model: data.model ?? harnessDescriptor?.model ?? '',
           // issue #127: a failed call MAY carry real tokens/costUSD/unpriced too (agent-executor.ts's
           // `capture()` failed branch, `failUsage`) — present only when the event carries them,
           // keeping a pre-#127 event's ZERO_TOKENS/costUSD:0/unpriced:false shape byte-identical.
-          tokens: data.tokens
-            ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 }
-            : ZERO_TOKENS,
+          // v40 (DES-273): a failed PRIMITIVE's tokens stay absent too (same rule as the done
+          // branch above) rather than zero-filling, unlike an ordinary failed agent() call.
+          ...(primitiveKind !== undefined
+            ? (data.tokens !== undefined ? { tokens: { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 } } : {})
+            : { tokens: data.tokens ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 } : ZERO_TOKENS }),
           costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? false,
           ...(data.partial === true ? { partial: true as const } : {}),
           ...(data.estimated === true ? { estimated: true as const } : {}),
@@ -168,7 +208,8 @@ export function deriveAgentRecords(
           ...(data.reason !== undefined ? { failReason: data.reason } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
-        }, harnessCommon));
+          ...(primitiveKind !== undefined ? { kind: primitiveKind } : {}),
+        }, effectiveCommon));
       }
       continue;
     }

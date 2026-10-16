@@ -7,6 +7,10 @@ export type ReplayResult = unknown | typeof MISS;
 export interface ResumePlan {
   cachedThrough: number;
   replay(callSeq: number, key: CallKey): ReplayResult;
+  /** [DES-274, TASK-271] Forces every LATER replay() (any callSeq) to MISS, same as an ordinary
+   *  cache miss — for a reason replay() itself cannot see (e.g. an image replay hit whose file no
+   *  longer verifies). Idempotent. */
+  invalidate(): void;
 }
 
 /** Structural equality over a CallKey (prompt + opts) — the cache-hit test. */
@@ -34,6 +38,10 @@ class Plan implements ResumePlan {
       return MISS;
     }
     return entry.value;
+  }
+
+  invalidate(): void {
+    this._missed = true;
   }
 }
 

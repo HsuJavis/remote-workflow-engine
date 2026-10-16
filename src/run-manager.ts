@@ -29,16 +29,21 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, AgentWarningSummary, RunListFilter } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, AgentWarningSummary, RunListFilter, DecideAnswer, ImageFile, PrimitiveKind } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 // v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
 import type { WorkflowMetrics } from './dashboard.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
-import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
+import { RunGuard, parseBudget, foldUsage, sumTokens, primitivePriceKnowable, pricePrimitiveCall, ZERO_TOKENS } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
+// v40 (DES-274, ARCH-187, TASK-271): decide()/generateImage() handler collaborators.
+import { validateDecideInput, validateImageInput, primitiveCallKey } from './direct-models/inputs.js';
+import { readContainedInput, resolveOutDir, writeImages, verifyFiles } from './direct-models/image-files.js';
+import { runDecide, runImage, toPiAiModel, defaultDirectDeps, type DirectDeps, type PiClassifierModel, type PiImageModel } from './direct-models/call.js';
+import { loadSecretSourceFromEnv } from './secret-source.js';
 import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
@@ -53,7 +58,7 @@ import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FR
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
 import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
-import { createEventSink, type EventSink } from './event-log.js';
+import { createEventSink, type EventSink, type AttemptReason } from './event-log.js';
 import { scanAgentCalls, expectedAgentOptsByLabel } from './workflow-meta.js';
 import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
 import { assertPositiveInteger } from './config-numeric.js';
@@ -184,6 +189,21 @@ export interface RunManagerDeps {
    *  construction (same convention as `maxWorkflowDepth` etc. via `_positiveInt`); absent ->
    *  `DEFAULT_MAX_RUN_DURATION_MS` (host.ts's own default). */
   maxRunDurationMs?: number;
+  /** v40 (DES-274/DES-275, ARCH-187/193, TASK-271/272): per-run concurrency caps for decide()/
+   *  generateImage() dispatch — independent of `semaphore` (agent() dispatch) and of `guard`'s own
+   *  `AGENT_CAP` (shared lifetime issuance counter, unaffected). Composition root forwards
+   *  `cfg.decideSlots`/`cfg.imageSlots` (TASK-272); omitted (every pre-v40 test/caller) ->
+   *  `createSemaphore(16)`/`createSemaphore(2)`. */
+  decideSemaphore?: Semaphore;
+  imageSemaphore?: Semaphore;
+  /** v40 (DES-275, TASK-272): byte cap for one `generateImage({inputImages})` entry read off the
+   *  run/asset workspace. Omitted -> 4_718_592 (4.5 MiB). */
+  imageInputMaxBytes?: number;
+  /** v40 (DES-274, ARCH-183, TASK-271): the decide()/generateImage() fetch/retry/backoff seam
+   *  (`direct-models/call.ts`'s `DirectDeps`) — a test overrides `fetch` alone; every other field
+   *  defaults from `defaultDirectDeps(loadSecretSourceFromEnv())`. Omitted entirely (every pre-v40
+   *  caller) -> the full production default. */
+  directDeps?: Partial<DirectDeps>;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -226,6 +246,32 @@ function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: 
     ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
     : undefined;
   return { args: resolvedArgs ?? rawArgs, resolvedArgs };
+}
+
+/** v40 (DES-271/274, ARCH-188/189, TASK-271): the admission-time `decisions`/`images` slice —
+ *  contract default only (`PrimitiveParamSpec` has no override ladder, unlike `agents`; see
+ *  `RunParams.decisions`'s own doc). Pure; shared by `start()`'s top-level admission and a nested
+ *  `workflow()` frame's own (`_handleWorkflowRequest`), same as `materializeRunArgs` above. */
+function buildPrimitiveParamsSlice(
+  spec: Record<string, { model: { default?: unknown }; timeoutMs: { default?: unknown }; retries: { default?: unknown } }>,
+): Record<string, { model: string; timeoutMs: number; retries: number }> {
+  const out: Record<string, { model: string; timeoutMs: number; retries: number }> = {};
+  for (const [label, s] of Object.entries(spec)) {
+    out[label] = { model: s.model.default as string, timeoutMs: s.timeoutMs.default as number, retries: s.retries.default as number };
+  }
+  return out;
+}
+
+/** v40 (DES-274, ARCH-187, TASK-271): maps `direct-models/call.ts`'s `AttemptReason` (the thrown
+ *  `PRIMITIVE_FAILED` error's `detail.reason`) onto `AgentRecord.failReason`'s own closed vocabulary
+ *  — timeout stays timeout, network becomes unreachable, aborted stays aborted (whether named
+ *  directly or inferred from the run's own abort signal, for a throw with no `.detail` at all), and
+ *  every other reason (http/no_output/malformed/response_too_large) is a definite terminal failure. */
+function primitiveFailReasonFrom(reason: AttemptReason | undefined, runAborted: boolean): 'timeout' | 'unreachable' | 'terminal' | 'aborted' {
+  if (reason === 'timeout') return 'timeout';
+  if (reason === 'network') return 'unreachable';
+  if (reason === 'aborted' || runAborted) return 'aborted';
+  return 'terminal';
 }
 
 /** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate — pure (no fs, no
@@ -448,7 +494,7 @@ interface RunEntry {
 /** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
  *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
  *  child cannot value-import this `.ts` file), pinned equal by the drift test. */
-export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA']);
+export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA', 'PRICE_UNKNOWN']);
 
 /** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
  *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
@@ -705,6 +751,11 @@ export class RunManager {
    *  every `SandboxHost` constructed below applies ITS OWN default — one definition of the default
    *  (host.ts's `DEFAULT_MAX_RUN_DURATION_MS`), never two that could drift. */
   private readonly _maxRunDurationMs: number | undefined;
+  /** v40 (DES-274/275, TASK-271/272): decide()/generateImage() concurrency caps + fetch seam. */
+  private readonly _decideSemaphore: Semaphore;
+  private readonly _imageSemaphore: Semaphore;
+  private readonly _imageInputMaxBytes: number;
+  private readonly _directDeps: DirectDeps;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
   private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
   private readonly _runs = new Map<string, RunEntry>();
@@ -776,6 +827,15 @@ export class RunManager {
       throw new Error(`maxRunDurationMs must be a positive integer, got ${deps.maxRunDurationMs}`);
     }
     this._maxRunDurationMs = deps.maxRunDurationMs;
+    // v40 (DES-274/275, TASK-271/272): default width (16 decide / 2 image) — composition root
+    // (TASK-272) overrides from `rwe.config.json`'s `decideSlots`/`imageSlots`.
+    this._decideSemaphore = deps.decideSemaphore ?? createSemaphore(16);
+    this._imageSemaphore = deps.imageSemaphore ?? createSemaphore(2);
+    this._imageInputMaxBytes = deps.imageInputMaxBytes ?? 4_718_592;
+    // v40 (DES-274, TASK-271): a caller overriding only `fetch` (every integration test here) still
+    // gets the real timer-based sleep/attemptSignal/random/resolveKey — merged, never replaced
+    // wholesale, so a partial override compiles against the full `DirectDeps` shape `call.ts` needs.
+    this._directDeps = { ...defaultDirectDeps(loadSecretSourceFromEnv()), ...(deps.directDeps ?? {}) };
   }
 
   /** Service accounts spec send-back D1: the ONE admission check shared by start(), resume(), and
@@ -1218,6 +1278,13 @@ export class RunManager {
       // always absent. Every value now comes from the per-agent contract (`contract.agents`).
       ? defaultRunParams(undefined, contract.agents)
       : mergeRunParams(undefined, overridesResult.value, contract.agents);
+    // v40 (DES-271/274, TASK-271): contract-default-only `decisions`/`images` slice (no override
+    // ladder for either — see `buildPrimitiveParamsSlice`'s own doc) — folded in BEFORE
+    // `_refuseUnadmittableParams`/the price pin below, so `reachableModels` (which already reads
+    // these two keys, TASK-267) picks up every decide()/generateImage() model at admission, same as
+    // every agent() label's.
+    if (contract.decisions) effectiveParams.decisions = buildPrimitiveParamsSlice(contract.decisions);
+    if (contract.images) effectiveParams.images = buildPrimitiveParamsSlice(contract.images);
     // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
@@ -2275,6 +2342,10 @@ export class RunManager {
       budget: budgetLimits,
       onAgentRequest: (prompt, opts, callSeq, phase) => this._handleAgentRequest(runId, prompt, opts, callSeq, '', phase),
       onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, '', callSeq, 1, topAncestors),
+      // v40 (DES-272/274, ARCH-186/187, TASK-269/271): mirrors `onAgentRequest` — top-level frame,
+      // no callSeq offset, no `frameParams` (reads the run's own `entry.effectiveParams`).
+      onDecideRequest: (msg, phase) => this._handleDecideRequest(runId, msg, msg.callSeq, '', phase),
+      onImageRequest: (msg, phase) => this._handleImageRequest(runId, msg, msg.callSeq, '', phase),
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
       onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
       currentPhase: () => this._currentPhaseFor(runId),
@@ -2584,6 +2655,11 @@ export class RunManager {
       throw paramCodedError(childArgsResult);
     }
     const childParams = defaultRunParams(undefined, childContract.agents);
+    // v40 (DES-271/274, TASK-271): same contract-default-only fold as `start()`'s — the CHILD's own
+    // declared `decisions`/`images`, never the parent's (same "nested workflow() is a black box"
+    // rule the agents/assets/tool-surface slices above already follow).
+    if (childContract.decisions) childParams.decisions = buildPrimitiveParamsSlice(childContract.decisions);
+    if (childContract.images) childParams.images = buildPrimitiveParamsSlice(childContract.images);
     // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
     // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
     // already is (`frameParams`), below. Before this, a nested dispatch built `AgentReq.assets`
@@ -2652,6 +2728,17 @@ export class RunManager {
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
       onWorkflowRequest: (ref2, args2, callSeq2) =>
         this._handleWorkflowRequest(runId, ref2, args2, framePathKey, callSeq2, depth + 1, childAncestors),
+      // v40 (DES-272/274, ARCH-186/187, TASK-269/271): mirrors `onAgentRequest` above — THIS
+      // frame's own `childParams.decisions`/`.images` (the child workflow's own declared contract),
+      // never the parent's.
+      onDecideRequest: (msg, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: decide() from a suspended/stopped nested workflow() frame`);
+        return this._handleDecideRequest(runId, msg, frameBase + msg.callSeq, framePathKey, phase, childParams);
+      },
+      onImageRequest: (msg, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: generateImage() from a suspended/stopped nested workflow() frame`);
+        return this._handleImageRequest(runId, msg, frameBase + msg.callSeq, framePathKey, phase, childParams);
+      },
       // v26 (DES-175): a nested frame with no phase() of its own inherits the PARENT's lane — same
       // closure, same runId, as the top-level host (`_newSandbox`) gets.
       currentPhase: () => this._currentPhaseFor(runId),
@@ -2980,5 +3067,374 @@ export class RunManager {
     } finally {
       release();
     }
+  }
+
+  /** v40 (DES-274, ARCH-187, TASK-271, ADR-072): the SAME run-level refusal ledger
+   *  `_handleAgentRequest`'s own catch already writes to (`entry.refusals`, keyed by callSeq,
+   *  8-slot-capped) — populated here too, unconditionally over every decide()/generateImage()
+   *  refusal/failure code (never gated on `RECORDED_REFUSAL_CODES`, which is `_handleAgentRequest`'s
+   *  OWN allowlist for agent()'s five budget/schema-shaped codes, not a bound on this mechanism
+   *  itself). The ledger is what lets an UNCAUGHT decide()/generateImage() throw surface its real
+   *  code at `run_result.error.code` — `child-entry.ts`'s `markEngineRefusal` tags the IPC
+   *  rejection's `refusalRef` with this SAME `callSeq` for every `agentThrow`, regardless of code,
+   *  and `evaluateScript` carries that ref through even on its generic `SCRIPT_ERROR` fallback (its
+   *  own classification only restricts WHICH flattened code reaches the vm script's own `catch`, not
+   *  whether the ref itself survives) — so `_runLive`'s `entry.refusals.get(outcome.refusalRef)`
+   *  recovers the ORIGINAL, unflattened error this method captured, never the generic fallback.
+   *  Recorded ONLY at the top-level frame (`framePath === ''`), same reason `_handleAgentRequest`'s
+   *  own comment gives: a nested `workflow()` boundary re-mints the error under its own callSeq. */
+  private _recordPrimitiveRefusal(entry: RunEntry, framePath: string, callSeq: number, err: unknown): void {
+    if (framePath !== '') return;
+    if (entry.refusals.size < 8) {
+      entry.refusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
+    } else {
+      entry.refusalsDropped++;
+    }
+  }
+
+  /** v40 (DES-264, TASK-260/271): one `kind:'primitive.call'` operational-event line per
+   *  decide()/generateImage() attempt/outcome — OUR engine data only (label/model/timings/cost),
+   *  never the provider body/prompt/questions/state (INV-V40-3). */
+  private _emitPrimitiveCall(fields: {
+    runId: string; agentId?: string; callSeq: number; primitive: PrimitiveKind; label: string; model: string; attempt: number;
+    outcome: 'ok' | 'retry' | 'failed' | 'refused'; reason?: AttemptReason; status?: number; errorCode?: string;
+    providerMs?: number; backoffMs?: number; engineMs?: number; costUSD?: number | null; costSource?: 'reported' | 'estimated' | 'absent';
+    tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number;
+  }): void {
+    this._eventSink({ kind: 'primitive.call', ...fields });
+  }
+
+  /** v40 (DES-274, ARCH-187, ADR-090/092/093/094, TASK-271): `decide()`'s handler — DES-274's own
+   *  numbered order. Wired as `SandboxHostConfig.onDecideRequest` by `_newSandbox` (top level) and
+   *  by the nested host in `_handleWorkflowRequest` (`frameParams` = that frame's own child
+   *  contract's `decisions` slice, never the parent's). */
+  private async _handleDecideRequest(
+    runId: string,
+    msg: { callSeq: number; label: string; state: unknown; questions: unknown },
+    callSeq: number,
+    framePath = '',
+    phase?: { title: string; index: number },
+    frameParams?: RunParams,
+  ): Promise<{ answers: Record<string, DecideAnswer> }> {
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    const label = msg.label;
+    // Defensive only — `scanPrimitiveCalls` (TASK-268) refuses registration of a decide() call
+    // whose label has no `params.decisions.<label>` declaration, so every REGISTERED script
+    // reaches here with a spec; unreachable on a real admitted run.
+    const baseParams = frameParams ?? entry.effectiveParams;
+    const spec = baseParams.decisions?.[label];
+    if (!spec) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: decide('${label}') has no params.decisions.${label} declaration at admission`, { label });
+    const { model, timeoutMs, retries } = spec;
+    const resolvedModel = parseModelRef(model);
+    if (!resolvedModel) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: decide('${label}') model '${model}' is not a valid <provider>/<model-id> ref`, { label, model });
+    // DES-274 step (1): pure validation BEFORE any spend — no record, no journal row on refusal.
+    let validated: ReturnType<typeof validateDecideInput>;
+    try {
+      validated = validateDecideInput(label, { state: msg.state, questions: msg.questions });
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'PRIMITIVE_INPUT_INVALID' });
+      throw err;
+    }
+    const { state, questions } = validated;
+    // step (3): resume replay — never re-dispatch a cached call.
+    const key = primitiveCallKey('decide', label, model, { state, questions });
+    if (entry.cachePlan) {
+      const cached = entry.cachePlan.replay(callSeq, key);
+      if (cached !== MISS) return cached as { answers: Record<string, DecideAnswer> };
+    }
+    // step (4): no key, no spend.
+    if (this._directDeps.resolveKey() === undefined) {
+      const err = codedError('OPENROUTER_AUTH_MISSING', 'OPENROUTER_AUTH_MISSING: no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or OPENROUTER_API_KEY before dispatching decide()/generateImage()', { label });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'OPENROUTER_AUTH_MISSING' });
+      throw err;
+    }
+    // step (5): allocate the agentId (shares AGENT_CAP with agent()) and mark queued — visible
+    // via workflow_status before dispatch, same as agent()'s own D-F12 contract.
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      entry.spawner.markQueued(agentId, { label, agentKey: label, phase, frame: framePath });
+    }
+    const pinEntry = entry.priceBook?.pinned[`${resolvedModel.provider}/${resolvedModel.model}`];
+    // step (6): a USD budget armed over an unpriceable model is refused before any spend.
+    if (entry.budgetLimits.usd !== null && !primitivePriceKnowable(pinEntry, 'decide')) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'PRICE_UNKNOWN', this._clock.isoNow());
+      const err = codedError('PRICE_UNKNOWN', `PRICE_UNKNOWN: decide('${label}') model '${model}' has no catalogued price; refusing rather than dispatch at an unknown cost`, { label, model });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'PRICE_UNKNOWN' });
+      throw err;
+    }
+    // step (7): the fast pre-slot budget door (v25 position).
+    try {
+      entry.guard.assertBudget();
+    } catch (err) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+      throw err;
+    }
+    const startedAt = this._clock.isoNow();
+    const t0 = this._directDeps.now();
+    let attempt = 0;
+    let providerMsTotal = 0;
+    let backoffMsTotal = 0;
+    let outcome: { answers: Record<string, DecideAnswer>; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number };
+    try {
+      // step (8): the slot is held across every retry; `assertBudget` repeats here (the v25
+      // load-bearing position), `markRunning` flips once the slot is actually acquired.
+      outcome = await this._decideSemaphore.withSlot(async () => {
+        entry.guard.assertBudget();
+        if (entry.spawner instanceof AgentExecutor) entry.spawner.markRunning(agentId, startedAt);
+        const piModel = toPiAiModel({ id: resolvedModel.model, modelType: 'decision' }) as PiClassifierModel;
+        return runDecide(
+          { model: piModel, state, questions, timeoutMs, retries, runSignal: entry.abortController.signal, label },
+          {
+            ...this._directDeps,
+            onAttempt: (o) => {
+              attempt = o.attempt;
+              providerMsTotal += o.providerMs;
+              backoffMsTotal += o.backoffMs ?? 0;
+              this._emitPrimitiveCall({
+                runId, agentId, callSeq, primitive: 'decide', label, model, attempt: o.attempt, outcome: o.outcome,
+                ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
+                providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+              });
+            },
+          },
+        );
+      });
+    } catch (err) {
+      // the v25 load-bearing in-slot `assertBudget()` re-check (step 8) can ALSO throw
+      // BUDGET_EXCEEDED here — a refusal, never a PRIMITIVE_FAILED: same treatment as the
+      // pre-slot budget door above (markRefused + refused event + ledger), no recordPrimitive.
+      if ((err as { code?: string }).code === 'BUDGET_EXCEEDED') {
+        if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+        this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+        this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+        throw err;
+      }
+      // failure path: price what the wire reported (nothing, on a throw) and record 'failed' —
+      // no journal row, so a resumed run re-runs this call (and every later one) live.
+      const endedAt = this._clock.isoNow();
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
+      const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
+      }
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'decide', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
+        engineMs: this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal, costUSD: 0, costSource: 'absent',
+      });
+      throw err;
+    }
+    // step (10): price + charge + record 'done'. `outcome.providerMsTotal`/`.backoffMsTotal` are
+    // `runWithRetry`'s own complete sums (including the successful final attempt, which never fires
+    // `onAttempt` — this handler's local accumulator above only covers retry/failed attempts).
+    const endedAt = this._clock.isoNow();
+    const engineMs = this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal;
+    const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'decide' });
+    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
+    const unpriced = 'absent' in priced;
+    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    if (entry.spawner instanceof AgentExecutor) {
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+    }
+    // step (11): journal push, exactly as agent()'s own success path.
+    const value = { answers: outcome.answers };
+    const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };
+    entry.journal.push(journalEntry);
+    const journalToStore = this._secretValueProvider ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry) : journalEntry;
+    await this._store.appendJournal(runId, journalToStore);
+    // step (12): the terminal 'ok' event.
+    this._emitPrimitiveCall({
+      runId, agentId, callSeq, primitive: 'decide', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs, costUSD,
+      costSource: 'absent' in priced ? 'absent' : priced.source, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      answers: outcome.answers,
+    });
+    return value;
+  }
+
+  /** v40 (DES-274, ARCH-187, ADR-090/092/093/094, TASK-271): `generateImage()`'s handler — same
+   *  order as `_handleDecideRequest`, plus DES-274 step (9)'s file write and the image-only replay
+   *  re-verify (step 3: a cached file that no longer verifies re-runs live, and poisons every later
+   *  callSeq via `plan.invalidate()`). */
+  private async _handleImageRequest(
+    runId: string,
+    msg: { callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown },
+    callSeq: number,
+    framePath = '',
+    phase?: { title: string; index: number },
+    frameParams?: RunParams,
+  ): Promise<{ files: ImageFile[] }> {
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    const label = msg.label;
+    const baseParams = frameParams ?? entry.effectiveParams;
+    const spec = baseParams.images?.[label];
+    if (!spec) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: generateImage('${label}') has no params.images.${label} declaration at admission`, { label });
+    const { model, timeoutMs, retries } = spec;
+    const resolvedModel = parseModelRef(model);
+    if (!resolvedModel) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: generateImage('${label}') model '${model}' is not a valid <provider>/<model-id> ref`, { label, model });
+    let prompt: string;
+    let inputImagePaths: string[];
+    let outDirRaw: string | undefined;
+    try {
+      const validated = validateImageInput(label, { prompt: msg.prompt, inputImages: msg.inputImages, outDir: msg.outDir });
+      prompt = validated.prompt;
+      inputImagePaths = validated.inputImages;
+      outDirRaw = validated.outDir;
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'PRIMITIVE_INPUT_INVALID' });
+      throw err;
+    }
+    const root = entry.workspace;
+    let inputImages: { data: Buffer; mimeType: string }[];
+    // DES-274 step (1): "its sha256 feeds the key" — the CONTENTS, not the path string, so a
+    // resumed run whose input file changed on disk (same path, different bytes) misses rather than
+    // replaying a stale result keyed on a path that still matches.
+    const inputImageShas: string[] = [];
+    let absDir: string;
+    try {
+      inputImages = [];
+      for (const p of inputImagePaths) {
+        const read = await readContainedInput(root, p, this._imageInputMaxBytes);
+        inputImages.push({ data: read.data, mimeType: read.mimeType });
+        inputImageShas.push(read.sha256);
+      }
+      absDir = await resolveOutDir(root, outDirRaw);
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'IMAGE_PATH_REFUSED' });
+      throw err;
+    }
+    // step (3): resume replay — an image hit whose file no longer verifies re-runs live and
+    // poisons every LATER callSeq too (ResumePlan.invalidate(), DES-274's own documented reason).
+    const key = primitiveCallKey('image', label, model, { prompt, inputImages: inputImageShas, outDir: outDirRaw });
+    if (entry.cachePlan) {
+      const cached = entry.cachePlan.replay(callSeq, key);
+      if (cached !== MISS) {
+        const v = cached as { files: ImageFile[] };
+        if (await verifyFiles(root, v.files)) return v;
+        entry.cachePlan.invalidate();
+      }
+    }
+    if (this._directDeps.resolveKey() === undefined) {
+      const err = codedError('OPENROUTER_AUTH_MISSING', 'OPENROUTER_AUTH_MISSING: no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or OPENROUTER_API_KEY before dispatching decide()/generateImage()', { label });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'OPENROUTER_AUTH_MISSING' });
+      throw err;
+    }
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      entry.spawner.markQueued(agentId, { label, agentKey: label, phase, frame: framePath });
+    }
+    const pinEntry = entry.priceBook?.pinned[`${resolvedModel.provider}/${resolvedModel.model}`];
+    if (entry.budgetLimits.usd !== null && !primitivePriceKnowable(pinEntry, 'image')) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'PRICE_UNKNOWN', this._clock.isoNow());
+      const err = codedError('PRICE_UNKNOWN', `PRICE_UNKNOWN: generateImage('${label}') model '${model}' has no catalogued price; refusing rather than dispatch at an unknown cost`, { label, model });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'PRICE_UNKNOWN' });
+      throw err;
+    }
+    try {
+      entry.guard.assertBudget();
+    } catch (err) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+      throw err;
+    }
+    const startedAt = this._clock.isoNow();
+    const t0 = this._directDeps.now();
+    let attempt = 0;
+    let providerMsTotal = 0;
+    let backoffMsTotal = 0;
+    let outcome: { images: { data: Buffer; mimeType: string }[]; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number };
+    try {
+      outcome = await this._imageSemaphore.withSlot(async () => {
+        entry.guard.assertBudget();
+        if (entry.spawner instanceof AgentExecutor) entry.spawner.markRunning(agentId, startedAt);
+        const piModel = toPiAiModel({ id: resolvedModel.model, modelType: 'image-gen' }) as PiImageModel;
+        return runImage(
+          { model: piModel, prompt, inputImages, timeoutMs, retries, runSignal: entry.abortController.signal, label },
+          {
+            ...this._directDeps,
+            onAttempt: (o) => {
+              attempt = o.attempt;
+              providerMsTotal += o.providerMs;
+              backoffMsTotal += o.backoffMs ?? 0;
+              this._emitPrimitiveCall({
+                runId, agentId, callSeq, primitive: 'image', label, model, attempt: o.attempt, outcome: o.outcome,
+                ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
+                providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+              });
+            },
+          },
+        );
+      });
+    } catch (err) {
+      // the v25 load-bearing in-slot `assertBudget()` re-check can ALSO throw BUDGET_EXCEEDED here
+      // — a refusal, never a PRIMITIVE_FAILED: same treatment as the pre-slot budget door above.
+      if ((err as { code?: string }).code === 'BUDGET_EXCEEDED') {
+        if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+        this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+        this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+        throw err;
+      }
+      const endedAt = this._clock.isoNow();
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
+      const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
+      }
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'image', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
+        engineMs: this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal, costUSD: 0, costSource: 'absent',
+      });
+      throw err;
+    }
+    // step (9): write images under the resolved outDir — zero written is still priced, still a
+    // failure. `outcome.providerMsTotal`/`.backoffMsTotal`/`.attempts` are `runWithRetry`'s own
+    // complete sums (including the successful final attempt, which never fires `onAttempt`).
+    const written = await writeImages(root, absDir, label, callSeq, outcome.images);
+    const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'image' });
+    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
+    const unpriced = 'absent' in priced;
+    const endedAt = this._clock.isoNow();
+    const engineMs = this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal;
+    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    if (written.files.length === 0) {
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
+      }
+      const noOutputErr = codedError('PRIMITIVE_FAILED', `PRIMITIVE_FAILED: generateImage('${label}') produced no usable image output after ${written.dropped} dropped`, { reason: 'no_output', attempts: outcome.attempts });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, noOutputErr);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'no_output', errorCode: 'PRIMITIVE_FAILED',
+        engineMs, costUSD, costSource: 'absent' in priced ? 'absent' : priced.source,
+      });
+      throw noOutputErr;
+    }
+    if (entry.spawner instanceof AgentExecutor) {
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+    }
+    const value = { files: written.files };
+    const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };
+    entry.journal.push(journalEntry);
+    const journalToStore = this._secretValueProvider ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry) : journalEntry;
+    await this._store.appendJournal(runId, journalToStore);
+    this._emitPrimitiveCall({
+      runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs, costUSD,
+      costSource: 'absent' in priced ? 'absent' : priced.source, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      files: written.files, ...(written.dropped > 0 ? { droppedImages: written.dropped } : {}),
+    });
+    return value;
   }
 }

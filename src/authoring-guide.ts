@@ -10,7 +10,11 @@
 //
 // `docs/AUTHORING.md` is generated from this SAME builder by scripts/gen-authoring-md.ts — never
 // hand-edited (tests/unit/authoring-md-generated.test.ts is the diff lock).
-import { LOCKED_KEYS, TUNABLE_KEYS, type Effort } from './params/contract.js';
+import { LOCKED_KEYS, TUNABLE_KEYS, MAX_PRIMITIVE_RETRIES, type Effort } from './params/contract.js';
+// v40 (DES-267, ARCH-183, TASK-263): the retry-after cap the backoff formula below is bound by —
+// read from the module that enforces it, same "never re-type a protocol constant" convention this
+// file already applies to SANDBOX_GLOBALS/SHAPES/PROVIDER_CAPS below.
+import { RETRY_AFTER_CAP_MS } from './direct-models/call.js';
 // v25 (#55): the accepted `agent()` option keys the guide lists come from the scanner that
 // enforces them, so the manual cannot teach a set the engine does not check.
 import { WRITABLE_AGENT_OPT_KEYS } from './workflow-meta.js';
@@ -104,6 +108,22 @@ export const EXAMPLE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
 // (the common test/first-boot case) accepts it anyway with a warning (checkModelRef's "could not
 // check" rule), so no live OpenRouter key is needed for a GUIDE_EXAMPLES_PI entry to register.
 export const EXAMPLE_MODEL_PI = 'openrouter/anthropic/claude-haiku-4.5';
+
+// v40 (DES-271, ARCH-183): decide()/generateImage()'s `model.default` must ALWAYS start
+// `openrouter/` (PRIMITIVE_PROVIDER_UNSUPPORTED otherwise) — unlike EXAMPLE_MODEL/EXAMPLE_MODEL_PI
+// above, these two never vary by harness, so buildGuideExamples() uses the SAME ref in both
+// GUIDE_EXAMPLES and GUIDE_EXAMPLES_PI. Real, currently-listed OpenRouter ids, not invented ones —
+// `typesafe/jev-1.13` is also in tests/fixtures/models/openrouter-models-all.json (the fixture
+// tests/unit/model-catalog-decision.test.ts checks, catalogued `'decision'` there); OpenRouter's
+// live catalog turned out reachable from THIS host (tests/integration/guide-examples-register.
+// test.ts does a real fetch, not the "CI catalog is static" case DES-276 assumed), so
+// `black-forest-labs/flux-1.1-pro` (the fixture's own image-gen row) had to be swapped for
+// `black-forest-labs/flux-3-image` — genuinely `image-gen` on the LIVE catalog today, but not in
+// the fixture; a future OpenRouter catalog change could retire this id the same way it already
+// retired flux-1.1-pro (see needs_clarification). Exported so a test fixing UT-159's
+// single-EXAMPLE_MODEL invariant can allowlist these two by name rather than by literal string.
+export const EXAMPLE_DECIDE_MODEL = 'openrouter/typesafe/jev-1.13';
+export const EXAMPLE_IMAGE_MODEL = 'openrouter/black-forest-labs/flux-3-image';
 
 /** issue #154 B4 + #153 L2: picks the example model ref for the harness actually in scope at render
  *  time — `undefined` (the static `docs/AUTHORING.md`, built once before any host boots, same "can't
@@ -405,6 +425,59 @@ function buildGuideExamples(exampleModel: string): GuideExample[] {
     mermaid:
       `graph LR\n` +
       `subgraph "judge"\n${stadiumNode('judge', 'judge', 'low', 60000, 'none')}\nend`,
+    expectRegister: 'ok',
+  },
+  {
+    // v40 (DES-276, ARCH-194, TASK-273, UT-355): a decide() bool gate with an agent() fallback.
+    // decide()/generateImage() model refs are ALWAYS an openrouter/* ref (ARCH-183/DES-271's
+    // `model.default` must start `openrouter/` rule), regardless of `exampleModel` — the two
+    // primitives only ever dispatch through the openrouter gateway, under either harness.
+    title: 'decide gate with agent fallback',
+    script:
+      `export const meta = {\n` +
+      `  description: 'Asks a bool decision whether a draft is ready to publish, falling back to an agent review when the model is not confident',\n` +
+      `  phases: [{ title: 'gate' }],\n` +
+      `  params: { decisions: { ready: { model: { type: 'string', default: '${EXAMPLE_DECIDE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } }, agents: { reviewer: ${agentSpec('low', 60000)} } },\n` +
+      `};\n` +
+      `phase('gate');\n` +
+      `const { answers } = await decide('ready', {\n` +
+      `  state: { draft: 'The quarterly report is complete.' },\n` +
+      `  questions: { ok: { type: 'bool', instructions: 'Is the draft ready to publish?', criteria: { true: 'ready to publish', false: 'needs more work' } } },\n` +
+      `});\n` +
+      `if (answers.ok.probability >= 0.7) {\n` +
+      `  return { ready: true };\n` +
+      `}\n` +
+      `return await agent('reviewer', { prompt: 'Review and fix the draft' });`,
+    // decide()/generateImage() labels are legal mermaid node ids but never required (DES-271: "primitive
+    // labels accepted as node ids, never required, excluded from deriveExpectedGraph and
+    // AGENT_BEFORE_PHASE") — drawn here anyway, same convention as the ternary/conditional examples'
+    // non-agent diamond, purely for a reader's benefit.
+    mermaid:
+      `graph LR\n` +
+      `subgraph "gate"\n` +
+      `ready{"ready? (decide)"}\n` +
+      `${stadiumNode('reviewer', 'reviewer', 'low', 60000, 'default')}\n` +
+      `ready-->|not confident|reviewer\n` +
+      `end`,
+    expectRegister: 'ok',
+  },
+  {
+    title: 'generateImage: single image from a prompt',
+    script:
+      `export const meta = {\n` +
+      `  description: 'Generates a single image from a text prompt',\n` +
+      `  phases: [{ title: 'render' }],\n` +
+      `  params: { images: { poster: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } } },\n` +
+      `};\n` +
+      `phase('render');\n` +
+      `const { files } = await generateImage('poster', { prompt: 'A lighthouse at sunset, watercolor style' });\n` +
+      `return { files };`,
+    // Aggregation shape (SHAPES: "non-agent aggregation"), not rectangle — rectangle is reserved
+    // for a nested workflow() black box (checkMermaid's own rule, SHAPES table) and this example
+    // never calls workflow().
+    mermaid:
+      `graph LR\n` +
+      `subgraph "render"\nposter{{"generateImage: poster"}}\nend`,
     expectRegister: 'ok',
   },
   ];
@@ -820,6 +893,89 @@ function roleAssetMatrixRows(): string {
   ].join('\n');
 }
 
+// v40 (DES-276, ARCH-194, TASK-273): the `PRIMITIVE_FAILED` message grammar, verbatim from
+// DES-267's own regex (`src/direct-models/call.ts`'s `codedError('PRIMITIVE_FAILED', ...)` is the
+// one place that builds the real message; this file has no reason to import that module just for
+// a fixed grammar string, so it is transcribed here once, as prose, the same way the diagram
+// grammar section above transcribes `SHAPES`/`EDGE_FORMS` by reading them, not by re-deriving them).
+const PRIMITIVE_FAILED_GRAMMAR =
+  "`^(decide|generateImage) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large) after \\d+ attempts?$`";
+
+/** v40 (DES-276, ARCH-194, TASK-273): decide()/generateImage() — declaration shape, call
+ *  signature/return shape, the v40 error codes (one cause + one fix line each), the
+ *  PRIMITIVE_FAILED grammar, the bool idiom, the wall-time bound, and suggested defaults. */
+function decideImageSectionBody(): string {
+  return (
+    'Two more sandbox globals dispatch a single OpenRouter call each, outside the `agent()` harness ' +
+      'loop (no tools, no conversation turns) — a yes/no or structured judgment (`decide`), or an ' +
+      'image from a prompt and optional input images (`generateImage`):\n\n' +
+      "- `await decide(label, { state, questions })` → `{ answers }` — `state` is a plain JSON object " +
+      "(your context); `questions` is `{ <id>: { type: 'bool'|'choice'|'score', instructions, criteria } }` " +
+      "(bool: `criteria: {true, false}`; choice: `criteria` a map of option -> description; score: " +
+      '`criteria` an array of level descriptions). `answers` mirrors it 1:1: ' +
+      "`{ <id>: { type:'bool', probability } }` / `{ type:'choice', choice, probabilities, confidence }` / " +
+      "`{ type:'score', score, confidence } }` — the common idiom is `answers.<id>.probability >= 0.7` " +
+      'for a bool gate.\n' +
+      "- `await generateImage(label, { prompt, inputImages?, outDir? })` → `{ files }` — `inputImages` " +
+      "(≤ 4) and `files[].path` are workspace-relative paths; `outDir` defaults to `'generated'`. A " +
+      "changed or missing image file on resume regenerates that call and every later one (same " +
+      'resume semantics as a changed input anywhere else in this engine).\n\n' +
+      'Each needs its OWN declaration block — `meta.params.decisions.<label>` for `decide()`, ' +
+      '`meta.params.images.<label>` for `generateImage()` — the SAME "no implicit engine default" ' +
+      "shape as `meta.params.agents.<label>`: `model`/`timeoutMs`/`retries` all REQUIRED with a " +
+      '`.default` (no `effort`; decide/generateImage never take one):\n\n' +
+      '```js\n' +
+      'params: {\n' +
+      '  decisions: { ready: { model: { type: \'string\', default: \'openrouter/typesafe/jev-1.13\' }, timeoutMs: { type: \'number\', default: 5000 }, retries: { type: \'number\', default: 2 } } },\n' +
+      '  images: { poster: { model: { type: \'string\', default: \'openrouter/black-forest-labs/flux-3-image\' }, timeoutMs: { type: \'number\', default: 120000 }, retries: { type: \'number\', default: 0 } } },\n' +
+      '}\n' +
+      '```\n\n' +
+      // declared<=>used + provider gate.
+      'Every `decide()`/`generateImage()` label must have a matching `decisions`/`images` entry and ' +
+      'vice versa, the SAME shape as `agents`. `retries` is an integer ' +
+      `0..${MAX_PRIMITIVE_RETRIES} (declared and any run override). The codes:\n\n` +
+      "- `DECISION_UNDECLARED`/`IMAGE_UNDECLARED` — a `decide()`/`generateImage()` call uses a label " +
+      "with no `decisions`/`images` entry → fix: add `meta.params.decisions.<label>`/" +
+      '`meta.params.images.<label>`.\n' +
+      "- `DECISION_DECLARED_NOT_IN_SCRIPT`/`IMAGE_DECLARED_NOT_IN_SCRIPT` — a declared label is never " +
+      'called → fix: call it, or delete the declaration.\n' +
+      "- `PRIMITIVE_PROVIDER_UNSUPPORTED` — `model.default` does not start `openrouter/` (decide()/" +
+      'generateImage() only ever dispatch through the openrouter gateway, under either ' +
+      '`gateway:"sdk"` or `gateway:"pi"`) → fix: use an `openrouter/<model-id>` ref.\n' +
+      "- `PRIMITIVE_INPUT_INVALID` — AT DISPATCH: the call's own options object carries an " +
+      "unrecognized key (`decide()` accepts only `state`/`questions`; `generateImage()` only " +
+      "`prompt`/`inputImages`/`outDir` — a literal `model`/`timeoutMs`/`retries` there is this " +
+      "error, not a registration-time one) or a malformed `state`/`questions`/`prompt`/" +
+      "`inputImages`/`outDir` shape → fix: move `model`/`timeoutMs`/`retries` to the label's " +
+      'declaration; fix the argument shape.\n' +
+      "- `IMAGE_PATH_REFUSED` — an `inputImages` entry or `outDir` resolves outside the run/asset " +
+      'workspace, or is not a plain regular file of an accepted type/size → fix: use a workspace-' +
+      'relative path to a real small image file.\n' +
+      "- `MODEL_TYPE_MISMATCH` — the declared model IS verifiable against a live catalog but is " +
+      "catalogued as the wrong `modelType` (`decide()` needs `'decision'`, `generateImage()` needs " +
+      "`'image-gen'`) → fix: pick a model models_list reports with the right `modelType`.\n" +
+      '- `MODEL_TYPE_UNVERIFIED` (a non-fatal registration warning, not a refusal) — the catalog ' +
+      'could not verify the declared model (unknown, or an id-heuristic guess) — same "warn, never ' +
+      "block, when the catalog cannot say\" posture `agent()`'s own MODEL_CATALOG_UNVERIFIED " +
+      'warning already has → fix: none required; double-check the id against models_list if unsure.\n' +
+      '- `PRICE_UNKNOWN` — a USD budget is armed and the declared model has no catalogued price → ' +
+      'fix: arm a token budget instead, or pick a priced model.\n' +
+      '- `OPENROUTER_AUTH_MISSING` — no OpenRouter key is configured on this engine (checked before ' +
+      'anything is spent) → fix: have the operator set `RWE_SECRET_OPENROUTER_API_KEY` (or ' +
+      '`OPENROUTER_API_KEY`).\n' +
+      '- `PRIMITIVE_FAILED` — the call did not succeed after the retry policy; message grammar: ' +
+      `${PRIMITIVE_FAILED_GRAMMAR} — e.g. "decide 'ready' failed: HTTP 429 after 3 attempts" (the ` +
+      "provider's own response text never appears in it) → fix: raise `retries`/`timeoutMs`, or " +
+      'retry the run later if the provider is down.\n\n' +
+      'decide()/generateImage() calls count toward the SAME run budget and the same ' +
+      '1000-model-calls-per-run ceiling as every `agent()` call. Worst-case wall time for one call ' +
+      `(every attempt timing out) is bounded by \`(retries+1) × timeoutMs + retries × ` +
+      `${RETRY_AFTER_CAP_MS / 1000}s\` (the per-retry backoff cap); a timed-out image call may still ` +
+      'be billed if the provider had already started rendering. Suggested starting defaults: ' +
+      '`decide` `timeoutMs: 5000, retries: 2`; `generateImage` `timeoutMs: 120000, retries: 0`.'
+  );
+}
+
 /** DES-157 / ARCH-107: assembled from the enforcement constants — the ONE builder both
  *  `workflow_authoring_guide` (the MCP tool, over the composition root's RESOLVED ceilings) and
  *  `scripts/gen-authoring-md.ts` (over `DEFAULT_CEILINGS`, the documented unconfigured default)
@@ -1174,6 +1330,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `\`${WRITABLE_AGENT_OPT_KEYS.join('`, `')}\` is refused \`SCAN_VIOLATION: PARAM_UNKNOWN\` at ` +
         'registration, naming the key you wrote and listing the ones that are accepted. It is never ' +
         'silently dropped: an unrecognized key always fails registration rather than being ignored.',
+    ),
+  );
+
+  parts.push(
+    section(
+      'Decisions and image generation (decide(), generateImage())',
+      decideImageSectionBody(),
     ),
   );
 

@@ -16,9 +16,9 @@ describe('sandbox globals + determinism guard drift locks (UT-201, DES-187)', ()
     // The real lock: the context object the VM is constructed from must match SANDBOX_GLOBALS.
     // evaluateScript builds `sandbox` internally; this test asserts the EXPORTED constant lists the
     // same names a real dispatch actually exposes (agent/parallel/pipeline/phase/log/args/budget/
-    // workflow/Date/Math/Intl — Intl added issue #157 B2).
+    // workflow/Date/Math/Intl — Intl added issue #157 B2; decide/generateImage added v40 DES-272).
     expect([...SANDBOX_GLOBALS].sort()).toEqual(
-      ['Date', 'Intl', 'Math', 'agent', 'args', 'budget', 'log', 'parallel', 'phase', 'pipeline', 'workflow'].sort(),
+      ['Date', 'Intl', 'Math', 'agent', 'args', 'budget', 'decide', 'generateImage', 'log', 'parallel', 'phase', 'pipeline', 'workflow'].sort(),
     );
   });
 

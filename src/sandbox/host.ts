@@ -73,6 +73,12 @@ const V8_OOM_FINGERPRINT_RE = /FATAL ERROR:.*heap|JavaScript heap out of memory/
 
 export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
+// v40 (DES-272, ARCH-186, TASK-269): mirrors `AgentRequestHandler`'s own shape — `msg` is the raw
+// `{t:'decide', ...}`/`{t:'image', ...}` child message, `phase` the SAME synchronous snapshot
+// `case 'agent'` takes (see `currentPhase`'s own doc for why it must be read before the deferred
+// handler below, not inside it).
+export type DecideRequestHandler = (msg: { runId: string; callSeq: number; label: string; state: unknown; questions: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
+export type ImageRequestHandler = (msg: { runId: string; callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 
 /** C-2 (review finding): carry the underlying error's OWN code across the sandbox IPC boundary
  *  instead of flattening every agent()/workflow() failure to one of two generic codes — so a caller
@@ -131,6 +137,13 @@ export interface SandboxHostConfig {
   /** Handles a child's workflow() call. Absent -> the child has no delegate, so guards.ts's
    *  own nesting guard throws NESTING_ERROR inside the script (no IPC round trip needed). */
   onWorkflowRequest?: WorkflowRequestHandler;
+  /** v40 (DES-272, ARCH-186, TASK-269): handles a child's decide()/generateImage() call — mirrors
+   *  `onAgentRequest` (sync phase snapshot, deferred handler, reply via the existing `agentResult`/
+   *  `agentThrow` messages). Absent -> the SAME coded fallback `case 'workflow'` uses when
+   *  `onWorkflowRequest` is absent (an immediate `agentThrow`, no dispatch attempt) — real wiring
+   *  (RunManager) always supplies both. */
+  onDecideRequest?: DecideRequestHandler;
+  onImageRequest?: ImageRequestHandler;
   /** Handles a child's phase(title) notification (DES-006/DES-008 observability). */
   onPhase?: (title: string) => void;
   /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the run's two independent limits — `undefined`
@@ -440,6 +453,51 @@ export class SandboxHost {
                   t: 'agentThrow',
                   callSeq: msg.callSeq,
                   error: { code: ipcErrorCode(err, 'AGENT_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          // v40 (DES-272, ARCH-186, TASK-269): `decide`/`image` mirror `case 'agent'` exactly (sync
+          // phase snapshot, deferred handler, reply via the existing `agentResult`/`agentThrow`
+          // messages — DES-272's own "unchanged shapes") except for two things: (1) an ABSENT
+          // handler is an immediate coded fallback, the same shape `case 'workflow'` uses when
+          // `onWorkflowRequest` is absent, since there is no in-script guard that can refuse this
+          // the way guards.ts's own nesting check refuses workflow() with no delegate; (2) the
+          // fallback CODE for an uncoded handler throw is `INTERNAL_ERROR`, never `AGENT_ERROR` —
+          // DES-272's own text, so a host-side bug surfaces distinctly from an ordinary agent()
+          // dispatch failure.
+          case 'decide': {
+            if (!this._config.onDecideRequest) {
+              child.send({ t: 'agentThrow', callSeq: msg.callSeq, error: { code: 'INTERNAL_ERROR', message: 'no decide() handler is wired on this host' } });
+              break;
+            }
+            const phase = this._config.currentPhase?.();
+            Promise.resolve()
+              .then(() => this._config.onDecideRequest!(msg, phase))
+              .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  error: { code: ipcErrorCode(err, 'INTERNAL_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          case 'image': {
+            if (!this._config.onImageRequest) {
+              child.send({ t: 'agentThrow', callSeq: msg.callSeq, error: { code: 'INTERNAL_ERROR', message: 'no generateImage() handler is wired on this host' } });
+              break;
+            }
+            const phase = this._config.currentPhase?.();
+            Promise.resolve()
+              .then(() => this._config.onImageRequest!(msg, phase))
+              .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  error: { code: ipcErrorCode(err, 'INTERNAL_ERROR'), message: err instanceof Error ? err.message : String(err) },
                 }),
               );
             break;

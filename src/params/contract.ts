@@ -68,9 +68,28 @@ export interface AgentParamSpec {
   mcp?: string[];
 }
 
+/** v40 (DES-271, ARCH-188/189, TASK-268): one script `decide()`/`generateImage()` label's declared
+ *  contract — `model`/`timeoutMs`/`retries` all REQUIRED with a `.default`, same "no implicit
+ *  engine default" posture as `AgentParamSpec`. No `effort` (decide/generateImage never take one). */
+export interface PrimitiveParamSpec {
+  model: ParamSpec;
+  timeoutMs: ParamSpec;
+  retries: ParamSpec;
+}
+
+/** v40 (DES-271): the engine-owned ceiling on `retries.default` for a `decisions`/`images` label —
+ *  a CODE constant (unlike `DEFAULT_CEILINGS`), never a `Ceilings` field, so it carries no config
+ *  wiring obligation. */
+export const MAX_PRIMITIVE_RETRIES = 5;
+
 export interface ParamContract {
   agents: Record<string, AgentParamSpec>;
   args: Record<string, ParamSpec>;
+  /** v40 (DES-271): present iff `meta.params.decisions`/`.images` is itself declared (even as
+   *  `{}`) — absent, never `{}`, when the author never wrote the key at all (keeps
+   *  `parseParamContract`'s zero-primitive result byte-identical to its pre-v40 shape). */
+  decisions?: Record<string, PrimitiveParamSpec>;
+  images?: Record<string, PrimitiveParamSpec>;
 }
 
 // closed: a locked key is UNREPRESENTABLE inside an agent override block (ADR-001)
@@ -111,6 +130,12 @@ export type Err = {
     | 'DEFAULTS_RETIRED'
     | 'UNKNOWN_AGENT_LABEL'
     | 'LEGACY_REREGISTER'
+    // v40 (DES-271, ARCH-188/189, TASK-268): decisions/images declared<=>used + provider gate.
+    | 'DECISION_UNDECLARED'
+    | 'DECISION_DECLARED_NOT_IN_SCRIPT'
+    | 'IMAGE_UNDECLARED'
+    | 'IMAGE_DECLARED_NOT_IN_SCRIPT'
+    | 'PRIMITIVE_PROVIDER_UNSUPPORTED'
   >;
   message: string;
   detail: Record<string, unknown>;
@@ -448,31 +473,105 @@ function validateOneAgentSpec(
   return null;
 }
 
+/** v40 (DES-271, TASK-268): one `decisions.<label>`/`images.<label>` spec — `model`/`timeoutMs`/
+ *  `retries` all required with a `.default`. `kind` picks the PRIMITIVE_PROVIDER_UNSUPPORTED,
+ *  DECISION_(UNDECLARED|DECLARED_NOT_IN_SCRIPT) vs IMAGE_(UNDECLARED|DECLARED_NOT_IN_SCRIPT)
+ *  vocabulary and whether the label belongs in `decisions` or `images`. The
+ *  `startsWith('openrouter/')` provider gate runs BEFORE `checkModelRefOrErr` — decide()/
+ *  generateImage() only ever dispatch through the openrouter gateway (TASK-263), so a non-openrouter
+ *  ref is refused by NAME, never by whatever `checkModelRef` would say about it against an
+ *  unrelated provider's rules. */
+function validateOnePrimitiveSpec(
+  kind: 'decisions' | 'images',
+  label: string,
+  raw: unknown,
+  catalog: ModelCatalogSnapshot,
+  warn: (w: ModelRefWarning) => void,
+): Err | null {
+  const param = `${kind}.${label}`;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return invalid(param, 'must be an object');
+  }
+  const spec = raw as Partial<PrimitiveParamSpec>;
+
+  const modelErr = validateRequiredKeySpec(`${param}.model`, spec.model);
+  if (modelErr) return modelErr;
+  const model = spec.model as ParamSpec;
+  if (typeof model.default === 'string' && !model.default.startsWith('openrouter/')) {
+    return invalid(
+      `${param}.model`,
+      `default must be an "openrouter/<model-id>" ref — decide()/generateImage() only dispatch through the openrouter gateway`,
+      'PRIMITIVE_PROVIDER_UNSUPPORTED',
+    );
+  }
+  if (typeof model.default === 'string') {
+    const err = checkModelRefOrErr(`${param}.model`, label, model.default, catalog, warn);
+    if (err) return err;
+  }
+
+  const timeoutErr = validateRequiredKeySpec(`${param}.timeoutMs`, spec.timeoutMs);
+  if (timeoutErr) return timeoutErr;
+  const timeoutMs = spec.timeoutMs as ParamSpec;
+  if (typeof timeoutMs.default !== 'number' || !Number.isInteger(timeoutMs.default) || timeoutMs.default < 1) {
+    return invalid(`${param}.timeoutMs`, 'default must be an integer >= 1');
+  }
+  if (timeoutMs.default > DEFAULT_CEILINGS.maxTimeoutMs) {
+    return invalid(`${param}.timeoutMs`, `default exceeds the engine ceiling ${DEFAULT_CEILINGS.maxTimeoutMs}`);
+  }
+
+  const retriesErr = validateRequiredKeySpec(`${param}.retries`, spec.retries);
+  if (retriesErr) return retriesErr;
+  const retries = spec.retries as ParamSpec;
+  if (typeof retries.default !== 'number' || !Number.isInteger(retries.default) || retries.default < 0) {
+    return invalid(`${param}.retries`, 'default must be an integer >= 0');
+  }
+  if (retries.default > MAX_PRIMITIVE_RETRIES) {
+    return invalid(`${param}.retries`, `default exceeds maxRetries ${MAX_PRIMITIVE_RETRIES}`);
+  }
+
+  return null;
+}
+
 /** Registration-time parse of `meta.params` (DES-144). v24: EVERY script agent() label needs a
  *  matching `agents.<label>` declaration (model/effort/timeoutMs all required, each with a
  *  `.default`) — there is no more "no params block means the 4 engine-global knobs" fallback. A
  *  zero-label (`workflow()`-only) script still parses to `{agents:{}, args:{}}`. Post-eval
  *  structural bounds only — the pre-eval source-size bound lives in workflow-meta.ts, because this
- *  only ever sees a value that already survived evaluation. */
+ *  only ever sees a value that already survived evaluation.
+ *
+ *  v40 (DES-271, ARCH-188/189, TASK-268): `primitiveLabels` is a 4th, OPTIONAL parameter — defaults
+ *  to `{decide:[], generateImage:[]}` so every EXISTING 3-arg (agent-only) call site is untouched —
+ *  the script's own `decide()`/`generateImage()` call labels (`scanPrimitiveCalls`,
+ *  workflow-meta.ts), checked declared<=>used against `meta.params.decisions`/`.images` the same
+ *  way `agents` is checked against `scriptLabels` above. */
 export function parseParamContract(
   metaParams: unknown,
   scriptLabels: string[],
   catalog: ModelCatalogSnapshot = EMPTY_CATALOG,
+  primitiveLabels: { decide: string[]; generateImage: string[] } = { decide: [], generateImage: [] },
 ): { ok: true; value: ParamContract; warnings?: ModelRefWarning[] } | Err {
   if (metaParams === undefined) {
-    if (scriptLabels.length === 0) return { ok: true, value: { agents: {}, args: {} } };
-    return {
-      ok: false,
-      code: 'AGENT_UNDECLARED',
-      message: `agent label "${scriptLabels[0]}" has no params.agents.${scriptLabels[0]} declaration`,
-      detail: { label: scriptLabels[0] },
-    };
+    if (scriptLabels.length === 0 && primitiveLabels.decide.length === 0 && primitiveLabels.generateImage.length === 0) {
+      return { ok: true, value: { agents: {}, args: {} } };
+    }
+    if (scriptLabels.length > 0) {
+      return {
+        ok: false,
+        code: 'AGENT_UNDECLARED',
+        message: `agent label "${scriptLabels[0]}" has no params.agents.${scriptLabels[0]} declaration`,
+        detail: { label: scriptLabels[0] },
+      };
+    }
+    if (primitiveLabels.decide.length > 0) {
+      return { ok: false, code: 'DECISION_UNDECLARED', message: `decide label "${primitiveLabels.decide[0]}" has no params.decisions.${primitiveLabels.decide[0]} declaration`, detail: { label: primitiveLabels.decide[0] } };
+    }
+    return { ok: false, code: 'IMAGE_UNDECLARED', message: `generateImage label "${primitiveLabels.generateImage[0]}" has no params.images.${primitiveLabels.generateImage[0]} declaration`, detail: { label: primitiveLabels.generateImage[0] } };
   }
   if (typeof metaParams !== 'object' || metaParams === null || Array.isArray(metaParams)) {
     return invalid('root', 'meta.params must be an object');
   }
 
-  const raw = metaParams as { agents?: unknown; args?: unknown; knobs?: unknown; defaults?: unknown };
+  const raw = metaParams as { agents?: unknown; args?: unknown; knobs?: unknown; defaults?: unknown; decisions?: unknown; images?: unknown };
   // v24 (ADR-035): both retired sites refused BY NAME, before anything else is parsed.
   if (raw.knobs !== undefined) return retiredDefaults('meta.params.knobs');
   if (raw.defaults !== undefined) return retiredDefaults('meta.defaults');
@@ -534,7 +633,64 @@ export function parseParamContract(
     args[key] = spec;
   }
 
-  return { ok: true, value: { agents, args }, ...(warnings.length > 0 ? { warnings } : {}) };
+  // v40 (DES-271, ARCH-188/189, TASK-268): decisions/images — same declared<=>used shape as
+  // agents/scriptLabels above, each against its OWN primitiveLabels array and its OWN pair of
+  // error codes.
+  if (raw.decisions !== undefined && (typeof raw.decisions !== 'object' || raw.decisions === null || Array.isArray(raw.decisions))) {
+    return invalid('decisions', 'params.decisions must be an object');
+  }
+  if (raw.images !== undefined && (typeof raw.images !== 'object' || raw.images === null || Array.isArray(raw.images))) {
+    return invalid('images', 'params.images must be an object');
+  }
+  const decisionsIn = (raw.decisions ?? {}) as Record<string, unknown>;
+  const imagesIn = (raw.images ?? {}) as Record<string, unknown>;
+
+  const decideSet = new Set(primitiveLabels.decide);
+  for (const label of primitiveLabels.decide) {
+    if (!Object.hasOwn(decisionsIn, label)) {
+      return { ok: false, code: 'DECISION_UNDECLARED', message: `decide label "${label}" has no params.decisions.${label} declaration`, detail: { label } };
+    }
+  }
+  for (const label of Object.keys(decisionsIn)) {
+    if (!decideSet.has(label)) {
+      return { ok: false, code: 'DECISION_DECLARED_NOT_IN_SCRIPT', message: `params.decisions.${label} is declared but no decide() call in the script uses it`, detail: { label } };
+    }
+  }
+  const imageSet = new Set(primitiveLabels.generateImage);
+  for (const label of primitiveLabels.generateImage) {
+    if (!Object.hasOwn(imagesIn, label)) {
+      return { ok: false, code: 'IMAGE_UNDECLARED', message: `generateImage label "${label}" has no params.images.${label} declaration`, detail: { label } };
+    }
+  }
+  for (const label of Object.keys(imagesIn)) {
+    if (!imageSet.has(label)) {
+      return { ok: false, code: 'IMAGE_DECLARED_NOT_IN_SCRIPT', message: `params.images.${label} is declared but no generateImage() call in the script uses it`, detail: { label } };
+    }
+  }
+
+  const decisions: Record<string, PrimitiveParamSpec> = {};
+  for (const [label, spec] of Object.entries(decisionsIn)) {
+    const specErr = validateOnePrimitiveSpec('decisions', label, spec, catalog, (w) => warnings.push(w));
+    if (specErr) return specErr;
+    decisions[label] = spec as PrimitiveParamSpec;
+  }
+  const images: Record<string, PrimitiveParamSpec> = {};
+  for (const [label, spec] of Object.entries(imagesIn)) {
+    const specErr = validateOnePrimitiveSpec('images', label, spec, catalog, (w) => warnings.push(w));
+    if (specErr) return specErr;
+    images[label] = spec as PrimitiveParamSpec;
+  }
+
+  return {
+    ok: true,
+    value: {
+      agents,
+      args,
+      ...(raw.decisions !== undefined ? { decisions } : {}),
+      ...(raw.images !== undefined ? { images } : {}),
+    },
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
 
 /** v35 (DES-235, ARCH-145, TASK-231, REQ-206): fills declared-but-absent `args` keys from their

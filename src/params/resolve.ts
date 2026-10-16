@@ -64,6 +64,12 @@ export interface RunParams {
    *  from `EffectiveCallParams` below so a per-agent `.agents.<label>` slice — and therefore the
    *  `workflow_describe` projection built from it — never grows a copy of the run's args. */
   args?: Record<string, unknown>;
+  /** v40 (DES-271, ARCH-188/189, TASK-268): the pinned run snapshot's per-label `decisions`/`images`
+   *  slice — contract default merged with any run override (RunManager._handleDecideRequest/
+   *  _handleImageRequest, DES-274), one entry per declared `params.decisions`/`params.images` label.
+   *  Absent when the workflow declares neither block. */
+  decisions?: Record<string, { model: string; timeoutMs: number; retries: number }>;
+  images?: Record<string, { model: string; timeoutMs: number; retries: number }>;
 }
 
 export interface EffectiveCallParams extends Omit<RunParams, 'provenance' | 'args'> {

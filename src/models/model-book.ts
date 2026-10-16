@@ -13,6 +13,7 @@ import type { Clock } from '../clock.js';
 import type { RunParams } from '../params/resolve.js';
 import type { FourRates, Caps, BookEntry } from '../types.js';
 import { ZERO_RATES, STATIC_ANTHROPIC_RATES, ratesFromOpenRouterPricing } from './model-catalog.js';
+import type { ModelType, ModelTypeSource } from './model-catalog.js';
 import type { Provider } from '../providers.js';
 
 /** The shape `ModelBook`'s injected `source()` returns one row per (provider,model) as. A
@@ -33,6 +34,12 @@ export interface CatalogSourceRow {
    *  here. Absent (every hand-built test row from before this issue) -> `capsFromRow` leaves
    *  `reasoningMandatory`/`reasoningEfforts` unset, byte-identical to its pre-#139(b) behavior. */
   capabilities?: { reasoning?: { mandatory?: boolean | null; efforts?: readonly string[] | null } };
+  /** v40 (DES-270, ARCH-189, TASK-267): carried through unchanged to `toModelCatalogSnapshot`'s own
+   *  `entries` so `checkPrimitiveModelType` (providers.ts) can read it off the SAME admission pin —
+   *  a production row (`model-catalog.ts`'s `ModelEntry`) always has these; absent on a hand-built
+   *  test row, which is read the same as "unknown" by that gate's own unknown/id-heuristic warn arm. */
+  modelType?: ModelType;
+  modelTypeSource?: ModelTypeSource;
 }
 
 export interface BookSnapshot {
@@ -192,7 +199,19 @@ export class ModelBook {
  *  reachable set from ONE place (INV-V26-4 is only as strong as the set it pins over). Deduplicated
  *  — a run-wide default plus per-agent overrides frequently repeat the same alias. */
 export function reachableModels(params: RunParams): string[] {
-  const raw = [params.model, ...Object.values(params.agents ?? {}).map((a) => a.model)];
+  // v40 (DES-270, ARCH-189, TASK-267): `decisions[*]`/`images[*]` are not yet on `RunParams` (that
+  // lands with TASK-268's src/params/resolve.ts) — widened locally so this reads the declared
+  // default AND any run override for each, same as `agents` below, without depending on that file.
+  const wide = params as RunParams & {
+    decisions?: Record<string, { model?: string }>;
+    images?: Record<string, { model?: string }>;
+  };
+  const raw = [
+    params.model,
+    ...Object.values(params.agents ?? {}).map((a) => a.model),
+    ...Object.values(wide.decisions ?? {}).map((d) => d.model),
+    ...Object.values(wide.images ?? {}).map((i) => i.model),
+  ];
   return [...new Set(raw.filter((m): m is string => m !== undefined))];
 }
 
@@ -210,16 +229,28 @@ export function reachableModels(params: RunParams): string[] {
 export function toModelCatalogSnapshot(
   snapshot: BookSnapshot,
   harnessProviders?: readonly Provider[],
-): { entries: Array<{ provider: string; model: string; sameModelAs?: readonly string[] }>; source: BookSnapshot['source']; harnessProviders?: readonly Provider[] } {
+): {
+  entries: Array<{ provider: string; model: string; sameModelAs?: readonly string[]; modelType?: ModelType; modelTypeSource?: ModelTypeSource }>;
+  source: BookSnapshot['source'];
+  harnessProviders?: readonly Provider[];
+} {
   return {
     // issue #136: `sameModelAs` is carried through when present — the SAME "really a superset"
     // relationship this file's own `entries` doc-comment already notes for `CatalogSourceRow[]` vs.
     // the production `ModelEntry[]` it really holds — so `checkModelRef`'s PROVIDER_UNSUPPORTED_BY_
     // HARNESS hint can name a real, catalog-linked OpenRouter ref (providers.ts's
     // `harnessUnsupportedSuggestion`) rather than a hard-coded example.
+    // v40 (DES-270, TASK-267): `modelType`/`modelTypeSource` ride the same way, for
+    // `checkPrimitiveModelType`'s registration-time gate.
     entries: snapshot.entries.map((e) => {
       const sameModelAs = (e as { sameModelAs?: readonly string[] }).sameModelAs;
-      return { provider: e.provider, model: e.model, ...(sameModelAs !== undefined ? { sameModelAs } : {}) };
+      return {
+        provider: e.provider,
+        model: e.model,
+        ...(sameModelAs !== undefined ? { sameModelAs } : {}),
+        ...(e.modelType !== undefined ? { modelType: e.modelType } : {}),
+        ...(e.modelTypeSource !== undefined ? { modelTypeSource: e.modelTypeSource } : {}),
+      };
     }),
     source: snapshot.source,
     ...(harnessProviders !== undefined ? { harnessProviders } : {}),

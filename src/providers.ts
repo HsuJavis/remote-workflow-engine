@@ -14,6 +14,7 @@
 // a promise) — the live/last-good/static fetch itself happens elsewhere (ModelBook), keeping this
 // file itself I/O-free.
 import { STATIC_ANTHROPIC_RATES, anthropicCanonicalKey } from './models/model-catalog.js';
+import type { ModelType, ModelTypeSource } from './models/model-catalog.js';
 
 export const PROVIDERS = ['anthropic', 'openrouter', 'ollama'] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -80,7 +81,7 @@ export interface ModelCatalogSnapshot {
   // hint can name a real, catalog-linked OpenRouter ref instead of a hard-coded example that drifts
   // out of date as the catalog's naming does (see `harnessUnsupportedSuggestion` below). Absent on any
   // entry (or the whole snapshot) -> the hint falls back to generic models_list guidance, never a guess.
-  entries: ReadonlyArray<{ provider: string; model: string; sameModelAs?: readonly string[] }>;
+  entries: ReadonlyArray<{ provider: string; model: string; sameModelAs?: readonly string[]; modelType?: ModelType; modelTypeSource?: ModelTypeSource }>;
   /** ModelBook's own provenance for `entries`: `'static'` means the live source has never once
    *  succeeded (nothing was actually looked up), so an empty `entries` for THAT reason must be
    *  treated as "unavailable", the same as a genuinely-empty live listing for a provider with no
@@ -208,4 +209,37 @@ export function checkModelRef(ref: unknown, catalog: ModelCatalogSnapshot = EMPT
     };
   }
   return { ok: true, provider, model };
+}
+
+/** v40 (DES-270, ARCH-189, ADR-095, TASK-267): the registration-only type gate for a label that
+ *  declares which primitive (`agent`/`decide`/`image`) dispatches it. Required `modelType` per kind
+ *  is strict (ADR-095): `agent`→'chat', `decision`→'decision', `image`→'image-gen'. Mirrors
+ *  `checkModelRef`'s own "we could not check must never become we assume it doesn't exist" posture
+ *  — catalog-unavailable and row-undefined (unknown model) are BOTH `checkModelRef`'s job, not this
+ *  one's, so this gate never refuses on either; it only refuses a KNOWN row of the WRONG type. */
+const REQUIRED_MODEL_TYPE: Record<'agent' | 'decision' | 'image', ModelType> = {
+  agent: 'chat',
+  decision: 'decision',
+  image: 'image-gen',
+};
+
+export function checkPrimitiveModelType(
+  kind: 'agent' | 'decision' | 'image',
+  label: string,
+  model: string,
+  row: { modelType: ModelType; modelTypeSource: ModelTypeSource } | undefined,
+  catalogAvailable: boolean,
+):
+  | { ok: true }
+  | { ok: true; warning: { code: 'MODEL_TYPE_UNVERIFIED'; label: string; model: string; modelTypeSource: string } }
+  | { ok: false; code: 'MODEL_TYPE_MISMATCH'; label: string; model: string; actual: ModelType; required: ModelType } {
+  const required = REQUIRED_MODEL_TYPE[kind];
+  if (!catalogAvailable || row === undefined) return { ok: true };
+  if (row.modelType === 'unknown' || row.modelTypeSource === 'id-heuristic') {
+    return { ok: true, warning: { code: 'MODEL_TYPE_UNVERIFIED', label, model, modelTypeSource: row.modelTypeSource } };
+  }
+  if (row.modelType !== required) {
+    return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required };
+  }
+  return { ok: true };
 }

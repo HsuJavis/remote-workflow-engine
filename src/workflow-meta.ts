@@ -176,9 +176,13 @@ export function parseMetaParams(
   catalog?: ModelCatalogSnapshot,
 ): { ok: true; value: ParamContract; warnings?: ModelRefWarning[] } | ParamContractErr {
   const labels = scanAgentCalls(script).labels;
+  // v40 (DES-271, ARCH-188/189, TASK-268): the script's own decide()/generateImage() labels, same
+  // role for `decisions`/`images` that `labels` (above) plays for `agents`.
+  const primitives = scanPrimitiveCalls(script);
+  const primitiveLabels = { decide: primitives.decide, generateImage: primitives.generateImage };
   const m = checkMeta(script);
   if (!m.found || !m.pureLiteral || m.objectText === undefined) {
-    return parseParamContract(undefined, labels, catalog);
+    return parseParamContract(undefined, labels, catalog, primitiveLabels);
   }
   if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
     return {
@@ -192,7 +196,7 @@ export function parseMetaParams(
   try {
     obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
   } catch {
-    return parseParamContract(undefined, labels, catalog);
+    return parseParamContract(undefined, labels, catalog, primitiveLabels);
   }
   // v24 Gate 7.5 (D-2, REQ-110 / ADR-035): `meta.defaults` is a SIBLING of `params`, so
   // `parseParamContract` — whose first argument IS `meta.params` — never saw it, and a script
@@ -204,7 +208,7 @@ export function parseMetaParams(
     return retiredDefaults('meta.defaults');
   }
   const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
-  return parseParamContract(rawParams, labels, catalog);
+  return parseParamContract(rawParams, labels, catalog, primitiveLabels);
 }
 
 export type SkeletonKind = 'phase' | 'agent' | 'workflow';
@@ -896,6 +900,50 @@ export function scanAgentCalls(script: string): AgentCallScan {
   }
 
   return { labels, calls, violations };
+}
+
+// v40 (DES-271, ARCH-188/189, TASK-268): the `decide`/`generateImage` label scanner. Mirrors
+// `AGENT_CALL_RE`'s own `(?<!\.)` member-expression defense; a renamed-alias call (`const d =
+// decide; d(...)`) is the SAME untracked gap `agent()` has, by design (the alias is refused
+// separately, at `validateScriptEntry`'s `checkSandboxApiAliasing`, not here).
+const DECIDE_CALL_RE = /(?<!\.)\bdecide\s*\(/g;
+const IMAGE_CALL_RE = /(?<!\.)\bgenerateImage\s*\(/g;
+
+function scanOnePrimitive(script: string, re: RegExp): string[] {
+  const labels: string[] = [];
+  re.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(script)) !== null) {
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
+    const args = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+    if (args.length < 1) continue;
+    // A non-literal label (a variable, a template), or one failing the same AGENT_LABEL_FORMAT_RE/
+    // 64-char grammar DES-271 names for primitive labels, is left UNTRACKED here, same as a
+    // renamed alias — the author gets DECISION_UNDECLARED/IMAGE_UNDECLARED from the contract
+    // check instead of a label-shape violation of its own (no such code is reserved for
+    // primitives; DES-271's "non-literal label/options refused" + "tunable key in options ->
+    // PARAM_IN_SCRIPT" boundary notes have no UT in TASK-268's test files and no PARAM_IN_SCRIPT
+    // ErrorCode exists outside the agent-only scanAgentCalls/SCAN_VIOLATION path — flagged, not
+    // implemented here; see TASK-268's PARIMPL report / needs_clarification).
+    const labelVal = literalStringValue(args[0]!.trim());
+    // `scanAgentCalls`'s own dedupe precedent (`!labels.includes(validLabel)`) — a label called
+    // twice (e.g. a retry shape) must still appear once in the contract-check array.
+    if (labelVal !== null && AGENT_LABEL_FORMAT_RE.test(labelVal) && labelVal.length <= 64 && !labels.includes(labelVal)) {
+      labels.push(labelVal);
+    }
+  }
+  return labels;
+}
+
+/** v40 (DES-271, ARCH-188/189, TASK-268): `scanPrimitiveCalls` — the registration-time scanner for
+ *  `decide()`/`generateImage()` call labels, mirroring `scanAgentCalls`'s text-level approach but
+ *  with the simpler DES-271 return shape (no groups/allowedTools/bash — primitives carry none of
+ *  those). `errors` is always empty today (see `scanOnePrimitive`'s comment on the untested
+ *  boundary notes it does not yet enforce). */
+export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; errors: ParamContractErr[] } {
+  return { decide: scanOnePrimitive(script, DECIDE_CALL_RE), generateImage: scanOnePrimitive(script, IMAGE_CALL_RE), errors: [] };
 }
 
 /** Issue #154 NEW HIGH (blocker): the per-label expectation `run-manager.ts`'s dispatch-time

@@ -4,6 +4,11 @@ import type { AgentOpts, Tokens } from '../types.js';
 // child → parent
 export type ChildMsg =
   | { t: 'agent';    runId: string; callSeq: number; prompt: string; opts: AgentOpts }
+  // v40 (DES-272, ARCH-186, TASK-269): decide()/generateImage() — replies travel over the EXISTING
+  // 'agentResult'/'agentThrow' ParentMsg variants below (DES-272: "unchanged shapes"), never a new
+  // reply type.
+  | { t: 'decide';   runId: string; callSeq: number; label: string; state: unknown; questions: unknown }
+  | { t: 'image';    runId: string; callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown }
   | { t: 'workflow'; runId: string; callSeq: number; ref: string | { scriptPath: string }; args: unknown }
   | { t: 'phase';    runId: string; title: string }
   | { t: 'log';      runId: string; message: string }
