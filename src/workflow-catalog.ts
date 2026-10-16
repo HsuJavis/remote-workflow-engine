@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError, ERROR_CATALOG, type ErrorCode } from './errors.js';
-import { parseMeta, parseMetaParams, parseWorkflowSkeleton, checkMetaPhases } from './workflow-meta.js';
+import { parseMeta, parseMetaParams, parseWorkflowSkeleton, checkMetaPhases, scanPrimitiveCalls } from './workflow-meta.js';
 // v26 integration (REQ-128, DES-184/DES-174, ADR-048): the registration half of "one derivation,
 // two consumers" — the SAME `deriveExpectedGraph` the run-DAG layout uses. ADR-048 put
 // `skeleton-graph.ts` on ADR-022's internal-module allowlist for exactly this call site: the only
@@ -40,7 +40,7 @@ import { SystemClock } from './clock.js';
 // independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
 // `unknown` is the point of the adjudication; list() carries the same typing.
 import type { ParamContract, AgentParamSpec, Ceilings, ModelRefWarning } from './params/contract.js';
-import { EMPTY_MODEL_CATALOG, parseModelRef, type ModelCatalogSnapshot } from './providers.js';
+import { EMPTY_MODEL_CATALOG, parseModelRef, checkPrimitiveModelType, type ModelCatalogSnapshot } from './providers.js';
 import { piUnsupportedToolNames } from './harness-info.js';
 // v22 (DES-111, DES-112, TASK-107): the lifted, pure registration-enforcement checks (TASK-106) —
 // same codes submission used to produce, so no caller learns a new vocabulary (ADR-013).
@@ -732,6 +732,14 @@ export class WorkflowCatalog {
       const v = scan.violations[0]!;
       throw codedError('SCAN_VIOLATION', `${v.code}: ${v.hint} (line ${v.line})`, { line: v.line, key: v.key, violation: v.code });
     }
+    // v40 Gate 6 delta (DES-271, R-10, TASK-268): the decide()/generateImage() label scan — same
+    // SCAN_VIOLATION throw site, checked right after the agent scan so agent violations always win
+    // the "first" slot ([...scan.violations, ...primitives.violations][0]).
+    const primitives = scanPrimitiveCalls(script);
+    if (primitives.violations.length > 0) {
+      const v = primitives.violations[0]!;
+      throw codedError('SCAN_VIOLATION', `${v.code}: ${v.hint} (line ${v.line})`, { line: v.line, key: v.key, violation: v.code });
+    }
 
     // DES-144 (TASK-136): the per-agent parameter contract — AGENT_UNDECLARED etc.
     // v24 Gate 7.5 (D-2): this line used to call a PRIVATE COPY of `workflow-meta.ts`'s
@@ -749,6 +757,49 @@ export class WorkflowCatalog {
       throw codedError(paramsResult.code, paramsResult.message, paramsResult.detail);
     }
     for (const w of paramsResult.warnings ?? []) console.warn(`[model-catalog] workflow '${name}' agent '${w.label}': ${w.message}`);
+
+    // v40 Gate 6 delta (DES-271, R-11 + OD-1, ADR-095, TASK-268): the registration-only model-type
+    // gate — every `agents`/`decisions`/`images` label, against the SAME fresh `catalog` snapshot
+    // `parseMetaParams` just used. New registration only (never `validateStoredVersion`, never
+    // admission) — this call site is it.
+    const catalogAvailableFor = (provider: string): boolean =>
+      catalog.source !== 'static' && catalog.entries.some((e) => e.provider === provider);
+    const primitiveTypeChecks: Array<{ kind: 'agent' | 'decision' | 'image'; specs: Record<string, { model: { default?: unknown } }> | undefined }> = [
+      { kind: 'agent', specs: paramsResult.value.agents },
+      { kind: 'decision', specs: paramsResult.value.decisions },
+      { kind: 'image', specs: paramsResult.value.images },
+    ];
+    for (const { kind, specs } of primitiveTypeChecks) {
+      for (const [label, spec] of Object.entries(specs ?? {})) {
+        const model = spec.model.default;
+        if (typeof model !== 'string') continue; // no literal default — nothing to check here
+        const parsed = parseModelRef(model);
+        if (!parsed) continue; // malformed ref — checkModelRef (inside parseMetaParams) already refused it
+        const entry = catalog.entries.find((e) => e.provider === parsed.provider && e.model === parsed.model);
+        const row = entry && entry.modelType !== undefined && entry.modelTypeSource !== undefined
+          ? { modelType: entry.modelType, modelTypeSource: entry.modelTypeSource, modalitiesOut: entry.modalities?.out }
+          : undefined;
+        const verdict = checkPrimitiveModelType(kind, label, model, row, catalogAvailableFor(parsed.provider));
+        if (!verdict.ok) {
+          throw codedError(
+            'MODEL_TYPE_MISMATCH',
+            `MODEL_TYPE_MISMATCH: ${kind} '${label}' declares model '${model}', catalogued as '${verdict.actual}', not '${verdict.required}'`,
+            { label, model, actual: verdict.actual, required: verdict.required },
+          );
+        }
+        if ('warning' in verdict) {
+          paramsResult.warnings = [
+            ...(paramsResult.warnings ?? []),
+            {
+              code: 'MODEL_TYPE_UNVERIFIED',
+              label,
+              model,
+              message: `${kind} '${label}' model '${model}' could not be confirmed as the right primitive type (modelTypeSource: ${verdict.warning.modelTypeSource}) — accepted unverified`,
+            },
+          ];
+        }
+      }
+    }
 
     // review M3: pi harness v1's spec says an unsupported tool (WebFetch/WebSearch/Task/
     // NotebookEdit/...) is refused "at registration AND dispatch" — only dispatch
@@ -835,7 +886,10 @@ export class WorkflowCatalog {
         { rule: derived.rule, line: derived.line, ...(derived.label !== null ? { label: derived.label } : {}) },
       );
     }
-    const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS, { expected: derived.graph });
+    // v40 Gate 6 delta (DES-271, R-12, TASK-268): a decide()/generateImage() label may be drawn as
+    // a stadium node too — accepted, never required (`checkMermaid`'s own v2.primitiveLabels).
+    const primitiveLabels = [...primitives.decide, ...primitives.generateImage];
+    const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS, { expected: derived.graph, primitiveLabels });
     if (!diagramCheck.ok) {
       // v26 (DES-184, TASK-189): RULE_CODE replaces the old two-way ternary — every `ok:false`
       // path above sets `rule` (the flat-shape comment on CheckMermaidResult explains why the type

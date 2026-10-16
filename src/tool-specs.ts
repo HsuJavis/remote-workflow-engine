@@ -8,7 +8,7 @@ import { RUN_STATUSES } from './types.js';
 // above — `run_start.overrides`'s description enumerates the locked keys, and a transcribed copy of
 // that vocabulary is what let `tools` survive here after the pipeline moved to `allowedTools`.
 // `params/contract.ts` is pure (no I/O, no VM) and imports only `ErrorCode`, so this adds no cycle.
-import { LOCKED_KEYS } from './params/contract.js';
+import { LOCKED_KEYS, MAX_PRIMITIVE_RETRIES } from './params/contract.js';
 // v26 (DES-170, TASK-175, issue #64): another value import — SEED_ITEM_HINT so the
 // `run_start` schema's `seed.items.contentB64` description and validateSeedSpec's refusal message
 // (run-manager.ts, via workspace-seed.ts) can never drift apart. Pure (no I/O), no cycle.
@@ -684,7 +684,18 @@ export const TOOL_SPECS = [
             'object (`agents: {<label>: \'medium\'}`, a bare string in place of the fields object, ' +
             'is exactly as malformed as `agents` itself being a string/array/null) — either shape ' +
             'violation is refused `PARAM_CONTRACT_INVALID`, not a generic schema error, so the ' +
-            'offending slot is named rather than silently coerced.',
+            'offending slot is named rather than silently coerced. ' +
+            // v40 Gate 6 delta (R-13, DES-277, TASK-274): decide()/generateImage() labels take the
+            // SAME shape of override block, under their own top-level keys — reusing the EXISTING
+            // undeclared-label code (UNKNOWN_AGENT_LABEL), never a new one, per the ruling.
+            "decide()/generateImage() labels take the same shape of override under their own keys: " +
+            "{decisions: {'<label>': {model?, timeoutMs?, retries?}}, images: {'<label>': {model?, " +
+            'timeoutMs?, retries?}}} — no `effort`/`appendPrompt` (decide()/generateImage() take ' +
+            'neither). `model`, when given, MUST start `openrouter/` — anything else is refused ' +
+            `PRIMITIVE_PROVIDER_UNSUPPORTED. \`retries\` must be an integer 0..${MAX_PRIMITIVE_RETRIES}; \`timeoutMs\` an integer up to the engine ceiling — either out of range is ` +
+            'refused PARAM_OUT_OF_RANGE. A label not declared in the script\'s own `decisions`/' +
+            '`images` block is refused `UNKNOWN_AGENT_LABEL` — the same code an undeclared agent ' +
+            'label gets.',
         },
         // v26 (DES-170, TASK-175, issue #64): item schemas — a bare `{type:'array'}` told a caller
         // nothing about the required shape, which is exactly how a sha256-only `seed` element (the
@@ -767,7 +778,7 @@ export const TOOL_SPECS = [
     // issue #125: QUOTA_EXCEEDED joined this row — a seedRef fetch's CasStore.putBlob can refuse
     // the caller's own content-store quota mid-fetch; it now surfaces as its real code (previously
     // folded into SEEDREF_FETCH_FAILED on run_status, though run_result's error.code was unaffected).
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'PARAM_CONTRACT_INVALID', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'QUOTA_EXCEEDED', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'PARAM_CONTRACT_INVALID', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'PRIMITIVE_PROVIDER_UNSUPPORTED', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'QUOTA_EXCEEDED', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     // Service accounts spec: run_start has no ownership subject of its own (ownership:'none' —
     // "run any version" vs "release only" is a separate rule inside RunManager.start(), not
@@ -1462,7 +1473,7 @@ export const TOOL_SPECS = [
       '`fields: [..names]` returns just those top-level fields (+ ref).\n' +
       'FIELDS (null ALWAYS means "the source did not say / not measured" — never zero, never false, never guessed):\n' +
       '- provider, model, description, modalities {in, out} (e.g. out ["embedding"] for an embedding model), location local|remote, besteffort (OpenRouter :free tier — queues/429s/cold-starts).\n' +
-      "- modelType: chat|embedding|rerank|image-gen|tts|stt|moderation|decision|unknown. 'chat' drives an agent() call, 'decision' drives decide(), 'image-gen' drives generateImage(). modelTypeSource: ollama-capabilities (Ollama's own " +
+      "- modelType: chat|embedding|rerank|image-gen|tts|stt|moderation|decision|unknown. 'chat' drives an agent() call, 'decision' drives decide(); generateImage() is driven by a model whose output modalities include 'image' (modalities.out), not only one catalogued 'image-gen' — a 'chat' model with image output works too. modelTypeSource: ollama-capabilities (Ollama's own " +
       "/api/show capabilities) | openrouter-modalities (any text output = chat) | static (built-in anthropic table) | id-heuristic (the model id alone — least reliable) | unknown.\n" +
       '- limits {contextWindow, maxOutputTokens} (tokens; OpenRouter context_length and top_provider.max_completion_tokens; Ollama the model\'s trained context length — its runtime num_ctx may be lower). ' +
       'contextWindow is also kept top-level.\n' +
@@ -1529,7 +1540,7 @@ export const TOOL_SPECS = [
         minContext: { type: 'number', description: 'Lower bound on contextWindow in tokens (null never passes).' },
         toolUseDeclared: { type: 'boolean', description: 'Only rows whose catalog declares tool use (true) / declares none (false).' },
         location: { type: 'string', enum: ['local', 'remote'], description: 'local = this host (Ollama); remote = a hosted API.' },
-        modelType: { type: 'string', enum: ['chat', 'embedding', 'rerank', 'image-gen', 'tts', 'stt', 'moderation', 'decision', 'unknown'], description: "Only this model type. Use 'chat' for agent() models, 'decision' for decide(), 'image-gen' for generateImage()." },
+        modelType: { type: 'string', enum: ['chat', 'embedding', 'rerank', 'image-gen', 'tts', 'stt', 'moderation', 'decision', 'unknown'], description: "Only this model type. Use 'chat' for agent() models, 'decision' for decide(); for generateImage() filter on modalityOut:'image' instead — its models are not only modelType:'image-gen'." },
         toolUseVerified: { type: 'boolean', description: "Only rows whose last models_probe did (true) / did not (false) make a real tool call; never-probed rows match neither." },
         structuredOutput: { type: 'boolean', description: 'Only rows whose source declares structured output (JSON schema / response_format).' },
         reasoning: { type: 'boolean', description: 'Only rows whose capabilities.reasoning.supported equals this.' },

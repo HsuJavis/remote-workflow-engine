@@ -93,8 +93,12 @@ export interface ParamContract {
 }
 
 // closed: a locked key is UNREPRESENTABLE inside an agent override block (ADR-001)
+// v40 Gate 6 delta (DES-277, ARCH-188/189, R-13, TASK-274): widened to `{agents, decisions, images}`
+// — a run-time `decisions.<label>`/`images.<label>` override of `model`/`timeoutMs`/`retries`.
 export interface UserOverrides {
   agents?: Record<string, Partial<{ model: string; effort: Effort; timeoutMs: number; appendPrompt: string }>>;
+  decisions?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
+  images?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
 }
 
 export interface Ceilings {
@@ -174,7 +178,11 @@ export const FRAME_CLOSE_FORGERY = /<\s*\/\s*user-instructions/i;
  *  `label` is the agent label the ref was declared/overridden on (or the literal `'<enum>'` marker
  *  for a `model.enum` entry, which has no single label of its own). */
 export interface ModelRefWarning {
-  code: 'MODEL_CATALOG_UNVERIFIED';
+  // v40 Gate 6 delta (DES-271, R-11, TASK-268): `'MODEL_TYPE_UNVERIFIED'` — `checkPrimitiveModelType`
+  // (providers.ts) could not confirm a label's declared model is the right primitive type (unknown
+  // type, or an id-heuristic guess) — a warning, never a refusal (that is `MODEL_TYPE_MISMATCH`, a
+  // thrown `codedError`, not a `ModelRefWarning`).
+  code: 'MODEL_CATALOG_UNVERIFIED' | 'MODEL_TYPE_UNVERIFIED';
   label: string;
   model: string;
   message: string;
@@ -919,16 +927,105 @@ function validateOneAgentOverride(
   return { ok: true, value };
 }
 
+/** v40 Gate 6 delta (DES-277, ARCH-188/189, R-13, TASK-274): the per-label rejection table for ONE
+ *  `decisions.<label>`/`images.<label>` run override — closed to `{model, timeoutMs, retries}`
+ *  (anything else is `PARAM_UNKNOWN{param:'<block>.<label>.<key>'}`). `retries` is bounded
+ *  `0..MAX_PRIMITIVE_RETRIES`, `timeoutMs` `1..ceilings.maxTimeoutMs`, both `PARAM_OUT_OF_RANGE`
+ *  naming the bound that fired; `model` must be an `openrouter/` ref (else
+ *  `PRIMITIVE_PROVIDER_UNSUPPORTED` — decide()/generateImage() only ever dispatch through the
+ *  openrouter gateway, same gate `validateOnePrimitiveSpec` applies at registration), then the SAME
+ *  existence/warning path (`checkModelRefOrErr`) an `agents` override already goes through. No
+ *  model-type gate here — ADMISSION never re-checks `modelType` (V40-Q6, DES-276). */
+function validatePrimitiveOverride(
+  block: 'decisions' | 'images',
+  label: string,
+  raw: unknown,
+  ceilings: Ceilings,
+  catalog: ModelCatalogSnapshot,
+  warn: (w: ModelRefWarning) => void,
+): { ok: true; value: Partial<{ model: string; timeoutMs: number; retries: number }> } | Err {
+  if (!isPlainObject(raw)) {
+    return invalid(
+      `${block}.${label}`,
+      `override must be an object mapping tunable key to value, not ${raw === null ? 'null' : Array.isArray(raw) ? 'an array' : typeof raw}`,
+    );
+  }
+  const value: Partial<{ model: string; timeoutMs: number; retries: number }> = {};
+  for (const [key, val] of Object.entries(raw)) {
+    if (key !== 'model' && key !== 'timeoutMs' && key !== 'retries') {
+      return {
+        ok: false,
+        code: 'PARAM_UNKNOWN',
+        message: `"${key}" is not a recognized override for ${block}.${label}`,
+        detail: { param: `${block}.${label}.${key}` },
+      };
+    }
+    if (key === 'retries') {
+      if (typeof val !== 'number' || !Number.isInteger(val) || val < 0 || val > MAX_PRIMITIVE_RETRIES) {
+        return {
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: `${block}.${label}.retries must be an integer between 0 and maxRetries ${MAX_PRIMITIVE_RETRIES}`,
+          detail: { param: `${block}.${label}.retries`, ...truncatedSupplied(val) },
+        };
+      }
+      value.retries = val;
+      continue;
+    }
+    if (key === 'timeoutMs') {
+      if (typeof val !== 'number' || !Number.isInteger(val) || val < 1 || val > ceilings.maxTimeoutMs) {
+        return {
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: `${block}.${label}.timeoutMs must be an integer between 1 and the engine ceiling maxTimeoutMs ${ceilings.maxTimeoutMs}`,
+          detail: { param: `${block}.${label}.timeoutMs`, ...truncatedSupplied(val) },
+        };
+      }
+      value.timeoutMs = val;
+      continue;
+    }
+    // key === 'model'
+    if (typeof val !== 'string') {
+      return {
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: `${block}.${label}.model has the wrong type`,
+        detail: { param: `${block}.${label}.model`, suppliedType: typeof val, expectedType: 'string' },
+      };
+    }
+    if (!val.startsWith('openrouter/')) {
+      return {
+        ok: false,
+        code: 'PRIMITIVE_PROVIDER_UNSUPPORTED',
+        message: `"${block}.${label}.model" must be an "openrouter/<model-id>" ref — decide()/generateImage() only dispatch through the openrouter gateway`,
+        detail: { param: `${block}.${label}.model`, ...truncatedSupplied(val) },
+      };
+    }
+    const err = checkModelRefOrErr(`${block}.${label}.model`, label, val, catalog, warn);
+    if (err) return err;
+    value.model = val;
+  }
+  return { ok: true, value };
+}
+
 /** v24 (DES-145): the per-agent rejection table. `raw.agents.<label>` is validated against
  *  `contract.agents[label]`'s EFFECTIVE (author ∩ ceiling) bound; an unknown label is
- *  `UNKNOWN_AGENT_LABEL{label, known}`. */
+ *  `UNKNOWN_AGENT_LABEL{label, known}`.
+ *  v40 Gate 6 delta (DES-277, R-13, TASK-274): the top level widens to `{agents, decisions,
+ *  images}` — `raw.decisions.<label>`/`raw.images.<label>` are validated against
+ *  `c.decisions[label]`/`c.images[label]` the same way, via `validatePrimitiveOverride` above; an
+ *  unknown label takes the SAME `UNKNOWN_AGENT_LABEL` code, with `detail.block` naming which one. */
 export function validateUserOverrides(
   c: ParamContract,
   raw: unknown,
   catalog: ModelCatalogSnapshot = EMPTY_CATALOG,
   ceilings: Ceilings = DEFAULT_CEILINGS,
 ): { ok: true; value: UserOverrides; warnings?: ModelRefWarning[] } | Err {
-  const obj = (raw ?? {}) as { agents?: Record<string, Record<string, unknown>> };
+  const obj = (raw ?? {}) as {
+    agents?: Record<string, Record<string, unknown>>;
+    decisions?: Record<string, Record<string, unknown>>;
+    images?: Record<string, Record<string, unknown>>;
+  };
   // v24 (integrator; DES-145/ADR-001): the TOP level of `overrides` is closed to `{agents}`. It
   // used to be unread — every key other than `agents` was silently dropped, so the whole v21 FLAT
   // shape (`overrides:{model,effort,timeoutMs,appendPrompt}`), which the plugin docs and every
@@ -936,8 +1033,9 @@ export function validateUserOverrides(
   // author's defaults and the caller was told it had been honoured. A locked key (`prompt`, …)
   // vanished the same way, turning ADR-001's type-level guarantee into a silent no-op at the wire,
   // where it matters. Locked keys keep their own code because it is the actionable one.
+  // v40 Gate 6 delta (DES-277, TASK-274): closed set widened to `{agents, decisions, images}`.
   for (const key of Object.keys(obj)) {
-    if (key === 'agents') continue;
+    if (key === 'agents' || key === 'decisions' || key === 'images') continue;
     if ((LOCKED_KEYS as readonly string[]).includes(key)) {
       return {
         ok: false,
@@ -951,7 +1049,7 @@ export function validateUserOverrides(
       code: 'PARAM_UNKNOWN',
       message: (TUNABLE_KEYS as readonly string[]).includes(key)
         ? `"${key}" is a per-agent override in v24 — spell it as overrides.agents.<label>.${key}`
-        : `"${key}" is not a recognized override; overrides has exactly one key: agents`,
+        : `"${key}" is not a recognized override; overrides has exactly {agents, decisions, images}`,
       detail: { param: key, tunable: [...TUNABLE_KEYS] },
     };
   }
@@ -991,7 +1089,38 @@ export function validateUserOverrides(
     resultAgents[label] = result.value;
   }
 
-  return { ok: true, value: { agents: resultAgents }, ...(warnings.length > 0 ? { warnings } : {}) };
+  // v40 Gate 6 delta (DES-277, R-13, TASK-274): same shape as `agents` above, once per block, each
+  // against its OWN declared label set (`c.decisions`/`c.images`) and its OWN result slice.
+  const resultByBlock: { decisions?: Record<string, Record<string, unknown>>; images?: Record<string, Record<string, unknown>> } = {};
+  for (const block of ['decisions', 'images'] as const) {
+    const blockIn = obj[block];
+    if (blockIn === undefined) continue;
+    if (!isPlainObject(blockIn)) {
+      return invalid(
+        block,
+        `overrides.${block} must be an object mapping label to its override fields, not ${blockIn === null ? 'null' : Array.isArray(blockIn) ? 'an array' : typeof blockIn}`,
+      );
+    }
+    const declared = (c[block] ?? {}) as Record<string, unknown>;
+    const knownForBlock = Object.keys(declared);
+    const resultForBlock: Record<string, Record<string, unknown>> = {};
+    for (const [label, overridesForLabel] of Object.entries(blockIn)) {
+      if (!Object.hasOwn(declared, label)) {
+        return {
+          ok: false,
+          code: 'UNKNOWN_AGENT_LABEL',
+          message: `"${label}" is not a declared ${block} label`,
+          detail: { label, block, known: knownForBlock },
+        };
+      }
+      const result = validatePrimitiveOverride(block, label, overridesForLabel === undefined ? {} : overridesForLabel, ceilings, catalog, (w) => warnings.push(w));
+      if (!result.ok) return result;
+      resultForBlock[label] = result.value;
+    }
+    resultByBlock[block] = resultForBlock;
+  }
+
+  return { ok: true, value: { agents: resultAgents, ...resultByBlock }, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 /** Declared `args` fields are checked only against what the contract declares; undeclared keys

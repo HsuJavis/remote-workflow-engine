@@ -45,9 +45,13 @@ export function pricePrimitiveCall(i: { wireCostUSD: number | null; tokens?: Tok
   if (i.wireCostUSD !== null) return { costUSD: i.wireCostUSD, source: 'reported' };
   if (i.tokens !== undefined && primitivePriceKnowable(i.entry, i.kind)) {
     const rates = i.entry!.price!;
+    // v40 Gate 6 delta (DES-279, R-4): `imageOutPerM` is USD per 1M image-output tokens (the
+    // OpenRouter `image_output` rate × 1e6 — see model-catalog.ts) — divide back down before
+    // multiplying by a token COUNT; `out` (the fallback) is already USD per token.
+    const outRate = rates.imageOutPerM !== undefined ? rates.imageOutPerM / 1e6 : rates.out;
     const costUSD = i.kind === 'decide'
       ? priceCall(i.tokens, rates)!
-      : i.tokens.input * rates.in + i.tokens.output * (rates.imageOutPerM ?? rates.out);
+      : i.tokens.input * rates.in + i.tokens.output * outRate;
     return { costUSD, source: 'estimated' };
   }
   return { absent: true };

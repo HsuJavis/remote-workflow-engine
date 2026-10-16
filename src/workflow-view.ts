@@ -5,7 +5,7 @@
 // defect verbatim). Pure: no I/O, no auth, no clock — the policy decision (who is the owner) is made
 // by the caller (DES-116, TASK-111) and handed in as `viewerIsOwner`.
 import type { ScriptCheckError } from './script-checks.js';
-import { LOCKED_KEYS, DEFAULT_CEILINGS, effectiveAgentBounds, type Ceilings, type AgentParamSpec, type ParamSpec } from './params/contract.js';
+import { LOCKED_KEYS, DEFAULT_CEILINGS, MAX_PRIMITIVE_RETRIES, effectiveAgentBounds, type Ceilings, type AgentParamSpec, type ParamSpec, type PrimitiveParamSpec } from './params/contract.js';
 // issue #93 item 3: the SAME pure predicate `RunManager.start()` admits/refuses a run with —
 // imported, never re-implemented, so `runnable`/`runnableReason` here and the actual admission
 // decision cannot drift apart. `admissionRefusal` has no fs/db/clock of its own (run-manager.ts's
@@ -123,7 +123,15 @@ export interface WorkflowDescribeView {
   versions: string[];
   description: string;
   phases: Array<{ title: string }>; // adjudication #1 — public to every principal (DES-136)
-  params: { agents: Record<string, Record<string, DescribeAgentParamKey>>; args: Record<string, ParamSpec> };
+  params: {
+    agents: Record<string, Record<string, DescribeAgentParamKey>>; args: Record<string, ParamSpec>;
+    // v40 (DES-278, ARCH-194, ruling R-16, TASK-273): present iff the stored contract itself
+    // declares the block (even as `{}`) — absent, never `{}`, on a contract that never wrote the
+    // key (keeps every pre-v40 describe response byte-identical — EXPECTED_DESCRIBE_KEYS unchanged,
+    // only `params`'s own inner shape grows).
+    decisions?: Record<string, DescribePrimitiveParams>;
+    images?: Record<string, DescribePrimitiveParams>;
+  };
   lockedKeys: readonly string[]; // === LOCKED_KEYS from src/params/contract.ts — imported, never re-typed
   owner: string | null;
   reportProblem: string;
@@ -231,6 +239,31 @@ function projectAgentParams(
   return out;
 }
 
+/** v40 (DES-278, ARCH-194, ruling R-16, TASK-273): one projected `decisions`/`images` label — no
+ *  `attempts`/`worstCaseMs` (that ladder is the agent harness's, per DES-278's boundary). */
+export interface DescribePrimitiveParams {
+  model: { type: 'string'; default: string };
+  timeoutMs: { type: 'number'; default: number; ceiling: 'maxTimeoutMs' };
+  retries: { type: 'number'; default: number; range: { min: number; max: number }; ceiling: 'maxRetries' };
+}
+
+/** DES-278: pure projection of a declared `decisions`/`images` block — per label `model`/
+ *  `timeoutMs`/`retries` with their defaults and bounds. */
+function projectPrimitiveParams(specs: Record<string, PrimitiveParamSpec>): Record<string, DescribePrimitiveParams> {
+  const out: Record<string, DescribePrimitiveParams> = {};
+  for (const [label, spec] of Object.entries(specs)) {
+    out[label] = {
+      model: { type: 'string', default: spec.model.default as string },
+      timeoutMs: { type: 'number', default: spec.timeoutMs.default as number, ceiling: 'maxTimeoutMs' },
+      retries: {
+        type: 'number', default: spec.retries.default as number,
+        range: { min: 0, max: MAX_PRIMITIVE_RETRIES }, ceiling: 'maxRetries',
+      },
+    };
+  }
+  return out;
+}
+
 /** DES-156: pure — no clock, no I/O, no auth. `ctx.triggers` is the caller's already-resolved,
  *  by-id live snapshot (`scheduler.get(id) ?? webhooks.get(id)`, never a by-workflow query — that
  *  port was retired with the analyzer, TASK-139); `ctx.ceilings` defaults to `DEFAULT_CEILINGS`
@@ -274,7 +307,10 @@ export function projectWorkflowDescribe(
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
   const attempts = ctx.attempts ?? DEFAULT_ATTEMPTS;
-  const paramsRaw = full.params as { agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec> } | undefined;
+  const paramsRaw = full.params as {
+    agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec>;
+    decisions?: Record<string, PrimitiveParamSpec>; images?: Record<string, PrimitiveParamSpec>;
+  } | undefined;
   const legacy = isLegacyParamsShape(full.params);
   // #98 item 6: an explicit `version` selector (`full.resolvedBy === 'version'`) is what
   // `run_start({version})` ALSO resolves regardless of publication state (REQ-097 "explicit
@@ -335,6 +371,8 @@ export function projectWorkflowDescribe(
     params: {
       agents: !legacy && paramsRaw?.agents ? projectAgentParams(paramsRaw.agents, ceilings, attempts) : {},
       args: (!legacy && paramsRaw?.args) || {},
+      ...(!legacy && paramsRaw?.decisions ? { decisions: projectPrimitiveParams(paramsRaw.decisions) } : {}),
+      ...(!legacy && paramsRaw?.images ? { images: projectPrimitiveParams(paramsRaw.images) } : {}),
     },
     lockedKeys: LOCKED_KEYS,
     owner: full.owner,

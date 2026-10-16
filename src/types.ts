@@ -178,9 +178,11 @@ export interface FourRates {
   out: number;
   cacheRead: number;
   cacheWrite: number;
-  /** v40 (DES-264, DES-269, ARCH-190, TASK-260/266): USD per million output images, parsed from the
-   *  catalog's `pricing.image_output` for generateImage()'s price pin. Absent means "no such price
-   *  on this model" (PRICE_UNKNOWN territory) — never defaulted to 0, which would mean "free". */
+  /** v40 (DES-264, DES-269, ARCH-190, TASK-260/266; doc corrected v40 Gate 6 delta DES-279/TASK-275):
+   *  USD per 1M IMAGE-OUTPUT TOKENS (not "per million images") — `Number(pricing.image_output) ×
+   *  1e6`, divided back by 1e6 before multiplying a token count (run-guard.ts's
+   *  `pricePrimitiveCall`). Absent means "no such price on this model" (PRICE_UNKNOWN territory) —
+   *  never defaulted to 0, which would mean "free". */
   imageOutPerM?: number;
 }
 

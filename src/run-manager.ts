@@ -55,7 +55,7 @@ import { assetRootsFor, defaultAssetRoot, globalAssetRoot, type AssetSyncService
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
-import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
+import { defaultRunParams, mergeRunParams, resolvePrimitiveParams, type RunParams } from './params/resolve.js';
 import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
 import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
 import { createEventSink, type EventSink, type AttemptReason } from './event-log.js';
@@ -246,20 +246,6 @@ function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: 
     ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
     : undefined;
   return { args: resolvedArgs ?? rawArgs, resolvedArgs };
-}
-
-/** v40 (DES-271/274, ARCH-188/189, TASK-271): the admission-time `decisions`/`images` slice —
- *  contract default only (`PrimitiveParamSpec` has no override ladder, unlike `agents`; see
- *  `RunParams.decisions`'s own doc). Pure; shared by `start()`'s top-level admission and a nested
- *  `workflow()` frame's own (`_handleWorkflowRequest`), same as `materializeRunArgs` above. */
-function buildPrimitiveParamsSlice(
-  spec: Record<string, { model: { default?: unknown }; timeoutMs: { default?: unknown }; retries: { default?: unknown } }>,
-): Record<string, { model: string; timeoutMs: number; retries: number }> {
-  const out: Record<string, { model: string; timeoutMs: number; retries: number }> = {};
-  for (const [label, s] of Object.entries(spec)) {
-    out[label] = { model: s.model.default as string, timeoutMs: s.timeoutMs.default as number, retries: s.retries.default as number };
-  }
-  return out;
 }
 
 /** v40 (DES-274, ARCH-187, TASK-271): maps `direct-models/call.ts`'s `AttemptReason` (the thrown
@@ -489,7 +475,18 @@ interface RunEntry {
    *  and increments `refusalsDropped` instead. Never persisted — dies with the entry. */
   refusals: Map<number, { code: string; message: string }>;
   refusalsDropped: number;
+  /** v40 Gate 6 delta (DES-274, R-14, TASK-271): a decide()/generateImage() refusal/failure's OWN
+   *  ledger, capped separately from `refusals` above — otherwise a run with enough primitive
+   *  failures could evict an `agent()` refusal from the shared 8 slots, losing its provenance
+   *  (the script's own rethrow can tamper `e.message`; only a ledger HIT survives that). callSeqs
+   *  are unique across both maps (one shared counter), so a lookup tries both. */
+  primitiveRefusals: Map<number, { code: string; message: string }>;
+  primitiveRefusalsDropped: number;
 }
+
+/** v40 Gate 6 delta (DES-274, R-14, TASK-271): `_recordPrimitiveRefusal`'s own cap — separate from
+ *  `_handleAgentRequest`'s 8-slot `entry.refusals`. */
+const PRIMITIVE_REFUSAL_CAP = 8;
 
 /** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
  *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
@@ -1278,13 +1275,13 @@ export class RunManager {
       // always absent. Every value now comes from the per-agent contract (`contract.agents`).
       ? defaultRunParams(undefined, contract.agents)
       : mergeRunParams(undefined, overridesResult.value, contract.agents);
-    // v40 (DES-271/274, TASK-271): contract-default-only `decisions`/`images` slice (no override
-    // ladder for either — see `buildPrimitiveParamsSlice`'s own doc) — folded in BEFORE
-    // `_refuseUnadmittableParams`/the price pin below, so `reachableModels` (which already reads
-    // these two keys, TASK-267) picks up every decide()/generateImage() model at admission, same as
-    // every agent() label's.
-    if (contract.decisions) effectiveParams.decisions = buildPrimitiveParamsSlice(contract.decisions);
-    if (contract.images) effectiveParams.images = buildPrimitiveParamsSlice(contract.images);
+    // v40 (DES-271/274, TASK-271) + v40 Gate 6 delta (DES-277, R-13, TASK-274): the `decisions`/
+    // `images` slice now folds any caller-supplied `overridesResult.value.decisions`/`.images` over
+    // the declared defaults (`resolvePrimitiveParams`, override › default per key) — folded in
+    // BEFORE `_refuseUnadmittableParams`/the price pin below, so `reachableModels` (which already
+    // reads these two keys, TASK-267) sees the OVERRIDDEN model, same as every agent() label's.
+    if (contract.decisions) effectiveParams.decisions = resolvePrimitiveParams(contract.decisions, overridesResult.value.decisions);
+    if (contract.images) effectiveParams.images = resolvePrimitiveParams(contract.images, overridesResult.value.images);
     // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
@@ -1458,6 +1455,8 @@ export class RunManager {
       principal: spec.principal,
       refusals: new Map(),
       refusalsDropped: 0,
+      primitiveRefusals: new Map(),
+      primitiveRefusalsDropped: 0,
     };
     this._runs.set(runId, entry);
     // Issue #73 (d): every admission route (run_start, schedule, webhook, chain) reaches here —
@@ -2172,6 +2171,8 @@ export class RunManager {
       principal: spec.principal,
       refusals: new Map(),
       refusalsDropped: 0,
+      primitiveRefusals: new Map(),
+      primitiveRefusalsDropped: 0,
     };
     this._runs.set(runId, entry);
     return entry;
@@ -2517,7 +2518,11 @@ export class RunManager {
           // contains replaces the flattened envelope with the ledger's own (unflattened, captured
           // at the real throw site) entry. An UNKNOWN ref — reachable only via a forged/stale
           // child IPC message, never a real script — falls back to today's path unchanged.
-          const refusalHit = outcome.refusalRef !== undefined ? entry.refusals.get(outcome.refusalRef) : undefined;
+          // v40 Gate 6 delta (DES-274, R-14): callSeqs are unique across both ledgers (one shared
+          // counter), so a hit tries the agent ledger first, then the primitive one.
+          const refusalHit = outcome.refusalRef !== undefined
+            ? (entry.refusals.get(outcome.refusalRef) ?? entry.primitiveRefusals.get(outcome.refusalRef))
+            : undefined;
           entry.resultError = refusalHit ?? captureFailure(outcome.error, this._secretValueProvider?.entries() ?? []);
           try { await this._store.recordError(runId, entry.resultError); }
           finally { await this._transition(runId, entry, 'failed'); }
@@ -2655,11 +2660,12 @@ export class RunManager {
       throw paramCodedError(childArgsResult);
     }
     const childParams = defaultRunParams(undefined, childContract.agents);
-    // v40 (DES-271/274, TASK-271): same contract-default-only fold as `start()`'s — the CHILD's own
-    // declared `decisions`/`images`, never the parent's (same "nested workflow() is a black box"
-    // rule the agents/assets/tool-surface slices above already follow).
-    if (childContract.decisions) childParams.decisions = buildPrimitiveParamsSlice(childContract.decisions);
-    if (childContract.images) childParams.images = buildPrimitiveParamsSlice(childContract.images);
+    // v40 (DES-271/274, TASK-271): same contract-default-only fold as `start()`'s no-overrides
+    // case — the CHILD's own declared `decisions`/`images`, never the parent's overrides (same
+    // "nested workflow() is a black box" rule the agents/assets/tool-surface slices above already
+    // follow; DES-277's delta keeps this call with no `overrides` argument).
+    if (childContract.decisions) childParams.decisions = resolvePrimitiveParams(childContract.decisions);
+    if (childContract.images) childParams.images = resolvePrimitiveParams(childContract.images);
     // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
     // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
     // already is (`frameParams`), below. Before this, a nested dispatch built `AgentReq.assets`
@@ -3085,10 +3091,13 @@ export class RunManager {
    *  own comment gives: a nested `workflow()` boundary re-mints the error under its own callSeq. */
   private _recordPrimitiveRefusal(entry: RunEntry, framePath: string, callSeq: number, err: unknown): void {
     if (framePath !== '') return;
-    if (entry.refusals.size < 8) {
-      entry.refusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
+    // v40 Gate 6 delta (DES-274, R-14): a SEPARATE map/cap from `entry.refusals` (that one is
+    // `_handleAgentRequest`'s alone) — a primitive refusal/failure can never evict an agent()
+    // refusal from the shared ledger.
+    if (entry.primitiveRefusals.size < PRIMITIVE_REFUSAL_CAP) {
+      entry.primitiveRefusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
     } else {
-      entry.refusalsDropped++;
+      entry.primitiveRefusalsDropped++;
     }
   }
 

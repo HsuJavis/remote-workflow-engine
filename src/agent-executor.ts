@@ -784,6 +784,10 @@ export class AgentTranscriptSink {
         startedAt: r.startedAt, provider: 'openrouter', model: r.model,
         costUSD: r.costUSD, unpriced: r.unpriced,
         ...(r.tokens !== undefined ? { tokens: r.tokens } : {}),
+        // v40 Gate 6 delta (DES-273, R-6, TASK-271): `deriveAgentRecords` (run-store.ts) keys
+        // `state` on `data.reason`'s presence — without this a failed primitive rebuilds as
+        // `done` after a restart (its usage event carried no other state-telling field).
+        ...(r.state === 'failed' ? { reason: r.failReason } : {}),
       },
     });
   }

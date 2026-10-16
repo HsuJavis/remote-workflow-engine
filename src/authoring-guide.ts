@@ -952,8 +952,10 @@ function decideImageSectionBody(): string {
       'workspace, or is not a plain regular file of an accepted type/size → fix: use a workspace-' +
       'relative path to a real small image file.\n' +
       "- `MODEL_TYPE_MISMATCH` — the declared model IS verifiable against a live catalog but is " +
-      "catalogued as the wrong `modelType` (`decide()` needs `'decision'`, `generateImage()` needs " +
-      "`'image-gen'`) → fix: pick a model models_list reports with the right `modelType`.\n" +
+      "catalogued the wrong way for the primitive (`decide()` needs `modelType:'decision'`; " +
+      "`generateImage()` needs a model whose output modalities include `'image'`, e.g. a " +
+      "`modelType:'chat'` image-and-text model, not only a dedicated `'image-gen'` one) → fix: " +
+      'pick a model models_list reports with the right modelType/output modalities.\n' +
       '- `MODEL_TYPE_UNVERIFIED` (a non-fatal registration warning, not a refusal) — the catalog ' +
       'could not verify the declared model (unknown, or an id-heuristic guess) — same "warn, never ' +
       "block, when the catalog cannot say\" posture `agent()`'s own MODEL_CATALOG_UNVERIFIED " +

@@ -111,7 +111,7 @@ export interface DeterminismGuard {
 export const DETERMINISM_GUARDED: readonly DeterminismGuard[] = [
   {
     call: 'Date.now()', // det:allow — the guard TABLE names the API it blocks inside a script; this file calls none of them
-    why: "resume replays agent() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call.",
+    why: "resume replays agent()/decide()/generateImage() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call.",
     instead: 'read a timestamp off run_status/run_result, or pass one in via args.',
   },
   {
@@ -386,6 +386,22 @@ function refusalCode(err: unknown): string | null {
   const e = err as { code?: unknown; name?: unknown } | null | undefined;
   const code = (typeof e?.code === 'string' && e.code) || (typeof e?.name === 'string' && e.name) || '';
   return ENGINE_REFUSAL_CODES.has(code) ? code : null;
+}
+
+// v40 (DES-272, ARCH-186, TASK-269): decide()/generateImage() codes that must survive an uncaught
+// rethrow as their OWN code (REQ-227/228 acceptance: `run_result.error.code` ===
+// 'PRIMITIVE_FAILED'/'PRIMITIVE_INPUT_INVALID'/'IMAGE_PATH_REFUSED') — but these are POST-dispatch
+// failures and pre-flight input refusals recorded via `recordPrimitive`'s own ledger (DES-274),
+// never the admission refusals ledger `ENGINE_REFUSAL_CODES`/`RECORDED_REFUSAL_CODES` cap, so
+// DES-264 deliberately keeps them OUT of that set ("+= 'PRICE_UNKNOWN' and nothing else"). Kept as
+// a separate allowlist for that reason, checked the same way as `refusalCode()` but never merged
+// into it.
+const PRIMITIVE_FAILURE_CODES = new Set(['PRIMITIVE_FAILED', 'PRIMITIVE_INPUT_INVALID', 'IMAGE_PATH_REFUSED']);
+
+function primitiveFailureCode(err: unknown): string | null {
+  const e = err as { code?: unknown; name?: unknown } | null | undefined;
+  const code = (typeof e?.code === 'string' && e.code) || (typeof e?.name === 'string' && e.name) || '';
+  return PRIMITIVE_FAILURE_CODES.has(code) ? code : null;
 }
 
 // F-2 (sandbox robustness sweep): `String(err)` throws when `err` is `Object.create(null)` (no
@@ -845,6 +861,10 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
       const refusal = refusalCode(err);
       if (refusal !== null) {
         return { kind: 'error', error: { code: refusal, message: safeMessage(err), ...refField } };
+      }
+      const primitiveFailure = primitiveFailureCode(err);
+      if (primitiveFailure !== null) {
+        return { kind: 'error', error: { code: primitiveFailure, message: safeMessage(err), ...refField } };
       }
       return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: safeMessage(err), ...refField } };
     } catch {

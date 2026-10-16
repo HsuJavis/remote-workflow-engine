@@ -81,7 +81,18 @@ export interface ModelCatalogSnapshot {
   // hint can name a real, catalog-linked OpenRouter ref instead of a hard-coded example that drifts
   // out of date as the catalog's naming does (see `harnessUnsupportedSuggestion` below). Absent on any
   // entry (or the whole snapshot) -> the hint falls back to generic models_list guidance, never a guess.
-  entries: ReadonlyArray<{ provider: string; model: string; sameModelAs?: readonly string[]; modelType?: ModelType; modelTypeSource?: ModelTypeSource }>;
+  // v40 Gate 6 delta (OD-1, DES-270, TASK-267): `modalities` rides the same way as `modelType` —
+  // carried unchanged from `model-catalog.ts`'s own `ModelEntry.modalities` through
+  // `toModelCatalogSnapshot` — so `checkPrimitiveModelType`'s OD-1 image rule (any output
+  // modalities including 'image', whatever `modelType`) can read it off the SAME admission pin.
+  entries: ReadonlyArray<{
+    provider: string;
+    model: string;
+    sameModelAs?: readonly string[];
+    modelType?: ModelType;
+    modelTypeSource?: ModelTypeSource;
+    modalities?: { out: readonly string[] };
+  }>;
   /** ModelBook's own provenance for `entries`: `'static'` means the live source has never once
    *  succeeded (nothing was actually looked up), so an empty `entries` for THAT reason must be
    *  treated as "unavailable", the same as a genuinely-empty live listing for a provider with no
@@ -216,7 +227,14 @@ export function checkModelRef(ref: unknown, catalog: ModelCatalogSnapshot = EMPT
  *  is strict (ADR-095): `agent`→'chat', `decision`→'decision', `image`→'image-gen'. Mirrors
  *  `checkModelRef`'s own "we could not check must never become we assume it doesn't exist" posture
  *  — catalog-unavailable and row-undefined (unknown model) are BOTH `checkModelRef`'s job, not this
- *  one's, so this gate never refuses on either; it only refuses a KNOWN row of the WRONG type. */
+ *  one's, so this gate never refuses on either; it only refuses a KNOWN row of the WRONG type.
+ *
+ *  v40 Gate 6 delta (OD-1): `images.<label>` is no longer gated on `modelType === 'image-gen'` —
+ *  an image-and-text chat model (e.g. gemini-2.5-flash-image) is accepted too. The real signal is
+ *  the row's OWN catalog output modalities (`modalitiesOut`, carried from `ModelCatalogSnapshot`
+ *  entry's `modalities.out`): ok iff it includes `'image'`, whatever `modelType` says. A hand-built
+ *  row from before this delta carries no `modalitiesOut` at all — falls back to the pre-delta
+ *  `modelType === 'image-gen'` rule so no pre-existing caller/test changes. */
 const REQUIRED_MODEL_TYPE: Record<'agent' | 'decision' | 'image', ModelType> = {
   agent: 'chat',
   decision: 'decision',
@@ -227,17 +245,27 @@ export function checkPrimitiveModelType(
   kind: 'agent' | 'decision' | 'image',
   label: string,
   model: string,
-  row: { modelType: ModelType; modelTypeSource: ModelTypeSource } | undefined,
+  row: { modelType: ModelType; modelTypeSource: ModelTypeSource; modalitiesOut?: readonly string[] } | undefined,
   catalogAvailable: boolean,
 ):
   | { ok: true }
   | { ok: true; warning: { code: 'MODEL_TYPE_UNVERIFIED'; label: string; model: string; modelTypeSource: string } }
-  | { ok: false; code: 'MODEL_TYPE_MISMATCH'; label: string; model: string; actual: ModelType; required: ModelType } {
-  const required = REQUIRED_MODEL_TYPE[kind];
+  | { ok: false; code: 'MODEL_TYPE_MISMATCH'; label: string; model: string; actual: ModelType; required: ModelType | 'image-output' } {
   if (!catalogAvailable || row === undefined) return { ok: true };
   if (row.modelType === 'unknown' || row.modelTypeSource === 'id-heuristic') {
     return { ok: true, warning: { code: 'MODEL_TYPE_UNVERIFIED', label, model, modelTypeSource: row.modelTypeSource } };
   }
+  if (kind === 'image') {
+    if (row.modalitiesOut !== undefined) {
+      if (row.modalitiesOut.includes('image')) return { ok: true };
+      return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required: 'image-output' };
+    }
+    if (row.modelType !== 'image-gen') {
+      return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required: 'image-gen' };
+    }
+    return { ok: true };
+  }
+  const required = REQUIRED_MODEL_TYPE[kind];
   if (row.modelType !== required) {
     return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required };
   }

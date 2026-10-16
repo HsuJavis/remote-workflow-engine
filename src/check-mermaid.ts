@@ -143,7 +143,9 @@ export function checkMermaid(
   limits: { maxBytes: number; maxLines: number },
   // v35 (DES-238, ARCH-150, ADR-069, TASK-234): required — there is no runtime path that skips
   // the v2 rules (an opt-out is the degraded mode with a name on it).
-  v2: { expected: ExpectedGraph },
+  // v40 Gate 6 delta (DES-271, R-12, TASK-268): `primitiveLabels` — a decide()/generateImage()
+  // call's label. Absent ≡ `[]` ≡ pre-v40 behaviour exactly.
+  v2: { expected: ExpectedGraph; primitiveLabels?: readonly string[] },
 ): CheckMermaidResult {
   // (1) normalize + size — checked before anything else touches the text.
   const normalized = src.replace(/\r\n/g, '\n');
@@ -236,6 +238,13 @@ export function checkMermaid(
 
   // (6) bidirectional label diff — agent (stadium) node labels vs the script's own agent labels.
   // Rectangle/trapezoid nodes are free text, excluded (DES-147 boundary).
+  const scriptSet = new Set(scriptLabels);
+  // v40 Gate 6 delta (DES-271, R-12): a label the author's script scans as a decide()/
+  // generateImage() call — accepted as a stadium node, never required, excluded from the v1
+  // set-diff and the v1 value-triple below. "A label in BOTH (an agent and a primitive share it)
+  // stays an agent node" — `scriptSet` (agent labels) wins the overlap.
+  const primitiveLabelSet = new Set((v2.primitiveLabels ?? []).filter((l) => !scriptSet.has(l)));
+
   const diagramLabels = new Set<string>();
   const labelToNode = new Map<string, NodeRecord>();
   // v26 integration (DES-174's own "duplicate labels — two distinct slots joined by offset, not
@@ -245,16 +254,22 @@ export function checkMermaid(
   // set/triple checks below, which are per-LABEL; the v2 lane/tools/edge checks are per-SLOT and
   // must resolve the node that sits in THAT slot's lane, which needs every node for the label.
   const labelToNodes = new Map<string, NodeRecord[]>();
+  // v40 Gate 6 delta (DES-271, R-12): the stadium node IDS of a primitive-labeled node —
+  // `pathThroughNonAgents` (rule 13a) reads this to treat them as non-agent intermediates.
+  const primitiveNodeIds = new Set<string>();
   for (const n of nodes.values()) {
     if (n.shape !== 'stadium') continue;
     const label = n.text.split('<br/>')[0]!;
-    diagramLabels.add(label);
+    if (primitiveLabelSet.has(label)) {
+      primitiveNodeIds.add(n.id);
+    } else {
+      diagramLabels.add(label);
+    }
     labelToNode.set(label, n);
     const arr = labelToNodes.get(label) ?? [];
     arr.push(n);
     labelToNodes.set(label, arr);
   }
-  const scriptSet = new Set(scriptLabels);
   const onlyInScript = [...scriptSet].filter((l) => !diagramLabels.has(l));
   const onlyInDiagram = [...diagramLabels].filter((l) => !scriptSet.has(l));
   if (onlyInScript.length > 0 || onlyInDiagram.length > 0) {
@@ -263,6 +278,7 @@ export function checkMermaid(
 
   // (7) value triple: `<label><br/><model> · <effort> · <timeout>` vs the contract default.
   for (const [label, node] of labelToNode) {
+    if (primitiveLabelSet.has(label)) continue; // v40 Gate 6 delta (R-12): never compared
     const parts = node.text.split('<br/>');
     if (parts.length < 2) continue; // no meta on this node — nothing to compare
     const def = agentDefaults[label];
@@ -308,7 +324,7 @@ export function checkMermaid(
   const toolsErr = checkTools(v2.expected, subgraphBlocks, labelToNodes);
   if (toolsErr) return toolsErr;
 
-  const edgeErr = checkEdges(v2.expected, nodes, edges, subgraphBlocks, labelToNodes);
+  const edgeErr = checkEdges(v2.expected, nodes, edges, subgraphBlocks, labelToNodes, primitiveNodeIds);
   if (edgeErr) return edgeErr;
 
   return { ok: true };
@@ -440,6 +456,10 @@ function checkEdges(
   edges: EdgeRecord[],
   subgraphBlocks: SubgraphBlock[],
   labelToNodes: Map<string, NodeRecord[]>,
+  // v40 Gate 6 delta (DES-271, R-12, TASK-268): primitive-labeled stadium node ids — rule 13a
+  // treats them as non-agent intermediates; rule 13b already ignores them (they carry no
+  // `nodeToSlot` entry — a primitive label never gets an `expected.slots` slot).
+  primitiveNodeIds: Set<string>,
 ): CheckMermaidResult | null {
   // Every id resolution below is per-SLOT (the node in that slot's own lane), so a label reused in
   // two lanes contributes a DIFFERENT node to each of its two slots.
@@ -477,7 +497,7 @@ function checkEdges(
     if (!fromSlot || !toSlot) continue;
     const targets = new Set(idsForSlot(toSlot));
     const starts = idsForSlot(fromSlot);
-    const reached = starts.some((startId) => pathThroughNonAgents(startId, targets, adj, nodes));
+    const reached = starts.some((startId) => pathThroughNonAgents(startId, targets, adj, nodes, primitiveNodeIds));
     // issue #155 DOC: self-describing `expected` — labels, not bare slot indices (LANE_MISMATCH /
     // TOOLS_MISMATCH are already self-describing; this one wasn't).
     if (!reached) {
@@ -543,7 +563,15 @@ function checkEdges(
 
 /** BFS from `startId`: reaches a member of `targets` while every intermediate hop (never `startId`
  *  itself, never a `targets` member) is a non-agent (non-stadium) shape. */
-function pathThroughNonAgents(startId: string, targets: Set<string>, adj: Map<string, string[]>, nodes: Map<string, NodeRecord>): boolean {
+function pathThroughNonAgents(
+  startId: string,
+  targets: Set<string>,
+  adj: Map<string, string[]>,
+  nodes: Map<string, NodeRecord>,
+  // v40 Gate 6 delta (DES-271, R-12): a primitive-labeled stadium node passes through exactly like
+  // a non-agent shape — only a REAL agent() stadium node still blocks the path.
+  primitiveNodeIds: Set<string>,
+): boolean {
   if (targets.has(startId)) return true;
   const visited = new Set<string>([startId]);
   const queue = [startId];
@@ -551,7 +579,7 @@ function pathThroughNonAgents(startId: string, targets: Set<string>, adj: Map<st
     const cur = queue.shift()!;
     for (const to of adj.get(cur) ?? []) {
       if (targets.has(to)) return true;
-      if (nodes.get(to)?.shape === 'stadium') continue; // only non-agent intermediates allowed
+      if (nodes.get(to)?.shape === 'stadium' && !primitiveNodeIds.has(to)) continue; // only non-agent intermediates allowed
       if (!visited.has(to)) { visited.add(to); queue.push(to); }
     }
   }

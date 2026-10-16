@@ -909,41 +909,118 @@ export function scanAgentCalls(script: string): AgentCallScan {
 const DECIDE_CALL_RE = /(?<!\.)\bdecide\s*\(/g;
 const IMAGE_CALL_RE = /(?<!\.)\bgenerateImage\s*\(/g;
 
-function scanOnePrimitive(script: string, re: RegExp): string[] {
+// v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): the tunables a `decide()`/`generateImage()`
+// options literal may NOT carry (they belong in `meta.params.decisions/images.<label>.<key>.default`
+// — DES-271's own closed vocabulary, distinct from `agent()`'s TUNABLE_KEYS: no `effort`/
+// `appendPrompt`, plus `retries`, which agent() does not have). The non-tunable keys each primitive
+// DOES accept at the call site (its own runtime data — DES-266's `validateDecideInput`/
+// `validateImageInput` closed sets).
+const PRIMITIVE_TUNABLE_KEYS = new Set<string>(['model', 'timeoutMs', 'retries']);
+const PRIMITIVE_DATA_KEYS: Record<'decide' | 'generateImage', Record<string, true>> = {
+  decide: { state: true, questions: true },
+  generateImage: { prompt: true, inputImages: true, outDir: true },
+};
+
+/** v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): one `decide`/`generateImage` scan — same
+ *  codes as `scanAgentCalls` (no new vocabulary), with one DES-271-specific exception: a shorthand
+ *  entry (`{ state, questions }`) is FINE here (never `AGENT_OPTS_SHORTHAND`) because a primitive's
+ *  own data keys are legitimately runtime values — only the TUNABLE keys (model/timeoutMs/retries)
+ *  are a script-time refusal. */
+function scanOnePrimitive(
+  script: string,
+  re: RegExp,
+  kind: 'decide' | 'generateImage',
+  inNonCode: (idx: number) => boolean,
+  lineAt: (idx: number) => number,
+  violations: AgentCallViolation[],
+): string[] {
   const labels: string[] = [];
+  const callName = `${kind}()`;
+  const paramsKind = kind === 'decide' ? 'decisions' : 'images';
+  const dataKeys = PRIMITIVE_DATA_KEYS[kind];
   re.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(script)) !== null) {
+    if (inNonCode(m.index)) continue;
+    const line = lineAt(m.index);
     const openParen = script.indexOf('(', m.index);
     const closeParen = matchDelimiter(script, openParen, '(', ')');
     if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
     const args = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
-    if (args.length < 1) continue;
-    // A non-literal label (a variable, a template), or one failing the same AGENT_LABEL_FORMAT_RE/
-    // 64-char grammar DES-271 names for primitive labels, is left UNTRACKED here, same as a
-    // renamed alias — the author gets DECISION_UNDECLARED/IMAGE_UNDECLARED from the contract
-    // check instead of a label-shape violation of its own (no such code is reserved for
-    // primitives; DES-271's "non-literal label/options refused" + "tunable key in options ->
-    // PARAM_IN_SCRIPT" boundary notes have no UT in TASK-268's test files and no PARAM_IN_SCRIPT
-    // ErrorCode exists outside the agent-only scanAgentCalls/SCAN_VIOLATION path — flagged, not
-    // implemented here; see TASK-268's PARIMPL report / needs_clarification).
+    if (args.length < 1) {
+      violations.push({ line, code: 'AGENT_LABEL_REQUIRED', hint: `${callName} needs a literal label and an options object: ${kind}("label", { … })` });
+      continue;
+    }
     const labelVal = literalStringValue(args[0]!.trim());
+    let validLabel: string | null = null;
+    if (labelVal === null) {
+      violations.push({ line, code: 'AGENT_LABEL_NOT_LITERAL', hint: `${callName}'s label must be a literal string, not a template or a variable` });
+    } else if (!AGENT_LABEL_FORMAT_RE.test(labelVal) || labelVal.length > 64) {
+      violations.push({ line, code: 'AGENT_LABEL_FORMAT', hint: `a ${callName} label must match /^[A-Za-z_][\\w-]*$/ and be at most 64 characters` });
+    } else {
+      validLabel = labelVal;
+    }
+    if (args.length >= 2) {
+      const optsInnerText = objectLiteralInnerText(args[1]!.trim());
+      if (optsInnerText === null) {
+        violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: `${callName}'s options argument must be a literal object: { … }` });
+      } else {
+        for (const entry of splitTopLevel(optsInnerText)) {
+          const trimmedEntry = entry.trim();
+          if (trimmedEntry === '') continue;
+          const colonIdx = entry.indexOf(':');
+          if (colonIdx === -1) {
+            // DES-271: a shorthand entry (`{ state, questions }`) is FINE — its value may be
+            // runtime, unlike `agent()`'s options. Only a spread hides a key from this scan.
+            if (trimmedEntry.startsWith('...')) {
+              violations.push({
+                line,
+                code: 'AGENT_OPTS_SPREAD',
+                hint: `a spread (\`...x\`) inside ${callName} options hides every key it carries from this scan — write each option as a literal key instead of spreading an object into it`,
+              });
+            }
+            continue;
+          }
+          let key = entry.slice(0, colonIdx).trim();
+          if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+          if (PRIMITIVE_TUNABLE_KEYS.has(key)) {
+            const label = validLabel ?? '<label>';
+            violations.push({ line, code: 'PARAM_IN_SCRIPT', key, hint: `move '${key}' to meta.params.${paramsKind}.${label}.${key}.default` });
+          } else if (!Object.hasOwn(dataKeys, key)) {
+            violations.push({
+              line,
+              key,
+              code: 'PARAM_UNKNOWN',
+              hint: `'${key}' is not a ${callName} option. Accepted: ${Object.keys(dataKeys).join(', ')}. model/timeoutMs/retries belong in meta.params.${paramsKind}.<label>.<key>.default`,
+            });
+          }
+        }
+      }
+    }
     // `scanAgentCalls`'s own dedupe precedent (`!labels.includes(validLabel)`) — a label called
     // twice (e.g. a retry shape) must still appear once in the contract-check array.
-    if (labelVal !== null && AGENT_LABEL_FORMAT_RE.test(labelVal) && labelVal.length <= 64 && !labels.includes(labelVal)) {
-      labels.push(labelVal);
-    }
+    if (validLabel !== null && !labels.includes(validLabel)) labels.push(validLabel);
   }
   return labels;
 }
 
-/** v40 (DES-271, ARCH-188/189, TASK-268): `scanPrimitiveCalls` — the registration-time scanner for
- *  `decide()`/`generateImage()` call labels, mirroring `scanAgentCalls`'s text-level approach but
+/** v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): `scanPrimitiveCalls` — the
+ *  registration-time scanner for `decide()`/`generateImage()` call labels, mirroring
+ *  `scanAgentCalls`'s text-level approach (including its `nonCodeSpans` fail-closed oracle) but
  *  with the simpler DES-271 return shape (no groups/allowedTools/bash — primitives carry none of
- *  those). `errors` is always empty today (see `scanOnePrimitive`'s comment on the untested
- *  boundary notes it does not yet enforce). */
-export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; errors: ParamContractErr[] } {
-  return { decide: scanOnePrimitive(script, DECIDE_CALL_RE), generateImage: scanOnePrimitive(script, IMAGE_CALL_RE), errors: [] };
+ *  those). `violations` is `AgentCallViolation`-shaped (same codes, no new vocabulary) — renamed
+ *  from the pre-delta `errors` field, which no longer exists. */
+export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; violations: AgentCallViolation[] } {
+  const oracle = nonCodeOracle(script);
+  if (oracle && !oracle.ok) {
+    return { decide: [], generateImage: [], violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }] };
+  }
+  const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
+  const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
+  const violations: AgentCallViolation[] = [];
+  const decide = scanOnePrimitive(script, DECIDE_CALL_RE, 'decide', inNonCode, lineAt, violations);
+  const generateImage = scanOnePrimitive(script, IMAGE_CALL_RE, 'generateImage', inNonCode, lineAt, violations);
+  return { decide, generateImage, violations };
 }
 
 /** Issue #154 NEW HIGH (blocker): the per-label expectation `run-manager.ts`'s dispatch-time

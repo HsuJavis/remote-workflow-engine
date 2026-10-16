@@ -226,7 +226,11 @@ export const ERROR_CATALOG = {
   IMAGE_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script generateImage() label has no params.images.<label> declaration' },
   IMAGE_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.images declares a label no generateImage() call in the script uses' },
   // v40 (DES-270, ADR-095, TASK-267): registration-time model/catalog checks for decide()/generateImage().
-  MODEL_TYPE_MISMATCH: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model is catalogued as a different modelType than the primitive requires (decide() needs 'decision', generateImage() needs 'image-gen')" },
+  // v40 Gate 6 delta (OD-1): generateImage()'s own requirement restated as "output modalities
+  // include image" (checkPrimitiveModelType's real, `modalitiesOut`-based check), not the retired
+  // "modelType is 'image-gen'" phrasing — a chat model whose output modalities include image
+  // (e.g. gemini-2.5-flash-image) passes too.
+  MODEL_TYPE_MISMATCH: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model is catalogued the wrong way for the primitive (decide() needs modelType 'decision'; generateImage() needs a model whose output modalities include 'image')" },
   PRIMITIVE_PROVIDER_UNSUPPORTED: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model.default does not start with 'openrouter/' — decide()/generateImage() only dispatch through the openrouter gateway" },
   // WARNING, never a refusal by itself: the catalog could not verify this model's modelType (e.g.
   // catalog unavailable, or the model is unknown/id-heuristic) — the call proceeds.

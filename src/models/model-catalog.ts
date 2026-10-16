@@ -63,7 +63,11 @@ export interface ModelEntry {
   description: string;
   modalities: { in: string[]; out: string[] };
   contextWindow: number | null;
-  price: ({ in: string; out: string; imageOutPerM?: number }) | 'free' | 'unknown';
+  price: ({ in: string; out: string }) | 'free' | 'unknown';
+  /** v40 (DES-269/DES-279, TASK-266/TASK-275): USD per 1M IMAGE-OUTPUT tokens, from
+   *  `pricing.image_output`. TOP-LEVEL sibling of `price` — never inside it — so it survives
+   *  every `displayPrice` outcome ('free'/'unknown'/object) instead of vanishing on a 0/0 row. */
+  imageOutPerM?: number;
   toolUse: boolean | 'unknown';
   location: 'local' | 'remote';
   /** issue #28 (2026-09-26: no aliases any more — every row is directly usable). The agent-ready
@@ -431,9 +435,8 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
     const ratesPerM = ratesFromOpenRouterPricing(m.pricing);
     const inMods = Array.isArray(m.architecture?.input_modalities) ? m.architecture!.input_modalities! : null;
     const r = m.reasoning && typeof m.reasoning === 'object' ? m.reasoning : null;
-    const basePrice = displayPrice(ratesPerM);
+    const price = displayPrice(ratesPerM);
     const imageOutPerM = imageOutPerMFrom(m.pricing);
-    const price = imageOutPerM !== undefined && typeof basePrice === 'object' ? { ...basePrice, imageOutPerM } : basePrice;
     out.push({
       provider: 'openrouter',
       model: m.id,
@@ -444,6 +447,7 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
       },
       contextWindow: typeof m.context_length === 'number' ? m.context_length : null,
       price,
+      ...(imageOutPerM !== undefined ? { imageOutPerM } : {}),
       toolUse: supported ? supported.includes('tools') : 'unknown',
       location: 'remote',
       ratesPerM,

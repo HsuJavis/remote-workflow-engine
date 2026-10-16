@@ -40,6 +40,16 @@ export interface CatalogSourceRow {
    *  test row, which is read the same as "unknown" by that gate's own unknown/id-heuristic warn arm. */
   modelType?: ModelType;
   modelTypeSource?: ModelTypeSource;
+  /** v40 Gate 6 delta (OD-1, DES-270, TASK-267): the catalog's own output modalities — a production
+   *  row (`ModelEntry.modalities`) always has this; absent on a hand-built test row, read by
+   *  `checkPrimitiveModelType`'s `images` rule the same as "no modalities info" (falls back to the
+   *  pre-delta `modelType === 'image-gen'` rule). */
+  modalities?: { out: readonly string[] };
+  /** v40 Gate 6 delta (DES-279, R-4, TASK-275): the catalog's own top-level per-image-output rate
+   *  (USD per 1M image-output tokens) — a production row (`ModelEntry.imageOutPerM`) carries this
+   *  SIBLING of `price`/`ratesPerM`, never inside either; `priceFromRow` below folds it onto the
+   *  pin's `FourRates` so `primitivePriceKnowable`/`pricePrimitiveCall` (run-guard.ts) see it. */
+  imageOutPerM?: number;
 }
 
 export interface BookSnapshot {
@@ -92,8 +102,11 @@ function capsFromRow(row: CatalogSourceRow): Caps {
  *  already did that parsing once (`model-catalog.ts`'s `buildCatalog`); re-parsing here would be a
  *  second writer of the same fact. */
 function priceFromRow(row: CatalogSourceRow): FourRates | null {
-  if (row.ratesPerM !== undefined) return row.ratesPerM;
-  return ratesFromOpenRouterPricing(row.pricing);
+  const base = row.ratesPerM !== undefined ? row.ratesPerM : ratesFromOpenRouterPricing(row.pricing);
+  // v40 Gate 6 delta (DES-279, R-4): `row.imageOutPerM` rides in TOP-LEVEL (never inside
+  // `ratesPerM`/`pricing`) — fold it onto the pin's `FourRates` here, the one place every source
+  // row (production `ModelEntry[]` or a raw feed) converges before `BookEntry.price`.
+  return base !== null && row.imageOutPerM !== undefined ? { ...base, imageOutPerM: row.imageOutPerM } : base;
 }
 
 interface BookCache {
@@ -230,7 +243,14 @@ export function toModelCatalogSnapshot(
   snapshot: BookSnapshot,
   harnessProviders?: readonly Provider[],
 ): {
-  entries: Array<{ provider: string; model: string; sameModelAs?: readonly string[]; modelType?: ModelType; modelTypeSource?: ModelTypeSource }>;
+  entries: Array<{
+    provider: string;
+    model: string;
+    sameModelAs?: readonly string[];
+    modelType?: ModelType;
+    modelTypeSource?: ModelTypeSource;
+    modalities?: { out: readonly string[] };
+  }>;
   source: BookSnapshot['source'];
   harnessProviders?: readonly Provider[];
 } {
@@ -241,7 +261,8 @@ export function toModelCatalogSnapshot(
     // HARNESS hint can name a real, catalog-linked OpenRouter ref (providers.ts's
     // `harnessUnsupportedSuggestion`) rather than a hard-coded example.
     // v40 (DES-270, TASK-267): `modelType`/`modelTypeSource` ride the same way, for
-    // `checkPrimitiveModelType`'s registration-time gate.
+    // `checkPrimitiveModelType`'s registration-time gate. v40 Gate 6 delta (OD-1): `modalities`
+    // rides the same way, for the images rule's "any output modality including image" check.
     entries: snapshot.entries.map((e) => {
       const sameModelAs = (e as { sameModelAs?: readonly string[] }).sameModelAs;
       return {
@@ -250,6 +271,7 @@ export function toModelCatalogSnapshot(
         ...(sameModelAs !== undefined ? { sameModelAs } : {}),
         ...(e.modelType !== undefined ? { modelType: e.modelType } : {}),
         ...(e.modelTypeSource !== undefined ? { modelTypeSource: e.modelTypeSource } : {}),
+        ...(e.modalities !== undefined ? { modalities: e.modalities } : {}),
       };
     }),
     source: snapshot.source,

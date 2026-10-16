@@ -175,6 +175,29 @@ export function resolveAgentParams(
   };
 }
 
+/** v40 Gate 6 delta (DES-277, ARCH-188/189, TASK-274): pure per-key fold of a validated
+ *  `decisions`/`images` run override over the declared `PrimitiveParamSpec` defaults — override ›
+ *  default, per key, same ladder shape as `resolveAgentParams` but with no `'engine'` rung (all
+ *  three keys are REQUIRED with a `.default` at registration, so a spec always resolves). `specs`
+ *  is the registration's own `ParamContract.decisions`/`.images` slice; `overrides` is that same
+ *  run's validated `UserOverrides.decisions`/`.images` (or absent for a no-overrides run, or a
+ *  nested `workflow()` frame, which never receives the parent's overrides). */
+export function resolvePrimitiveParams(
+  specs: Record<string, { model: { default?: unknown }; timeoutMs: { default?: unknown }; retries: { default?: unknown } }>,
+  overrides?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>,
+): Record<string, { model: string; timeoutMs: number; retries: number }> {
+  const out: Record<string, { model: string; timeoutMs: number; retries: number }> = {};
+  for (const [label, spec] of Object.entries(specs)) {
+    const ov = overrides?.[label];
+    out[label] = {
+      model: ov?.model ?? (spec.model.default as string),
+      timeoutMs: ov?.timeoutMs ?? (spec.timeoutMs.default as number),
+      retries: ov?.retries ?? (spec.retries.default as number),
+    };
+  }
+  return out;
+}
+
 export const USER_INSTRUCTIONS_OPEN = '\n\n<user-instructions untrusted="true">\n';
 export const USER_INSTRUCTIONS_CLOSE = '\n</user-instructions>';
 

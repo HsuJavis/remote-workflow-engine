@@ -56,7 +56,7 @@ export const COMPACT_FIELDS = [
 
 /** Every top-level key a full row carries (the `fields` vocabulary). */
 export const ALL_FIELDS = [
-  'ref', 'provider', 'model', 'description', 'modalities', 'contextWindow', 'price', 'location', 'besteffort', 'ratesPerM',
+  'ref', 'provider', 'model', 'description', 'modalities', 'contextWindow', 'price', 'location', 'besteffort', 'ratesPerM', 'imageOutPerM',
   'capability', 'stability', 'costLevel', 'toolUseDeclared', 'effortDeclared', 'declaredSource', 'catalogFetchedAt',
   'toolUseVerified', 'proseVerified', 'lastProbedAt', 'probeDetail', 'stabilitySource', 'probeFailureReason',
   'modelType', 'modelTypeSource', 'limits', 'capabilities', 'effortAppliedOnTransport', 'pricingDetail', 'local',
