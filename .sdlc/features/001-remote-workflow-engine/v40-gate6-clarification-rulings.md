@@ -39,3 +39,19 @@ accepts a model whose catalog **output modalities include `image`**, whatever it
 
 Out of scope / do not touch: `package-lock.json` churn from an `npm install` (platform optional deps
 only, `package.json` unchanged). It is left uncommitted and must not be "fixed" with `git checkout`.
+
+## Round 2 — second Gate 6 stop (run `wf_93b33a88-4c8`, 2026-10-16)
+
+Full suite at the stop: 6273 tests, 25 failed in 11 files (report: `.sdlc/.scratch/v40-fullsuite.json`).
+The core decide()/generateImage() path still ends `failed` end-to-end, and the registration declare/use checks
+(`primitive-contract.test.ts`) are not wired. Gate 6 is not done; these rulings unblock it.
+
+| # | Clarification | Ruling |
+|---|---|---|
+| R-18 | IT-154 forbids the string `PRICE_UNKNOWN` (ADR-038, v26: unpriced agent() is admitted at $0), but V40-Q12 refuses unpriced primitive calls under a USD budget | **Owner decided 2026-10-16: 「分開處理」.** Primitives refuse with `PRICE_UNKNOWN`; `agent()` keeps ADR-038's admit behaviour unchanged. Narrow IT-154 so it pins only "the agent() path never emits `PRICE_UNKNOWN`" (e.g. an unpriced agent call under a USD budget is admitted with `unpriced:true`), and drop the global grep. Record the split as an ADR-038 amendment line. |
+| R-19 | IT-314 never asserts the REQ-230 bound | **Strengthen IT-314**: stub provider with a fixed delay, then assert p95(script-observed − provider-observed) ≤ 200ms over 100 calls. Measure with timestamps from the stub, not wall-clock guesses. |
+| R-20 | `status-disclosure` (anonymous `/api/status`) now leaks `decideSemaphore`/`imageSemaphore` | **Security regression; fix.** Anonymous callers keep exactly `{agentSemaphore, version}`. The new gauges go only on the authenticated branch. The test is right; do not edit it. |
+| R-21 | `authoring-guide` EXAMPLE_MODEL invariant broken by the decide/image guide examples | **Extend the invariant, don't weaken it**: chat examples keep `EXAMPLE_MODEL`; decide/image examples use single constants `EXAMPLE_DECISION_MODEL` / `EXAMPLE_IMAGE_MODEL`, and the test pins each kind to its constant. |
+| R-22 | `register-bash-subsumption-warning`: a guide example (decide gate with agent fallback) trips a warning | **Fix the example**, not the warning: guide examples must register warning-free. |
+| R-23 | Tests use `openrouter/black-forest-labs/flux-1.1-pro`, which OpenRouter has retired (live catalog → `UNKNOWN_MODEL`) | **Replace** with `EXAMPLE_IMAGE_MODEL` (a live-listed image model; per OD-1 `google/gemini-2.5-flash-image` qualifies), and add that row to `tests/fixtures/models/openrouter-models-all.json`. Tests stop depending on a retired id. |
+| R-24 | Full-suite enumeration was tail-only | **Done by the orchestrator**: the 11 failing files are listed above. Gate 6 closes only when the full suite is green apart from failures proven to predate v40. |
