@@ -49,7 +49,7 @@ describe('VAL-262: REQ-227 — limited retries then a named error; 4xx (not 429)
       `;
       const started: any = await runScriptVia(callerFor(s), script, {});
       const view = await poll(s, started.runId ?? started.result?.runId);
-      expect(view.error?.code ?? view.code).toBe('PRIMITIVE_FAILED');
+      expect(view.result?.error?.code ?? view.error?.code, JSON.stringify(view.result?.error ?? null)).toBe('PRIMITIVE_FAILED'); // run_status carries the terminal error at result.error
       expect(stub.calls).toHaveLength(2);
     } finally { await s.close(); }
   });
@@ -109,29 +109,42 @@ describe('VAL-264: REQ-229 — event log carries metadata only', () => {
 });
 
 describe('VAL-265: REQ-230 — engine overhead p95 <= 200ms over 100 decide() calls', () => {
-  it('(script-observed elapsed) minus (providerMs) has p95 <= 200ms over 100 calls against a fixed-latency stub', async () => {
-    const FIXED_PROVIDER_MS = 5;
-    const steps = Array.from({ length: 100 }, () => ({ status: 200, body: { answers: { ok: { type: 'noul', noul: 0.5 } } } }));
-    const stub = makeStubFetch(steps);
-    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r230'), directDeps: { fetch: stub.fetch } } as never);
+  // v40 Gate 6 follow-up: the script may not call Date.now() (the sandbox determinism guard refuses
+  // it), so — as IT-314 does — every timestamp is taken STUB-side in the test process. 101 sequential
+  // calls against a fixed 20ms provider delay; overhead_i = start[i+1] − end[i] (the script-observed
+  // cycle minus the provider-observed time) → 100 samples; p95 <= 200ms. Real entrypoint
+  // (createServer + MCP HTTP); the provider wire is the only stub.
+  it('(script-observed cycle) minus (provider-observed time) has p95 <= 200ms over 100 calls against a fixed-latency stub', async () => {
+    const FIXED_PROVIDER_MS = 20;
+    const CALLS = 101;
+    const inner = makeStubFetch(Array.from({ length: CALLS }, () => ({ status: 200, body: { answers: { ok: { type: 'noul', noul: 0.5 } } } })));
+    const start: number[] = [];
+    const end: number[] = [];
+    const timedFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      start.push(performance.now());
+      await new Promise((r) => setTimeout(r, FIXED_PROVIDER_MS));
+      const res = await inner.fetch(input, init);
+      end.push(performance.now());
+      return res;
+    }) as typeof fetch;
+    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r230'), directDeps: { fetch: timedFetch, resolveKey: () => 'sk-test' } } as never);
     try {
-      const calls = Array.from({ length: 100 }, (_, i) =>
-        `t${i}_start = Date.now(); await decide('gate', { state: {i:${i}}, questions: { ok: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } }); elapsed.push(Date.now() - t${i}_start);`,
+      const calls = Array.from({ length: CALLS }, (_, i) =>
+        `await decide('gate', { state: {i:${i}}, questions: { ok: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } });`,
       ).join('\n');
       const script = `
         export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
-        const elapsed = []; let ${Array.from({ length: 100 }, (_, i) => `t${i}_start`).join(', ')};
         ${calls}
-        return { elapsed };
+        return 'done';
       `;
       const started: any = await runScriptVia(callerFor(s), script, {});
       const view = await poll(s, started.runId ?? started.result?.runId, 1000);
-      expect(view.status).toBe('completed');
-      const elapsed: number[] = view.result?.elapsed ?? [];
-      expect(elapsed).toHaveLength(100);
-      const overhead = elapsed.map((e) => e - FIXED_PROVIDER_MS).sort((a, b) => a - b);
-      const p95 = overhead[Math.min(overhead.length - 1, Math.ceil(0.95 * overhead.length) - 1)];
+      expect(view.status, JSON.stringify(view.result?.error ?? null)).toBe('completed');
+      expect(start).toHaveLength(CALLS);
+      expect(end).toHaveLength(CALLS);
+      const overhead = Array.from({ length: CALLS - 1 }, (_, i) => start[i + 1]! - end[i]!).sort((a, b) => a - b);
+      const p95 = overhead[Math.min(overhead.length - 1, Math.ceil(0.95 * overhead.length) - 1)]!;
       expect(p95).toBeLessThanOrEqual(200);
     } finally { await s.close(); }
-  }, 30000);
+  }, 60000);
 });

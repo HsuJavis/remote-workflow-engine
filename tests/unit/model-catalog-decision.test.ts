@@ -42,7 +42,7 @@ describe('UT-346: catalog decision type + imageOutPerM (DES-269)', () => {
 
   it('the FLUX image-only row stays modelType:"image-gen" (unchanged)', async () => {
     const { entries } = await buildFromFixture();
-    const flux = entries.find((e) => e.model === 'black-forest-labs/flux-1.1-pro');
+    const flux = entries.find((e) => e.model === 'black-forest-labs/flux-3-image'); // R-23: live image-only row replaced the retired FLUX 1.1 Pro row
     expect(flux?.modelType).toBe('image-gen');
   });
 

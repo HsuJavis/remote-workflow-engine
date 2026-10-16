@@ -8987,11 +8987,12 @@ File: `tests/unit/dashboard-diagram-render.test.ts` (3 cases, source-text assert
 vacuous-but-correct green pin (true today, must stay true).
 
 ### UT-159 — buildAuthoringGuide(inputs): pure over resolved ceilings; GUIDE_EXAMPLES
-- **status:** green
+- **status:** red
 - **traces:** DES-157
 - **tier:** unit
 - **real:** false
-- **result:** pass
+- **result:** fail
+- **delta (v40 Gate 6, ruling R-21):** the single-`EXAMPLE_MODEL` invariant is EXTENDED per kind: chat examples → `EXAMPLE_MODEL`; `decide()` examples → `EXAMPLE_DECISION_MODEL` in the `decisions` block; `generateImage()` examples → `EXAMPLE_IMAGE_MODEL` in the `images` block; every `model:` default in every example is one of the three; ≥1 decide and ≥1 image example exist. Measured RED (1/111, the invariant case only): `EXAMPLE_DECISION_MODEL` is not exported (src has `EXAMPLE_DECIDE_MODEL`) — goes green once TASK-273 renames it (verified by aliasing the import: 111/111) and sets the DES-276 values.
 - **iter:** v24
 
 File: `tests/unit/authoring-guide.test.ts` (5 cases: ceiling interpolation, ≥10 examples with the
@@ -10835,15 +10836,13 @@ fallthrough swallows it, since `TranscriptEvent.kind` has no `'refused'` member 
 - **tier:** integration
 - **real:** false
 - **result:** pass
+- **delta (v40 Gate 6, ruling R-18, owner 2026-10-16 「分開處理」):** the global `PRICE_UNKNOWN` grep case is REMOVED (the primitives now legitimately emit it — ARCH-191/ADR-091). Replaced by an agent-path pin: a listed-but-unpriced `openrouter/vendor/not-in-catalog` model, `run_start` with `budget:{usd:1}`, one `agent()` call → run `completed`, record `state:'done'`, `unpriced:true`, `costUSD:0`, and the string appears nowhere in `run_status`/`run_result` (ADR-038 amendment). Measured GREEN (2/2) — characterizes shipped ADR-038 behaviour; the primitive half is VAL-260.
 - **iter:** v26
 
 File: `tests/integration/public-shapes-pin.test.ts` (2 cases, over `tests/fixtures/v26-public-shapes.ts`).
 Red (measured): the key-set case fails — today's `AgentRecord` carries `tokens:{input,output}` (two
 columns) and no `costUSD`/`unpriced`/`transport`/`proxyModel`/`phaseIndex` at all. The
-`PRICE_UNKNOWN` grep is a **green-by-construction invariant** (ADR-038's decision was a deletion
-item, never an implementation one — ADR-038 itself confirms the code was never written; ADR-039's
-sibling `no-retired-surface.test.ts` precedent is followed: the guard's own source splits the needle
-string so it cannot self-match).
+former `PRICE_UNKNOWN` grep case was replaced by the agent-path pin (see the R-18 delta above).
 
 ### v26 — REQ-121..130 acceptance (VAL), Gate 5 seed
 
@@ -16768,6 +16767,7 @@ sha-mismatch/symlinked. Red confirmed: module-not-found.
 - **tier:** unit
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6, ruling R-23):** the fixture's retired `black-forest-labs/flux-1.1-pro` image-only row is replaced by the LIVE `black-forest-labs/flux-3-image` row (copied verbatim from `https://openrouter.ai/api/v1/models?output_modalities=all`, 2026-10-16); it is image-only, so not a chat row and the golden is untouched. The `google/gemini-2.5-flash-image` row is left as-is (it is a text-output row inside the golden; re-copying the live row would change the golden). The sanity case now expects `flux-3-image`. Measured green (2/2) after the swap.
 - **delta (v40 Gate 6, 2026-10-16):** RED since 0c31a63 — the Gate 6 WIP placed `imageOutPerM` INSIDE gemini's display `price` object, changing a pre-existing chat row (REQ-222 last clause). The comparison now strips only the additive TOP-LEVEL `imageOutPerM` key (DES-269/DES-279 deltas); the golden file (provenance `0e19fae`, R-1) is unchanged. Green again when TASK-275 moves the field.
 - **iter:** v40
 
@@ -16786,6 +16786,7 @@ Confirmed green: 2/2 passing.
 - **tier:** unit
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6, ruling R-23):** the image-only case reads `black-forest-labs/flux-3-image` (live row) instead of the retired `flux-1.1-pro`. Measured green (7/7) after the swap.
 - **delta (v40 Gate 6, R-4):** the gemini assertion now reads the TOP-LEVEL `imageOutPerM` (and asserts the display `price` does NOT carry it); the absent case also asserts no top-level key; the golden case strips only the additive top-level `imageOutPerM` (same rule as UT-345). Red (2/7) for the right reason: the 0c31a63 impl puts the rate inside `price`.
 - **iter:** v40
 
@@ -16977,11 +16978,12 @@ merely "it failed" — a bare ReferenceError satisfies "fetch never called" vacu
 test's code-specific assertion does not. Red confirmed.
 
 ### IT-312 — resume replay precondition: a decide+image run completes once
-- **status:** red
+- **status:** green
 - **traces:** REQ-226, DES-274, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
+- **delta (v40 Gate 6 follow-up):** test hermeticity fix — the RunManager now gets `directDeps.resolveKey: () => 'sk-test'`; before, the run failed `OPENROUTER_AUTH_MISSING` (no key in the test env), a test bug, not the feature. Measured GREEN (1/1).
 - **iter:** v40
 
 File: `tests/integration/primitive-resume.test.ts` (new). Reduction (disclosed): the full "stop
@@ -16990,11 +16992,12 @@ at all; this pins that precondition with a strong (non-vacuous) `status==='compl
 The full resume claim is carried by E2E-011. Red confirmed.
 
 ### IT-313 — sentinel sweep with positive control
-- **status:** red
+- **status:** green
 - **traces:** REQ-229, DES-274, TASK-271
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
+- **delta (v40 Gate 6 follow-up):** same `directDeps.resolveKey` injection as IT-312/IT-314 (the run failed `OPENROUTER_AUTH_MISSING`, so the positive control never saw a request). Measured GREEN (1/1).
 - **iter:** v40
 
 File: `tests/integration/primitive-sentinel-sweep.test.ts` (new). ONE test, control-gated: the
@@ -17002,17 +17005,17 @@ positive control (the stub provider actually received both sentinels) is asserte
 leak-free sweep, in the SAME test — a run that never reaches the provider would otherwise pass the
 leak-free check vacuously. Red confirmed (fails at the control).
 
-### IT-314 — engine overhead precondition: 100 decide() calls each complete
-- **status:** red
+### IT-314 — engine overhead p95 <= 200ms over 100 decide() calls (stub-side timestamps)
+- **status:** green
 - **traces:** REQ-230, DES-274, TASK-271
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
+- **delta (v40 Gate 6, ruling R-19):** strengthened — 101 sequential `decide()` calls against a stub with a fixed 20ms provider delay; every timestamp is taken stub-side (`performance.now()` in the test process — script `Date.now()` is refused by the determinism guard and the run's `FixedClock` makes event timestamps useless). overhead_i = `start[i+1] − end[i]` (script-observed cycle minus provider-observed time) → 100 samples, asserts p95 ≤ 200ms, plus a sanity check that each provider leg really waited. Test fix: the RunManager now gets `directDeps.resolveKey` (without it the run failed `OPENROUTER_AUTH_MISSING`, a hermeticity bug, not the feature). Measured GREEN at 8c5fad2+WIP (p95 ≈ 2.7ms); a perturbed bound of 0 fails, so the assertion is live.
 - **iter:** v40
 
-File: `tests/integration/primitive-latency.test.ts` (new). Reduction (disclosed): pins the
-precondition (100 calls each complete) with a strong assertion; the real p95 percentile
-measurement is carried by VAL-265 (acceptance tier), not duplicated here. Red confirmed.
+File: `tests/integration/primitive-latency.test.ts` (new). Originally pinned only the precondition
+(100 calls each complete); since ruling R-19 it carries the REQ-230 p95 bound itself (see delta).
 
 ### IT-315 — GUIDE_EXAMPLES decide/image entries register over real MCP HTTP
 - **status:** red
@@ -17101,6 +17104,7 @@ agent) — this VAL covers the structural clauses only; noted, not silently drop
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6 follow-up):** the old ref `openrouter/typesafe/unpriced-model` was unlisted, so registration refused `UNKNOWN_MODEL` before the budget path. No live decision model is unpriced, so the test now uses a CONTROLLED catalog stub (`modelCatalog` → `buildCatalog` over a listed `typesafe/unpriced-decider` row, `output_modalities:['decisions']`, no `pricing`), `budget:{usd:1}`, `directDeps:{fetch, resolveKey}`; also fixed the error read path (`run_status` carries it at `result.error`, not top-level `error`). Intent kept: PRICE_UNKNOWN, stub fetch count 0. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` into RunManager (TASK-272 note). With `OPENROUTER_API_KEY=sk-test` in env it passes (diagnostic only), so the pricing/refusal path itself works.
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. An unpriceable model under a USD budget
@@ -17158,6 +17162,7 @@ same test. Red confirmed: fails at the control.
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
+- **delta (v40 Gate 6 follow-up):** the in-script `Date.now()` is removed (the sandbox determinism guard refuses it, so the case could never pass). Now measured as IT-314: 101 calls, fixed 20ms stub delay, stub-side `performance.now()` timestamps, overhead_i = `start[i+1] − end[i]`, 100 samples, p95 ≤ 200ms; `directDeps:{fetch, resolveKey}`. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` (TASK-272 note).
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-nfr.test.ts`. The one genuinely new, non-derivative measurement in

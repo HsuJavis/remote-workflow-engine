@@ -21,16 +21,7 @@
       "pricing": { "prompt": "0.0000005", "completion": "0.000001" },
       "supported_parameters": []
     },
-    {
-      "id": "black-forest-labs/flux-1.1-pro",
-      "name": "FLUX 1.1 Pro",
-      "description": "Image generation, image output only",
-      "created": 1735689600,
-      "context_length": 0,
-      "architecture": { "input_modalities": ["text"], "output_modalities": ["image"] },
-      "pricing": { "prompt": "0", "completion": "0", "image": "0.04" },
-      "supported_parameters": []
-    },
+    {"id": "black-forest-labs/flux-3-image", "canonical_slug": "black-forest-labs/flux-3-image-20261001", "hugging_face_id": null, "name": "Black Forest Labs: FLUX 3 Image", "created": 1790885807, "description": "FLUX.3 Image is Black Forest Labs' flagship image generation and editing model. It handles text-to-image and multi-reference editing with up to 10 input images, and renders at fixed resolution tiers...", "context_length": 46864, "architecture": {"modality": "text+image->image", "input_modalities": ["text", "image"], "output_modalities": ["image"], "tokenizer": "Other", "instruct_type": null}, "pricing": {"prompt": "0", "completion": "0", "image_token": "0.00000982035928143713", "image_output": "0.00000982035928143713"}, "top_provider": {"context_length": 46864, "max_completion_tokens": 42177, "is_moderated": false}, "per_request_limits": null, "supported_parameters": ["seed"], "default_parameters": {}, "supported_voices": null, "knowledge_cutoff": null, "expiration_date": null, "links": {"details": "/api/v1/models/black-forest-labs/flux-3-image-20261001/endpoints"}},
     {
       "id": "google/gemini-2.5-flash-image",
       "name": "Gemini 2.5 Flash Image",

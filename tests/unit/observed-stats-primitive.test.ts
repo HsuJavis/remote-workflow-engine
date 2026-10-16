@@ -9,6 +9,9 @@
 import { describe, it, expect } from 'vitest';
 import { loadFacts, aggregateFacts, type ObservedStatsSource, type AgentCallFact } from '../../src/models/observed-stats.js';
 import type { TranscriptEvent } from '../../src/types.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
+const IMAGE_MODEL_ID = EXAMPLE_IMAGE_MODEL.replace(/^openrouter\//, ''); // event data carries the post-split id
 
 function fakeSource(transcripts: Map<string, TranscriptEvent[]>): ObservedStatsSource {
   return {
@@ -37,8 +40,8 @@ describe('UT-352: loadFacts kind bucket for primitives (DES-273)', () => {
 
   it('an image usage event produces a fact with kind:"image"', () => {
     const events: TranscriptEvent[] = [
-      { ts: '2026-10-01T00:00:00Z', kind: 'harness', data: { descriptor: { model: 'black-forest-labs/flux-1.1-pro', provider: 'openrouter', label: 'hero' } } },
-      { ts: '2026-10-01T00:00:01Z', kind: 'usage', data: { primitive: 'image', label: 'hero', agentKey: 'hero', provider: 'openrouter', model: 'black-forest-labs/flux-1.1-pro', startedAt: '2026-10-01T00:00:00Z', costUSD: 0.03, unpriced: false } },
+      { ts: '2026-10-01T00:00:00Z', kind: 'harness', data: { descriptor: { model: IMAGE_MODEL_ID, provider: 'openrouter', label: 'hero' } } },
+      { ts: '2026-10-01T00:00:01Z', kind: 'usage', data: { primitive: 'image', label: 'hero', agentKey: 'hero', provider: 'openrouter', model: IMAGE_MODEL_ID, startedAt: '2026-10-01T00:00:00Z', costUSD: 0.03, unpriced: false } },
     ];
     const transcripts = new Map([['agent-2', events]]);
     const facts = loadFacts(fakeSource(transcripts), '2026-10-01T00:00:00Z');

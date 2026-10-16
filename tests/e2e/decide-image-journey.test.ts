@@ -17,6 +17,8 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
 import { makeStubFetch } from '../helpers/stub-fetch.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 
 async function call(s: Server, name: string, args: unknown): Promise<any> {
   const res = await fetch(`http://127.0.0.1:${s.port}/mcp`, {
@@ -55,7 +57,7 @@ describe('E2E-011: register -> run -> stop -> resume -> workspace_list/pull -> r
     const script = `
       export const meta = { phases: [], params: {
         decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } },
-        images: { hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
+        images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
       } };
       const d = await decide('gate', { state: {}, questions: { ok: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } });
       const img = await generateImage('hero', { prompt: 'a red dog' });

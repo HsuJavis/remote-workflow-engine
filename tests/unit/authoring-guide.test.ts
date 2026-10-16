@@ -3,7 +3,7 @@
 // alias in any example script. Written test-first (Gate 5, RED) — src/authoring-guide.ts does
 // not exist yet.
 import { describe, it, expect } from 'vitest';
-import { buildAuthoringGuide, GUIDE_EXAMPLES, EXAMPLE_MODEL } from '../../src/authoring-guide.js';
+import { buildAuthoringGuide, GUIDE_EXAMPLES, EXAMPLE_MODEL, EXAMPLE_DECISION_MODEL, EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 import { SHAPES, EDGE_FORMS } from '../../src/check-mermaid.js';
 // v37 owner ruling on DES-258 (ARCH-181, ADR-083 posture C): the load-bearing correction test
 // below calls the REAL boot probe against THIS host, same precedent as UT-323b.
@@ -49,15 +49,48 @@ describe('buildAuthoringGuide (UT-159, DES-157)', () => {
   // static full ref (`EXAMPLE_MODEL`), which is the whole point (a deployment-independent, always-
   // valid static-table id, never a per-deployment alias name). The successor property: every example
   // that declares a model uses EXACTLY that one ref, never a different hard-coded alternative.
-  it('every example script that declares a model uses the SAME static EXAMPLE_MODEL ref, never a different hard-coded alternative', () => {
+  //
+  // v40 Gate 6 ruling R-21: extended, not weakened — each KIND of example pins to its OWN single
+  // constant. A chat example (agents) declares EXAMPLE_MODEL; a decide() example declares
+  // EXAMPLE_DECISION_MODEL in its `decisions` block; a generateImage() example declares
+  // EXAMPLE_IMAGE_MODEL in its `images` block. Every `model:` default in every example is one of the
+  // three constants and nothing else.
+  it('every example script pins each model kind to its single constant: chat → EXAMPLE_MODEL, decide → EXAMPLE_DECISION_MODEL, image → EXAMPLE_IMAGE_MODEL', () => {
     expect(EXAMPLE_MODEL).toMatch(/^anthropic\//);
+    expect(EXAMPLE_DECISION_MODEL).toMatch(/^openrouter\//);
+    expect(EXAMPLE_IMAGE_MODEL).toMatch(/^openrouter\//);
+    const ALLOWED = new Set([EXAMPLE_MODEL, EXAMPLE_DECISION_MODEL, EXAMPLE_IMAGE_MODEL]);
     const otherModelLiterals = /sonnet-5|opus|gpt-4/; // EXAMPLE_MODEL itself contains "haiku"
-    for (const ex of GUIDE_EXAMPLES as Array<{ script: string }>) {
+    let decideSeen = 0;
+    let imageSeen = 0;
+    for (const ex of GUIDE_EXAMPLES as Array<{ title: string; script: string }>) {
       expect(ex.script).not.toMatch(otherModelLiterals);
-      if (ex.script.includes('model:')) {
-        expect(ex.script).toContain(EXAMPLE_MODEL);
+      // every declared model default in the example is one of the three constants
+      for (const m of ex.script.matchAll(/model:\s*\{[^}]*default:\s*'([^']+)'/g)) {
+        expect(ALLOWED.has(m[1]!), `${ex.title}: model default '${m[1]}' is not one of the example constants`).toBe(true);
+      }
+      const usesDecide = /\bdecide\(/.test(ex.script);
+      const usesImage = /\bgenerateImage\(/.test(ex.script);
+      if (usesDecide) {
+        decideSeen++;
+        const block = ex.script.slice(ex.script.indexOf('decisions:'));
+        expect(block, `${ex.title}: decisions block`).toContain(`default: '${EXAMPLE_DECISION_MODEL}'`);
+        expect(ex.script, `${ex.title}: decide example must not use the image constant`).not.toContain(EXAMPLE_IMAGE_MODEL);
+      }
+      if (usesImage) {
+        imageSeen++;
+        const block = ex.script.slice(ex.script.indexOf('images:'));
+        expect(block, `${ex.title}: images block`).toContain(`default: '${EXAMPLE_IMAGE_MODEL}'`);
+        expect(ex.script, `${ex.title}: image example must not use the decision constant`).not.toContain(EXAMPLE_DECISION_MODEL);
+      }
+      if (!usesDecide && !usesImage && ex.script.includes('model:')) {
+        expect(ex.script, `${ex.title}: chat example`).toContain(EXAMPLE_MODEL);
+        expect(ex.script).not.toContain(EXAMPLE_DECISION_MODEL);
+        expect(ex.script).not.toContain(EXAMPLE_IMAGE_MODEL);
       }
     }
+    expect(decideSeen, 'at least one decide() guide example').toBeGreaterThan(0);
+    expect(imageSeen, 'at least one generateImage() guide example').toBeGreaterThan(0);
   });
 
   it('the guide names the one-level nesting limit and the flatten instruction', () => {

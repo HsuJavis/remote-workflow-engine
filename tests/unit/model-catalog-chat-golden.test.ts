@@ -45,7 +45,7 @@ describe('UT-345: chat-rows golden (Mode C characterization, DES-269)', () => {
     const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as { data: { id: string }[] };
     const ids = fixture.data.map((d) => d.id);
     expect(ids).toContain('typesafe/jev-1.13');
-    expect(ids).toContain('black-forest-labs/flux-1.1-pro');
+    expect(ids).toContain('black-forest-labs/flux-3-image'); // R-23: live image-only row (copied from the live API 2026-10-16) replaced the retired FLUX 1.1 Pro row
     expect(ids).toContain('google/gemini-2.5-flash-image');
   });
 });

@@ -16,6 +16,8 @@ import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import { startScript } from '../helpers/workflow-fixtures.js';
 import { makeStubFetch } from '../helpers/stub-fetch.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 
 async function pollStatus(mgr: RunManager, runId: string, ms = 20, maxIter = 150): Promise<any> {
   for (let i = 0; i < maxIter; i++) {
@@ -31,7 +33,7 @@ const PROMPT_SENTINEL = 'sentinel-prompt-4a1f88';
 
 const META = `export const meta = { phases: [], params: {
   decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } },
-  images: { hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
+  images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
 } };`;
 
 const SCRIPT = `
@@ -52,7 +54,7 @@ describe('IT-313: sentinel sweep with positive control (REQ-229)', () => {
       { status: 200, body: { id: 'g1', choices: [{ message: { content: '', images: [] } }] } },
     ]);
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-10-01T00:00:00Z')));
-    const mgr = new RunManager({ store, directDeps: { fetch: stub.fetch } } as any);
+    const mgr = new RunManager({ store, directDeps: { fetch: stub.fetch, resolveKey: () => 'sk-test' } } as any);
     const runId = await startScript(mgr, SCRIPT, {});
     const view = await pollStatus(mgr, runId);
 

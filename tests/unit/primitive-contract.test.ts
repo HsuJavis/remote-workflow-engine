@@ -14,6 +14,8 @@
 // `.images` or the DES-271 refusal never fires; `MAX_PRIMITIVE_RETRIES` is not exported.
 import { describe, it, expect } from 'vitest';
 import { parseParamContract, MAX_PRIMITIVE_RETRIES } from '../../src/params/contract.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 
 const VALID_AGENT_SPEC = { model: { type: 'string' as const, default: 'anthropic/claude-sonnet-5' }, effort: { type: 'enum' as const, default: 'medium' }, timeoutMs: { type: 'number' as const, default: 60000 } };
 
@@ -56,7 +58,7 @@ describe('UT-348: decisions/images declared<=>used (DES-271)', () => {
 
   it('a declared+used image label parses into value.images', () => {
     const r = parseParamContract(
-      { agents: {}, images: { hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } } },
+      { agents: {}, images: { hero: { model: { type: 'string', default: EXAMPLE_IMAGE_MODEL }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } } },
       [], { decide: [], generateImage: ['hero'] } as never,
     ) as { ok: true; value: { images?: Record<string, unknown> } };
     expect(r.ok).toBe(true);

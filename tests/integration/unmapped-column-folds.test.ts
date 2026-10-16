@@ -15,6 +15,9 @@ import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import { foldUsage, ZERO_TOKENS } from '../../src/run-guard.js';
 import { startScript } from '../helpers/workflow-fixtures.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
+const IMAGE_MODEL_ID = EXAMPLE_IMAGE_MODEL.replace(/^openrouter\//, ''); // event data carries the post-split id
 
 async function pollStatus(mgr: RunManager, runId: string, ms = 20, maxIter = 100): Promise<any> {
   for (let i = 0; i < maxIter; i++) {
@@ -212,7 +215,7 @@ describe('foldUsage widened guard: a tokenless reported-cost event is still coun
   it('an absent-cost image usage event (no tokens, unpriced) still counts as one unpriced call, not silently dropped', () => {
     const events = [{
       ts: '2026-10-01T00:00:00Z', kind: 'usage',
-      data: { primitive: 'image', label: 'hero', provider: 'openrouter', model: 'black-forest-labs/flux-1.1-pro', costUSD: 0, unpriced: true },
+      data: { primitive: 'image', label: 'hero', provider: 'openrouter', model: IMAGE_MODEL_ID, costUSD: 0, unpriced: true },
     }];
     const result = foldUsage(events as any);
     expect(result.unpricedCalls).toBe(1);

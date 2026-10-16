@@ -9,6 +9,9 @@
 import { describe, it, expect } from 'vitest';
 import { checkPrimitiveModelType } from '../../src/providers.js';
 import { reachableModels } from '../../src/models/model-book.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
+// (the image-gen truth-table row above uses the live image-ONLY flux-3-image id, matching its modelType.)
 
 describe('UT-347: checkPrimitiveModelType truth table (DES-270)', () => {
   it('ok: known row, type matches required', () => {
@@ -49,7 +52,7 @@ describe('UT-347: checkPrimitiveModelType truth table (DES-270)', () => {
   });
 
   it('generateImage() requires "image-gen"', () => {
-    const r = checkPrimitiveModelType('image', 'hero', 'openrouter/black-forest-labs/flux-1.1-pro', { modelType: 'image-gen', modelTypeSource: 'openrouter-modalities' }, true);
+    const r = checkPrimitiveModelType('image', 'hero', 'openrouter/black-forest-labs/flux-3-image', { modelType: 'image-gen', modelTypeSource: 'openrouter-modalities' }, true);
     expect(r).toEqual({ ok: true });
   });
 });
@@ -59,10 +62,10 @@ describe('UT-347: reachableModels covers decisions[*]/images[*] (DES-270)', () =
     const models = reachableModels({
       model: 'openrouter/anthropic/claude-sonnet-5',
       decisions: { gate: { model: 'openrouter/typesafe/jev-1.13', timeoutMs: 5000, retries: 2 } },
-      images: { hero: { model: 'openrouter/black-forest-labs/flux-1.1-pro', timeoutMs: 120000, retries: 0 } },
+      images: { hero: { model: EXAMPLE_IMAGE_MODEL, timeoutMs: 120000, retries: 0 } },
     } as never);
     expect(models).toContain('openrouter/typesafe/jev-1.13');
-    expect(models).toContain('openrouter/black-forest-labs/flux-1.1-pro');
+    expect(models).toContain(EXAMPLE_IMAGE_MODEL);
   });
 
   it('includes a run-level override of a decisions/images model, not just the declared default', () => {

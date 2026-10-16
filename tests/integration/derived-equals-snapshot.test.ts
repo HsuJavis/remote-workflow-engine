@@ -13,6 +13,9 @@ import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import { deriveAgentRecords } from '../../src/run-store.js';
 import { startScript } from '../helpers/workflow-fixtures.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
+const IMAGE_MODEL_ID = EXAMPLE_IMAGE_MODEL.replace(/^openrouter\//, ''); // event data carries the post-split id
 
 async function pollStatus(mgr: RunManager, runId: string, ms = 20, maxIter = 150): Promise<any> {
   for (let i = 0; i < maxIter; i++) {
@@ -71,13 +74,13 @@ describe('derived AgentRecords deep-equal the terminal snapshot, minus lastActiv
       { ts: '2026-10-01T00:00:00Z', kind: 'usage', data: { primitive: 'decide', label: 'gate', agentKey: 'gate', provider: 'openrouter', model: 'typesafe/jev-1.13', startedAt: '2026-10-01T00:00:00Z', costUSD: 0.002, unpriced: false } },
     ];
     const imageEvents: any[] = [
-      { ts: '2026-10-01T00:00:00Z', kind: 'usage', data: { primitive: 'image', label: 'hero', agentKey: 'hero', provider: 'openrouter', model: 'black-forest-labs/flux-1.1-pro', startedAt: '2026-10-01T00:00:00Z', costUSD: 0, unpriced: true } },
+      { ts: '2026-10-01T00:00:00Z', kind: 'usage', data: { primitive: 'image', label: 'hero', agentKey: 'hero', provider: 'openrouter', model: IMAGE_MODEL_ID, startedAt: '2026-10-01T00:00:00Z', costUSD: 0, unpriced: true } },
     ];
     const transcripts = new Map<string, any>([['agent-decide', decideEvents], ['agent-image', imageEvents]]);
     const records = deriveAgentRecords(transcripts, 'completed');
     const decideRec = records.find((r: any) => r.agentId === 'agent-decide');
     const imageRec = records.find((r: any) => r.agentId === 'agent-image');
     expect(decideRec).toMatchObject({ kind: 'decide', label: 'gate', model: 'typesafe/jev-1.13', costUSD: 0.002, unpriced: false });
-    expect(imageRec).toMatchObject({ kind: 'image', label: 'hero', model: 'black-forest-labs/flux-1.1-pro', unpriced: true });
+    expect(imageRec).toMatchObject({ kind: 'image', label: 'hero', model: IMAGE_MODEL_ID, unpriced: true });
   });
 });

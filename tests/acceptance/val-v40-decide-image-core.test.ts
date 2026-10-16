@@ -20,6 +20,9 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { runScriptVia, registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 import { makeStubFetch } from '../helpers/stub-fetch.js';
+import { buildCatalog } from '../../src/models/model-catalog.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 
 let server: Server;
 let serverPi: Server;
@@ -98,7 +101,7 @@ describe('VAL-255: REQ-220 — decide(label, {state, questions}) returns a typed
 describe('VAL-256: REQ-221 — generateImage(label, {prompt, inputImages?, outDir?}) writes real files, never base64 in the reply', () => {
   it('a bare prompt call returns workspace-relative file paths that actually exist and are pullable', async () => {
     const script = `
-      export const meta = { phases: [], params: { images: { hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
+      export const meta = { phases: [], params: { images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
       const r = await generateImage('hero', { prompt: 'a red dog' });
       return r;
     `;
@@ -115,7 +118,7 @@ describe('VAL-256: REQ-221 — generateImage(label, {prompt, inputImages?, outDi
 
   it('inputImages with an escaping path (../x.png) is refused BEFORE calling the provider', async () => {
     const script = `
-      export const meta = { phases: [], params: { images: { hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
+      export const meta = { phases: [], params: { images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
       const r = await generateImage('hero', { prompt: 'x', inputImages: ['../escape.png'] });
       return r;
     `;
@@ -168,18 +171,33 @@ describe('VAL-259: REQ-224 — static checks + served text cover decide/generate
 });
 
 describe('VAL-260: REQ-225 — cost accounting + USD budget', () => {
+  // v40 Gate 6 follow-up: the old ref `openrouter/typesafe/unpriced-model` is not in any catalog, so
+  // registration refused it UNKNOWN_MODEL before the budget path was ever reached. No live decision
+  // model is unpriced, so this uses a CONTROLLED catalog stub: a listed `decisions`-output row with no
+  // `pricing` — registrable (known, decision-typed) yet unpriceable at the admission pin. Intent kept:
+  // unpriced + USD budget → PRICE_UNKNOWN refusal, provider never called (R-18: primitive path only).
   it('a run with a USD budget whose model cannot be priced is refused PRICE_UNKNOWN, provider never called', async () => {
+    const UNPRICED_DECIDER = 'typesafe/unpriced-decider';
+    const notOk = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
+    const openrouterFetch = (async () => ({
+      ok: true,
+      json: async () => ({ data: [{ id: UNPRICED_DECIDER, architecture: { input_modalities: ['text'], output_modalities: ['decisions'] } }] }),
+    })) as unknown as typeof fetch;
     const localStub = makeStubFetch([DECIDE_OK_STUB]);
-    const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: mkdtempSync(join(tmpdir(), 'rwe-val260-')), directDeps: { fetch: localStub.fetch } } as never);
+    const s = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot: mkdtempSync(join(tmpdir(), 'rwe-val260-')),
+      modelCatalog: () => buildCatalog({ ollamaFetch: notOk, openrouterFetch }),
+      directDeps: { fetch: localStub.fetch, resolveKey: () => 'sk-test' },
+    } as never);
     try {
       const script = `
-        export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/unpriced-model' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
+        export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/${UNPRICED_DECIDER}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
         await decide('gate', { state: {}, questions: { ok: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } });
         return 'x';
       `;
       const started: any = await runScriptVia(callerFor(s), script, { budget: { usd: 1 } });
       const view = await poll(s, started.runId ?? started.result?.runId);
-      expect(view.error?.code ?? view.code).toBe('PRICE_UNKNOWN');
+      expect(view.result?.error?.code ?? view.error?.code, JSON.stringify(view.result?.error ?? null)).toBe('PRICE_UNKNOWN'); // run_status carries the terminal error at result.error
       expect(localStub.calls).toHaveLength(0);
     } finally { await s.close(); }
   });
@@ -190,7 +208,7 @@ describe('VAL-261: REQ-226 — resume replays decide/generateImage without re-ca
     const script = `
       export const meta = { phases: [], params: {
         decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } },
-        images: { hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
+        images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } }
       } };
       const d = await decide('gate', { state: {}, questions: { ok: { type: 'bool', instructions: 'i', criteria: { true: 't', false: 'f' } } } });
       const img = await generateImage('hero', { prompt: 'p' });

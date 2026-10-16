@@ -15,6 +15,8 @@
 import { describe, it, expect } from 'vitest';
 import { validateUserOverrides, type ParamContract } from '../../src/params/contract.js';
 import * as resolve from '../../src/params/resolve.js';
+// v40 Gate 6 ruling R-23: the retired FLUX 1.1 Pro id is replaced by the guide's single image constant.
+import { EXAMPLE_IMAGE_MODEL } from '../../src/authoring-guide.js';
 
 const CONTRACT = {
   agents: {},
@@ -23,7 +25,7 @@ const CONTRACT = {
     gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 1 } },
   },
   images: {
-    hero: { model: { type: 'string', default: 'openrouter/black-forest-labs/flux-1.1-pro' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } },
+    hero: { model: { type: 'string', default: EXAMPLE_IMAGE_MODEL }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } },
   },
 } as unknown as ParamContract;
 
