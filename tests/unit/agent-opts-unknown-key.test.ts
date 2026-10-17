@@ -102,17 +102,11 @@ describe('unknown agent() option keys are refused at scan time (UT-165, #55)', (
     expect(scanAgentCalls('agent("plan", { schema: { type: "object", nosuchknob: 1 } });').violations).toEqual([]);
   });
 
-  // KNOWN BOUNDARY, pinned so it is a documented limit rather than a surprise. DES-143 accepted
-  // comment-blindness from the start (a commented-out `agent(` IS matched — cheaper than a comment
-  // stripper), but before v25 that only misfired on a comment containing `model:`/`effort:`/
-  // `timeoutMs:`; the closed check widens it to ANY colon in a comment inside the options literal.
-  // The remedy is a shared `splitTopLevel` that skips comments, which is a change to the scanner's
-  // one string-splitting primitive and does not belong in this fix.
-  it('KNOWN LIMIT: a `//` comment carrying a colon inside the options literal reads as a key', () => {
+  // Formerly a pinned KNOWN LIMIT (a comment with a colon read as a key). Closed in v40 (IMPL-414):
+  // the scanners read comment-blanked text, so a comment inside the options literal is not an entry.
+  it('a `//` comment carrying a colon inside the options literal is not read as a key', () => {
     const src = "agent('a', {\n  prompt: 'x', // TODO: tune this\n  label: 'y',\n});";
-    const { violations } = scanAgentCalls(src);
-    expect(violations).toHaveLength(1);
-    expect(violations[0]).toMatchObject({ code: 'PARAM_UNKNOWN', key: '// TODO' });
+    expect(scanAgentCalls(src).violations).toEqual([]);
   });
 
   it('the near-miss hint reads as one sentence (this message is the entire point of the item)', () => {

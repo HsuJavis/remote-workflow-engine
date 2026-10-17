@@ -10569,3 +10569,4 @@ REQ-220..230,不再被 08-validation.md 蓋住。另發現一組不在本次任�
 號,但 08-validation.md 從未給它們掛正式的 `### VAL-255/256` 條目,trace.py 掃不到,不是結構性碰撞,
 未動——留給未來發現者)。下一步：review（Gate 8）。
 - 2026-10-17 — **v40 Gate 7.5 fix — checkMeta 註解盲修復**(executor,verifier→implementer 合約):UT-366 先紅(8/10)→ IMPL-413 讓 `checkMeta` 略過字串外的 `//`、`/* */`(未閉合 `/*` 失敗即關)→ 綠;冷客戶端原封 `ig-gate.js` 於 8798 暫存實例註冊成功(VAL-289,real,REQ-224 ✅);全套 6295/6295、兩份 tsc 乾淨;workflow-meta.ts 主體掃描器同類註解盲(agent() 呼叫可整個從掃描消失)以 UT-367 鎖住、待擁有者決定。
+- 2026-10-17 — **v40 fix — workflow-meta.ts 掃描器註解盲修復**(executor,implementer 合約,擁有者裁決 v40 內修):UT-367 四案由 `it.fails` 轉 `it` 先紅 → IMPL-414:`nonCodeSpans` 多回傳 `comments`/`regexBodies`,`script-spans.ts` 新增 `blankSpans`(保留換行與位移),三個掃描器在 `nonCodeOracle` 之後同樣讀 `scanText`(D12 位置對齊不變)→ 綠;UT-368(區塊註解/字串/regex/meta 註解/D12 lockstep)、UT-369(`allowedTools:['Bash']` 加引號註解的註冊結果與無註解版相同,24 對)皆先紅後綠;regex 內含引號一併修好。

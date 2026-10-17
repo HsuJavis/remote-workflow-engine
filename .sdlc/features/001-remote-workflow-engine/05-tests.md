@@ -9767,6 +9767,8 @@ the options literal now reads as a key (`key: '// TODO'`). Comment-blindness is 
 limit from the start, but it used to misfire only on `model:`/`effort:`/`timeoutMs:` in a comment
 and the closed check widens it to any colon; the remedy is a comment-skipping `splitTopLevel`, which
 is a change to the scanner's one string-splitting primitive and does not belong in this fix.
+**v40 delta (IMPL-414):** that limit is closed — the scanners now read comment-blanked text, so the case
+now asserts NO violation for `prompt: 'x', // TODO: tune this`.
 The registration-level half lives in IT-085's file (see its v25 note).
 
 Red before the fix, quoted: `expected undefined not to be undefined` on the first case, and
@@ -17494,12 +17496,12 @@ line before `}`; unterminated `/*` fails closed; real template/spread still reje
 meta. RED on bb3b87d: 8 failed / 2 passed (the two that pass on HEAD — `https://` string and template/spread after
 a comment — are guards against an over-eager fix, by design). GREEN after IMPL-413.
 
-### UT-367 — KNOWN DEFECT (not fixed): workflow-meta.ts body scanners are comment-blind
-- **status:** red
+### UT-367 — workflow-meta.ts body scanners are not comment-blind (was a known-defect lock; fixed v40, IMPL-414)
+- **status:** green
 - **traces:** DES-143, DES-174
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v40
 
 File: `tests/unit/scan-comment-blindness.test.ts` (new), 4 cases written as `it.fails` (they assert the CORRECT
@@ -17510,4 +17512,41 @@ comments: (1) an apostrophe in a comment inside `agent()` options makes the WHOL
 (2) ANY comment inside `agent()` options is read into the next key → `PARAM_UNKNOWN` (not quote-related);
 (3) an apostrophe comment in an if-arm drops the `alt` group (and skeleton `dynamic`);
 (4) same in `parallel([...])` drops the `parallel` group. Owner decision pending (see IMPL-413 note).
+Owner ruling 2026-10-17: fix inside v40. The 4 cases are now plain `it`; RED on a9e8769 for the reasons above
+(labels `[]`; one `PARAM_UNKNOWN`; alt/parallel groups differ); GREEN after IMPL-414.
+
+### UT-368 — scanner blanking: block comments, strings, regex literals, meta comments, D12 lockstep
+- **status:** green
+- **traces:** DES-237, TASK-233
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/unit/scan-comment-blindness.test.ts` (second describe), 12 cases: UT-367's four shapes with `/* */`;
+a comment carrying a backtick and `...` (no template/spread); `'https://x'` and `"//"` stay string text
+(`allowedTools: ['Read', "//"]`); a regex literal with a quote (`/'/`, `/"/.test(x)`) inside an if-arm keeps the alt
+group; `allowedTools: [/Bash/]` still `AGENT_OPTS_VALUE_NOT_LITERAL`; an apostrophe comment inside the meta literal
+keeps a ternary's alt group; commented-out `agent()` (both forms) still not a call; `blankSpans` keeps length and
+every newline; D12 lockstep — one script with quote comments, a regex, `parallel`, `decide()` and if/else: 5 calls,
+skeleton agent count and parallel membership equal the scan's, every `index` points at real `agent(` text,
+`scanPrimitiveCalls` finds `d1`. RED on a9e8769 (source copy via `git archive`): 9/12 fail; the 3 that pass
+(strings, regex in `allowedTools`, commented-out call) are guards against an over-eager fix, by design. The regex
+case also fails with comments-only blanking, so regex bodies are blanked too.
+
+### UT-369 — security pair: a quote-bearing comment does not change `allowedTools: ['Bash']` registration outcome
+- **status:** green
+- **traces:** DES-237, TASK-233
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/unit/scan-comment-registration-pair.test.ts` (new), 24 cases through a REAL WorkflowCatalog/RunManager/
+McpFacade `workflowRegister`: tools `['Bash']` and `['Bash','Read']` × three comments (`// don't widen`,
+`/* it's 'quoted' */`, ``// a `tick` ... here``) × posture confined/unconfined × diagram truthful/lying. Each
+comment-bearing script must deep-equal the comment-free one on status, error code, error detail and warning codes:
+truthful → `completed` (`BASH_SUBSUMES_FILE_TOOLS` for Bash+Read); lying (`tools: none`) → `failed`
+`TOOLS_MISMATCH`. RED on a9e8769: 24/24 (the comment hid the call, so the lying diagram was refused differently
+and the truthful one failed).
 

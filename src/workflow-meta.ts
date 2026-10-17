@@ -4,7 +4,7 @@
 import { runInNewContext } from 'node:vm';
 import { parse } from 'acorn';
 import { checkMeta } from './sandbox/guards.js';
-import { nonCodeSpans } from './script-spans.js';
+import { nonCodeSpans, blankSpans } from './script-spans.js';
 import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
 // v25 (#55): the scanner's accepted-key set is derived from the AgentOpts TYPE, so the two
 // cannot drift apart (see AGENT_OPT_KEYS below).
@@ -718,13 +718,28 @@ function nonCodeOracle(script: string): ReturnType<typeof nonCodeSpans> | null {
     // real call. `meta` is a validated object-literal region (checkMeta's own string-aware brace
     // scan) that can never legitimately contain a top-level `agent(` call, so the whole span is
     // unconditionally non-code, independent of whether `pureLiteral` holds.
+    // v40 (UT-367): the hand scanners now read `scanText` (this span blanked whole), not the
+    // original; the `spans` entry stays so `inNonCode` and the blanked text agree.
     const metaStart = script.indexOf(meta.span);
     const metaSpan: [number, number] = [metaStart, metaStart + meta.span.length];
-    return { ok: true, spans: [...result.spans, metaSpan] };
+    // v40 (UT-367): the oracle parsed a probe with meta blanked, so it reports no comment inside
+    // meta — yet an apostrophe in a `// don't` there still desyncs `altSpans`' from-offset-0 string
+    // skip. The whole span is non-code, so `scanText` blanks it whole (listed with the comments).
+    return { ...result, spans: [...result.spans, metaSpan], comments: [...result.comments, metaSpan] };
   }
   if (meta.found) return null;
   const result = nonCodeSpans(script);
   return result.ok ? result : null;
+}
+
+/** v40 (UT-367, DES-237 D12): the text every hand scanner below reads — comment text and regex
+ *  bodies blanked by `blankSpans` (offsets and line numbers unchanged), so an apostrophe in a
+ *  `// don't` comment or a quote in `/'/` can no longer open a phantom string in `matchDelimiter`/
+ *  `splitTopLevel`/`altSpans`. `scanAgentCalls`, `parseWorkflowSkeleton` and `scanPrimitiveCalls` all
+ *  call this right after `nonCodeOracle`, so the positionally-joined scans see byte-identical text.
+ *  No oracle (`null`) → the raw script, unchanged from before. */
+function scanText(script: string, oracle: ReturnType<typeof nonCodeOracle>): string {
+  return oracle?.ok ? blankSpans(script, [...oracle.comments, ...oracle.regexBodies]) : script;
 }
 
 export function scanAgentCalls(script: string): AgentCallScan {
@@ -737,6 +752,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
       unscannable: true,
     };
   }
+  script = scanText(script, oracle);
   const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
 
   const labels: string[] = [];
@@ -1015,6 +1031,7 @@ export function scanPrimitiveCalls(script: string): { decide: string[]; generate
   if (oracle && !oracle.ok) {
     return { decide: [], generateImage: [], violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }] };
   }
+  script = scanText(script, oracle);
   const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
   const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
   const violations: AgentCallViolation[] = [];
@@ -1199,14 +1216,15 @@ export function provisioningWarningsFor(
  *  executes the script and never throws. */
 export function parseWorkflowSkeleton(script: string): SkeletonNode[] {
   const nodes: SkeletonNode[] = [];
-  const dyn = dynamicRanges(script);
-  const inDynamic = (idx: number): boolean => dyn.some(([s, e]) => idx >= s && idx < e);
   // v35 (DES-237): same oracle as `scanAgentCalls` — see `nonCodeOracle`'s own comment for why a
   // string/comment/regex-literal false positive must be excluded here too, not only there. `null`
   // (oracle not invoked) or `{ok:false}` (fails open here — refusal is `scanAgentCalls`'s job, this
   // function never throws) both leave `inNonCode` always false, i.e. today's unfiltered behaviour.
   const oracle = nonCodeOracle(script);
+  script = scanText(script, oracle);
   const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
+  const dyn = dynamicRanges(script);
+  const inDynamic = (idx: number): boolean => dyn.some(([s, e]) => idx >= s && idx < e);
   // parallel spans: [start,end) of each parallel(...) call, with a group id.
   const parallelSpans: Array<{ id: number; start: number; end: number }> = [];
   let groupSeq = 0;
