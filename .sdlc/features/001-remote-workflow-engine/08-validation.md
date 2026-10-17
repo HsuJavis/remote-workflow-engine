@@ -13066,3 +13066,260 @@ id/secret 不變、`DEFAULT 0` grandfather —— 逐條與規格相符。`deliv
 (`src/tool-specs.ts` 自己就這麼寫),不是本輪引入的。但它直接影響操作者:復原時想先確認「哪一版被標記」,
 必須寫成 `workflow_describe({name, version})`。已補進 DEPLOY.md §6 的查法說明。
 
+
+## v40 Gate 7.5 — REQ-220..230 real-run validation (2026-10-16, validator)
+
+**Pre-existing defect found and recorded (not silently fixed):** `05-tests.md`'s v40 test-first RED
+items `VAL-255..265`/`E2E-011` (REQ-220..230) reuse ID numbers already defined in THIS file for a
+different, earlier (v37, REQ-117/REQ-218) iteration. `trace.py`'s `scan()` keys its item dict by bare
+id and walks files alphabetically — `05-tests.md` sorts before `08-validation.md`, so the
+`08-validation.md` definitions silently WIN at scan time; `items['VAL-255']` etc. resolve to the v37
+object (`traces: REQ-117/REQ-218/...`), not the v40 one. Confirmed empirically (`trace.scan()` run as
+a library): `items['VAL-255']['file'] == '08-validation.md'`, `traces == ['REQ-117','REQ-218',
+'REQ-116','REQ-207']`. **This does not currently corrupt gap-counting** — `analyze()`'s `verified`/
+`verified_real` sets walk the full upstream closure through every UT/IT item (which correctly trace to
+DES-26x/ARCH-18x/REQ-220..230), so the pre-existing 未真實驗證 (mock-only) gaps for REQ-220..230 were
+already showing correctly before this gate. But the v40 `VAL-255..265`/`E2E-011` **objects themselves
+are unreachable by id** — flipping their `real:` field in `05-tests.md` in place would have had ZERO
+effect on `trace.py`'s view of the ledger, since the colliding `08-validation.md` definitions always
+shadow them. For that reason this gate's real-tier items below use FRESH ids (`VAL-266..276`,
+`E2E-012` — one past the highest existing `VAL-265`/`E2E-011` across both files, confirmed by grep
+before allocating). **Recorded as `needs_clarification`, not fixed here**: a future gate should
+renumber `05-tests.md`'s `VAL-255..265`/`E2E-011` (and this file's colliding `VAL-255..259` from v37,
+whichever direction a maintainer prefers) so every id is globally unique across the ledger — out of
+this validator's scope (cross-file renumbering touches `rtm.md` and every citing note).
+
+**Real run setup.** Key: `~/.config/credstore/openrouter_api_key.cred`, a user-scope `systemd-creds`
+credential (`systemd-creds --user decrypt --name=openrouter_api_key <path> -`), decrypted to a 0600
+scratch file, exported as `OPENROUTER_API_KEY` (or, for one specific check below,
+`RWE_SECRET_OPENROUTER_API_KEY`) for the boot command only, then shredded — never logged, never
+committed, never visible in any run's audit trail (confirmed, see VAL-275). Four separate scratch
+instances, independent of production and of each other, booted ONLY via the documented
+`RWE_CONFIG_PATH=... RWE_BIND=127.0.0.1 RWE_PORT=... ./deploy.sh --background` (§0): port 8794
+(`decideSlots:16`, the default — most REQs), port 8795 (`decideSlots:1`, REQ-228's capped arm), port
+8796 (deliberately WRONG `OPENROUTER_API_KEY` — REQ-227's non-retryable-4xx arm), port 8797
+(`RWE_SECRET_OPENROUTER_API_KEY` only, no bare var — the config-sync check below). `workRoot` for each
+outside the repo (`/tmp/rwe-val-v40-workroot*`). `ss -ltnp` confirmed production's port 8899 present
+and unchanged before/during/after every boot and teardown; all four scratch PIDs killed at the end,
+confirmed gone. Harness: `evidence/v40/val-v40-real-run-harness.mts` (plain TS, run via
+`npx tsx ... <phase>`), importing the SAME `registerPublishedVia`/`runScriptVia` helpers the
+acceptance-tier tests use — no reinvented registration logic, no mock of the SUT. Full engine logs
+(real `primitive.call` events, the un-fakeable record) saved: `evidence/v40/val-v40-main-
+decideSlots16.log`, `val-v40-cap1-decideSlots1.log`, `val-v40-badkey.log`.
+
+**Spend.** Total real engine-recorded cost (`costSource:'reported'`, i.e. read off each real OpenRouter
+response's own usage, not estimated): **$0.1940** across every phase below (40 `decide()` + 2
+`decide()` + 4 `generateImage()` real provider contacts) — well inside the Gate-1-granted $1 cap.
+OpenRouter's OWN account-level `/api/v1/auth/key` `usage` aggregate did not move at this precision in
+the ~10 minutes these runs spanned (billing-ledger aggregation lag on their side, not a defect here);
+the engine's own per-call `costUSD`/`costSource:'reported'` field is the authoritative real artifact
+for REQ-225 and is what is cited below.
+
+### VAL-266 — REQ-220: `decide(label, {state, questions})` returns a typed answer, real OpenRouter
+- **status:** green
+- **traces:** REQ-220
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx tsx .../val-v40-real-run-harness.mts decide-real` against the real `gateway:"sdk"`
+  server (port 8794) — `openrouter/typesafe/jev-1.13` (a live catalog `decision`-typed model, no
+  stub/fixture). Real run completed in 1161ms; `run_result.result.answers.order` =
+  `{type:'bool', probability:0.46}` — a genuine model-produced probability, not a fixture value (seven
+  separate real calls across this gate return seven different probabilities: 0.46/0.41/0.4/0.39/0.38/
+  0.45/0.52 — see the journey/overhead entries below). `evidence/v40/val-v40-main-decideSlots16.log`
+  line 1: `primitive.call decide gate ok`.
+- **iter:** v40
+
+### VAL-267 — REQ-221: `generateImage(label, {prompt, inputImages?, outDir?})` — real files, real OpenRouter
+- **status:** green
+- **traces:** REQ-221
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `... image-real` — `openrouter/google/gemini-2.5-flash-image` (the authoring guide's
+  own `EXAMPLE_IMAGE_MODEL`), real prompt "a small red circle on white background, minimal". Real run
+  completed in 6640ms; `run_result.result.files` = `[{path:'generated/hero-0-0.png', bytes:697058,
+  mimeType:'image/png'}]`; `JSON.stringify(run_result)` contains NO `data:image/`/`base64` substring
+  (`repliedTextHasBase64:false`); `workspace_list` lists the same path — a real file, pullable, not an
+  inline blob. Engine-recorded real cost: `$0.0387027` (1290 output tokens × the live catalog's
+  `image_output` rate), `costSource:'reported'`.
+- **iter:** v40
+
+### VAL-268 — REQ-222: catalog recognizes decision models, real live OpenRouter catalog
+- **status:** green
+- **traces:** REQ-222
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `... catalog` — `models_list({query:'typesafe'})` against the real server's real
+  (live-fetched, not fixture-seeded) OpenRouter model catalog: 5 rows returned, including
+  `openrouter/typesafe/jev-1.13` with `modelType:"decision"`. Independently cross-checked against a raw
+  `curl https://openrouter.ai/api/v1/models?output_modalities=all` (no key needed for listing): 25 live
+  rows carry `architecture.output_modalities:["decisions"]` today (e.g. `typesafe/jev-1.14`,
+  `respan/span-02`, `liquid/d1-ultra`), 61 carry `"image"` in `output_modalities` — the classification
+  this REQ depends on has live subjects, not just the one pinned fixture ref.
+- **iter:** v40
+
+### VAL-269 — REQ-223: registration-time model-type gate, real catalog, zero spend
+- **status:** green
+- **traces:** REQ-223
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `... reg-mismatch` — `workflow_register` with `decisions.gate.model.default` set to
+  `openrouter/anthropic/claude-sonnet-5` (a real, live-catalogued `chat` model) refused BEFORE any run:
+  `MODEL_TYPE_MISMATCH: decision 'gate' declares model 'openrouter/anthropic/claude-sonnet-5',
+  catalogued as 'chat', not 'decision'` — the real catalog's real classification, no stub. Zero
+  provider spend (registration-time check, no run started).
+- **iter:** v40
+
+### VAL-270 — REQ-224: static checks + served text, real MCP; cold-client clause disclosed as a gap
+- **status:** green
+- **traces:** REQ-224
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `... guide` — real `workflow_authoring_guide` call, text matches both `/decide\(/` and
+  `/generateImage\(/`. `... reg-alias` — `const d = decide; d(...)` refused at registration:
+  `SCRIPT_INVALID: \`decide\` is referenced at line 3 ... without being called directly`, same
+  class as the pre-existing `agent` aliasing refusal. **Not real-verified (disclosed, same posture
+  v37 took for REQ-117 in this same file): REQ-224's own last-sentence clause — a genuinely cold,
+  unbriefed LLM client reading ONLY the live guide text and authoring a correct `decide()`/
+  `generateImage()` script from it.** This validator has no tool to spawn an independent, repo-blind
+  agent process in this role (the v37 cold-subject runs used a separate orchestrator dispatching a
+  wholly different agent instance with no repo/file access — not available here). Filed as
+  `needs_clarification`, not silently passed on the structural clauses alone.
+- **iter:** v40
+
+### VAL-271 — REQ-225: cost accounting + USD budget, real OpenRouter-reported cost
+- **status:** green
+- **traces:** REQ-225
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Every real `decide()`/`generateImage()` call across this gate carries a real
+  `primitive.call` event with `costSource:'reported'` (read from the live OpenRouter response's own
+  usage, not locally estimated) — e.g. `decide gate ok costUSD:1.2642e-05 tokens:{input:301,
+  output:20}`, `image hero ok costUSD:0.0387027 tokens:{input:9,output:1290}` — both arithmetically
+  consistent with the live catalog's own listed per-token rates for these models (cross-checked
+  against the raw `/api/v1/models` pricing fields, not just trusted blindly).
+  `PRICE_UNKNOWN`-before-any-call (the unpriced-model arm) has no live unpriced `decision`/`image`
+  model subject today (same finding Gate 6 already recorded for VAL-260) — that arm stays
+  stub-covered at acceptance tier (VAL-260/05-tests.md), disclosed not silently dropped.
+- **iter:** v40
+
+### VAL-272 — REQ-226: resume replays decide/generateImage WITHOUT re-calling the provider, real run
+- **status:** green
+- **traces:** REQ-226
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `... journey2` on port 8794. Script: `d1 = decide('d1', ...)` →
+  `generateImage('hero', ...)` → `d2 = decide('d2', ...)`. `run_start`, waited 2.5s (comfortably past
+  d1's own ~1.1s real latency, well before image's ~5-6s), `run_suspend` → `status:"suspended"`,
+  `run_resume` → completes. **Real log, run `b9efd8db-...`** (`evidence/v40/val-v40-main-
+  decideSlots16.log`):
+  ```
+  14:07:52.931  decide d1 ok        (before suspend — persisted)
+  14:07:54.473  image hero FAILED aborted   (suspend's abort hit the in-flight image call)
+  14:07:59.547  image hero ok        (resume — re-dispatched for real, since it never completed)
+  14:08:00.015  decide d2 ok         (resume — genuinely new, never ran before)
+  ```
+  **Zero additional `d1` line anywhere after resume** — the completed primitive was replayed from its
+  persisted record, not re-called; `run_result.result.d1.answers.order.probability === 0.39` (the
+  ORIGINAL pre-suspend answer) is present in the final result despite zero post-resume provider
+  contact for it. `image`/`d2` (not yet complete at suspend time) DID genuinely re-run — proving this
+  is real selective replay, not "the whole run just happened to not need anything" (the negative
+  control: a first, un-suspended run of the identical script, `run` `229a3373-...`, shows all three
+  primitives calling the provider exactly once each, with no suspend in the picture at all).
+- **iter:** v40
+
+### VAL-273 — REQ-227: limited retries then a named error, both arms proven against a REAL provider
+- **status:** green
+- **traces:** REQ-227
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **Retryable arm** (`... retry-timeout`, port 8794): `timeoutMs:1` against the real
+  `jev-1.13` model — a genuine provider round trip cannot complete in 1ms, so this is a real timeout,
+  not simulated — `retries:1` → `PRIMITIVE_FAILED: decide 'gate' failed: timeout after 2 attempts`
+  (1 initial + 1 retry, matching the configured cap exactly). **Non-retryable 4xx arm**
+  (`... retry-4xx`, port 8796 — booted with a deliberately WRONG `OPENROUTER_API_KEY`): a real 401
+  from the real OpenRouter auth layer → `PRIMITIVE_FAILED: decide 'gate' failed: HTTP 401 after 1
+  attempt` — `retries:1` was configured but NOT consumed, because `classifyAttempt()`
+  (`src/direct-models/call.ts`) marks any non-429 4xx as non-retryable; confirmed for real, not just
+  by reading the classifier. **Not reproducible live (disclosed)**: a genuine 429 from OpenRouter is
+  rate-limiter-dependent and not something this gate can deterministically provoke against a real
+  account — that specific sub-case (429 IS retried) stays stub-covered at acceptance tier
+  (VAL-262/05-tests.md).
+- **iter:** v40
+
+### VAL-274 — REQ-228: independent, configurable concurrency caps, real timing on two real instances
+- **status:** green
+- **traces:** REQ-228
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Same two-concurrent-`decide()` script fired on two REAL instances differing only in
+  `decideSlots`. Port 8794 (`decideSlots:16`): both real calls' `ok` events land 27ms apart
+  (`14:08:43.553` / `14:08:43.580`, `evidence/v40/val-v40-main-decideSlots16.log`) — genuinely
+  concurrent. Port 8795 (`decideSlots:1`, `evidence/v40/val-v40-cap1-decideSlots1.log`): the two
+  calls' `ok` events land 440ms apart (`14:08:45.508` / `14:08:45.948`), and the SECOND call's own
+  `engineMs:416` (engine-added time, excluding the real provider round trip) is almost entirely queue
+  wait for the `decideSlots:1` semaphore held by the first call — the real, measured cost of the cap,
+  not inferred from wall-clock alone.
+- **iter:** v40
+
+### VAL-275 — REQ-229: event log carries metadata only, real primitive.call lines inspected directly
+- **status:** green
+- **traces:** REQ-229
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Every script run in this gate used a distinctive, grep-able sentinel in `state`/
+  `questions`/`prompt` (`VALV40SENTINEL`, `VALV40JOURNEY-D1/D2`, `"a small red circle..."`, etc.).
+  `grep -c` across all four real engine logs for every sentinel string used: **zero hits** in any
+  log. Positive control (the content really was sent and the engine really saw a real answer):
+  `run_result` for each of these runs carries real, label-matched answers/files — the content reached
+  the real provider and came back, it just never reached the log. A full real `primitive.call` line
+  was inspected field-by-field (not just grepped for absence): `{kind, runId, agentId, callSeq,
+  primitive, label, model, attempt, outcome, engineMs, costUSD, costSource, tokens, answers, at}` —
+  no `state`/`questions`/`prompt` key exists in the shape at all, confirming this isn't "redacted
+  text" but a structurally narrower event than the primitive's own input.
+- **iter:** v40
+
+### VAL-276 — REQ-230: engine overhead p95 ≤ 200ms, real sample (N=24 real decide() calls)
+- **status:** green
+- **traces:** REQ-230
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `... overhead 24` on port 8794: 24 sequential real `decide()` calls against the live
+  `jev-1.13` model in one run, completed in 10.8s wall clock. Real per-call `engineMs` values pulled
+  from `evidence/v40/val-v40-main-decideSlots16.log` for this run's 24 `primitive.call ok` lines:
+  `[0×15, 1×6, 2×3]` — **p95 (nearest-rank) = 2ms**, max 2ms, mean 0.5ms — two orders of magnitude
+  under the 200ms budget. **Note on sample size**: REQ-230's own acceptance text specifies the
+  measurement against "provider 以固定延遲回應的 stub" (a FIXED-delay stub), not a live call — that
+  controlled, 100-sample shape is exactly what `IT-314`/VAL-265 (05-tests.md) already proves at the
+  integration tier, with real percentile math over the real engine instrumentation. This real-tier
+  item goes beyond what the REQ's own acceptance text asks for: N=24 genuinely live OpenRouter calls,
+  corroborating the SAME `engineMs` instrumentation under real (variable, uncontrolled) network
+  conditions rather than a controlled delay — not a reduction of either the REQ's acceptance or
+  IT-314's rigor, an additional real-world data point on top of both.
+- **iter:** v40
+
+### E2E-012 — register → run (complete) → register → run → suspend → resume, real decide+image+decide
+- **status:** green
+- **traces:** REQ-220, REQ-221, REQ-225, REQ-226, REQ-229
+- **tier:** e2e
+- **real:** true
+- **result:** pass
+- **evidence:** `... journey` + `... journey2` on port 8794 (real `gateway:"sdk"` server, real
+  OpenRouter). Run A (baseline, no suspend): `d1`→`image`→`d2`, all three real provider calls happen
+  exactly once, `status:"completed"`, real answers/files returned. Run B (`journey2`): suspended ~2.5s
+  in (after `d1` genuinely completed), resumed — `d1` replayed with ZERO further provider contact,
+  `image`+`d2` (not yet complete at suspend) genuinely re-ran, final result correct end-to-end
+  (`d1.answers.order.probability` from BEFORE suspend survives into the final `run_result` with no
+  post-resume `d1` provider line in the log — see VAL-272 for the full log excerpt, shared evidence).
+  `workspace_list`/file presence for the generated image confirmed in VAL-267/VAL-272.
+- **iter:** v40

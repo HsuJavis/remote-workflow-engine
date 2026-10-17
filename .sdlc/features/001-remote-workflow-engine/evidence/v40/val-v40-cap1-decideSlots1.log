@@ -1,0 +1,16 @@
+[RunStore] hydrateAll: re-hydrated 0 run(s), 0 re-classified running→interrupted (resumable)
+catalog.migrate: 0 workflows → workflow_versions, release published
+[remote-workflow-engine] assets.migrate: 0 legacy row(s), 0 tree(s) moved out of the swept asset root
+[remote-workflow-engine] auth: enabled=false principals=1 defaultRole=none ownerlessRuns=0 ownerlessTriggers=0
+[remote-workflow-engine] listening on http://127.0.0.1:8795/mcp (workRoot=/tmp/rwe-val-v40-workroot-cap1)
+[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)
+[remote-workflow-engine] ready
+{"kind":"catalog.register","name":"valv40-conc1-c6b06ded","version":"v1","actor":{"id":null,"bypass":true,"idSource":"none"},"at":"2026-10-16T14:08:44.798Z"}
+{"kind":"catalog.publish","name":"valv40-conc1-c6b06ded","version":"v1","channel":"release","fromVersion":null,"actor":{"id":null,"bypass":true,"idSource":"none"},"at":"2026-10-16T14:08:44.814Z"}
+{"kind":"catalog.register","name":"valv40-conc2-e2c81ecc","version":"v1","actor":{"id":null,"bypass":true,"idSource":"none"},"at":"2026-10-16T14:08:44.827Z"}
+{"kind":"catalog.publish","name":"valv40-conc2-e2c81ecc","version":"v1","channel":"release","fromVersion":null,"actor":{"id":null,"bypass":true,"idSource":"none"},"at":"2026-10-16T14:08:44.831Z"}
+{"kind":"primitive.call","runId":"22dea58a-5cba-48f1-8a0e-4b3f03c7480c","agentId":"agent-1","callSeq":0,"primitive":"decide","label":"gate","model":"openrouter/typesafe/jev-1.13","attempt":1,"outcome":"ok","engineMs":4,"costUSD":0.000012306,"costSource":"reported","tokens":{"input":293,"output":20,"cacheRead":0,"cacheWrite":0},"answers":{"order":{"type":"bool","probability":0.55}},"at":"2026-10-16T14:08:45.508Z"}
+{"kind":"run.terminal","runId":"22dea58a-5cba-48f1-8a0e-4b3f03c7480c","name":"valv40-conc1-c6b06ded","version":"v1","outcome":"completed","principal":null,"at":"2026-10-16T14:08:45.510Z"}
+{"kind":"primitive.call","runId":"8298ab7b-1fd2-4a8a-b16a-c1a9cd0b6d0b","agentId":"agent-1","callSeq":0,"primitive":"decide","label":"gate","model":"openrouter/typesafe/jev-1.13","attempt":1,"outcome":"ok","engineMs":416,"costUSD":0.000012306,"costSource":"reported","tokens":{"input":293,"output":20,"cacheRead":0,"cacheWrite":0},"answers":{"order":{"type":"bool","probability":0.56}},"at":"2026-10-16T14:08:45.948Z"}
+{"kind":"run.terminal","runId":"8298ab7b-1fd2-4a8a-b16a-c1a9cd0b6d0b","name":"valv40-conc2-e2c81ecc","version":"v1","outcome":"completed","principal":null,"at":"2026-10-16T14:08:45.950Z"}
+[remote-workflow-engine] received SIGTERM, shutting down...

@@ -10480,3 +10480,68 @@ trace 2187/113 → 2219/113(總數不變,逐項核對:REQ-220..230 的 11 個「
 - 2026-10-16 — **v40 Gate 6 follow-up (tests+ledger)**:IT-312/IT-313 補 `directDeps.resolveKey`(green,原為測試環境缺 key);VAL-265 移除腳本內 Date.now() 改 stub 端時間戳;VAL-260 改用受控 catalog stub 的未定價 decision 列並修正 error 讀取路徑(result.error);兩者現因產品原因 red(OPENROUTER_AUTH_MISSING:createServer 未把 directDeps 傳入 RunManager,TASK-272 已加註需追查驗證)。
 - 2026-10-16 — **v40 Gate 6 integrator**(executor,implementer 合約):IMPL-391..407 記錄;修 server tsconfig 型別錯(call.ts DOM 型別)、R-30 engineMs 下限 0;授權測試修正 R-25/27/28/29;TASK-272「directDeps 未接線」推論證偽(已接線)。剩 9 個 v40 acceptance/e2e red 皆為授權範圍外的測試缺陷(缺 resolveKey、run_status/run_result 讀錯、共用序列 stub、run_stop 應為 run_suspend、E2E-011 第 4 步競態),以修正後暫存副本證明產品路徑 green;gates.impl 未過,交 orchestrator 路由。
 - 2026-10-16 — **v40 Gate 6 round 4 — PASSED**(integrator):R-32 修 VAL-255/256/261/262/263/264 測試缺陷(每個以產品擾動驗紅);R-33 重設計 E2E-011 第 4 步(3 筆 primitive 入帳後才 suspend、resume 零 provider 呼叫、刪圖後 regenerate-then-MISS、無 suspend 基線為負控制);R-34 TDD 修 primitive 紀錄 model 雙前綴(UT-365)。全套 6275/6275 green,兩份 typecheck 乾淨;IMPL-408..410;下一步 verify。
+
+- 2026-10-16 — **v40 Gate 6.5+7 (simplify + verification merged) PASSED**（verifier）。
+simplify：審完整份 v40 diff(33 檔)，程式碼品質已高，唯一改動是 solid_check 的架構宣告修正
+（ARCH-183 補 deps: ARCH-069，同 ARCH-103 v24 先例，純文件不動碼）；兩處重複（run-manager.ts 的
+decide/image 兩個 handler 12 步管線、sandbox/guards.ts 的 makeDecide/makeGenerateImage）judgment
+call 不重構（風險/收益不對稱、符合既有檔案慣例）。regression：npx vitest run 全套 6281/6281（自己
+重跑，非沿用 Gate 6）。coverage：暫裝 @vitest/coverage-v8 跑 tests/unit+integration，
+95.45%/90.41%/96%/95.45%（行/分支/函式/陳述式），逐函式稽核抓到一個真缺口：
+run-manager.ts 的 nested onDecideRequest/onImageRequest（0 次呼叫）+ _handleDecideRequest/
+_handleImageRequest 的 OPENROUTER_AUTH_MISSING/PRICE_UNKNOWN/BUDGET_EXCEEDED(pre-slot) 四條分支，
+新增 IT-318..321（4 個測試檔新案例）修到 90.6%/80.0%。**揭露未補**：v25 in-slot assertBudget()
+二次檔（ADR-090 第二道閂）三次嘗試皆 flaky（15-25% 失敗率，其一在 v8 coverage 下重現紅），根因
+是 run-manager.ts 自己的「overshoot bound documented, not engineered」設計本身不保證這道競態的
+順序 — 寫一個會 flaky 的測試正是 CLAUDE.md 禁止的「造假測試」，三份草稿都沒留。
+determinism_check：15→12（v40 自己的 3 處修正：parseRetryAfterMs 改吃注入的 now、兩處
+production-default seam 的 det:allow 標註），餘 12 經 git archive 526db75 核實為既有債務。
+TZ=Pacific/Kiritimati 全套重跑：6281/6281、0 翻紅。trace --check：2262/88（缺口集合與閂前基線
+逐項核對一致，+6 項新工作項 0 新斷鏈）。solid_check：132 模組，3 HIGH/0 mid/10 low —— v40 自己
+新增的第 4 個 HIGH（call.ts 匯入 ARCH-184 因 .ts 副檔名比對不到而落到 ARCH-069）已修；餘 3 個
+HIGH 經 `git archive 526db75` 核實為 v40 之前既有（本輪自己的 v37 journal 曾誤記 0 high，這次
+一併更正）。seam 接線：options.fetch/resolveKey/directDeps/decideSlots/imageSlots 全程走到組合根
+核實接好；defaultDirectDeps 與 server.ts 用同一個 loadSecretSourceFromEnv()，非兩套密鑰來源。
+real-dependency smoke：本機無 OPENROUTER key 可用（/home/rwe 無權限），decide()/generateImage()
+仍 mock-only，留 Gate 7.5。無新 owner_decision。未用 git checkout/restore/stash；coverage 工具
+裝/卸經 git diff 驗證乾淨。下一步：validation。
+
+## 2026-10-16 — v40 Gate 7.5（validator）PASSED，next stage review
+
+REQ-220..230（decide()/generateImage()）全部在這輪真跑過真實 OpenRouter，拿到 real:true。用
+`~/.config/credstore/openrouter_api_key.cred`（user-scope systemd-creds 憑證，`systemd-creds --user
+decrypt` 解開、用完即 shred，從未落地/進 log）開四台 scratch 實例（決對不碰 production 8899，前後都
+用 `ss -ltnp` 確認），走文件既有的 `./deploy.sh --background` 一鍵部署：decide() 回真機率值、
+generateImage() 落真檔（697KB PNG，回覆零 base64）、catalog 對真 OpenRouter 目錄辨識出
+`openrouter/typesafe/jev-1.13` 是 decision 類型、註冊期模型型別關卡對真目錄真拒絕、suspend 中途真
+run 再 resume 證明「已完成的 primitive 不重打、未完成的真的重打」、兩種 4xx 都用真供應商證過（真
+timeout 重試一次後具名失敗、真 401 不重試）、decideSlots:1 vs 16 兩台真機測出真的序列化等待、事件
+log 真的只記中繼資料（本輪用的每個 sentinel 字串,四份真 log 全撈,零命中）、24 次真 decide() 呼叫
+量出 p95=2ms。總真花費 $0.1940（$1 上限的五分之一）。
+
+**發現並修好一個設定文件漂移（4b）**：DEPLOY.md 原本寫「只設 `RWE_SECRET_OPENROUTER_API_KEY`、沒設
+裸 `OPENROUTER_API_KEY`，切到 `gateway:"sdk"`/`"direct-fetch"` 後每一通 openrouter 呼叫都失敗」——這
+句話對 `agent()` 仍成立，但對 v40 新增的 `decide()`/`generateImage()`（兩者共用同一支
+`resolveOpenrouterKey`，不分 gateway）已經是假的，已用第四台只設 secret-store 鍵的真機跑通
+`decide()` 實測驗證，再改文件。README.md 既有的 decide/generateImage 段落核對後與現況一致、未改。
+
+**發現一個既有缺陷,登記不擅自修（needs_clarification）**：`05-tests.md` 這輪新增的
+`VAL-255..265`/`E2E-011` 跟本檔 v37 時期已經用過的同一批編號撞號——`trace.py` 的 `scan()` 依檔名字母
+序覆寫,`08-validation.md` 排序在後會贏,使得 v40 那批 id 存在於磁碟卻無法被用 id 找到。不影響本輪缺
+口計數(UT/IT 那層的追溯鏈本來就正確接到 REQ-220..230),但代表直接在 `05-tests.md` 原地把 `real:`
+改成 `true`不會有任何效果——這也是本輪改用全新編號 `VAL-266..276`/`E2E-012` 寫進
+`08-validation.md` 的原因。留給未來一輪重新編號。
+
+REQ-224 的「冷客端讀 guide 寫出對的腳本」那一句本輪沒驗(此角色沒有能生出一個獨立、不碰這個 repo 的
+冷主體的工具)，登記 needs_clarification，不是靜默放行。REQ-227 的真 429 情境無法在真帳號上決定性地
+引發,維持 stub 層覆蓋,已揭露。
+
+`sh .sdlc/trace --check`：2262/88 → 2274/77（少 11 個缺口，正好是這 11 個 REQ 原本的
+未真實驗證／mock-only 缺口，零新缺口）。mock_census：verified-real=173 / mock-only=0 / unverified=17
+（REQ-153..169，每輪都有的既有債，與本次無關）。owner_decisions=[]——對固定 metadata key
+`- **owner_decision:** pending` 做過一次機械式全文掃描：ADR-095 本輪 Gate 6 OD-1 裁決時其實已經從
+pending 翻成 decided（`02-architecture.md:6871` 的 marker 本身已是 `decided`，只是同一節下方一句舊
+摘要文字仍寫「one owner_decision is pending」——這是文件內部漂移，不是真的還有待決事項，本輪未改那句
+摘要，留給下一輪一併清，記在這裡避免誤判）；掃描當下唯一一個活的 pending marker是本輪草稿裡自己寫
+在 VAL-270 的一行（已刪除，見 08-validation.md），刪除後全帳本零活的 pending marker。rtm.md 補上
+REQ-220..230 十一列。下一步：review（Gate 8）。
