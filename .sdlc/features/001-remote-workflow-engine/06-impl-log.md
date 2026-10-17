@@ -10896,3 +10896,14 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **commit:** uncommitted at write time (Gate 6.5, verifier)
 - **disclosed gap:** the v25 IN-SLOT `assertBudget()` re-check (DES-274 step 8) stays uncovered — three test constructions all flaked (one reproduced under `v8` coverage instrumentation specifically, two more under plain repeated runs); root-caused to this engine's own documented "overshoot bound (documented, not engineered)" posture on the identical mechanism, not a test-authoring mistake. Not shipped; see 05-tests.md's own disclosure under IT-319..321 and the gate report's coverage section.
 - **iter:** v40
+
+### IMPL-413 — v40 Gate 7.5 fix (VAL-277): checkMeta skips `//` and `/* */` comments outside strings (TDD)
+- **status:** done
+- **traces:** TASK-007
+- **greens:** UT-366
+- **files:** src/sandbox/guards.ts, tests/unit/guards-meta-comments.test.ts, tests/unit/scan-comment-blindness.test.ts, .sdlc/features/001-remote-workflow-engine/04-design.md
+- **commit:** (uncommitted at write time)
+- **iter:** v40
+- **design:** DES-005 (its v40 delta line names this IMPL). Traced via TASK-007 rather than DES-005 directly: DES-005's body is v1 + a v40 delta line, and a direct v40→v1 link (or bumping DES-005's iter, which instead flags UT-005/UT-015/IT-018 as stale) reads as doc drift in trace.py although the doc WAS updated.
+- **note:** UT-366 written first: 8/10 RED on bb3b87d for the right reason (`pureLiteral:false`/span lost; register path `PARSE_ERROR` on `export`; run path `INVALID_META`). Fix: two branches in checkMeta's non-string arm — `//` jumps to the newline (none → depth stays open → fails closed), `/*` jumps past `*/` (none → `pureLiteral:false`); inline, no new import (child-loaded file). GREEN 10/10; existing guards-meta/meta-literal suites unchanged. Re-registration of the unedited cold-client script: VAL-289 completed. Full suite 6295/6295; `tsc --noEmit` and `-p tsconfig.server.json` clean. NOT fixed (owner decision): workflow-meta.ts `matchDelimiter`/`splitTopLevel`/`findMatchingColon`/`findArmEnd`/`altSpans` are comment-blind the same way (UT-367 known-defect lock) — worst case an `agent()` call silently vanishes from `scanAgentCalls`; suggested fix shape: one string-aware, character-preserving comment blanker applied identically at the top of `scanAgentCalls`, `parseWorkflowSkeleton` and `scanPrimitiveCalls` (DES-237 D12 positional-join invariant). Also not fixed: a regex literal containing a quote or ending `\//` inside meta/body still desyncs any hand scanner.
+

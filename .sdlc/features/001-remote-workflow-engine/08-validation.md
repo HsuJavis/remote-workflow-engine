@@ -13381,6 +13381,8 @@ edited before or after this call).
   validator.
 - **iter:** v40
 
+> **Superseded by VAL-289 (2026-10-17):** the checkMeta comment-blindness was fixed TDD (UT-366, IMPL-413) and the SAME unedited cold-client artifacts registered first try — VAL-277 stays as the historical red record.
+
 **Guide-feedback items (NOT defects to fix now — the cold client's own reported authoring
 ambiguities, reading `docs/AUTHORING.md` alone):**
 1. `meta.params.args` has no array item type (`'string'|'number'|'enum'` only) — a script that needs
@@ -13396,3 +13398,24 @@ ambiguities, reading `docs/AUTHORING.md` alone):**
    the JSON schema's `required` array but `mermaid` is described as "Required." in prose only, and
    `meta.phases` is required by a separate rule stated elsewhere again; a cold client has to collect
    this from three different places in the tool description rather than one list.
+
+### VAL-289 — REQ-224 cold-client clause re-run after the checkMeta comment fix: unedited `ig-gate.js` registers first try
+- **status:** green
+- **traces:** REQ-224
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** After UT-366/IMPL-413 (comment-aware `checkMeta`), a fresh scratch instance was booted from the
+  VAL-277 config with a fresh `workRoot` (`/tmp/rwe-val-coldclient-reg2-workroot`), port 8798, launched with
+  the same command `deploy.sh` step 4 runs (`node node_modules/tsx/dist/cli.mjs src/main.ts`, litellm venv on
+  PATH) but WITHOUT `deploy.sh` itself (its step 1 `npm install` would rewrite package-lock). NO credentials
+  were decrypted; `OPENROUTER_API_KEY` unset. Healthcheck `version:"0.1.0 (v0.37.14-16-gbb3b87d)"`, log
+  `Bash confinement: CONFINED`, `ready`. Production 8899 untouched (`ss -ltnp` before/after). Exactly ONE
+  `tools/call` `workflow_register` with `{name, script, mermaid}` built verbatim from the untouched artifacts
+  (sha256 `ig-gate.js` 71b54b98…3b839c31, `register-args.json` e31aab1c…c141477d). Response, verbatim:
+  `{"runId":"","status":"completed","version":1,"result":{"name":"ig-dm-auto-reply-gate","version":"v1","versions":["v1"],"channels":{"release":null,"beta":null}}}`;
+  operator log `{"kind":"catalog.register","name":"ig-dm-auto-reply-gate","version":"v1",…}`. Instance stopped
+  (8798 free, no stray litellm). REQ-224's cold-client clause is real-verified: a repo-blind client authored
+  a decide()+agent()+generateImage() script from `docs/AUTHORING.md` alone and it registered first try.
+  Scope note: registration only (no run — no key, by instruction); VAL-266..276 cover the run path.
+- **iter:** v40

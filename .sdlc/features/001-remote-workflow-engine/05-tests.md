@@ -17478,3 +17478,36 @@ test built on top of it can be deterministic either. A test that passes 80-95% o
 "fudged test" this ledger's CLAUDE.md and the verifier contract both forbid keeping; none of the
 three drafts is in `tests/`. Routed to the gate report as an accepted coverage gap, not silently
 dropped — see `gate_check`'s coverage section.
+
+### UT-366 — checkMeta is comment-aware: `//`/`/* */` text inside `export const meta = {…}` never moves string/brace/impure state (VAL-277 defect)
+- **status:** green
+- **traces:** DES-005, TASK-007
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40
+
+File: `tests/unit/guards-meta-comments.test.ts` (new). 10 cases: apostrophe in `//`; quotes in `/* */`; backtick +
+`...` in `//` (the cold-client shape); `'https://x'` stays string text; `}`/`{` in a comment; comment on the last
+line before `}`; unterminated `/*` fails closed; real template/spread still rejected after a comment;
+`validateScriptEntry` (register path) and `evaluateScript` (`checkMetaLiteral`, run path) accept the VAL-277-shaped
+meta. RED on bb3b87d: 8 failed / 2 passed (the two that pass on HEAD — `https://` string and template/spread after
+a comment — are guards against an over-eager fix, by design). GREEN after IMPL-413.
+
+### UT-367 — KNOWN DEFECT (not fixed): workflow-meta.ts body scanners are comment-blind
+- **status:** red
+- **traces:** DES-143, DES-174
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v40
+
+File: `tests/unit/scan-comment-blindness.test.ts` (new), 4 cases written as `it.fails` (they assert the CORRECT
+behaviour and fail today; flip to `it` when fixed — each confirmed failing for the right reason by running them as
+plain `it`). `matchDelimiter`/`splitTopLevel`/`findMatchingColon`/`findArmEnd`/`altSpans` track quotes but not
+comments: (1) an apostrophe in a comment inside `agent()` options makes the WHOLE call vanish from
+`scanAgentCalls` (labels `[]` — AGENT_UNDECLARED / allowedTools / bash / diagram checks never see it);
+(2) ANY comment inside `agent()` options is read into the next key → `PARAM_UNKNOWN` (not quote-related);
+(3) an apostrophe comment in an if-arm drops the `alt` group (and skeleton `dynamic`);
+(4) same in `parallel([...])` drops the `parallel` group. Owner decision pending (see IMPL-413 note).
+

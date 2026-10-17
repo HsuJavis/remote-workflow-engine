@@ -10568,3 +10568,4 @@ REQ-220..230,不再被 08-validation.md 蓋住。另發現一組不在本次任�
 的 `tests/acceptance/val-255-*.test.ts`/`val-256-*.test.ts` 兩個檔頭註解沿用 VAL-255/VAL-256 這兩個
 號,但 08-validation.md 從未給它們掛正式的 `### VAL-255/256` 條目,trace.py 掃不到,不是結構性碰撞,
 未動——留給未來發現者)。下一步：review（Gate 8）。
+- 2026-10-17 — **v40 Gate 7.5 fix — checkMeta 註解盲修復**(executor,verifier→implementer 合約):UT-366 先紅(8/10)→ IMPL-413 讓 `checkMeta` 略過字串外的 `//`、`/* */`(未閉合 `/*` 失敗即關)→ 綠;冷客戶端原封 `ig-gate.js` 於 8798 暫存實例註冊成功(VAL-289,real,REQ-224 ✅);全套 6295/6295、兩份 tsc 乾淨;workflow-meta.ts 主體掃描器同類註解盲(agent() 呼叫可整個從掃描消失)以 UT-367 鎖住、待擁有者決定。

@@ -25,7 +25,7 @@ export interface MetaCheck {
 
 const META_DECL_RE = /export\s+const\s+meta\s*=\s*/;
 
-/** Locates `export const meta = {…}` with a STRING-AWARE brace scan (the object's string values
+/** Locates `export const meta = {…}` with a STRING- and COMMENT-AWARE brace scan (the object's string values
  *  routinely contain `;`, `{`, `}`), and flags a template literal / spread only when it appears
  *  OUTSIDE a string. Replaces a prior `/[^;]*;/` regex that truncated the object at the first
  *  in-string semicolon and wrongly rejected legitimate workflows (e.g. iso-agile-sdlc's sdlc-run.js
@@ -44,6 +44,20 @@ export function checkMeta(script: string): MetaCheck {
     if (str !== null) {
       if (c === '\\') { i++; continue; }
       if (c === str) str = null;
+      continue;
+    }
+    // Comments (outside strings — the string branch above already consumed any `//` in 'https://x')
+    // are skipped whole: their text (an apostrophe, a backtick, `...`, a brace) is not code.
+    if (c === '/' && script[i + 1] === '/') {
+      const nl = script.indexOf('\n', i);
+      if (nl === -1) break; // runs off the end: depth stays non-zero → fails closed below
+      i = nl;
+      continue;
+    }
+    if (c === '/' && script[i + 1] === '*') {
+      const close = script.indexOf('*/', i + 2);
+      if (close === -1) return { found: true, pureLiteral: false }; // unterminated: fail closed
+      i = close + 1;
       continue;
     }
     if (c === "'" || c === '"') { str = c; continue; }

@@ -245,6 +245,7 @@ type AgentOpts = { label?: string; phase?: string; schema?: object; model?: stri
 type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
 ```
 Boundary/error (all throw INSIDE the script, catchable/reported): `Date.now()`, `Math.random()`, argless `new Date()` (determinism guard); >4096 items in one `parallel`/`pipeline` call; second-level `workflow()` nesting; script >512 KB; TS syntax (type annotations/generics fail to parse — must match original JS-not-TS); non-literal `meta` (variables/calls/spreads/interpolation rejected). No `fs`/`require`/`process`/network reachable in-context. `budget` is frozen getters — mutation attempts throw.
+- **delta (v40 Gate 7.5 fix, VAL-277 → UT-366/IMPL-413):** the `export const meta = {…}` locator `checkMeta` (`src/sandbox/guards.ts`, shared by `checkMetaLiteral`, `validateScriptEntry` and every `parseMeta*` reader) is string- AND comment-aware: outside a string/template, `//…` (to the newline) and `/*…*/` are skipped whole, so an apostrophe, quote, backtick, `...` or brace in a comment never moves string state, brace depth or the impure flag; a `//` inside a string (`'https://x'`) stays string text; an unterminated `/*` fails closed (`pureLiteral:false`, no span). Kept inline in guards.ts (child-loaded; no local value import). Out of scope, known: workflow-meta.ts's body scanners share the blindness (UT-367).
 
 ### DES-006 — IPC seam message protocol (child ↔ parent)
 - **status:** draft
