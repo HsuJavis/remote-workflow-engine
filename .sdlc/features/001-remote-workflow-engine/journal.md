@@ -10545,3 +10545,26 @@ pending 翻成 decided（`02-architecture.md:6871` 的 marker 本身已是 `deci
 摘要，留給下一輪一併清，記在這裡避免誤判）；掃描當下唯一一個活的 pending marker是本輪草稿裡自己寫
 在 VAL-270 的一行（已刪除，見 08-validation.md），刪除後全帳本零活的 pending marker。rtm.md 補上
 REQ-220..230 十一列。下一步：review（Gate 8）。
+
+2026-10-17（validator，Gate 7.5 addendum）：REQ-224 冷客端子句真跑一次——repo-blind 代理只讀
+docs/AUTHORING.md 寫出的 IG DM auto-reply 工作流程（decide+agent+generateImage），對著一台獨立的
+scratch 引擎（port 8798，workRoot 在 repo 外）打一次未經修改的 workflow_register，第一次就被拒絕：
+PARSE_ERROR，訊息誤指 export，真因是 checkMeta 的逐字元掃描器不懂 `//` 註解、被腳本自己註解裡的
+一個英文縮寫撇號（guide's）打亂引號/大括號配對（見 08-validation.md VAL-277 完整重放證據）。未重跑、
+未改腳本——這是對 guide/掃描器的發現，不是對冷客端的發現。REQ-224 在 rtm.md 從 ✅* 翻成 ⚠️（VAL-270
+綠、VAL-277 紅，同 REQ-134/135 的手動覆寫慣例）。另記四條冷客端回報的 guide 模糊點為
+guide-feedback（非本輪缺陷）。下一步：review（Gate 8）仍待進行；此條目是其前置真跑證據的補充。
+
+2026-10-17（validator，Gate 7.5 ID 收尾）：修掉 Gate 7.5 自己記下的 ID 碰撞——05-tests.md 的 v40
+test-first 項目 VAL-255..265/E2E-011 與 08-validation.md 既有的 v37 VAL-255..259 撞號，trace.py 的
+scan() 以裸 id 為鍵、08-validation.md 排序在 05-tests.md 之後故靜默覆蓋，使這些 v40 項目無法被 id
+觸達。改從 v40 這一側重新編號為全帳本下一個空號 VAL-278..288/E2E-013（對照表見 05-tests.md），同步
+更新 rtm.md、03-tasks.md、04-design.md、06-impl-log.md 與 tests/ 下引用這些 id 的檔頭註解；過程中
+發現自己第一輪機械式替換誤改了同檔裡原本就該保留的 v37 引用（VAL-256/VAL-259 兩處,06-impl-log.md），
+已逐一核對並改回。`sh .sdlc/trace.py ... -o dashboard.html`：2274/77 → 2280/77（缺口數不變,
++6 個項目 = 本輪新增的 VAL-277 加上原本被 v37 蓋住、現在變成獨立可觸達 id 的 VAL-278..282 五個）；
+`analyze(scan(...))` 直接確認 VAL-278..288/E2E-013 各自落在 05-tests.md、traces 正確指到
+REQ-220..230,不再被 08-validation.md 蓋住。另發現一組不在本次任務範圍內的第三方 id 重用(issue #117
+的 `tests/acceptance/val-255-*.test.ts`/`val-256-*.test.ts` 兩個檔頭註解沿用 VAL-255/VAL-256 這兩個
+號,但 08-validation.md 從未給它們掛正式的 `### VAL-255/256` 條目,trace.py 掃不到,不是結構性碰撞,
+未動——留給未來發現者)。下一步：review（Gate 8）。

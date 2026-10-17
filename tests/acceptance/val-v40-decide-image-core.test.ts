@@ -1,4 +1,4 @@
-// VAL-255..261 (REQ-220..226, v40): decide()/generateImage() acceptance clauses, bound against the
+// VAL-278..284 (REQ-220..226, v40): decide()/generateImage() acceptance clauses, bound against the
 // REAL entrypoint — a real createServer() + real HTTP MCP (`workflow_register`/`workflow_publish`/
 // `run_start`/`run_status`/`workspace_list`/`workspace_pull`). The OpenRouter wire itself is the one
 // genuinely un-runnable third party; it is stood in by a local fake HTTP server bound to
@@ -72,7 +72,7 @@ afterAll(async () => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('VAL-255: REQ-220 — decide(label, {state, questions}) returns a typed answer, usable under BOTH gateway:sdk and gateway:pi', () => {
+describe('VAL-278: REQ-220 — decide(label, {state, questions}) returns a typed answer, usable under BOTH gateway:sdk and gateway:pi', () => {
   it('a declared decide() call returns answers.order of the declared bool type (gateway:sdk)', async () => {
     const script = `
       export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
@@ -110,7 +110,7 @@ describe('VAL-255: REQ-220 — decide(label, {state, questions}) returns a typed
   });
 });
 
-describe('VAL-256: REQ-221 — generateImage(label, {prompt, inputImages?, outDir?}) writes real files, never base64 in the reply', () => {
+describe('VAL-279: REQ-221 — generateImage(label, {prompt, inputImages?, outDir?}) writes real files, never base64 in the reply', () => {
   it('a bare prompt call returns workspace-relative file paths that actually exist and are pullable', async () => {
     const script = `
       export const meta = { phases: [], params: { images: { hero: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 0 } } } } };
@@ -146,7 +146,7 @@ describe('VAL-256: REQ-221 — generateImage(label, {prompt, inputImages?, outDi
   });
 });
 
-describe('VAL-257: REQ-222 — catalog recognizes decision models', () => {
+describe('VAL-280: REQ-222 — catalog recognizes decision models', () => {
   it('models_list({query:"typesafe"}) lists openrouter/typesafe/jev-1.13 with modelType:"decision" (requires live/static catalog wiring)', async () => {
     const r = await call(server, 'models_list', { query: 'typesafe' });
     const rows = (r.models ?? r.result?.models ?? []) as Array<{ ref?: string; modelType?: string }>;
@@ -155,7 +155,7 @@ describe('VAL-257: REQ-222 — catalog recognizes decision models', () => {
   });
 });
 
-describe('VAL-258: REQ-223 — registration-time model-type gate (new registrations only)', () => {
+describe('VAL-281: REQ-223 — registration-time model-type gate (new registrations only)', () => {
   it('a decisions.<label>.model.default typed as a known-wrong model (chat) refuses registration with a named code', async () => {
     const name = uniqueWorkflowName('val258-mismatch');
     const script = `
@@ -167,7 +167,7 @@ describe('VAL-258: REQ-223 — registration-time model-type gate (new registrati
   });
 });
 
-describe('VAL-259: REQ-224 — static checks + served text cover decide/generateImage', () => {
+describe('VAL-282: REQ-224 — static checks + served text cover decide/generateImage', () => {
   it('the real workflow_authoring_guide tool call documents the decide()/generateImage() signatures over real MCP HTTP', async () => {
     const guide = await call(server, 'workflow_authoring_guide', {});
     const text = JSON.stringify(guide);
@@ -187,7 +187,7 @@ describe('VAL-259: REQ-224 — static checks + served text cover decide/generate
   });
 });
 
-describe('VAL-260: REQ-225 — cost accounting + USD budget', () => {
+describe('VAL-283: REQ-225 — cost accounting + USD budget', () => {
   // v40 Gate 6 follow-up: the old ref `openrouter/typesafe/unpriced-model` is not in any catalog, so
   // registration refused it UNKNOWN_MODEL before the budget path was ever reached. No live decision
   // model is unpriced, so this uses a CONTROLLED catalog stub: a listed `decisions`-output row with no
@@ -220,7 +220,7 @@ describe('VAL-260: REQ-225 — cost accounting + USD budget', () => {
   });
 });
 
-describe('VAL-261: REQ-226 — resume replays decide/generateImage without re-calling the provider', () => {
+describe('VAL-284: REQ-226 — resume replays decide/generateImage without re-calling the provider', () => {
   it('(precondition) a decide+image run completes on the first attempt — see IT-312 for the full stop/resume claim once this holds', async () => {
     const script = `
       export const meta = { phases: [], params: {

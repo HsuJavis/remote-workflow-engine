@@ -2,7 +2,7 @@
 // (DES-274, ARCH-187, TASK-271) scored 83.9%/70.9% statement coverage over tests/unit+tests/
 // integration — every OTHER v40 test dispatches a decide()/generateImage() call whose model is
 // EITHER priceable-and-under-budget (the happy path) OR deliberately unpriceable with a USD budget
-// (VAL-260's own PRICE_UNKNOWN case) — no test exercises OPENROUTER_AUTH_MISSING for either
+// (VAL-283's own PRICE_UNKNOWN case) — no test exercises OPENROUTER_AUTH_MISSING for either
 // primitive, nor a PRICED model whose USD budget is already exhausted (the pre-slot door, DES-274
 // step 7). This file closes those branches, for BOTH primitives.
 //
@@ -95,7 +95,7 @@ describe('decide()/generateImage() OPENROUTER_AUTH_MISSING (DES-274 step 4) — 
   });
 });
 
-describe('decide()/generateImage() PRICE_UNKNOWN (DES-274 step 6) — VAL-260 covers decide(); generateImage() has no equivalent', () => {
+describe('decide()/generateImage() PRICE_UNKNOWN (DES-274 step 6) — VAL-283 covers decide(); generateImage() has no equivalent', () => {
   it('generateImage(): an unpriced model under a USD budget is refused PRICE_UNKNOWN, provider never called', async () => {
     const stub = makeStubFetch([IMAGE_OK]);
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-10-01T00:00:00Z')));

@@ -10836,7 +10836,7 @@ fallthrough swallows it, since `TranscriptEvent.kind` has no `'refused'` member 
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **delta (v40 Gate 6, ruling R-18, owner 2026-10-16 「分開處理」):** the global `PRICE_UNKNOWN` grep case is REMOVED (the primitives now legitimately emit it — ARCH-191/ADR-091). Replaced by an agent-path pin: a listed-but-unpriced `openrouter/vendor/not-in-catalog` model, `run_start` with `budget:{usd:1}`, one `agent()` call → run `completed`, record `state:'done'`, `unpriced:true`, `costUSD:0`, and the string appears nowhere in `run_status`/`run_result` (ADR-038 amendment). Measured GREEN (2/2) — characterizes shipped ADR-038 behaviour; the primitive half is VAL-260.
+- **delta (v40 Gate 6, ruling R-18, owner 2026-10-16 「分開處理」):** the global `PRICE_UNKNOWN` grep case is REMOVED (the primitives now legitimately emit it — ARCH-191/ADR-091). Replaced by an agent-path pin: a listed-but-unpriced `openrouter/vendor/not-in-catalog` model, `run_start` with `budget:{usd:1}`, one `agent()` call → run `completed`, record `state:'done'`, `unpriced:true`, `costUSD:0`, and the string appears nowhere in `run_status`/`run_result` (ADR-038 amendment). Measured GREEN (2/2) — characterizes shipped ADR-038 behaviour; the primitive half is VAL-283.
 - **iter:** v26
 
 File: `tests/integration/public-shapes-pin.test.ts` (2 cases, over `tests/fixtures/v26-public-shapes.ts`).
@@ -16662,12 +16662,12 @@ every helper's call signature; TDD's test author fills that gap. A Gate 6 implem
 cleaner shape should feel free to adjust the test alongside the code, same as any other RED test.
 
 Reduction (disclosed, not silently dropped): TASK-271's four integration files (IT-311..314) and
-the VAL-261 "resume" case are reduced to their PRECONDITION ("the run completes once") rather than
+the VAL-284 "resume" case are reduced to their PRECONDITION ("the run completes once") rather than
 the full stop/resume/concurrency/latency claim, because none of those claims are exercisable until
-decide()/generateImage() can complete at all (TASK-269's sandbox wiring). IT-312/VAL-261 do not yet
-assert "0 further provider calls after resume" as a separate case; IT-313/VAL-264's sentinel sweep
-and VAL-265/IT-314's p95 measurement DO carry their full real assertions (positive control /
-percentile math) because those are independent of resume. E2E-011 carries the full stop/resume
+decide()/generateImage() can complete at all (TASK-269's sandbox wiring). IT-312/VAL-284 do not yet
+assert "0 further provider calls after resume" as a separate case; IT-313/VAL-287's sentinel sweep
+and VAL-288/IT-314's p95 measurement DO carry their full real assertions (positive control /
+percentile math) because those are independent of resume. E2E-013 carries the full stop/resume
 assertion since it is the one place this ledger needs the whole journey end to end.
 
 ### UT-339 — v40 shared vocabulary: PRICE_UNKNOWN joins both refusal sets; 11 new ERROR_CATALOG entries
@@ -16989,7 +16989,7 @@ test's code-specific assertion does not. Red confirmed.
 File: `tests/integration/primitive-resume.test.ts` (new). Reduction (disclosed): the full "stop
 then resume -> 0 further provider calls" claim cannot be exercised until a first run can complete
 at all; this pins that precondition with a strong (non-vacuous) `status==='completed'` assertion.
-The full resume claim is carried by E2E-011. Red confirmed.
+The full resume claim is carried by E2E-013. Red confirmed.
 
 ### IT-313 — sentinel sweep with positive control
 - **status:** green
@@ -17032,7 +17032,31 @@ decide/image entry yet (UT-355), so this file's `it.each` has nothing new to ite
 it will go red the moment UT-355's `scripts.some(...)` assertions force a GUIDE_EXAMPLES entry to
 exist, and this file's own `it.each` is what then proves that entry actually registers for real.
 
-### VAL-255 — REQ-220: decide(label, {state, questions}) returns a typed answer under sdk AND pi gateways
+**ID renumbering (2026-10-17, validator, Gate 7.5 finding).** The eleven VAL items and one E2E item
+below were originally filed as `VAL-255..265`/`E2E-011`, which collide with pre-existing v37 ids of
+the same number already defined in `08-validation.md` (REQ-117/REQ-218/REQ-116/REQ-207) —
+`trace.py`'s `scan()` keys items by bare id and `08-validation.md` sorts after `05-tests.md`
+alphabetically, so the v37 definitions silently won every id lookup and these v40 items were
+unreachable by id (full mechanism: `08-validation.md`'s v40 Gate 7.5 section). Renumbered to the
+next free ids across the whole ledger (one past `VAL-277`/`E2E-012`, the highest ids in use after
+this same gate's cold-client addendum):
+
+| old id | new id | old id | new id |
+|---|---|---|---|
+| VAL-255 | VAL-278 | VAL-261 | VAL-284 |
+| VAL-256 | VAL-279 | VAL-262 | VAL-285 |
+| VAL-257 | VAL-280 | VAL-263 | VAL-286 |
+| VAL-258 | VAL-281 | VAL-264 | VAL-287 |
+| VAL-259 | VAL-282 | VAL-265 | VAL-288 |
+| VAL-260 | VAL-283 | E2E-011 | E2E-013 |
+
+Every reference to these ids in `rtm.md`, `03-tasks.md`, `04-design.md`, `06-impl-log.md` and the
+test files' own header comments (`tests/acceptance/val-v40-*.test.ts`, `tests/e2e/decide-image-
+journey.test.ts`) was updated to match in the same pass. The colliding v37 ids in `08-validation.md`
+(`VAL-255..259`, a different iteration's items) are untouched — the collision is resolved from the
+v40 side only, per this gate's own instruction.
+
+### VAL-278 — REQ-220: decide(label, {state, questions}) returns a typed answer under sdk AND pi gateways
 - **status:** green
 - **traces:** REQ-220
 - **tier:** acceptance
@@ -17047,7 +17071,7 @@ File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Real `createServer()
 and `gateway:'pi'` servers and runs the identical script against each, per the owner's acceptance
 clause. Undeclared-label registration refusal case included. Red confirmed: 3/3 fail.
 
-### VAL-256 — REQ-221: generateImage(label, {prompt, inputImages?, outDir?}) — real files, no base64 in the reply
+### VAL-279 — REQ-221: generateImage(label, {prompt, inputImages?, outDir?}) — real files, no base64 in the reply
 - **status:** green
 - **traces:** REQ-221
 - **tier:** acceptance
@@ -17061,7 +17085,7 @@ File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Asserts the reply co
 `inputImages` entry is refused `IMAGE_PATH_REFUSED` before any provider call. Red confirmed: 2/2
 fail.
 
-### VAL-257 — REQ-222: catalog recognizes decision models
+### VAL-280 — REQ-222: catalog recognizes decision models
 - **status:** green
 - **traces:** REQ-222
 - **tier:** acceptance
@@ -17074,7 +17098,7 @@ real MCP HTTP against the live/static catalog wiring. Red confirmed: fails (the 
 fixture-seeded jev row at acceptance tier today — same underlying cause as UT-346, exercised
 end-to-end).
 
-### VAL-258 — REQ-223: registration-time model-type gate (new registrations only)
+### VAL-281 — REQ-223: registration-time model-type gate (new registrations only)
 - **status:** green
 - **traces:** REQ-223
 - **tier:** acceptance
@@ -17086,7 +17110,7 @@ File: `tests/acceptance/val-v40-decide-image-core.test.ts`. A `decisions.<label>
 typed chat refuses registration naming `MODEL_TYPE_MISMATCH`, over real `workflow_register`. Red
 confirmed: registration resolves instead of rejecting today.
 
-### VAL-259 — REQ-224: static checks + served text cover decide/generateImage
+### VAL-282 — REQ-224: static checks + served text cover decide/generateImage
 - **status:** green
 - **traces:** REQ-224
 - **tier:** acceptance
@@ -17100,20 +17124,20 @@ cold-client-authoring clause (REQ-224's last sentence) is Gate 7.5 scope (a real
 agent) — this VAL covers the structural clauses only; noted, not silently dropped. Red confirmed:
 2/2 fail.
 
-### VAL-260 — REQ-225: cost accounting + USD budget
+### VAL-283 — REQ-225: cost accounting + USD budget
 - **status:** green
 - **traces:** REQ-225
 - **tier:** acceptance
 - **real:** false
 - **result:** pass
 - **delta (v40 Gate 6 follow-up):** the old ref `openrouter/typesafe/unpriced-model` was unlisted, so registration refused `UNKNOWN_MODEL` before the budget path. No live decision model is unpriced, so the test now uses a CONTROLLED catalog stub (`modelCatalog` → `buildCatalog` over a listed `typesafe/unpriced-decider` row, `output_modalities:['decisions']`, no `pricing`), `budget:{usd:1}`, `directDeps:{fetch, resolveKey}`; also fixed the error read path (`run_status` carries it at `result.error`, not top-level `error`). Intent kept: PRICE_UNKNOWN, stub fetch count 0. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` into RunManager (TASK-272 note). With `OPENROUTER_API_KEY=sk-test` in env it passes (diagnostic only), so the pricing/refusal path itself works.
-- **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-260 already has it) the case is green; see IMPL-407 note 7.
+- **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-283 already has it) the case is green; see IMPL-407 note 7.
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. An unpriceable model under a USD budget
 is refused `PRICE_UNKNOWN` BEFORE the provider is called (`stub.calls` stays empty). Red confirmed.
 
-### VAL-261 — REQ-226: resume replay precondition
+### VAL-284 — REQ-226: resume replay precondition
 - **status:** green
 - **traces:** REQ-226
 - **tier:** acceptance
@@ -17124,9 +17148,9 @@ is refused `PRICE_UNKNOWN` BEFORE the provider is called (`stub.calls` stays emp
 
 File: `tests/acceptance/val-v40-decide-image-core.test.ts`. Reduction (disclosed, same class as
 IT-312): pins "a decide+image run completes on the first attempt" at the acceptance tier; the full
-stop/resume/0-provider-calls claim is carried end-to-end by E2E-011. Red confirmed.
+stop/resume/0-provider-calls claim is carried end-to-end by E2E-013. Red confirmed.
 
-### VAL-262 — REQ-227: limited retries then a named error; 4xx (not 429) never retries
+### VAL-285 — REQ-227: limited retries then a named error; 4xx (not 429) never retries
 - **status:** green
 - **traces:** REQ-227
 - **tier:** acceptance
@@ -17138,7 +17162,7 @@ stop/resume/0-provider-calls claim is carried end-to-end by E2E-011. Red confirm
 File: `tests/acceptance/val-v40-nfr.test.ts`. 429 then 400 over real MCP HTTP: one retry, then
 `PRIMITIVE_FAILED` naming HTTP 400, exactly 2 provider calls. Red confirmed.
 
-### VAL-263 — REQ-228: independent, configurable concurrency caps
+### VAL-286 — REQ-228: independent, configurable concurrency caps
 - **status:** green
 - **traces:** REQ-228
 - **tier:** acceptance
@@ -17150,7 +17174,7 @@ File: `tests/acceptance/val-v40-nfr.test.ts`. 429 then 400 over real MCP HTTP: o
 File: `tests/acceptance/val-v40-nfr.test.ts`. `decideSlots:1` caps two concurrent `decide()` calls
 at 1 in-flight, measured via a wrapped stub fetch that tracks live concurrency. Red confirmed.
 
-### VAL-264 — REQ-229: event log carries metadata only (positive-control-gated)
+### VAL-287 — REQ-229: event log carries metadata only (positive-control-gated)
 - **status:** green
 - **traces:** REQ-229
 - **tier:** acceptance
@@ -17163,14 +17187,14 @@ File: `tests/acceptance/val-v40-nfr.test.ts`. Same control-gating discipline as 
 control (stub received the sentinel) is asserted before the `/api/runs/:id` leak-free check, in the
 same test. Red confirmed: fails at the control.
 
-### VAL-265 — REQ-230: engine overhead p95 <= 200ms over 100 decide() calls (real percentile math)
+### VAL-288 — REQ-230: engine overhead p95 <= 200ms over 100 decide() calls (real percentile math)
 - **status:** green
 - **traces:** REQ-230
 - **tier:** acceptance
 - **real:** false
 - **result:** pass
 - **delta (v40 Gate 6 follow-up):** the in-script `Date.now()` is removed (the sandbox determinism guard refuses it, so the case could never pass). Now measured as IT-314: 101 calls, fixed 20ms stub delay, stub-side `performance.now()` timestamps, overhead_i = `start[i+1] − end[i]`, 100 samples, p95 ≤ 200ms; `directDeps:{fetch, resolveKey}`. Measured RED for a PRODUCT reason: `OPENROUTER_AUTH_MISSING` — `createServer` does not thread `directDeps` (TASK-272 note).
-- **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-260 already has it) the case is green; see IMPL-407 note 7.
+- **delta (v40 Gate 6 integrator, 2026-10-16):** the "PRODUCT reason" above is withdrawn — `createServer` does thread `directDeps` (server.ts ~L1101). With `directDeps.resolveKey` injected (VAL-283 already has it) the case is green; see IMPL-407 note 7.
 - **iter:** v40
 
 File: `tests/acceptance/val-v40-nfr.test.ts`. The one genuinely new, non-derivative measurement in
@@ -17178,7 +17202,7 @@ this ledger slice (IT-314 only pins the precondition): script-observed elapsed m
 injected provider delay, p95 over 100 calls, computed with real nearest-rank percentile math. Red
 confirmed: fails before the percentile is ever computed (the run never completes).
 
-### E2E-011 — register -> run -> suspend -> resume -> workspace_list/pull -> run_status.agents[].kind
+### E2E-013 — register -> run -> suspend -> resume -> workspace_list/pull -> run_status.agents[].kind
 - **status:** green
 - **traces:** REQ-220, REQ-221, REQ-225, REQ-226, REQ-229
 - **tier:** e2e
@@ -17378,7 +17402,7 @@ is refused at admission (expected 3 provider calls).
 File: `tests/integration/nested-primitive-dispatch.test.ts` (new). Coverage audit (`coverage-final.json`
 over the v40 diff, tests/unit+tests/integration) found `RunManager._handleWorkflowRequest`'s nested
 `onDecideRequest`/`onImageRequest` closures (new at v40) at 0 invocations — every existing v40 test
-(IT-308/311/312/313/314, VAL-255..265, E2E-011) dispatches `decide()`/`generateImage()` only at the
+(IT-308/311/312/313/314, VAL-278..265, E2E-013) dispatches `decide()`/`generateImage()` only at the
 TOP level, never from inside a nested `workflow()` frame, mirroring `nested-agent-child-params.test.ts`'s
 own pre-v40 concern (a nested frame must use the CHILD's own declared params, never the parent's) but
 for the two new primitives. Registers an inner workflow declaring both `decisions.gate` and
@@ -17405,7 +17429,7 @@ to `if (false)` for the positive-control probe and immediately edited back (via 
 - **result:** pass
 - **iter:** v40
 
-### IT-320 — generateImage() PRICE_UNKNOWN (DES-274 step 6) — VAL-260 covers decide(); no prior test covered generateImage()'s own branch
+### IT-320 — generateImage() PRICE_UNKNOWN (DES-274 step 6) — VAL-283 covers decide(); no prior test covered generateImage()'s own branch
 - **status:** green
 - **traces:** DES-274, ARCH-187, ARCH-191, TASK-271
 - **tier:** integration
@@ -17424,7 +17448,7 @@ to `if (false)` for the positive-control probe and immediately edited back (via 
 File (IT-319..321): `tests/integration/primitive-budget-auth-refusals.test.ts` (new). Coverage audit
 (`coverage-final.json`, v40 diff, tests/unit+tests/integration) found `_handleDecideRequest`/
 `_handleImageRequest` (DES-274) at 83.9%/70.9% statement coverage — every other v40 test dispatches
-a model that is either priced-and-under-budget or deliberately unpriced-with-budget (VAL-260's own
+a model that is either priced-and-under-budget or deliberately unpriced-with-budget (VAL-283's own
 PRICE_UNKNOWN case, decide() only); no test anywhere exercised OPENROUTER_AUTH_MISSING for either
 primitive, generateImage()'s own PRICE_UNKNOWN branch, or a PRICED model whose USD budget is already
 exhausted (the pre-slot door, DES-274 step 7). Pricing injected via a real `ModelBook` whose

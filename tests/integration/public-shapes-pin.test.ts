@@ -3,7 +3,7 @@
 // agent() path never emits `PRICE_UNKNOWN`: an unpriced agent() call under a USD budget is ADMITTED
 // with `unpriced:true` (ADR-038). v40 ruling R-18 (owner 2026-10-16 「分開處理」) replaced the old
 // global grep: decide()/generateImage() DO refuse `PRICE_UNKNOWN` under a USD budget (ARCH-191,
-// ADR-091) — that is the primitive path, pinned by VAL-260, not here. Written test-first (Gate 5, RED): today's
+// ADR-091) — that is the primitive path, pinned by VAL-283, not here. Written test-first (Gate 5, RED): today's
 // `AgentRecord` carries `tokens: {input, output}` (two columns) and no `costUSD`/`unpriced`/
 // `transport`/`proxyModel`/`phaseIndex` at all — the key-set comparison fails immediately.
 // Mock policy (integration, real adjacent components): real createServer(), real MCP HTTP; a fake

@@ -1,4 +1,4 @@
-// VAL-262..265 (REQ-227..230, v40): the four NFR acceptance clauses, bound against the real
+// VAL-285..288 (REQ-227..230, v40): the four NFR acceptance clauses, bound against the real
 // entrypoint (createServer + real HTTP MCP). real:false — flips at Gate 7.5.
 //
 // Red reason (uniform): decide()/generateImage() are not sandbox globals yet — every run fails
@@ -37,7 +37,7 @@ let tmpDir: string;
 beforeAll(() => { tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val-v40-nfr-')); });
 afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
 
-describe('VAL-262: REQ-227 — limited retries then a named error; 4xx (not 429) never retries', () => {
+describe('VAL-285: REQ-227 — limited retries then a named error; 4xx (not 429) never retries', () => {
   it('a 429 then a 400: retries the 429 once, then fails fast on the 400 — naming HTTP 400, never retried further', async () => {
     const stub = makeStubFetch([{ status: 429 }, { status: 400 }]);
     const s = await createServer({ port: 0, bind: '127.0.0.1', workRoot: join(tmpDir, 'r227'), directDeps: { fetch: stub.fetch, resolveKey: () => 'sk-test' } } as never);
@@ -55,7 +55,7 @@ describe('VAL-262: REQ-227 — limited retries then a named error; 4xx (not 429)
   });
 });
 
-describe('VAL-263: REQ-228 — independent, configurable concurrency caps', () => {
+describe('VAL-286: REQ-228 — independent, configurable concurrency caps', () => {
   it('decideSlots:1 caps simultaneous decide() calls at 1, even while the agent semaphore is fully saturated', async () => {
     let maxConcurrent = 0;
     let inFlight = 0;
@@ -86,7 +86,7 @@ describe('VAL-263: REQ-228 — independent, configurable concurrency caps', () =
   });
 });
 
-describe('VAL-264: REQ-229 — event log carries metadata only', () => {
+describe('VAL-287: REQ-229 — event log carries metadata only', () => {
   it('a sentinel in state never appears in /api/runs/:id or the agent log, over real HTTP', async () => {
     const SENTINEL = 'val264-sentinel-7b2c';
     const stub = makeStubFetch([{ status: 200, body: { answers: { ok: { type: 'noul', noul: 0.5 } } } }]);
@@ -111,7 +111,7 @@ describe('VAL-264: REQ-229 — event log carries metadata only', () => {
   });
 });
 
-describe('VAL-265: REQ-230 — engine overhead p95 <= 200ms over 100 decide() calls', () => {
+describe('VAL-288: REQ-230 — engine overhead p95 <= 200ms over 100 decide() calls', () => {
   // v40 Gate 6 follow-up: the script may not call Date.now() (the sandbox determinism guard refuses
   // it), so — as IT-314 does — every timestamp is taken STUB-side in the test process. 101 sequential
   // calls against a fixed 20ms provider delay; overhead_i = start[i+1] − end[i] (the script-observed

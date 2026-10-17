@@ -1,4 +1,4 @@
-// E2E-011 (REQ-220/221/225/226/229, v40): the full user journey — register a workflow that
+// E2E-013 (REQ-220/221/225/226/229, v40): the full user journey — register a workflow that
 // declares `decisions`/`images` blocks, run it, suspend it once its primitive calls are journaled, resume it (decide/image calls
 // replay, provider not re-called), list the workspace, pull the generated file, and confirm
 // `run_status.agents[].kind` surfaces 'decide'/'image' — all over real MCP HTTP against a real
@@ -80,7 +80,7 @@ function findFile(dir: string, suffix: string, runId: string): string | null {
   return null;
 }
 
-describe('E2E-011: register -> run -> suspend (after the calls are journaled) -> resume -> workspace_list/pull -> run_status.agents[].kind', () => {
+describe('E2E-013: register -> run -> suspend (after the calls are journaled) -> resume -> workspace_list/pull -> run_status.agents[].kind', () => {
   it('the full decide+generateImage journey', async () => {
     const decideStub = makeStubFetch([{ status: 200, body: { answers: { ok: { type: 'noul', noul: 0.75 } } } }]);
     const imageStub = makeStubFetch([{ status: 200, body: { id: 'g1', choices: [{ message: { content: '', images: [{ image_url: 'data:image/png;base64,iVBORw0KGgo=' }] } }] } }]);

@@ -13323,3 +13323,76 @@ for REQ-225 and is what is cited below.
   post-resume `d1` provider line in the log — see VAL-272 for the full log excerpt, shared evidence).
   `workspace_list`/file presence for the generated image confirmed in VAL-267/VAL-272.
 - **iter:** v40
+
+
+## v40 Gate 7.5 addendum — REQ-224's cold-client clause, real run (2026-10-17, validator)
+
+**What this is.** VAL-270 above disclosed that REQ-224's own last-sentence clause — a genuinely
+cold, unbriefed LLM client reading ONLY `docs/AUTHORING.md` and authoring a `decide()`/
+`generateImage()`/`workflow_register` script from it — was NOT exercised in that gate (this role has
+no tool to spawn a separate, repo-blind agent process). The owner has since had a repo-blind agent
+(given ONLY a copy of `docs/AUTHORING.md`, no repo access) author exactly such a workflow for real:
+an Instagram-DM auto-reply gate combining `decide()` (triage), `agent()` (reply draft) and
+`generateImage()` (promo image) — the combination the guide has no worked example for (see
+guide-feedback item 3 below). This addendum runs that cold client's unedited artifacts against a
+real engine for the first time.
+
+**Setup.** A fresh scratch instance, independent of production (port 8899, `rwe` user, untouched —
+confirmed via `ss -ltnp` before/after) and of the four v40 Gate-7.5 scratch instances (already torn
+down): `RWE_CONFIG_PATH=.../coldclient/run/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8798
+./deploy.sh --background`, `workRoot=/tmp/rwe-val-coldclient-workroot` (outside the repo).
+`OPENROUTER_API_KEY` decrypted from the user's own `systemd-creds` credential store
+(`~/.config/credstore/openrouter_api_key.cred`) to a 0600 scratch file for the boot command only,
+then left in place under the scratch dir (not the repo), never logged. Healthcheck passed
+(`version:"0.1.0 (v0.37.14-15-g1e22ade)"`).
+
+**The call.** Exactly ONE `tools/call` POST to `http://127.0.0.1:8798/mcp`, `workflow_register` with
+`{name, script, mermaid}` built verbatim from the two untouched cold-client artifacts (`name`/
+`mermaid` from `register-args.json`, `script` = the literal text of `ig-gate.js` — neither file
+edited before or after this call).
+
+### VAL-277 — REQ-224's cold-client clause: first-try `workflow_register` from a cold read of `docs/AUTHORING.md` alone
+- **status:** red
+- **traces:** REQ-224
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** Refused on the FIRST (and only) attempt against the real, live engine:
+  `{"runId":"","status":"failed","code":"PARSE_ERROR","error":{"code":"PARSE_ERROR","message":"Unexpected token 'export' at line 1: \`export const meta = {\`. — \`export\` is not accepted here: \`export const meta = {…}\` is the ONE export a script may carry. A workflow script body is a BARE async function body — statements and a \`return\`, with no \`export default\`, no \`function\` wrapper and no top-level \`import\`; \`export const meta = {…}\` is the one exception and it must be written exactly that way.","see":"workflow_authoring_guide","detail":{"field":"script","line":1,"source":"export const meta = {","construct":"export"}}}`.
+  **This is misleading, not literally true**: the script's line 1 IS exactly
+  `export const meta = {`, the one documented exception. Root cause, confirmed by replaying
+  `checkMeta`'s own char-by-char scanner (`src/sandbox/guards.ts`) against the cold client's exact
+  script text: the scanner tracks `'`/`"`/`` ` `` string state and `{`/`}` depth over the WHOLE
+  script with no awareness of `//` line comments. The cold client's own explanatory comment on line
+  8 — `// guide's "Declaring the parameter contract" section...` — contains an apostrophe
+  (`guide's`); the scanner reads that apostrophe as opening a `'`-string, which does not close until
+  the next literal `'` it finds four lines later (inside real code, `message: { type: 'string', ...`
+  on line 12), silently swallowing one real `{`/`}` pair as "string content" along the way. Every
+  subsequent quote in the file is now off by one pairing, and by the end of the `meta` object the
+  scanner's brace depth never returns to 0 (confirmed: final depth 3, scanner runs off the end of
+  the 3859-byte script) — `checkMeta` returns no `span`, `validateScriptEntry` never blanks the meta
+  literal, and the literal `export` on line 1 reaches `vm.Script` unblanked, producing exactly the
+  reported (misattributed) error. **Not a defect in the cold client's script** — `export const meta
+  = {…}` with an explanatory `//` comment containing an apostrophe is unremarkable JS and nothing in
+  `docs/AUTHORING.md` or the tool's own `workflow_register` description warns that comment TEXT
+  inside the `meta` object can break registration. Filed as a real, reproducible defect in the
+  registration-time scanner (comment-blind quote/brace tracking), not retried with an edited script
+  per this gate's own instruction — fixing it is a decision for the owner/a future gate, not this
+  validator.
+- **iter:** v40
+
+**Guide-feedback items (NOT defects to fix now — the cold client's own reported authoring
+ambiguities, reading `docs/AUTHORING.md` alone):**
+1. `meta.params.args` has no array item type (`'string'|'number'|'enum'` only) — a script that needs
+   a `history: string[]`-shaped arg cannot declare it in the parameter contract and must read it
+   defensively off `args` instead; the guide never states this limitation or the workaround.
+2. The guide does not state whether `decide()`/`generateImage()` nodes are edge-checked in the
+   mermaid diagram the same way `agent()` nodes are (lane membership, `EDGE_MISMATCH`, etc.) — the
+   cold client had to infer the diagram shape for `decide`/`generateImage` nodes by analogy alone.
+3. No worked example in the guide combines `decide()` + `agent()` + `generateImage()` in one script —
+   only each primitive shown in isolation, so composing all three (as this workflow does) had no
+   template to check against.
+4. No explicit, single list of which `workflow_register` keys are required — `name`/`script` are in
+   the JSON schema's `required` array but `mermaid` is described as "Required." in prose only, and
+   `meta.phases` is required by a separate rule stated elsewhere again; a cold client has to collect
+   this from three different places in the tool description rather than one list.

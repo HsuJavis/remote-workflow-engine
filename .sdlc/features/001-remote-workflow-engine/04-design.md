@@ -10819,7 +10819,7 @@ R-15, R-17). New rows below. R-1 (golden provenance `0e19fae`) is recorded on TA
 Real-tier paths: R-13 → a real `run_start` with `overrides.decisions.<label>.retries` against the
 Gate 7.5 engine (attempt count in the `primitive.call` lines); OD-1 → a real `workflow_register` of
 `images.hero` → `openrouter/google/gemini-2.5-flash-image` succeeds and an embedding model is refused
-`MODEL_TYPE_MISMATCH` (VAL-258's path).
+`MODEL_TYPE_MISMATCH` (VAL-281's path).
 
 ### DES-277 — run-time overrides for `decisions`/`images`: `validateUserOverrides` widening + `resolvePrimitiveParams`
 - **status:** draft
