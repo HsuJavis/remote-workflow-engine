@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { codedError } from '../errors.js';
 import type { ImageFile, ImageMime } from '../types.js';
-import { isPathContained } from '../path-containment.js';
+import { isPathContained, resolveLanding } from '../path-containment.js';
 
 export const DEFAULT_OUT_DIR = 'generated';
 
@@ -65,12 +65,14 @@ export async function readContainedInput(root: string, rel: string, maxBytes: nu
   }
 }
 
-/** Resolves (and creates) the absolute output directory under `root` — `mkdir -p` semantics, then
- *  a realpath + containment RE-CHECK (a symlinked path component resolves outside root -> escape,
- *  caught here even though `mkdir` itself succeeded silently). */
+/** Resolves (and creates) the absolute output directory under `root` (ARCH-185, INV-V40-7): FIRST
+ *  where `mkdir -p` would really land (`resolveLanding` follows every existing symlinked component,
+ *  intermediate ones included) must be contained — refused before anything is created; THEN
+ *  `mkdir -p`; THEN the realpath + containment re-check as defence in depth. */
 export async function resolveOutDir(root: string, outDir: string | undefined): Promise<string> {
   const rel = outDir ?? DEFAULT_OUT_DIR;
   const abs = join(root, rel);
+  if (!isPathContained(resolveLanding(abs), root)) pathRefused('escape', 'outDir');
   await mkdir(abs, { recursive: true });
   if (!isPathContained(abs, root)) pathRefused('escape', 'outDir');
   return abs;

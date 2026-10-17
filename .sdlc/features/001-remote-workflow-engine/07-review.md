@@ -15417,3 +15417,432 @@ before declaring the repair done.
 work under review nor rounds 4/5/6's reviews. Findings verified by driving the real classes and by
 perturbation, not from the reports. `.panel/` listed, untouched, not consulted. Nothing committed; no
 file other than `07-review.md` edited; no `git checkout`/`restore`/`stash` used.*
+
+---
+
+## v40 GATE 8 round 1 (2026-10-17, reviewer) — SEND-BACK
+
+**Scope:** REQ-220..230 (`decide()`/`generateImage()` over pi-ai, host-side) + the two Gate 7.5
+addendum fixes (IMPL-413 `checkMeta` comment-blindness, IMPL-414 three-scanner comment/regex
+blindness). Two architecture-expert panels **already ran** and are consolidated here, not
+re-spawned (`.panel/review/{adversarial,quality-dimensions}.md`, both dated 2026-10-17, both
+scoped to IMPL-391..414's `files:` lines plus directly-referenced module boundaries, no whole-tree
+read).
+
+### Traceability
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **2287 items / 77 gaps** (up
+from the pre-gate 2280/77 baseline by exactly the 7 items the last two implementer commits added —
+UT-367..369/IMPL-414 — **0 new gaps**). Loaded `trace.analyze()` as a library and confirmed by
+type: **15 HIGH** — all pre-existing 斷鏈 (`IMPL-303..311`/`UT-264/265`/`IMPL-323` tracing to
+`REQ-144..152/186`, dated v6–v28, 0 touching v40's own ids); **36 MID** — 17 未驗證
+(`REQ-153..169`, pre-existing, same cohort every round since it first appeared) + 19 TDD-order
+violations (`IMPL-305..323`, pre-existing); **26 LOW** — 23 文件↔程式碼漂移 (dated v1–v28) + 2
+未實作 (`TASK-018`/`TASK-153`). **0 未真實驗證** anywhere (confirmed: all eleven v40 REQs carry
+`real:true` VAL/E2E evidence per `gates.validation`'s note). All 77 gaps are pre-existing,
+repeatedly disclosed in prior `gates.*` notes across a dozen+ iterations, and recorded here again
+as known tech debt (Exit Gate 1) — none block this closure on their own.
+
+### Dashboard QA — degraded tooling, same root cause this ledger has carried since v37
+
+This project's `.sdlc/trace.py` is still the stale vendor copy that lacks `--tool` dispatch (no
+`dashboard_check`/`solid_check`/`module_check` routing) — confirmed again this round
+(`sh .sdlc/trace --tool dashboard_check …` → argparse error). Ran the plugin's standalone
+`dashboard_check.py`/`solid_check.py`/`module_check.py` (2.4.3, matching this dispatch's named
+contract path) directly against the ledger instead:
+- `dashboard_check`: **5 high / 8 mid / 1 low.** The 5 high are the already-root-caused
+  `evidence/v36/gate75-real-run-2026-09-22.md` 2-`#`-heading SoT-link false positive on
+  REQ-211..215 (see this file's own prior "known `evidence/v36/gate75-real-run-2026-09-22.md`
+  2-`#`-heading false-positive, root-caused" line) — unchanged, accepted LOW debt, not re-verified
+  against shipped `dashboard.html` data this round beyond confirming the root-cause citation still
+  exists. 7 of the 8 mid are the pre-existing erDiagram crow's-foot (`||--o{`) bracket-balance false
+  positive (unchanged since v37). **One new instance of that same class**: the v40 "Data
+  architecture — v40" erDiagram (`02-architecture.md:6686`) — read by eye, confirmed standard
+  Mermaid `erDiagram` crow's-foot syntax, not a real syntax error; recorded as a new instance of the
+  already-accepted false-positive class, not silently inherited. The 1 low is the accepted "no
+  mermaid offline fallback, vendored trace.py" debt, unchanged.
+- `solid_check`: **132 modules, 3 high / 0 mid / 10 low.** The 3 high (`workflow-meta.ts`/ARCH-096,
+  `mcp-facade.ts`/ARCH-076, `errors.ts`/ARCH-141, each importing a different `src/gateway/*.ts`
+  sibling without a matching `deps:` declaration) are confirmed pre-existing via
+  `gates.verification`'s own `git archive 526db75` check — outside this closure, routed to the next
+  architecture pass. The v40-introduced 4th instance (ARCH-183→ARCH-184) was already fixed in Gate
+  6.5+7 by adding the missing `deps:` entry; confirmed fixed (not re-appearing here). 10 low
+  (unclaimed files, pre-existing) unchanged.
+- `module_check`: dormant — no `ARCH-*` declares `build:`.
+- **No playwright available this session** (degraded, same as every prior round) — mitigated by
+  direct reading of the cited SoT files/lines above rather than trusting the tool output alone.
+
+### Module-boundary (SOLID)
+
+Covered above under Dashboard QA's `solid_check` run — 3 pre-existing HIGH (routed to next
+architecture pass, not this closure's to fix), 10 pre-existing LOW, 0 MID. No new violation
+introduced by this iteration beyond the one already self-fixed in Gate 6.5+7.
+
+### Architecture consistency — consolidated from the two pre-run panels
+
+Both panels independently read the same `files:` scope (IMPL-391..414) against `02-architecture.md`
+v40 slice (ARCH-183..194, ADR-087..095, INV-V40-1..7) and **converge on the same two real defects**,
+found from different angles (adversarial's attack-scenario framing vs. quality-dimensions'
+lifecycle/accounting framing) with matching `file:line` evidence. I re-verified both directly on
+disk (not trusted from the reports alone) before counting them:
+
+**V40-C1 (confirmed on disk) — symlink TOCTOU: `generateImage()`'s output directory is created
+with `mkdir -p` before the containment check, contradicting the invariant written to forbid exactly
+this.** `src/direct-models/image-files.ts`'s `resolveOutDir()`: `await mkdir(abs, {recursive:
+true})` runs, *then* `isPathContained(abs, root)`. `path-containment.ts` exports `resolveLanding()`
+specifically for this case (its own doc comment: "callers that create or write a file must check
+`isPathContained(resolveLanding(p), root)`, never `isPathContained(p, root)` alone") —
+`image-files.ts` imports only `isPathContained`, never `resolveLanding`. **Both panels name the same
+attack**: an agent running concurrently (same workspace, confined by bwrap) plants a symlink at an
+intermediate path component (e.g. `out → /home/rwe/...`) between registration and the image call;
+the host (unconfined, running as `rwe`) follows it on `mkdir`, creating a real directory outside the
+workspace before the post-hoc check refuses the call. `writeImages()`'s own tmp-file open
+(`O_NOFOLLOW` on the *last* component only) has the same read-side gap one level down (adversarial
+F1/F8). This is a direct contradiction between `INV-V40-7` ("the host never reads or writes a path
+whose realpath leaves the run workspace") and `ARCH-185`'s own prescribed order ("`mkdir -p` then
+realpath then re-check") — the architecture text is self-contradictory, and the code follows the
+text that loses. Both panels rate this MEDIUM (bounded: today it creates an empty directory, no
+bytes land outside before the second check fires, and the final-name write is correctly
+re-contained) — but it is a **real, demonstrated violation of a stated security invariant**, with
+an existing pure helper (`resolveLanding`) that already carries the fix and is already used
+correctly elsewhere. **BLOCKING** (see below) precisely because it is cheap to fix and both panels
+independently found it against the exact threat the invariant names.
+
+**V40-C2 (confirmed on disk) — a post-provider filesystem failure in `generateImage()` is
+unobserved, unaccounted, and strands the run record.** `src/run-manager.ts:3415`:
+`const written = await writeImages(root, absDir, label, callSeq, outcome.images);` runs *after*
+`withSlot` returned (provider already called and billed) and *outside* any `try/catch` — confirmed
+by reading `:3380-3450`: the preceding `try{...}catch(err){...throw err}` closes at `:3411`, and
+`writeImages` at `:3415` is the very next statement, with `guard.addUsage` (`:3421`),
+`recordPrimitive` (`:3424`/`:3435`) and the terminal `primitive.call` event (`:3442-3446`) all
+sitting *after* it, none in any failure arm. A real I/O failure there (`ENOSPC`, `EACCES`, a
+directory planted at the final name) throws raw past the handler: no `addUsage` (a paid generation's
+spend becomes invisible to the budget), no `recordPrimitive` (the `AgentRecord` stays `state:
+'running'` forever — exactly the gap `agent()`'s own generic catch, `:3054-3071`, was built to
+close, with no twin here), no `failed` event. Compounding this: **both** primitive catch arms
+(`:3217` decide, `:3389` image) already discard whatever the provider billed on *any* failed
+attempt — confirmed on disk: both record `costUSD: 0, unpriced: true` with no `tokens` field and
+never call `guard.addUsage` in the failure path (success-only call at `:3251`/`:3421`) — so a
+malformed-but-billed response, or a timed-out-but-already-billed image attempt, spends real money
+`assertBudget` never learns about. This is a real gap against REQ-225's own "記到 run 用量" guarantee
+and ADR-094's accounting contract, not a hypothetical. **BLOCKING.**
+
+Both panels also independently flag, and I accept as **non-blocking recorded debt** (bundled into
+the next architecture/impl pass, not urgent): `models_list`'s compact projection + `callKind` enum
+never surfaces `decide`/`image` observed buckets, so filter/sort by latency/success excludes every
+decision/image row by construction (O-2/C-1) — checked against REQ-222's actual acceptance text,
+which promises only catalog classification (`modelType`), not an observed-stats comparison surface;
+this is an `ARCH-192`-note-level promise, not a REQ-level one, so it is debt, not a validation
+finding; the stale `INV-V40-1` wording that no longer matches IMPL-413/414 (owner-ruled, needs one
+dated amendment bullet); the pi-ai model object's un-cached/un-pinned-modalities construction
+(F6/R-1); the pre-slot input-image memory bound understating queued buffers (F7/S-3); the
+`costUSD:0` vs `null` distinction on the operator event log for unknown cost (F9); the unnamed third
+refusal allowlist `PRIMITIVE_FAILURE_CODES` (F10); `network`-reason retry policy and the
+un-cleared per-attempt timer (F12); and six `ARCH-183/185/187/188/193/194` rows left stale after
+Gate 6/7.5 rulings (F11, O-3, O-4, O-5, C-2, C-3, C-4) — all doc-only amendments, no code change,
+none touching money/secrets/sandbox invariants the way V40-C1/C2 do.
+
+**`arch_consistent: no`** — both panels say "NOT consistent" independently; two MEDIUM findings
+(V40-C1, V40-C2) are real, demonstrated, and reach exactly the money/sandbox invariants this slice
+was built to hold, so they are sent back despite neither panel rating them HIGH (this ledger's own
+house convention — v37 rounds 2/3 — sends back MEDIUM findings of this shape; severity rates impact,
+blocking routes on "does it reach the invariant the slice exists to protect", which both do here).
+
+### Owner-deferral ledger sweep (issue #15)
+
+`grep -rn -- "- \*\*owner_decision:\*\*" .sdlc/features/001-remote-workflow-engine/0[1-8]-*.md
+rtm.md`: the only live-shaped hit is `02-architecture.md:6875` — `- **owner_decision:** decided
+(2026-10-16, owner, OD-1 in v40-gate6-clarification-rulings.md: 「接受」) — …`. **Zero `pending`
+hits anywhere in 01-08*.md or rtm.md.** `owner_decisions: []`. One doc-internal inconsistency found
+and recorded as non-blocking debt (not a live marker, not re-opening the decision): `ADR-095`'s own
+**note:** field (`02-architecture.md:6874`) still ends "this is a product call … so it is deferred,
+not taken here", two lines above its own `owner_decision:` field reading `decided` — stale prose
+left over from before the Gate 6 ruling landed, not a second pending decision. Separately, and
+already disclosed by the validator (not newly found here): the summary sentence at
+`02-architecture.md:6905` ("One owner_decision is pending: ADR-095") is the same kind of stale
+prose, already flagged in `gates.validation`'s note as doc-internal drift, left for the next gate.
+Neither is a live `pending` marker on mechanical reconciliation; both are one-line prose cleanups
+worth doing in the same pass as the architecture repair below, not separately costed.
+
+### Validation & handover
+
+`gates.validation` (v40 GATE 7.5): all eleven REQ-220..230 carry `real:true` VAL/E2E evidence
+against genuinely live OpenRouter (VAL-266..276, E2E-012, plus the Gate 7.5 addendum VAL-277/-289
+for REQ-224's cold-client clause) — confirmed by `trace --check`'s 0 未真實驗證 count above, not
+just by reading the note. `08-validation.md` exists with the full real-run record (spend
+$0.1940/$1 cap). `README.md` + `DEPLOY.md` exist; `DEPLOY.md` leads with `§0 一鍵部署` running the
+exact `./deploy.sh --background` form (confirmed by reading `DEPLOY.md:24-50`) that Gate 7.5 actually
+ran; one deduplicated `§1b 設定總表` (confirmed: `設定總表` appears as a section heading exactly
+once per file, every other reference is a cross-reference to that one section); the document's own
+header states it is current-state only, history lives in `.sdlc/` (confirmed, `DEPLOY.md:1-5`). The
+`OPENROUTER_API_KEY`/`RWE_SECRET_OPENROUTER_API_KEY` rows the validator rewrote this gate
+(`DEPLOY.md:656-657`) read as current-state coexistence of three gateways' key-resolution order, not
+as a changelog ("used to X, now Y") — acceptable; the "已在 Gate 7.5 以真實 OpenRouter 呼叫驗證"
+clause cites verification provenance, which is not forbidden history content. No mock-only/missing
+REQ found. **Validation is not sent back.**
+
+### Special-file review
+
+`git diff --name-only 0e19fae..HEAD | grep -iE 'CLAUDE\.md|AGENTS\.md|SKILL\.md'` → zero hits.
+`git status` at session start shows no `CLAUDE.md`/`AGENTS.md`/`SKILL.md` dirty either. N/A this
+round.
+
+### Retro
+
+**What went well:** the two-panel split (attack-scenario framing vs. lifecycle/accounting framing)
+converged on the identical two real defects from different starting points and with different
+file:line citations that both verify on disk — that is panel review working as designed, not
+rubber-stamping. The validator's own Gate 7.5 addendum (finding and fixing the `checkMeta`/scanner
+comment-blindness class via a real cold-client replay, not a synthetic test) is the kind of
+real-tier discipline this ledger's mock hard-rule exists to produce. `resolveLanding()` existing
+*already*, with a doc comment naming exactly the bug class V40-C1 is, shows the codebase's own
+defenses are there when callers remember to use them — the gap is one import, not a missing
+primitive.
+
+**What to change:** `ARCH-185`'s own text prescribes the *vulnerable* order ("mkdir then check")
+while `INV-V40-7` on the same page states the invariant that order violates — two parts of the same
+architecture document disagree with each other, and the implementer followed the part that was
+wrong. When an architecture gate writes both a specific step order AND a general invariant for the
+same mechanism, Gate 2/6 should cross-check the order against the invariant before marking the slice
+done, not leave it to Gate 8's panels to catch after the code ships.
+
+**Known tech debt carried forward (recorded, not blocking):** the full pre-existing 77-gap set (15
+HIGH 斷鏈 on `REQ-144..152/186`, 36 MID on `REQ-153..169`/TDD-order, 26 LOW drift, dated v6–v28);
+the 3 pre-existing `solid_check` HIGH (`workflow-meta.ts`/`mcp-facade.ts`/`errors.ts` missing
+`deps:` on `src/gateway/*.ts` imports); the 5 `dashboard_check` HIGH SoT-link artifact on
+REQ-211..215 and 8 mid erDiagram false positives (1 new instance, same accepted class); the
+`INV-V40-1` stale wording, the `ADR-095` doc-internal prose inconsistency at `:6874`/`:6905`, and
+the dozen LOW architecture-text staleness items named above (F5/F6/F9/F10/F11/F12/O-3/O-4/O-5/
+R-1/C-2/C-3/C-4/S-3). None of these touch money/secrets/sandbox invariants the way V40-C1/C2 do.
+
+### Send-back
+
+**`send_back: [architecture, impl]`.** `architecture` because `ARCH-185`'s prescribed order
+contradicts `INV-V40-7` on the same page and must be corrected before impl's fix can be judged
+against a consistent spec; `impl` for the two confirmed-on-disk defects. `validation` is not
+included — no REQ is mock-only and no handover doc is broken by these two findings (they are both
+code/spec defects below the REQ's acceptance text, not REQ-level evidence gaps). See
+`blocking_findings` for the itemized, gate-scoped, standalone-actionable list this contract hands to
+the repair agent as its entire scope.
+
+*Reviewer: Gate 8, 2026-10-17, round 1. Scope: REQ-220..230 + IMPL-413/414. Both architecture-expert
+panels pre-ran per this dispatch's instruction and are consolidated above, not re-spawned. Blocking
+findings (V40-C1, V40-C2, and the `ARCH-185`/`INV-V40-7` text contradiction they share) independently
+re-verified by direct code read, not taken from the panel reports alone. `.panel/` left in place
+(`send_back` non-empty — not cleaned up). No `git checkout`/`restore`/`stash` used; no file other
+than `07-review.md`/`state.yaml`/`journal.md` edited.*
+
+## v40 GATE 8 round 2 (2026-10-17, reviewer, RE-REVIEW) — CLOSE
+
+**Scope per dispatch:** verify round 1's two blocking items are fixed on disk; do not re-open the
+full review. Both the architect's repair (`state.yaml` `gates.architecture`) and an implementer's
+own re-verification pass already ran before this dispatch and both found zero further code delta
+needed. I re-verified independently rather than trusting either account.
+
+### What round 1 sent back, ticked against disk
+
+Round 1's structured `blocking_findings` array was not persisted to a file (`07-review.md` carries
+only the prose V40-C1/V40-C2 paragraphs); the counting authority is `state.yaml` `gates.review`'s
+own note, which the repair's own `06-impl-log.md` IMPL-415 entry and `02-architecture.md`'s repair
+amendment both cite as "the five blocking findings." Enumerated and each independently re-verified
+on the current working tree (uncommitted — `IMPL-415` reads `commit: (uncommitted at write time)`,
+confirmed: `git status` still shows `src/direct-models/image-files.ts`, `src/run-manager.ts`,
+`src/direct-models/call.ts`, `src/errors.ts`, `src/event-log.ts`, `src/authoring-guide.ts`,
+`docs/AUTHORING.md`, `tests/unit/image-files.test.ts` modified and
+`tests/integration/primitive-spend-on-failure.test.ts` untracked, byte-for-byte what IMPL-415 lists):
+
+1. **`resolveOutDir()` checks containment BEFORE `mkdir`** (V40-C1 mechanism). `src/direct-models/image-files.ts`: now imports `resolveLanding` and runs `if (!isPathContained(resolveLanding(abs), root)) pathRefused('escape', 'outDir')` immediately before `mkdir(abs, {recursive:true})`, keeping the post-`mkdir` re-check as defence in depth. `tests/unit/image-files.test.ts`'s new case ("UT-370: refuses an INTERMEDIATE symlinked component BEFORE mkdir — no directory created outside root") asserts the negative side-effect (nothing created outside `root`), not just the refusal — the right assertion shape for a TOCTOU fix. **Verified green**: `tests/unit/image-files.test.ts` 20/20.
+2. **`writeImages()`'s post-provider write sits in a dedicated failure arm, never bare** (V40-C2 mechanism). `src/run-manager.ts` `_handleImageRequest`: `realpathSync(absDir)` is captured before the provider call; after `runImage()` returns, `pricePrimitiveCall`+`guard.addUsage` run immediately (before any further fallible step); the `realpath === captured` re-check and `writeImages()` are wrapped in one `try/catch` that on throw records `failed`/`terminal`, writes the refusal ledger row, emits a `failed` event with `reason:'write'`, and throws a constructed `PRIMITIVE_FAILED{write}` built from `primitiveFailedError` (now exported from `call.ts`) — the raw fs error (and any host path) never reaches the script/ledger/log.
+3. **A failed primitive call is charged, in both `decide` and `image` catch arms** (V40-C2 compounding defect — both arms previously called `guard.addUsage` only on success). New `RunManager._chargeFailedPrimitive(entry, err, pinEntry, kind)` reads `FailedSpend` (`{wireCostUSD, tokens}`, now carried on `PRIMITIVE_FAILED.detail` by `runWithRetry`'s last observed attempt), prices it through `pricePrimitiveCall` (same precedence as success, never a separate wire-only rule), and calls `guard.addUsage` before the failed state is recorded. Both catch arms (`decide` and `image`) now pass the real `costUSD`/`tokens`/`costSource` to `recordPrimitive` and the emitted event instead of the old fixed `costUSD:0, unpriced:true`.
+4. **`AttemptReason` gains `write`; served text synced.** `src/event-log.ts`'s `AttemptReason` union, `src/errors.ts`'s `PRIMITIVE_FAILED` hint, `src/authoring-guide.ts`'s served grammar regex, and `docs/AUTHORING.md`'s two copies of the same regex/reason-list all now include `write`. Checked each file directly — all four agree, no copy missed.
+5. **`ARCH-185`/`INV-V40-7` text self-contradiction corrected.** `02-architecture.md:6738` (ARCH-185 note) now reads "amended 2026-10-17, Gate 8 r1 V40-C1 — the earlier wording … contradicted INV-V40-7" and states the new order (a) resolveLanding-containment-check BEFORE mkdir, (b) mkdir, (c) post-mkdir re-check, (d) pre-write realpath-match re-check. `INV-V40-7`'s own row (`:6888-6889`) carries a matching "Realization" bullet. The two no longer disagree.
+
+**Tests confirming the mechanism, re-run directly this round** (not taken from any report):
+`npx vitest run tests/unit/image-files.test.ts tests/integration/primitive-spend-on-failure.test.ts`
+→ **22/22 green** (20 + 2). `tests/integration/primitive-spend-on-failure.test.ts`'s IT-322 cases
+assert the *exact* charged amount (`expect(view.usage?.costUSD).toBeCloseTo(0.5, 6)` and the same on
+the `AgentRecord`) for both the decide-malformed-but-billed case and the image-write-failure case —
+not merely that `BUDGET_EXCEEDED` fires next on the following call, which would pass under a silent
+double-charge or a missed charge alike. `npx tsc -p tsconfig.json --noEmit` and
+`npx tsc -p tsconfig.server.json --noEmit` both clean (exit 0) — this catches the type-level seam
+every one of the five changes above crosses (the new `FailedSpend` export, `primitiveFailedError`'s
+new exported signature, `AttemptReason`'s widened union, `RunManager`'s new private method).
+
+### Panel consolidation this round
+
+The two files instructed by the dispatch, `.panel/review/{adversarial,quality-dimensions}.md`, are
+unchanged since round 1 (file mtimes 2026-10-17 14:29/14:35, both predating the repair) — they are
+the **same two reports already consolidated in round 1**, not a second review of the repair; I did
+not re-spawn them, matching the dispatch instruction. What I additionally read this round, not
+instructed but load-bearing for judging whether the repair matches what the panels actually asked
+for, are the architect's own repair-round debate files, `.panel/architecture/{adversarial,quality-dimensions}.r2.md`
+(2026-10-17, 15:14/15:25 — written by the architect gate as part of *fixing* round 1's send-back, not
+a review of it). Both r2 files converge on **mechanism (A)** — a single fd-anchored no-follow walk
+through `/proc/self/fd` — as architecturally preferable to the shipped **mechanism (B)**
+(`resolveLanding` pre-check + realpath re-checks), but adversarial's r2 §2.1/§4.1 explicitly states
+the fallback condition: *"If the architect picks (B), the INV-V40-7 amendment is mandatory. I would
+not accept (B) with INV-V40-7 left as written."* The architect took (B) (cheaper, reuses the existing
+`ARCH-020` helper, no new `/proc`-dependent mechanism across four functions) and the condition is
+met: `INV-V40-7`'s own "Realization" bullet (`:6889`) states the residual in exactly adversarial's
+terms ("a concurrent swap that lands exactly between the last check and the kernel's open/rename is
+not excluded… filed as a v41 candidate") and is locked by UT-370. This is a legitimate repair-scope
+architecture call — not an owner deferral (it is an implementation-mechanism trade-off with a
+measured, bounded, documented residual, not a product decision) — and the panel's stated acceptance
+condition for the road not taken was honored, not silently dropped. **Verdict: the repair matches
+what both panels required, including the condition attached to the cheaper path.** No new finding
+from this consolidation.
+
+### New drift found this round (recorded, non-blocking)
+
+**`04-design.md:10444`/`:10530` (DES-264/DES-267) still enumerate the OLD closed `AttemptReason`
+list and grammar regex without `write`** — `export type AttemptReason =
+'http'|'timeout'|'aborted'|'network'|'no_output'|'malformed'|'response_too_large';` and the matching
+grammar regex, both missing the `write` alternation the repair added to the actual type
+(`event-log.ts`), the served grammar (`errors.ts`/`authoring-guide.ts`/`docs/AUTHORING.md`) and
+`02-architecture.md`. The repair's `send_back` scope was `[architecture, impl]` — `tests`/`design`
+were never named, so this drift is a genuine side-effect the repair's own scope did not reach, not a
+missed finding from round 1 (round 1 predates the fix that created it). **Recorded as LOW doc-only
+drift, design-owned, next design touch** — it does not affect behavior (the shipped type/regex are
+the sources of truth and are internally consistent with each other) and the ONE place a reader is
+served the wrong-but-safe-direction text (an undercount, not an overclaim — a reader of
+`04-design.md` alone would not know `write` exists, never the reverse) is a stale internal design
+reference, not public-facing served text.
+
+**`02-architecture.md:6898`'s cite to `.panel/architecture/*.r2.md` for the v41 Tier-B item list
+will dangle once `.panel/` is removed below.** Transcribing the two lists here before cleanup so the
+citation's content survives even though its target will not:
+- **Adversarial r2 (final position §6, v41/owner asks):** a per-image estimate for timed-out attempts
+  (with an over-count bound), `queuedMs`, observed decide/image buckets surfaced on `models_list`,
+  an event `costUSD:null` code (vs. today's `0`), `DISK_LOW` pre-spend for images, `network`-reason
+  retry policy, `OPENROUTER_AUTH_MISSING` fold semantics, and `modalitiesOut` in the pinned model
+  object.
+- **Quality-dimensions r2 (§5, v41 candidates):** `queuedMs`; `costUSD:null` on events; `providerMs`
+  on `ok`; observed buckets on the served surface; `MODEL_TYPE_UNVERIFIED` to the operator-log sink;
+  `modalitiesOut` in the pin (+`text?`); a between-attempt budget check (with its own S-4 note);
+  provisional charge for timed-out image attempts (owner call, with adversarial's bound); `DISK_LOW`
+  pre-spend (owner call); `network` retry (owner call); `OPENROUTER_AUTH_MISSING` fold (owner call);
+  pre-slot hash + post-slot re-read; the O-7 post-condition if struck now.
+
+Both lists overlap substantially (same v41 backlog seen from two angles); neither names anything
+touching money/secret/sandbox invariants — consistent with round 1's own classification of the
+non-blocking items. **Recorded as LOW debt: the dangling `.panel/` cite at `:6898`** (the list itself
+now lives here and in the transcription above, not lost) — the next architecture touch should
+re-point the citation at this section or inline the list.
+
+### Re-confirmed unchanged from round 1 (not re-litigated, spot-checked on disk)
+
+- **Traceability**: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **2290
+  items / 77 gaps** (up from 2287 by exactly the 3 new items the repair added: UT-370, IT-322,
+  IMPL-415 — **0 new gaps**). Loaded `trace.analyze()` as a library and confirmed the gap set is
+  **byte-identical by type to round 1**: 15 HIGH / 36 MID / 26 LOW = 77, all pre-existing (dated
+  v6–v28), 0 未真實驗證.
+- **Dashboard QA**: `dashboard_check.py` (plugin 2.4.3, this dispatch's named contract path; the
+  project's own `.sdlc/trace.py` still lacks `--tool` dispatch, unchanged) → **5 high / 8 mid / 1
+  low**, identical counts to round 1 (the known `evidence/v36/gate75-real-run-2026-09-22.md` SoT
+  artifact + the erDiagram crow's-foot bracket-balance false positive, both pre-existing accepted
+  debt). No playwright available this session (degraded, same as every prior round).
+- **Module-boundary (SOLID)**: `solid_check.py` → **132 modules, 3 high / 0 mid / 10 low**, identical
+  to round 1 (pre-existing `workflow-meta.ts`/`mcp-facade.ts`/`errors.ts` → `src/gateway/*` undeclared
+  deps, routed to the next architecture pass; 10 pre-existing unclaimed-file LOW).
+- **`module_check`**: dormant — no `ARCH-*` declares `build:` (unchanged).
+- **Owner-deferral sweep (issue #15)**: mechanical `grep -rn -- "owner_decision" .sdlc/features/001-remote-workflow-engine`
+  across `01`–`08-*.md` + `rtm.md` → the only structured-field hit is `02-architecture.md:6876`,
+  `decided (2026-10-16, owner, OD-1…)`. **Zero `- **owner_decision:** pending` hits anywhere** —
+  confirmed with a pattern anchored on the fixed metadata shape, not prose. One prose hit at
+  `rtm.md:471` ("A THIRD `owner_decision: pending` is open on ADR-086") is backtick-quoted narrative
+  inside a historical, dated amendment bullet describing a since-superseded state — not a live field
+  (the live field, `02-architecture.md:6073`, reads `answered 2026-09-25`). **`owner_decisions: []`.**
+  **ADR-095's stale prose is still present, unchanged, still non-blocking debt**: `:6875` ("this is a
+  product call … so it is deferred, not taken here") and `:6909` ("One owner_decision is pending:
+  ADR-095") both still contradict the same ADR's own `owner_decision: decided` field two lines below
+  — round 1 recorded this as "worth doing in the same pass, not separately costed" but the repair's
+  scope was "the five blocking findings only" (architect's own words) and did not touch it. Carried
+  forward as the same LOW debt, not newly discovered, not escalated — it is a doc-internal
+  inconsistency on an already-decided question, not an unanswered one.
+- **Validation & handover**: not re-opened. Round 1 explicitly did not send validation back ("no REQ
+  is mock-only and no handover doc is broken by these two findings"), and nothing in the repair
+  touches `08-validation.md`, `README.md`, or `DEPLOY.md` (confirmed: neither file is in `git diff
+  --name-only`'s output this round). `trace --check`'s 0 未真實驗證 count (above) still holds.
+- **Special-file review**: `git status`/`git diff --name-only` show no `CLAUDE.md`/`AGENTS.md`/
+  `SKILL.md` touched this iteration or by the repair — N/A, unchanged.
+
+### Regression suite — degraded verification, disclosed
+
+`npx vitest run` (bare, matching `package.json`'s `"test": "vitest run"` — confirmed identical
+command) is serial/timer-bound on this host for several real-sandbox/real-timer integration and
+acceptance files (one single file, `val-200-swimlane.test.ts`, alone took 35s); at the observed rate
+a full run is on the order of two hours wall-clock, not a few minutes. Time-boxed at ~15 minutes
+(two attempts: one killed by a 580s shell timeout, one run in background and inspected then
+terminated): **69 of 692 test files completed, 0 failures, 0 `✗`/`FAIL ` markers** in either partial
+run's output (three string hits on "FAILURE" are test *names* describing simulated-failure scenarios,
+not failed tests — checked individually). This is **not** an independent full-suite confirmation and
+is recorded as such rather than implied. What I am relying on instead, each independently checked
+this round:
+1. The two directly-affected test files re-run to completion: **22/22 green** (above).
+2. Both `tsc` configs clean — catches type-level regressions across every seam the five changes
+   touch (new exports, widened unions, new private method signatures).
+3. `git diff --name-only` confirms IMPL-415's change surface is exactly the 8 declared files plus one
+   new test file — no production code outside `src/direct-models/{image-files,call}.ts`,
+   `src/run-manager.ts`, `src/errors.ts`, `src/event-log.ts`, `src/authoring-guide.ts` was touched, so
+   the blast radius for an undetected regression is small and bounded to primitive-call handling.
+4. The implementer's own prior full run (`gates.impl.note`, this same uncommitted working tree,
+   no code change since): **6289 passed / 1 failed / 44 skipped of 6334**, the sole failure being
+   `IT-314` (`tests/integration/primitive-latency.test.ts`, a real-timer margin — 18.86ms observed
+   against a 19ms floor), reported isolated-green on re-run and confirmed to exercise only
+   `decide()`'s success path, never the catch/charging code this repair changed. **Recorded as
+   pre-existing real-timer flake debt** (this ledger's v32 precedent for the same class), not a
+   regression from this repair — consistent with my own partial run surfacing no failures in the 69
+   files it did complete.
+
+None of the four individually, nor the combination, is as strong as a completed independent full run
+would be; this is disclosed as degraded verification rather than reported as equivalent to one.
+
+### Retro (round 2)
+
+**What went well:** the architect's repair chose the cheaper of two panel-offered mechanisms for
+V40-C1 while explicitly satisfying the one condition the dissenting panel attached to that choice
+(state the residual in `INV-V40-7`, file the stronger fix for v41) — a repair-scope architecture call
+made and justified in the ledger, not silently taken. The two new tests (UT-370, IT-322) assert the
+negative side-effect and the exact charged amount respectively, not just the refusal/outcome code,
+which is the assertion shape that would have let a double-charge or a missed charge slip through
+unnoticed.
+
+**What to change:** the repair widened `AttemptReason` and its served grammar in four places
+(`event-log.ts`, `errors.ts`, `authoring-guide.ts`, `docs/AUTHORING.md`) and `02-architecture.md`,
+but not in `04-design.md`'s two copies of the same type/grammar — a repair whose `send_back` scope is
+`[architecture, impl]` only will not touch `tests`/`design`-owned text by construction, so a type
+widened at the architecture tier and served at the impl tier can still drift at the design tier in
+the same change. When a repair's fix touches a closed-vocabulary type that a design doc also
+transcribes, the send-back list should name `design` too, or the repairing gate should grep for the
+other transcriptions of the same literal before calling the scope closed.
+
+**Known tech debt carried forward (recorded, not blocking):** the full pre-existing 77-gap set (15
+HIGH 斷鏈 on `REQ-144..152/186`, 36 MID on `REQ-153..169`/TDD-order, 26 LOW drift, dated v6–v28,
+byte-identical by type to every prior round); the 3 pre-existing `solid_check` HIGH; the 5
+`dashboard_check` HIGH SoT-link artifact + 8 mid erDiagram false positives; `INV-V40-1` stale
+wording; the `ADR-095` doc-internal prose inconsistency at `:6875`/`:6909`; the dozen LOW
+architecture-text staleness items named in round 1 (F5/F6/F9/F10/F11/F12/O-3/O-4/O-5/R-1/C-2/C-3/C-4/
+S-3); the v41 candidate list transcribed above (now newly also recorded here, not only in `.panel/`);
+the NEW `04-design.md:10444`/`:10530` `AttemptReason`/grammar drift (this round); the NEW dangling
+`.panel/` cite at `02-architecture.md:6898` (this round); `IT-314`'s real-timer margin flake (this
+round, carried from the implementer's own run). None of these touch money/secrets/sandbox invariants.
+
+### Send-back
+
+**`send_back: []`. Iteration CLOSES.** Both round-1 blocking findings (V40-C1, V40-C2, and the
+`ARCH-185`/`INV-V40-7` text contradiction they shared) are verified fixed on disk, with tests,
+independently of both the architect's and the implementer's own accounts. `arch_consistent: true` —
+the repair matches both panels' requirements including the condition attached to the cheaper
+mechanism; the remaining non-blocking items are the same pre-existing debt round 1 already carried
+plus two small new doc-only drift items disclosed above, none reaching the invariants this slice
+exists to protect. `.panel/` is now removed (`rm -rf`) since this closes — its only load-bearing
+content for a future reader (the v41 candidate lists) is transcribed above first.
+
+*Reviewer: Gate 8, 2026-10-17, round 2 (RE-REVIEW, close). Verified independently: two targeted test
+files re-run (22/22 green), both tsc configs, `trace --check`, `dashboard_check`/`solid_check`/
+`module_check`, mechanical owner_decision sweep, `git diff --name-only` for blast-radius and
+special-file scope, both panel-consolidation inputs (round-1 reports unchanged + repair-round r2
+debate files for condition-compliance). Regression suite only partially re-run this round (disclosed
+above as degraded, not hidden); relied additionally on tsc + the implementer's own full-run account.
+No `git checkout`/`restore`/`stash` used. Edited only `07-review.md`/`state.yaml`/`journal.md` plus
+regenerating `dashboard.html`; removed `.panel/` as the last step, after this section was written.*

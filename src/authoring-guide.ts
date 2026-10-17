@@ -904,7 +904,7 @@ function roleAssetMatrixRows(): string {
 // a fixed grammar string, so it is transcribed here once, as prose, the same way the diagram
 // grammar section above transcribes `SHAPES`/`EDGE_FORMS` by reading them, not by re-deriving them).
 const PRIMITIVE_FAILED_GRAMMAR =
-  "`^(decide|generateImage) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large) after \\d+ attempts?$`";
+  "`^(decide|generateImage) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large|write) after \\d+ attempts?$`";
 
 /** v40 (DES-276, ARCH-194, TASK-273): decide()/generateImage() — declaration shape, call
  *  signature/return shape, the v40 error codes (one cause + one fix line each), the

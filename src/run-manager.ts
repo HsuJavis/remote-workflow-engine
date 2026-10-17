@@ -6,7 +6,7 @@
 // calls (AbortSignal) and kill the sandbox child, not just flip the status flag.
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { materializeSeed, materializeManifest, validateSeedSpec } from './workspace-seed.js';
 import type { CasStore } from './cas-store.js';
@@ -42,7 +42,7 @@ import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
 // v40 (DES-274, ARCH-187, TASK-271): decide()/generateImage() handler collaborators.
 import { validateDecideInput, validateImageInput, primitiveCallKey } from './direct-models/inputs.js';
 import { readContainedInput, resolveOutDir, writeImages, verifyFiles } from './direct-models/image-files.js';
-import { runDecide, runImage, toPiAiModel, defaultDirectDeps, type DirectDeps, type PiClassifierModel, type PiImageModel } from './direct-models/call.js';
+import { runDecide, runImage, toPiAiModel, defaultDirectDeps, primitiveFailedError, type DirectDeps, type FailedSpend, type PiClassifierModel, type PiImageModel } from './direct-models/call.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
@@ -252,7 +252,7 @@ function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: 
  *  `PRIMITIVE_FAILED` error's `detail.reason`) onto `AgentRecord.failReason`'s own closed vocabulary
  *  — timeout stays timeout, network becomes unreachable, aborted stays aborted (whether named
  *  directly or inferred from the run's own abort signal, for a throw with no `.detail` at all), and
- *  every other reason (http/no_output/malformed/response_too_large) is a definite terminal failure. */
+ *  every other reason (http/no_output/malformed/response_too_large/write) is a definite terminal failure. */
 function primitiveFailReasonFrom(reason: AttemptReason | undefined, runAborted: boolean): 'timeout' | 'unreachable' | 'terminal' | 'aborted' {
   if (reason === 'timeout') return 'timeout';
   if (reason === 'network') return 'unreachable';
@@ -3101,6 +3101,20 @@ export class RunManager {
     }
   }
 
+  /** ARCH-187 v40b (Gate 8 r1 V40-C2): a FAILED primitive call is still charged — whatever the last
+   *  attempt was billed (`PRIMITIVE_FAILED.detail`'s `FailedSpend`) is priced by the same
+   *  precedence as a success (ARCH-191: reported, else estimated, else absent → unpriced) and added
+   *  to the live guard BEFORE the failed state is recorded, so `assertBudget` sees it. */
+  private _chargeFailedPrimitive(entry: RunEntry, err: unknown, pinEntry: Parameters<typeof pricePrimitiveCall>[0]['entry'], kind: 'decide' | 'image'): { tokens?: Tokens; costUSD: number; unpriced: boolean; costSource: 'reported' | 'estimated' | 'absent' } {
+    const spend = (err as { detail?: Partial<FailedSpend> }).detail;
+    const tokens = spend?.tokens;
+    const priced = pricePrimitiveCall({ wireCostUSD: spend?.wireCostUSD ?? null, tokens, entry: pinEntry, kind });
+    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
+    const unpriced = 'absent' in priced;
+    entry.guard.addUsage(tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    return { ...(tokens !== undefined ? { tokens } : {}), costUSD, unpriced, costSource: 'absent' in priced ? 'absent' : priced.source };
+  }
+
   /** v40 (DES-264, TASK-260/271): one `kind:'primitive.call'` operational-event line per
    *  decide()/generateImage() attempt/outcome — OUR engine data only (label/model/timings/cost),
    *  never the provider body/prompt/questions/state (INV-V40-3). */
@@ -3229,14 +3243,15 @@ export class RunManager {
       const endedAt = this._clock.isoNow();
       const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
       const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'decide');
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'decide', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
         ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
-        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: 0, costSource: 'absent',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: charged.costUSD, costSource: charged.costSource,
       });
       throw err;
     }
@@ -3308,6 +3323,7 @@ export class RunManager {
     // replaying a stale result keyed on a path that still matches.
     const inputImageShas: string[] = [];
     let absDir: string;
+    let absDirReal: string;
     try {
       inputImages = [];
       for (const p of inputImagePaths) {
@@ -3316,6 +3332,7 @@ export class RunManager {
         inputImageShas.push(read.sha256);
       }
       absDir = await resolveOutDir(root, outDirRaw);
+      absDirReal = realpathSync(absDir);
     } catch (err) {
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'IMAGE_PATH_REFUSED' });
@@ -3398,27 +3415,50 @@ export class RunManager {
       const endedAt = this._clock.isoNow();
       const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
       const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'image');
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, costUSD: 0, unpriced: true, state: 'failed', failReason, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'image', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
         ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
-        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: 0, costSource: 'absent',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: charged.costUSD, costSource: charged.costSource,
       });
       throw err;
     }
-    // step (9): write images under the resolved outDir — zero written is still priced, still a
-    // failure. `outcome.providerMsTotal`/`.backoffMsTotal`/`.attempts` are `runWithRetry`'s own
-    // complete sums (including the successful final attempt, which never fires `onAttempt`).
-    const written = await writeImages(root, absDir, label, callSeq, outcome.images);
+    // ARCH-187 v40b (Gate 8 r1 V40-C2): the provider has billed — price and charge FIRST, before
+    // any fallible local step, so nothing below can lose the spend.
     const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'image' });
     const costUSD = 'absent' in priced ? 0 : priced.costUSD;
     const unpriced = 'absent' in priced;
+    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    // step (9): write images under the resolved outDir — zero written is still priced, still a
+    // failure. `outcome.providerMsTotal`/`.backoffMsTotal`/`.attempts` are `runWithRetry`'s own
+    // complete sums (including the successful final attempt, which never fires `onAttempt`).
+    // ARCH-185 v40b: the dir must still realpath to what was checked before the provider call; a
+    // swapped dir, or any fs failure (ENOSPC/EACCES/EISDIR), finalizes the record `failed` with the
+    // spend kept and surfaces a CONSTRUCTED PRIMITIVE_FAILED{write} — never the fs error's text/path.
+    let written: Awaited<ReturnType<typeof writeImages>>;
+    try {
+      if (realpathSync(absDir) !== absDirReal) throw new Error('outDir moved since it was checked');
+      written = await writeImages(root, absDir, label, callSeq, outcome.images);
+    } catch {
+      const endedAt = this._clock.isoNow();
+      const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal);
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
+      }
+      const writeErr = primitiveFailedError('generateImage', label, 'write', outcome.attempts, undefined, false, { wireCostUSD: outcome.wireCostUSD, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}) });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, writeErr);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'write', errorCode: 'PRIMITIVE_FAILED',
+        engineMs, costUSD, costSource: 'absent' in priced ? 'absent' : priced.source,
+      });
+      throw writeErr;
+    }
     const endedAt = this._clock.isoNow();
     const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
-    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
     if (written.files.length === 0) {
       if (entry.spawner instanceof AgentExecutor) {
         await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });

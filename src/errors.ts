@@ -246,7 +246,7 @@ export const ERROR_CATALOG = {
   PRICE_UNKNOWN: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model has no catalogued price (pricing.image_output or the chat price fields are absent) — the engine refused the call rather than dispatch at an unknown cost" },
   // v40 (DES-267, TASK-263): the decide()/generateImage() engine retry loop gave up (non-retryable
   // status, or retries exhausted) and surfaces this terminal code to the script's catch.
-  PRIMITIVE_FAILED: { see: 'workflow_authoring_guide', hint: 'a decide()/generateImage() call did not succeed after the engine\'s retry policy; detail.reason carries http|timeout|aborted|network|no_output|malformed|response_too_large' },
+  PRIMITIVE_FAILED: { see: 'workflow_authoring_guide', hint: 'a decide()/generateImage() call did not succeed after the engine\'s retry policy; detail.reason carries http|timeout|aborted|network|no_output|malformed|response_too_large|write' },
   // issue #156 NEW-2 reverify: also returned at run_start ADMISSION (not only registration) when
   // `overrides.agents`/`overrides.agents.<label>` is the wrong shape (e.g. a bare string/array/null
   // instead of an object) — a reader of this one generic table had no way to learn that case existed.

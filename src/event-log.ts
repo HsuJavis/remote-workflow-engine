@@ -68,8 +68,8 @@ export type EngineEvent =
       tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number };
 
 /** v40 (DES-264, TASK-260): why a `primitive.call` attempt did not reach `ok` — carried only on
- *  `retry`/`failed` outcomes. */
-export type AttemptReason = 'http' | 'timeout' | 'aborted' | 'network' | 'no_output' | 'malformed' | 'response_too_large';
+ *  `retry`/`failed` outcomes. `write`: generateImage()'s post-provider file write failed. */
+export type AttemptReason = 'http' | 'timeout' | 'aborted' | 'network' | 'no_output' | 'malformed' | 'response_too_large' | 'write';
 
 export type EventSink = (event: EngineEvent) => void;
 

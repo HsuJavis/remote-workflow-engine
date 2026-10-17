@@ -5,7 +5,7 @@
 //
 // Red reason: `src/direct-models/image-files.ts` does not exist yet — module-not-found.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -92,6 +92,21 @@ describe('UT-344: resolveOutDir (DES-268)', () => {
     symlinkSync(outsideDir, join(root, 'out', 'ig'));
     await expect(resolveOutDir(root, 'out/ig')).rejects.toThrow(/IMAGE_PATH_REFUSED/);
     rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  // UT-370 (Gate 8 r1 V40-C1, ARCH-185 v40b, INV-V40-7): an INTERMEDIATE component planted as a
+  // symlink out of root, with the leaf not yet existing — `mkdir -p` would follow it and create the
+  // leaf OUTSIDE the workspace before any post-hoc check. Refused before mkdir: nothing created.
+  it('UT-370: refuses an INTERMEDIATE symlinked component BEFORE mkdir — no directory created outside root', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'rwe-image-files-outside-mid-'));
+    try {
+      symlinkSync(outsideDir, join(root, 'out'));
+      await expect(resolveOutDir(root, 'out/ig/deep')).rejects.toMatchObject({ code: 'IMAGE_PATH_REFUSED', detail: { reason: 'escape' } });
+      expect(existsSync(join(outsideDir, 'ig'))).toBe(false);
+      expect(readdirSync(outsideDir)).toEqual([]);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });
 

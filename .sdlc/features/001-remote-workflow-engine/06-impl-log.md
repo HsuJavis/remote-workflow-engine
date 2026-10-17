@@ -10917,3 +10917,20 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **iter:** v40
 - **design:** DES-237 (its v40 delta line names this IMPL). Traced via TASK-233, same reason as IMPL-413's note (a direct v40→v35 DES link reads as drift).
 - **note:** RED first: UT-367's 4 `it.fails` flipped to `it` — 4/4 red on a9e8769 for the right reason; UT-368 9/12 and UT-369 24/24 red on an `git archive` copy of a9e8769. Fix: `nonCodeSpans` (acorn, already the oracle) also returns `comments` and `regexBodies`; new `blankSpans(script, ranges)` in `script-spans.ts` replaces those characters with spaces, newlines kept; `workflow-meta.ts`'s `scanText` applies it (plus the meta span) right after `nonCodeOracle` in `scanAgentCalls`, `parseWorkflowSkeleton` (now also before `dynamicRanges`) and `scanPrimitiveCalls`, so every hand scanner reads one byte-identical, offset-preserving text (D12). Regex literal with a quote: fixed (body blanked, delimiters kept so `[/Bash/]` is still refused). Neither file is loaded by the sandbox child; `checkMeta` (guards.ts) keeps its own IMPL-413 inline comment skip — no shared copy, so no two-copy corpus test. Superseded pin: `tests/unit/agent-opts-unknown-key.test.ts` (UT-165) carried a `KNOWN LIMIT` case asserting the defect (`// TODO: tune this` → `PARAM_UNKNOWN '// TODO'`); it now asserts no violation (the remedy that pin named). Residual: when the oracle is `null` (no-meta script that does not parse, or malformed meta) the scanners still read raw text — comment-blind there, as before.
+
+### IMPL-415 — v40 Gate 8 r1 send-back repair (V40-C1/C2): contain `outDir` before `mkdir`; charge billed-but-failed primitive calls; one post-spend write-failure arm (TDD)
+- **status:** done
+- **traces:** TASK-264, TASK-271
+- **greens:** UT-370, IT-322
+- **files:** src/direct-models/image-files.ts, src/direct-models/call.ts, src/run-manager.ts, src/event-log.ts, src/errors.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/image-files.test.ts, tests/integration/primitive-spend-on-failure.test.ts, .sdlc/features/001-remote-workflow-engine/02-architecture.md
+- **commit:** (uncommitted at write time)
+- **iter:** v40b
+- **design:** ARCH-185 / ARCH-187 v40b amendments (02-architecture.md); DES-268/DES-274 bodies untouched.
+- **note:** RED first. UT-370 was 1/20 red and IT-322 2/2 red on 80140b2, each for the right reason (see the items). Changes:
+  - `resolveOutDir` now checks `isPathContained(resolveLanding(abs), root)` BEFORE `mkdir`, and keeps the post-`mkdir` re-check.
+  - `runWithRetry` attaches the last attempt's `{wireCostUSD, tokens}` (`FailedSpend`) to `PRIMITIVE_FAILED.detail`. The message is unchanged.
+  - A new `RunManager._chargeFailedPrimitive` prices that spend with `pricePrimitiveCall` and calls `guard.addUsage` in both failure catch arms. The failed record and event now carry the real cost, tokens and `costSource` instead of a fixed `0`/`absent`.
+  - `_handleImageRequest` charges right after `runImage` returns. It captures `realpathSync(absDir)` before the provider call. The pre-write `realpath === captured` check and `writeImages()` are wrapped in one arm (record `failed`/`terminal`, ledger row, `failed` event `reason:'write'`), which throws a `primitiveFailedError('generateImage', label, 'write', …)` built from the DES-267 grammar (now exported) and never the fs error.
+  - `AttemptReason += 'write'`, and the served grammar and hints were synced (guide, `errors.ts`, `docs/AUTHORING.md` ×2).
+
+  Both `tsc` configs are clean. NOT done, as v41 candidates per 02-architecture.md: the fd-anchored walk, summing over all attempts, and the panel's Tier B items.

@@ -287,19 +287,25 @@ function reasonWord(reason: AttemptReason, status?: number): string {
 /** `label` is NOT on DES-267's `runDecide`/`runImage` signature (the caller — DES-274's handler —
  *  owns the author-chosen label); kept optional here so the grammar still degrades to
  *  `"decide failed: ..."` rather than guessing an identifier this module was never given. */
-function primitiveFailedError(
+export function primitiveFailedError(
   kind: 'decide' | 'generateImage',
   label: string | undefined,
   reason: AttemptReason,
   attempts: number,
   status: number | undefined,
   retryable: boolean,
+  spend: FailedSpend,
 ): Error & { code: ErrorCode; detail?: Record<string, unknown> } {
   const who = label !== undefined ? ` '${label}'` : '';
   const plural = attempts === 1 ? 'attempt' : 'attempts';
   const message = `${kind}${who} failed: ${reasonWord(reason, status)} after ${attempts} ${plural}`;
-  return codedError('PRIMITIVE_FAILED', message, { reason, status, attempts, retryable });
+  return codedError('PRIMITIVE_FAILED', message, { reason, status, attempts, retryable, ...spend });
 }
+
+/** What the LAST observed attempt of a failed call was billed, as far as the wire/codec said
+ *  (ARCH-187 v40b, Gate 8 r1 V40-C2): carried on `PRIMITIVE_FAILED.detail` for the engine-side catch
+ *  arm to charge (`guard.addUsage`) — never part of the message body. */
+export interface FailedSpend { wireCostUSD: number | null; tokens?: Tokens }
 
 /** One attempt's outcome, shared by `runDecide`/`runImage`'s retry loop: `malformed` is the
  *  decide-only post-check (`checkAnswers`) folded in as if `classifyAttempt` itself had said so. */
@@ -308,6 +314,8 @@ interface AttemptResult<T> {
   hasOutput: boolean;
   malformed: boolean;
   value: T;
+  /** the codec's own usage for this attempt (if any) — charged on failure too (V40-C2). */
+  tokens?: Tokens;
 }
 
 async function runWithRetry<T>(
@@ -326,8 +334,9 @@ async function runWithRetry<T>(
     const observed = makeObservedFetch({ fetch: deps.fetch, now: deps.now }, maxBodyBytes);
     const { signal: tSig, fired } = deps.attemptSignal(timeoutMs);
     const signal = AbortSignal.any([tSig, runSignal]);
-    const { piStop, hasOutput, malformed, value } = await attempt(observed.fetch, signal);
+    const { piStop, hasOutput, malformed, value, tokens } = await attempt(observed.fetch, signal);
     const seam = observed.last();
+    const spend: FailedSpend = { wireCostUSD: seam?.wireCostUSD ?? null, ...(tokens !== undefined ? { tokens } : {}) };
     providerMsTotal += seam?.providerMs ?? 0;
     let classification = classifyAttempt({
       runAborted: runSignal.aborted,
@@ -343,16 +352,16 @@ async function runWithRetry<T>(
       return { value, seam, attempts: a, providerMsTotal, backoffMsTotal };
     }
     if (classification.reason === 'aborted') {
-      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, false);
+      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, false, spend);
     }
     if (!classification.retryable || a > retries) {
       deps.onAttempt({ attempt: a, outcome: 'failed', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0 });
-      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, classification.retryable);
+      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, classification.retryable, spend);
     }
     const b = backoffMs(a, seam?.retryAfterMs ?? null, deps.random());
     if (b === 'over_cap') {
       deps.onAttempt({ attempt: a, outcome: 'failed', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0 });
-      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, true);
+      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, true, spend);
     }
     backoffMsTotal += b;
     deps.onAttempt({ attempt: a, outcome: 'retry', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0, backoffMs: b });
@@ -390,7 +399,7 @@ export async function runDecide(
       const res = await classify(req.model, context, { fetch: fetchImpl, apiKey: deps.resolveKey(), signal, maxRetries: 0 });
       const hasOutput = Object.keys(res.answers).length > 0;
       const malformed = res.stopReason === 'stop' && !checkAnswers(req.questions, res.answers);
-      return { piStop: res.stopReason, hasOutput, malformed, value: res };
+      return { piStop: res.stopReason, hasOutput, malformed, value: res, tokens: pickTokens(res.usage) };
     },
   );
   return {
@@ -437,7 +446,7 @@ export async function runImage(
         onPayload: (p) => (IMAGE_USAGE_INCLUDE ? { ...(p as JsonObject), usage: { include: true } } : undefined),
       });
       const images = res.output.filter((o) => o.type === 'image');
-      return { piStop: res.stopReason, hasOutput: images.length > 0, malformed: false, value: res };
+      return { piStop: res.stopReason, hasOutput: images.length > 0, malformed: false, value: res, tokens: pickTokens(res.usage) };
     },
   );
   const images = value.output

@@ -72,8 +72,10 @@ describe('IT-314: engine overhead p95 <= 200ms over 100 decide() calls (REQ-230)
     expect(stub.calls).toHaveLength(CALLS);
     expect(timed.start).toHaveLength(CALLS);
     expect(timed.end).toHaveLength(CALLS);
-    // Sanity: the provider leg really is the fixed delay (guards against a stub that never waited).
-    for (let i = 0; i < CALLS; i++) expect(timed.end[i]! - timed.start[i]!).toBeGreaterThanOrEqual(FIXED_PROVIDER_MS - 1);
+    // Sanity: the provider leg really waited (guards against a stub that never waited). Half the delay, not
+    // delay-1: Node's setTimeout can fire >1ms early against performance.now() under full-suite load
+    // (observed 18.864ms for a 20ms timer), and a no-wait stub measures ~0ms, so half still discriminates.
+    for (let i = 0; i < CALLS; i++) expect(timed.end[i]! - timed.start[i]!).toBeGreaterThanOrEqual(FIXED_PROVIDER_MS / 2);
     const overhead = Array.from({ length: CALLS - 1 }, (_, i) => timed.start[i + 1]! - timed.end[i]!);
     expect(overhead).toHaveLength(100);
     expect(p95(overhead)).toBeLessThanOrEqual(200);

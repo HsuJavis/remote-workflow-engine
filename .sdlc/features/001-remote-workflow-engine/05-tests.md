@@ -17550,3 +17550,37 @@ truthful → `completed` (`BASH_SUBSUMES_FILE_TOOLS` for Bash+Read); lying (`too
 `TOOLS_MISMATCH`. RED on a9e8769: 24/24 (the comment hid the call, so the lying diagram was refused differently
 and the truthful one failed).
 
+
+### UT-370 — `resolveOutDir` refuses an INTERMEDIATE symlinked component BEFORE `mkdir` (Gate 8 r1 V40-C1, INV-V40-7 lock)
+- **status:** green
+- **traces:** DES-268, ARCH-185, TASK-264
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v40b
+
+File: `tests/unit/image-files.test.ts`, one new case, using a real tmp dir and real fs. The test plants `root/out` as a symlink to an outside dir and asks for `out/ig/deep`, whose leaf does not exist yet. It asserts `IMAGE_PATH_REFUSED{escape}` and that the outside dir is still EMPTY: nothing named `ig`, no entries at all. The existing leaf-plant case (`out/ig` → outside) is not enough, because there `mkdir -p` creates nothing outside. RED on 80140b2 for the right reason: the refusal was thrown, but `outside/ig` existed.
+
+### IT-322 — a billed-but-failed decide()/generateImage() call is charged to run usage and the live budget; an image write failure finalizes `failed` with a constructed `PRIMITIVE_FAILED{write}` (Gate 8 r1 V40-C2)
+- **status:** green
+- **traces:** DES-274, ARCH-187, ARCH-191, TASK-271
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v40b
+
+File: `tests/integration/primitive-spend-on-failure.test.ts` (new). It uses a real RunManager, InMemoryRunStore and sandbox fork, with a stub OpenRouter fetch and a priced ModelBook. Each case runs with `budget.usd: 0.3`: the first call fails after a reported `usage.cost: 0.5`, the script catches that error, then makes a second call.
+- (a) Decide: a 200 body whose answers name an unasked question, which is `malformed`.
+- (b) Image: a REAL `EISDIR`, from a directory planted at the engine-chosen final name before the stub answers.
+
+Both cases assert the same things:
+- `view.usage.costUSD ≈ 0.5`.
+- The record is `failed` with `costUSD ≈ 0.5`.
+- The second call is refused with `BUDGET_EXCEEDED`, which shows the live guard was charged.
+- The provider was called exactly once.
+
+Case (b) also asserts the script saw `PRIMITIVE_FAILED` with the message `generateImage 'hero' failed: write after 1 attempt` and no `/` in it.
+
+RED on 80140b2:
+- (a) ended `PRIMITIVE_FAILED`, not `BUDGET_EXCEEDED`: the spend was dropped.
+- (b) ended `completed` with the raw `EISDIR … rename '/tmp/…/generated/…'` message, a host path, reaching the script, and the AgentRecord was left `running`.
