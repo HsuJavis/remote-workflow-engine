@@ -53,7 +53,10 @@ beforeAll(async () => {
     dbPath: schedulerDbPath,
   });
   const pastAt = new Date(Date.now() - 5000).toISOString();
-  const created = await seed.create({ kind: 'once', workflow: WORKFLOW_NAME, at: pastAt, enabled: true, createdRemote: true });
+  // Seeded DISABLED and enabled only after registration below: an enabled past-due row fires on the
+  // server's first tick, and under full-suite load that tick could beat registerPublishedVia, so the
+  // firing saw CLAIMED_WORKFLOW_MISSING instead of the confinement refusal under test.
+  const created = await seed.create({ kind: 'once', workflow: WORKFLOW_NAME, at: pastAt, enabled: false, createdRemote: true });
   if ('error' in created || !created.result) throw new Error('unreachable: seed create failed: ' + JSON.stringify(created.error));
   scheduleId = created.result.id;
 
@@ -65,6 +68,8 @@ beforeAll(async () => {
   // (isRemoteSubmission:false — a LOCAL registration). The seeded row's own `createdRemote:true`
   // (the TRIGGER's write-once stamp) is what drives the refusal, not this registration's locality.
   await registerPublishedVia(callTool, WORKFLOW_NAME, `return 'ok';`, { triggers: [scheduleId] });
+  // Enabling does not touch the row's write-once createdRemote stamp, which is what drives the refusal.
+  await callTool('schedule_setEnabled', { id: scheduleId, enabled: true });
 });
 afterAll(async () => {
   await server?.close();
