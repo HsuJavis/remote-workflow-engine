@@ -152,7 +152,13 @@ describe('Issues tab: v28 clothes + the real safeIssueHref wiring (VAL-215, REQ-
       await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
       await (await page.$('[data-tab="issues"]'))!.click();
       await new Promise((r) => setTimeout(r, 300));
-      const evidenceDir = join(__dirname, '..', '..', '.sdlc', 'features', '001-remote-workflow-engine', 'evidence', 'v28');
+      // Written to a scratch dir by default: the ledger copy is git-tracked, so regenerating it on
+      // every run dirtied each checkout — and the self-update deploy dir's test gate then made
+      // `git checkout <next tag>` refuse to overwrite it (v0.38.1 failed exactly this way). Set
+      // RWE_RECORD_EVIDENCE=1 to deliberately refresh the committed evidence.
+      const evidenceDir = process.env['RWE_RECORD_EVIDENCE'] === '1'
+        ? join(__dirname, '..', '..', '.sdlc', 'features', '001-remote-workflow-engine', 'evidence', 'v28')
+        : mkdtempSync(join(tmpdir(), 'rwe-val215-evidence-'));
       mkdirSync(evidenceDir, { recursive: true });
       for (const theme of ['dark', 'light'] as const) {
         await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);

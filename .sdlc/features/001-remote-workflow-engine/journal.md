@@ -10670,3 +10670,12 @@ evidence/v28 PNG（既有、測試會重生）；02-architecture.md:6895「v41 c
 改標 v42 candidates）。
 
 `.panel/` 已移除（send_back 為空，迭代關閉）。完整記錄見 07-review.md「v41 GATE 8 RE-REVIEW #1」節。
+
+
+## 2026-10-19 — v0.38.1 自我更新失敗 → v0.38.2(orchestrator)
+
+v0.38.1 Release CI 綠、發布後,正式機自我更新 `git checkout failed`:部署目錄的 test gate 每次跑 VAL-215 都重寫 git 追蹤的
+`evidence/v28/val215-issues-{dark,light}.png`(使部署目錄 dirty),而 v0.38.1 又帶了這兩張圖的新版本(orchestrator 的
+Gate 6 WIP commit 8a340f1 以 `git add <ledger dir>` 誤收進測試重產的 PNG),checkout 拒絕覆蓋本地變更。正式機維持 v0.38.0,無中斷。
+修正:(1) 兩張 PNG 以 `git show v0.38.0:<path>` 還原為 v0.38.0 內容(使 v0.38.0→v0.38.2 的 checkout 不觸及它們);
+(2) val-205 測試預設把截圖寫到暫存目錄,僅 RWE_RECORD_EVIDENCE=1 才寫回 ledger(CLAUDE.md:會一直變 dirty 的產物應寫 scratch)。
