@@ -2693,3 +2693,49 @@ sharer. TASK-268 gains `src/skeleton-graph.ts` (R-12); TASK-267 carries OD-1's `
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-image-price.test.ts tests/unit/primitive-pricing.test.ts tests/unit/model-catalog-chat-golden.test.ts tests/unit/model-catalog-decision.test.ts tests/unit/model-book` → green: UT-357 (0/0 row with `image_output` → row `imageOutPerM` 40, pin `price.imageOutPerM` 40, estimate `tokens.output × 40/1e6 > 0`), UT-351 (corrected fixture, per-M unit), UT-345 (golden deep-equal modulo the additive top-level `imageOutPerM` — i.e. the display `price` object is back to its pre-v40 shape).
 - **estimate:** S
 - **iter:** v40
+
+## v41 — REQ-227 (delta) / REQ-231 / REQ-232: a hung body read ends with its attempt, one failure word on three surfaces, no process report per agent() launch (ARCH-183/187/192/194 in-place amendments) — TASK-276..279
+
+**Order.** TASK-276, TASK-277 and TASK-278 have disjoint `files:` and run in parallel (TASK-277 reads no new
+vocabulary from TASK-276 — `network`/`write`/`aborted` already exist in `AttemptReason`). TASK-279 (served
+text) runs last: its sentences describe TASK-276's retry set and TASK-277's `agentFailures` shape. No two
+concurrently-runnable tasks share a `files:` entry. DES rows: DES-267/273/274/276 (v41 deltas) and DES-280.
+
+### TASK-276 — `call.ts`: attempt deadline reaches the fetch and every body read; `network` retryable; attempt timer cleared
+- **status:** draft
+- **traces:** ARCH-183
+- **note:** realizes REQ-227's v41 addendum (REQ link is via ARCH-183; tests trace REQ-227 directly).
+- **files:** src/direct-models/call.ts, tests/helpers/stub-fetch.ts, tests/unit/direct-models-call.test.ts, tests/integration/primitive-undici-abort-race.test.ts
+- **des:** DES-267
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/direct-models-call.test.ts tests/integration/primitive-undici-abort-race.test.ts` → green: a `holdBody` stub (headers sent, body never enqueues/closes) ends `PRIMITIVE_FAILED{reason:'timeout'}` with the stream's `cancel` invoked; `retries:2` + hung body → 3 attempts, elapsed ≤ bound + 250 ms; two `UND_ERR_SOCKET` rejections then 200 → success, `attempts===3`; `vi.getTimerCount()===0` after a success and after timeout→retry→ok; real-undici RED (B) 30/30 iterations settle within bound and the trailers hook fired every iteration.
+- **estimate:** M
+- **iter:** v41
+
+### TASK-277 — one failure word: primitive `failReason` = `AttemptReason`, `detail` = the thrown message, `agentFailures` mirrors both
+- **status:** draft
+- **traces:** ARCH-187, ARCH-192
+- **note:** realizes REQ-231. The REQ is deliberately NOT in `traces:` — DES-274 is shared with v40 IMPLs, so a TASK→REQ link would make v40 code count as REQ-231 coverage; Gate 5 tests trace REQ-231 directly.
+- **files:** src/run-manager.ts, src/agent-executor.ts, src/types.ts, tests/unit/primitive-record-failed.test.ts, tests/integration/primitive-failure-surfaces.test.ts
+- **des:** DES-274, DES-273
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/primitive-record-failed.test.ts tests/integration/primitive-failure-surfaces.test.ts` → green: for each of network / timeout / HTTP 429 / HTTP 400 / malformed / no_output (zero blocks AND all-dropped) / write, the script's `e.message`, `run_agent_log` `failReason`+`detail`, and `run_status.agentFailures[].reason`+`.message` name the same word and equal text; message matches the DES-267 grammar; no "no failure detail recorded"; derived (restart) record ≡ live record; a non-`PRIMITIVE_FAILED` throw records the fixed `internal error` text; `rg primitiveFailReasonFrom src` empty.
+- **estimate:** M
+- **iter:** v41
+
+### TASK-278 — SDK gateway: resolve the native CLI path once, pass `pathToClaudeCodeExecutable` on every `query()`
+- **status:** draft
+- **traces:** REQ-232
+- **files:** src/gateway/claude-agent-sdk-client.ts, tests/unit/claude-agent-sdk-gateway-cli-path.test.ts, tests/integration/sdk-getreport-off-hot-path.test.ts
+- **des:** DES-280
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/claude-agent-sdk-gateway-cli-path.test.ts tests/integration/sdk-getreport-off-hot-path.test.ts` → green: resolver table (glibc→glibc first, musl→musl first, first throws→second, all throw→`undefined`, darwin/win32/android names); a fake `queryImpl` sees `options.pathToClaudeCodeExecutable` = the resolved/injected path, and the key is absent with `cliExecutable:null`; real `sdkQuery` ×10 with a stub `spawnClaudeCodeProcess` → `process.report.getReport` spy count 0 with the path set, ≥1 with `cliExecutable:null` (perturbation effective); the stub spawner's captured `spawnOpts.command` is identical with `cliExecutable:null` and with the default (resolver ≡ SDK pick).
+- **estimate:** S
+- **note:** no ARCH row in the v41 closure owns `src/gateway/claude-agent-sdk-client.ts` (no Gate 2 this iteration); traces REQ-232 directly. Nearest existing row for the reviewer: ARCH-176 (the `query()` options literal) — referenced, not edited.
+- **iter:** v41
+
+### TASK-279 — served text: retry set names connection-level failures; `agentFailures.reason` for a primitive; grammar lists `aborted`
+- **status:** draft
+- **traces:** ARCH-194
+- **files:** src/authoring-guide.ts, src/tool-specs.ts, docs/AUTHORING.md, tests/unit/authoring-guide.test.ts
+- **des:** DES-276
+- **dod:** `npm run gen:authoring && npx tsc --noEmit && npx vitest run tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts tests/unit/primitive-served-surface.test.ts` → green: guide states the retried set (429, 5xx, per-attempt timeout, connection-level failure) and the not-retried set; image billing sentence names "timed-out or disconnected"; `PRIMITIVE_FAILED_GRAMMAR` contains `aborted` and `write`; `run_status` description says a `decide`/`image` entry's `reason` is the primitive failure word and `message` the script's error text; no issue numbers / history.
+- **estimate:** S
+- **iter:** v41

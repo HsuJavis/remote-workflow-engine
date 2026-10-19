@@ -10483,7 +10483,7 @@ purpose (real tmp dir).
 
 ### DES-267 — `src/direct-models/call.ts`: seam, classification, retry loop
 - **status:** draft
-- **traces:** ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093, TASK-263
+- **traces:** ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093, TASK-263, TASK-276
 - **signature:**
   ```ts
   import { classify } from '@earendil-works/pi-ai/api/typesafe-system-one';
@@ -10528,7 +10528,36 @@ purpose (real tmp dir).
 - **toPiAiModel:** `api` from `{decision:'typesafe-system-one', 'image-gen':'openrouter-images'}`; `provider:'openrouter'`; `baseUrl: OPENROUTER_BASE_URL`; `cost` all 0 (pi-ai `usage.cost` never read, ADR-091); `input` = `['text']` (+`'image'` if `modalitiesIn` has it); classifier `contextWindow: row.contextWindow ?? 32768`; image `output:['image']`; result `satisfies` pi-ai's types. Cached per (run, model) by the caller.
 - **images out:** each output `ImageContent` → `{data: Buffer.from(b64,'base64'), mimeType}`; mime trust happens in DES-268 (sniff). Text blocks ignored.
 - **error thrown:** `codedError('PRIMITIVE_FAILED', "<decide|generateImage> '<label>' failed: <cause> after <n> attempt(s)")`, `<cause>` = `HTTP <status>` for reason `http`, else the reason word. Grammar regex (UT + guide): `/^(decide|generateImage) '[A-Za-z_][\w-]*' failed: (HTTP \d{3}|timeout|network|no_output|malformed|response_too_large) after \d+ attempts?$/`. No provider text, ever. `detail {reason,status,attempts,retryable}` is returned to the handler for the event only — it does not cross IPC.
-- **iter:** v40
+- **delta (v41, REQ-227 delta, TASK-276):** supersedes the `attemptSignal`/`makeObservedFetch` signatures, the per-attempt flow's first lines, the `network` row and the grammar regex above.
+  ```ts
+  attemptSignal: (ms: number) => { signal: AbortSignal; fired(): boolean; clear(): void };   // clear REQUIRED (tsc finds every fake); prod = clearTimeout(timer)
+  export function makeObservedFetch(deps: Pick<DirectDeps,'fetch'|'now'>, maxBodyBytes: number, signal: AbortSignal):
+    { fetch: typeof fetch; last(): SeamRecord | null };
+  function untilAborted<T>(p: Promise<T>, signal: AbortSignal, onAbort?: () => void): Promise<T>;   // private
+  ```
+  - **flow:** `{signal: tSig, fired, clear} = deps.attemptSignal(timeoutMs)`; `signal = AbortSignal.any([tSig, runSignal])`; `observed = makeObservedFetch(deps, max, signal)` (signal built BEFORE the seam); `try { r = await attempt(observed.fetch, signal) } finally { clear() }` — cleared on ok / fail / throw, before classification and before any backoff sleep; `fired()` stays readable after `clear()`. `AbortSignal.any` kept (no timer of its own).
+  - **untilAborted:** `signal.aborted` on entry → reject `DOMException('…','AbortError')` synchronously-ish, `p` not awaited; else rejects on the `abort` event; removes its listener when settled; calls `onAbort()` once on abort.
+  - **seam:** `if (signal.aborted) → record {invoked:true,status:undefined} and throw AbortError WITHOUT calling deps.fetch`; `res = await untilAborted(deps.fetch(input, init), signal)`; `readCapped(res, max, signal)`: every `reader.read()` (and the no-body `arrayBuffer()`) goes through `untilAborted(…, signal, () => void reader.cancel().catch(() => {}))` — cancel is fired, **never awaited**. The seam's own `signal` is the closure argument, never `init.signal` (pi-ai's forwarding is not relied on). One seam instance per attempt, so a late-settling read cannot write into the next attempt's record.
+  - **classifyAttempt:** `network` → `retryable: **true**` (only change; precedence unchanged — `runAborted`→aborted, `timeoutFired`→timeout run first, so an abort/timeout mid-body is never `network`).
+  - **grammar regex:** `/^(decide|generateImage) '[A-Za-z_][\w-]*' failed: (HTTP \d{3}|timeout|network|no_output|malformed|response_too_large|write|aborted) after \d+ attempts?$/` (adds the v40-missing `write` and `aborted`, both of which `primitiveFailedError` already emits).
+  - **boundary table (one UT row each):**
+
+    | condition | reason | retryable | message cause |
+    |---|---|---|---|
+    | 429 / ≥500 | http | yes | `HTTP 503` |
+    | other 4xx | http | no | `HTTP 400` |
+    | attempt timer fired (pre-header, body, codec) | timeout | yes | `timeout` |
+    | run stop mid-attempt or during backoff sleep | aborted | no | `aborted` |
+    | rejection with no status (`UND_ERR_SOCKET`, `ETIMEDOUT`, reset) | network | **yes** | `network` |
+    | body over cap | response_too_large | no | `response_too_large` |
+    | decide answers fail `checkAnswers` / 2xx + `error` | malformed | no | `malformed` |
+    | `stop` with zero output | no_output | no | `no_output` |
+    | retry-after over cap | last reason | yes (fail fast) | last reason |
+  - **bound (tests only):** per call `≤ (retries+1)×timeoutMs + Σbackoff + G`; `G` is a test tolerance, not a runtime timer — UT `G = 250 ms`, IT `G = 1000 ms` (named `ATTEMPT_SETTLE_GRACE_MS` in `tests/helpers/stub-fetch.ts`). Guide formula unchanged.
+  - **boundaries to test:** B-1 timer fires in the same tick the body completes → `timeout` (pre-existing precedence, kept; named residual); B-2 `retries:0` + hung body → 1 attempt, ≤ `timeoutMs + G`; B-3 run stop during backoff → `aborted`, no further attempt; B-4 signal already aborted → stub fetch call count 0.
+  - **stub-fetch:** `StubFetchStep.holdBody?: true` → `new Response(new ReadableStream({type:'bytes', pull(){}, cancel(){ cancelled = true }}), {status: 200})`; the helper exposes the `cancelled` flag.
+  - **RED (B) IT:** local `http.createServer`; `diagnostics_channel.subscribe('undici:request:trailers', () => queueMicrotask(abortCurrentAttempt))`; 30 iterations; each must settle within bound AND assert the channel callback fired that iteration (perturbation effective; a silent non-fire fails the test, never skips).
+- **iter:** v41
 
 ### DES-268 — `src/direct-models/image-files.ts`
 - **status:** draft
@@ -10615,7 +10644,7 @@ purpose (real tmp dir).
 
 ### DES-273 — primitive usage accounting and reconstruction
 - **status:** draft
-- **traces:** ARCH-191, ARCH-192, ADR-091, ADR-094, TASK-270
+- **traces:** ARCH-191, ARCH-192, ADR-091, ADR-094, TASK-270, TASK-277
 - **signature:**
   ```ts
   // src/run-guard.ts — pure, beside priceCall (untouched)
@@ -10632,11 +10661,12 @@ purpose (real tmp dir).
   `observed-stats.loadFacts`: `kind = data.primitive` when present (checked before the harness-descriptor rule); `AgentCallFact.kind` += `'decide'|'image'`; `ObservedForRef` gains `decide`/`image` buckets.
 - **boundary:** agent usage events always carry `costUSD` together with `tokens` (verified agent-executor.ts:581/:728), so the guard widening is a no-op for agents — the existing IT-156/DES-188 cases stay unedited. Locks extended: live fold ≡ at-rest fold and derived ≡ snapshot with one tokenless reported-cost decide and one absent-cost image.
 - **delta (v40 Gate 6, R-6):** the usage event `recordPrimitive` writes carries `reason: failReason` whenever `state === 'failed'` (absent on `done`) — `deriveAgentRecords` keys `state` on `data.reason`, so without it a failed primitive rebuilds as `done` after a restart. (R-4) image estimate unit: see DES-279 — `tokens.output × imageOutPerM / 1e6`.
-- **iter:** v40
+- **delta (v41, REQ-231, TASK-277):** on a failed primitive the usage event `data` also carries `detail: string` (the same string as `AgentRecord.detail`, DES-274 v41) and `reason` is now the `AttemptReason` word (`'network'`, `'http'`, `'write'`, …) or `'terminal'`/`'aborted'`. `deriveAgentRecords` needs NO change — it already maps `data.detail → detail` and `data.reason → failReason` (run-store.ts ~204-208). Lock: derived ≡ live for `failReason` AND `detail` on one failed decide and one failed image.
+- **iter:** v41
 
 ### DES-274 — `RunManager._handleDecideRequest` / `_handleImageRequest`
 - **status:** draft
-- **traces:** ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271
+- **traces:** ARCH-187, ADR-090, ADR-092, ADR-093, ADR-094, TASK-271, TASK-277
 - **signature:**
   ```ts
   // src/resume-cache.ts — replay() unchanged
@@ -10664,7 +10694,21 @@ purpose (real tmp dir).
 - **delta (v40 Gate 6, R-14):** split cap. `RunEntry` += `primitiveRefusals: Map<number, {code, message}>`, `primitiveRefusalsDropped: number`; `_recordPrimitiveRefusal` writes ONLY there under its own cap `PRIMITIVE_REFUSAL_CAP = 8` (top frame only, unchanged); `_handleAgentRequest`'s 8 slots in `entry.refusals` are never touched by a primitive. `_runLive`: `refusalHit = entry.refusals.get(ref) ?? entry.primitiveRefusals.get(ref)` (callSeqs are unique across both, one shared counter). (R-6) see DES-273 delta. (R-13) step (2) "contract default ⊕ run override" is realised by DES-277's `resolvePrimitiveParams` at admission (`start()` with the validated `overrides.decisions/images`; a nested frame stays default-only).
 - **delta (v40 Gate 6 round 4, R-34; also binds DES-273's usage event):** `recordPrimitive`'s `model` (the AgentRecord AND the `kind:'usage'` event's `data.model`) is the provider-less id (`parseModelRef(model).model`, e.g. `typesafe/jev-1.13`) beside `provider:'openrouter'` — the same form an agent() record has — so `${provider}/${model}` readers (`run_result.meta.budgetEnforceable.unpricedModels`, observed-stats) see the real ref, never `openrouter/openrouter/…`. The `primitive.call` operator event keeps the full ref. UT-365 pins it.
 - **delta (v40 Gate 6 round 3, R-30):** every `engineMs` (terminal `ok` and `failed` events) is `Math.max(0, (now() − t0) − providerMsTotal − backoffMsTotal)` — a stubbed no-op `sleep` can make the raw difference negative, and a negative overhead is meaningless in the event log.
-- **iter:** v40
+- **delta (v41, REQ-231, TASK-277):** supersedes "failure paths"' `failReason` mapping and the `recordPrimitive` signature above.
+  ```ts
+  // src/types.ts (ARCH-192)
+  AgentRecord.failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted' | AttemptReason;   // import AttemptReason from event-log.ts, do not re-list
+  AgentFailureSummary.reason: 'timeout' | 'error' | 'aborted' | 'refused' | 'schema-exhausted' | AttemptReason;
+  // src/agent-executor.ts
+  recordPrimitive(runId, r: { …as above…; failReason?: AgentRecord['failReason']; detail?: string }): Promise<void>;
+    // state:'failed' ⇒ detail present; writes AgentRecord.detail AND usage-event data.detail (DES-273 v41)
+  ```
+  - **delete `primitiveFailReasonFrom`.** Each failure arm computes ONE local used by the record, the `primitive.call failed` event and the thrown error: `reason = detail?.reason ?? (runAborted ? 'aborted' : 'terminal')`; `detailText = err.code === 'PRIMITIVE_FAILED' ? err.message : \`${primitive} '${label}' failed: internal error\`` (`primitive` = `decide`|`generateImage`; never a non-coded `err.message` — REQ-229).
+  - **image write arm:** record `failReason:'write'`, `detail: writeErr.message`.
+  - **image all-dropped arm:** throw `primitiveFailedError('generateImage', label, 'no_output', outcome.attempts, undefined, false, {wireCostUSD: null})` (grammar message; replaces the hand-built `PRIMITIVE_FAILED: generateImage('x') produced…` text); record `failReason:'no_output'`, `detail` = its message. Spend was already charged above — the `{wireCostUSD:null}` spend is not re-charged (this throw leaves the handler, it does not re-enter the catch arm).
+  - **run-manager `failureReason(a)`:** first branch after `schemaExhausted`/`refused`: `a.kind !== undefined && a.failReason !== undefined → return a.failReason`. `failureMessage(a)` unchanged (already prefers `detail`; `summaryOfDetail` is a no-op on the grammar — lock with a UT). Agent records (`kind` absent) keep today's mapping (INV-V40-1).
+  - **boundary:** for a network-exhausted decide, three surfaces read: `e.message = "decide 'b' failed: network after 4 attempts"`; `run_agent_log` `{failReason:'network', detail: same}`; `agentFailures` `{reason:'network', message: same}`. The equality is on `e.message`; `String(e)`'s `PRIMITIVE_FAILED: ` prefix is the child's error rendering (DES-169), outside the claim.
+- **iter:** v41
 
 ### DES-275 — composition root: config keys, semaphores, gauges
 - **status:** draft
@@ -10676,12 +10720,13 @@ purpose (real tmp dir).
 
 ### DES-276 — served text
 - **status:** draft
-- **traces:** ARCH-194, TASK-273
+- **traces:** ARCH-194, TASK-273, TASK-279
 - **signature:** `workflow_authoring_guide` gains sections `decide` and `generateImage`: declaration block (`meta.params.decisions.<label>` / `images.<label>`: `model`/`timeoutMs`/`retries` defaults, no `effort`), the two call signatures and return shapes from DES-264, the full v40 code table (one cause + one fix line each, plus `BUDGET_EXCEEDED`, `PARAM_IN_SCRIPT`, `OPENROUTER_AUTH_MISSING`), the `PRIMITIVE_FAILED` message grammar, the bool idiom `answers.<id>.probability >= 0.7`, wall time ≤ `(retries+1)×timeoutMs + retries×10s`, suggested defaults (decide `timeoutMs 5000, retries 2`; image `timeoutMs 120000, retries 0` — a timed-out image may still be billed), "a changed or missing image file regenerates that call and every later one on resume", "an error message never contains the provider's response", "with a USD budget a model the catalog could not price is refused `PRICE_UNKNOWN`", "decide/generateImage count toward the 1000 model calls per run". `GUIDE_EXAMPLES` += a decide gate (bool → fallback to `agent()`) and an image example. `tool-specs.ts`: `workflow_register` mentions both blocks; `models_list` `modelType` enum + description `'chat'` for agent(), `'decision'` for decide(), `'image-gen'` for generateImage(); `run_status` documents `agents[].kind`; `system_info` the two gauges. `workflow-view.ts`: `workflow_describe`/`workflow_get` project `decisions`/`images` (model/timeoutMs/retries). README/DEPLOY: the three config keys. `npm run gen:authoring` regenerates `docs/AUTHORING.md`.
 - **boundary:** served text = current behaviour only, no issue numbers, no version history. Examples registered by IT-118 must not hit `MODEL_TYPE_MISMATCH` (CI catalog is static → warning arm, which the test must not treat as refusal).
 - **delta (v40 Gate 6, R-2 / R-16 / R-13 / OD-1 / R-15 / R-17):** (R-2) `models_list.inputSchema.modelType.enum` contains `'decision'` (present since 0c31a63; UT-356 locks it against the real ajv). (R-16) `workflow_describe` projects `params.decisions`/`params.images` — DES-278; `workflow_get` unchanged. (R-13) `run_start.overrides` description: `{agents:{…}, decisions:{'<label>':{model?,timeoutMs?,retries?}}, images:{…}}`, `retries` ≤ 5, model must be `openrouter/…`, undeclared label → `UNKNOWN_AGENT_LABEL`. (OD-1) every "'image-gen' drives generateImage()" wording becomes "a model whose `modalities.out` includes `image`": `models_list` description + `modelType` enum description (tool-specs.ts), `ERROR_CATALOG.MODEL_TYPE_MISMATCH.hint` (errors.ts), the guide's MODEL_TYPE_MISMATCH fix line (authoring-guide.ts) and the image section; the image example MAY use a chat image model (R-17: live ids drift — accepted risk). (R-15) no `system_info` gauge text. `npm run gen:authoring` after.
 - **delta (v40 Gate 6 round 2, R-21/R-23):** `src/authoring-guide.ts` exports one model constant per example kind — `EXAMPLE_MODEL` (chat, unchanged), `EXAMPLE_DECISION_MODEL = 'openrouter/typesafe/jev-1.13'`, `EXAMPLE_IMAGE_MODEL = 'openrouter/google/gemini-2.5-flash-image'` (live-listed on `GET https://openrouter.ai/api/v1/models?output_modalities=all`, checked 2026-10-16: `output_modalities:["image","text"]`, `pricing.image_output:"0.00003"`; qualifies for `images.<label>` under OD-1/ADR-095). Every decide/image guide example and the declaration-block prose render from these constants; UT-159 pins chat→`EXAMPLE_MODEL`, decide→`EXAMPLE_DECISION_MODEL`, image→`EXAMPLE_IMAGE_MODEL`. Boundary: both primitive constants start `openrouter/`; no other model literal in any example. Tests that need an image model import `EXAMPLE_IMAGE_MODEL` (the retired `black-forest-labs/flux-1.1-pro` is gone from tests; the catalog fixture's image-ONLY row is now the live `black-forest-labs/flux-3-image`).
-- **iter:** v40
+- **delta (v41, TASK-279):** (1) `PRIMITIVE_FAILED_GRAMMAR` = DES-267 v41 regex (adds `aborted`; `write` already present). (2) the paragraph after the code list gains: "429, 5xx, a per-attempt timeout and a connection-level failure (no HTTP status: connect timeout, reset, dead keep-alive) are retried up to `retries`; any other 4xx, `malformed`, `no_output`, `response_too_large` and `write` are not." (3) "a timed-out image call may still be billed" → "a timed-out or disconnected image call may still be billed". Wall-time formula unchanged. (4) `tool-specs.ts` `run_status`: the `agentFailures` enum sentence adds "for a `decide`/`image` entry `reason` is the primitive's failure word (`http`, `timeout`, `network`, `malformed`, `no_output`, `response_too_large`, `write`, `aborted`) and `message` is the exact error message the script received". Current behaviour only, no issue numbers. `npm run gen:authoring` after.
+- **iter:** v41
 
 ### v40 class diagram
 
@@ -10899,3 +10944,76 @@ Gate 7.5 engine (attempt count in the `primitive.call` lines); OD-1 → a real `
 - **R-13 — reuse `UNKNOWN_AGENT_LABEL` with `detail.block`.** The ruling says "the existing unknown-label refusal path"; a new code would contradict it. `detail.block` disambiguates.
 - **R-14 — what the split protects is provenance.** A missing ledger entry does not lose the CODE (the child keeps `BUDGET_EXCEEDED` in `ENGINE_REFUSAL_CODES`); it loses attestation — the run then reports whatever the script rethrew. IT-317 therefore tampers `e.message` before rethrowing; the no-decide control proves the mechanism is live today.
 - **Owner decisions:** none new. OD-1 answers ADR-095's pending question; the `owner_decision: pending` line on ADR-095 (02-architecture.md) is the architect's to close — not edited here.
+
+## v41 design entries (REQ-227 delta / REQ-231 / REQ-232 — in-place deltas on DES-267, DES-273, DES-274, DES-276; new DES-280)
+
+### DES-280 — SDK gateway: native CLI path resolved once, passed on every `query()`
+- **status:** draft
+- **traces:** REQ-232, TASK-278
+- **signature:**
+  ```ts
+  // src/gateway/claude-agent-sdk-client.ts — pure, exported for UT
+  export function resolveCliExecutable(d: { platform: NodeJS.Platform; arch: string; musl: boolean;
+    resolve: (spec: string) => string; exists: (p: string) => boolean }): string | undefined;
+  // module scope, beside SDK_VERSION (one getReport at most, at import, never per call)
+  const CLI_EXECUTABLE: string | undefined = resolveCliExecutable({ platform: process.platform, arch: process.arch,
+    musl: detectMusl(), resolve: createRequire(<resolved SDK main entry, as resolveSdkVersion>).resolve, exists: existsSync });
+  function detectMusl(): boolean;   // linux only: process.report.getReport().header.glibcVersionRuntime === undefined; other platforms false; any throw → false
+  ClaudeAgentSdkGatewayConfig.cliExecutable?: string | null;   // undefined → CLI_EXECUTABLE; string → it; null → leave the SDK's own lookup
+  ```
+- **candidates (the SDK 0.3.199 `lI` order, `P = '@anthropic-ai/claude-agent-sdk'`, `x = platform==='win32' ? '.exe' : ''`):** android → `P-linux-<arch>-android`; linux & musl → `P-linux-<arch>-musl`, `P-linux-<arch>`; linux & !musl → `P-linux-<arch>`, `P-linux-<arch>-musl`; else `P-<platform>-<arch>`; each `+ '/claude' + x`. First candidate whose `resolve()` does not throw AND `exists()` is true wins; none → `undefined`. `detectMusl` is only evaluated on linux.
+- **wiring:** constructor stores `this._cliExecutable = _config.cliExecutable === undefined ? CLI_EXECUTABLE : _config.cliExecutable`; the `query()` `options` literal (ARCH-176's site) gets `...(this._cliExecutable ? { pathToClaudeCodeExecutable: this._cliExecutable } : {})` — nothing else in `options`, spawn, env, tools or confinement changes (REQ-232 clause 3). `CLI_EXECUTABLE === undefined` at import → ONE `process.emitWarning('claude-agent-sdk native CLI not resolved; the SDK will resolve it per call', {code: 'RWE_CLI_PATH_UNRESOLVED'})`; no new event kind, no config key.
+- **boundary:** fail-open — an unresolvable path keeps today's behaviour (SDK per-call lookup, which throws its own "Native CLI binary … not found" if truly absent). The platform packages have no `exports` map today, so `…/claude` resolves; a future package that hides it throws in `resolve` → skipped → fail-open. Resolver equivalence (same binary the SDK would pick) is what keeps agent() behaviour unchanged: the IT asserts it: the stub `spawnClaudeCodeProcess` captures `spawnOpts.command`; one `invoke()` with `cliExecutable:null` (the SDK's own `lI` pick) and one with the default (ours) must capture the same path (both glibc and musl packages are installed here, so the musl ordering is load-bearing). `exists` mirrors the SDK's `existsSync` check (`lI`'s `o = existsSync`); `errors.ts`' `PRIMITIVE_FAILED` hint already lists `aborted` — unchanged.
+- **tests:** UT (pure resolver table + fake `queryImpl` options capture for string / `null`); IT (real `sdkQuery`, stub `spawnClaudeCodeProcess` returning a child that exits at once, spy on `process.report.getReport` installed AFTER module import: 0 calls over 10 `invoke()`s with the path set, ≥1 with `cliExecutable:null`).
+- **iter:** v41
+
+### v41 real-tier validation paths and mock policy
+- **REQ-227 (delta):** real engine (`npm start` build, rwe service config), real OpenRouter decide; RED (B) undici race is the deterministic real-wire proof (IT, real `fetch` against a local server, no mock of `call.ts`). Real tier: rerun `rwe168-repro@v2` ×3 (`n:60`, issue shape) under the owner's US$1 cap → every decide settles (0 non-terminal records at run end), `retry` events with `reason:'network'` appear when the wire produces them.
+- **REQ-231:** same rerun → for every failed primitive, `run_status.agentFailures[].reason` = `run_agent_log` `failReason`, `message` = `detail` = the script's caught `e.message`; no "no failure detail recorded".
+- **REQ-232:** same rerun with a `node --import <preload>` that installs `perf_hooks.monitorEventLoopDelay({resolution: 20})` and prints p99/max at exit → p99 ≤ 200 ms, max ≤ 1 s; `ps -o args` of a spawned CLI equals the resolved path; the IT `getReport` count is the deterministic clause-2 proof. No engine surface is added for the measurement.
+- **mock policy:** UT may stub `fetch`, timers and `queryImpl` freely; IT uses the real pi-ai codec, the real forked child, real undici / real `sdkQuery` (only the provider network and the CLI process are stubbed); Gate 7.5 mocks nothing of the engine. Timing percentiles are never a UT/IT gate (flake on a shared host); they belong to Gate 7.5 only.
+
+### v41 class diagram
+
+```mermaid
+classDiagram
+  class DirectDeps {
+    fetch
+    attemptSignal(ms) signal_fired_clear
+    sleep(ms, signal)
+  }
+  class ObservedFetch {
+    +makeObservedFetch(deps, maxBodyBytes, signal)
+    -untilAborted(p, signal, onAbort)
+    -readCapped(res, max, signal)
+  }
+  class RunManager {
+    -_handleDecideRequest()
+    -_handleImageRequest()
+    -failureReason(a) kind-aware
+  }
+  class AgentExecutor {
+    +recordPrimitive(failReason, detail)
+  }
+  class ClaudeAgentSdkGatewayClient {
+    -_cliExecutable
+    +resolveCliExecutable(d)
+  }
+  DirectDeps <.. ObservedFetch
+  RunManager --> ObservedFetch : runDecide/runImage
+  RunManager --> AgentExecutor : failed record + usage event
+```
+
+## Decision rationale — v41 (DES-267/273/274/276 deltas + DES-280; panel pre-ran, two groups, round 1 only, synthesized here)
+
+- **Inner race only, no outer `Promise.race` and no runtime settle grace (adversarial KP-1 over quality S-1).** Every await the seam owns (`fetch`, each `read`) is bounded by the attempt signal, which covers both observed hang sites (RED A, RED B). An outer race abandons a promise that still holds the socket and adds a second timer, and a per-attempt grace makes the bound `(retries+1)×G` while REQ-227 states a single small fixed grace. Quality conceded in advance to the literal reading. Fallback, recorded: if the RED (B) IT still hangs with the inner race in place, an outer race is justified and Gate 6 sends back here.
+- **Signal via closure, not `init.signal` (adversarial).** It avoids depending on pi-ai's decide/image forwarding paths. The cost is one parameter on an exported helper.
+- **`AbortSignal.any` kept (quality wanted an explicit forwarder).** No REQ asks for a listener count; `clear()` already satisfies "timer cleared when the attempt ends".
+- **`agentFailures[].reason` widened for `kind`-bearing records (quality O-3 over adversarial D-2).** REQ-231 says "reason/message" both name the type, and `reason:'error'` next to `failReason:'network'` is the two-names defect. Adversarial's contract lens had argued for this; its simplicity tie-break is overruled by the acceptance text. Agent records are unchanged.
+- **Widen `failReason`, no `primitiveReason` field (both lenses agree).** `failStatus` is dropped because the message already carries `HTTP <status>`.
+- **Grammar gains `aborted` (adversarial B-5).** One token, and the engine already throws it. `write` was missing from DES-267 (v40 Gate 8 r2 drift) and is fixed in the same edit. DES-264 has the same drift but is outside this closure; it is left for the reviewer.
+- **REQ-232 resolver: tri-state `cliExecutable?: string | null` (quality R-1) over `?? CLI_PATH` (adversarial).** `null` is the only way to run the RED variant of the `getReport` IT (perturbation effective). The resolver stays in the gateway file (one file, pure export) rather than a new module. The unresolved warning uses `process.emitWarning` rather than a new `EngineEvent` kind (the sink is not bound at import; a new closed-union kind is more surface than one boot line needs).
+- **REQ-232 has no ARCH in the closure.** The SDK gateway's rows (ARCH-103/111/176/178) are outside it, and no Gate 2 ran. TASK-278/DES-280 trace REQ-232 directly. ARCH-176 is named as the nearest row, not edited.
+- **Rejected as outside every v41 REQ (v42 candidates, nothing deferred to the owner):** quality O-6, the served event-loop gauge on `/api/status`/`system_info` plus `engine.loop_stall` (ARCH-193 and server.ts are outside the closure; REQ-232 says "measured by", and the Gate 7.5 preload measures it); O-1 `stage`/`cause` seam fields and the sentinel-sweep extension they need; O-4 `markQueued` kind/model/provider and per-attempt `markActivity`; O-5 `gateway.cli_resolved` event; adversarial R-3 `sdk.mjs` grep test (self-described over-engineering — the IT's `getReport` count catches a resolver miss on an SDK bump).
+- **Residuals named, not engineered:** B-1 (timer and body completion in one tick → `timeout`, pre-existing precedence); image double-billing on a network retry (same as timeout; guide sentence extended); `spawn` cost (~26 ms per launch) is the remaining p99 contributor, measured at Gate 7.5.
+- **Lens checklist:** interface-contract — signatures above; `clear()` required so tsc finds every fake. Boundary — DES-267 v41 table plus B-1..B-4. Testability — every change has a UT on an existing seam, plus one IT each for undici and the SDK. Observability — one failure word on three surfaces; the boot warning. Replaceability — no new deps; the SDK's documented option. Consumability — served grammar and retry set made true. Self-sustainability — the bound is real and timers do not leak. Seam consistency: every `runWithRetry` path that obtains an `attemptSignal` calls `clear()` in the same `finally`; no method reads wall time outside `deps.now`.
