@@ -52,13 +52,14 @@ const SDK_VERSION = resolveSdkVersion();
 
 const CLI_PACKAGE_PREFIX = '@anthropic-ai/claude-agent-sdk';
 
-/** v41 (DES-280, REQ-232, TASK-278): the SDK 0.3.199 `lI` candidate order — android gets exactly
- *  the one android-arch package; linux tries musl-first or glibc-first depending on `d.musl`; every
- *  other platform gets its one `<platform>-<arch>` package. `d.resolve` is given each BARE package
- *  spec in turn (never `require.resolve`'s own subpath form) and only the path IT returns has
- *  `/claude` (`.exe` on win32) appended before `d.exists` is asked about it — a candidate whose
- *  `resolve` throws (package not installed) or whose final path does not exist is skipped, never
- *  thrown out of this function. Pure — no fs/require of its own. */
+/** v41 (DES-280, REQ-232, TASK-278, ruling R-v41-1): the SDK 0.3.199 `lI` candidate order — android
+ *  gets exactly the one android-arch package; linux tries musl-first or glibc-first depending on
+ *  `d.musl`; every other platform gets its one `<platform>-<arch>` package. `d.resolve` is given each
+ *  candidate's SUBPATH spec `<pkg>/claude` (`.exe` on win32) — the same form the SDK's own resolver
+ *  uses; the platform packages declare no `main`/`exports`, so a bare package spec never resolves —
+ *  and `d.exists` is asked about the path it returns. A candidate whose `resolve` throws (package not
+ *  installed) or whose path does not exist is skipped, never thrown out of this function. Pure — no
+ *  fs/require of its own. */
 export function resolveCliExecutable(d: {
   platform: NodeJS.Platform; arch: string; musl: boolean;
   resolve: (spec: string) => string; exists: (p: string) => boolean;
@@ -73,7 +74,7 @@ export function resolveCliExecutable(d: {
       : [`${CLI_PACKAGE_PREFIX}-${d.platform}-${d.arch}`];
   for (const spec of specs) {
     try {
-      const candidate = `${d.resolve(spec)}/claude${exeSuffix}`;
+      const candidate = d.resolve(`${spec}/claude${exeSuffix}`);
       if (d.exists(candidate)) return candidate;
     } catch {
       // this candidate's platform package is not installed — try the next one.
@@ -100,7 +101,7 @@ function detectMusl(): boolean {
 // fallback to find this per call (REQ-232's hot-path clause). `undefined` (package not installed,
 // or this platform/arch has none) is fail-open: `ClaudeAgentSdkGatewayConfig.cliExecutable` stays
 // unset and every `query()` falls back to the SDK's own per-call lookup, unchanged from before this.
-const CLI_EXECUTABLE: string | undefined = resolveCliExecutable({
+export const CLI_EXECUTABLE: string | undefined = resolveCliExecutable({
   platform: process.platform, arch: process.arch, musl: detectMusl(),
   resolve: createRequire(import.meta.url).resolve, exists: existsSync,
 });

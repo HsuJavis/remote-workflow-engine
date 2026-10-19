@@ -34,7 +34,7 @@ describe('UT-373: resolveCliExecutable candidate table (DES-280)', () => {
       resolve: (spec: string) => { seen.push(spec); return `/pkg/${spec}`; },
       exists: () => true,
     });
-    expect(seen).toEqual(['@anthropic-ai/claude-agent-sdk-linux-arm64-android']);
+    expect(seen).toEqual(['@anthropic-ai/claude-agent-sdk-linux-arm64-android/claude']);
     expect(v).toBe('/pkg/@anthropic-ai/claude-agent-sdk-linux-arm64-android/claude');
   });
 
@@ -46,7 +46,7 @@ describe('UT-373: resolveCliExecutable candidate table (DES-280)', () => {
       resolve: (spec: string) => { seen.push(spec); return `/pkg/${spec}`; },
       exists: (p: string) => p.includes('musl'),
     });
-    expect(seen[0]).toBe('@anthropic-ai/claude-agent-sdk-linux-x64-musl');
+    expect(seen[0]).toBe('@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude');
     expect(v).toBe('/pkg/@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude');
   });
 
@@ -58,7 +58,7 @@ describe('UT-373: resolveCliExecutable candidate table (DES-280)', () => {
       resolve: (spec: string) => { seen.push(spec); return `/pkg/${spec}`; },
       exists: () => true,
     });
-    expect(seen[0]).toBe('@anthropic-ai/claude-agent-sdk-linux-x64');
+    expect(seen[0]).toBe('@anthropic-ai/claude-agent-sdk-linux-x64/claude');
     expect(v).toBe('/pkg/@anthropic-ai/claude-agent-sdk-linux-x64/claude');
   });
 
@@ -66,7 +66,7 @@ describe('UT-373: resolveCliExecutable candidate table (DES-280)', () => {
     const { resolveCliExecutable } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const v = resolveCliExecutable({
       platform: 'linux', arch: 'x64', musl: false,
-      resolve: (spec: string) => { if (spec.endsWith('-x64')) throw new Error('not found'); return `/pkg/${spec}`; },
+      resolve: (spec: string) => { if (spec.endsWith('-x64/claude')) throw new Error('not found'); return `/pkg/${spec}`; },
       exists: () => true,
     });
     expect(v).toBe('/pkg/@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude');
@@ -123,5 +123,19 @@ describe('UT-373: ClaudeAgentSdkGatewayConfig.cliExecutable wiring (DES-280)', (
     for (const k of ['cwd', 'model', 'thinking', 'permissionMode', 'allowedTools', 'sandbox'] as const) {
       expect((optsWithoutPath as Record<string, unknown>)[k], `options.${k}`).toEqual((optsWithPath as Record<string, unknown>)[k]);
     }
+  });
+});
+
+// R-v41-1: the platform packages declare no `main`/`exports`, so only the `<pkg>/claude` subpath
+// resolves — a fake resolver cannot catch a wrong spec form. No fake here: the module-scope
+// constant, resolved against this repo's REAL node_modules, must name an existing file.
+describe('UT-373: CLI_EXECUTABLE resolves for real on this host (DES-280, R-v41-1)', () => {
+  it('module-scope CLI_EXECUTABLE is an existing file under this repo\'s node_modules', async () => {
+    const { existsSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const { CLI_EXECUTABLE } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    expect(CLI_EXECUTABLE).toBeDefined();
+    expect(CLI_EXECUTABLE!.startsWith(resolve(__dirname, '../../node_modules/@anthropic-ai/claude-agent-sdk-'))).toBe(true);
+    expect(existsSync(CLI_EXECUTABLE!)).toBe(true);
   });
 });

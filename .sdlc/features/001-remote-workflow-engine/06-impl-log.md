@@ -10934,3 +10934,38 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   - `AttemptReason += 'write'`, and the served grammar and hints were synced (guide, `errors.ts`, `docs/AUTHORING.md` ×2).
 
   Both `tsc` configs are clean. NOT done, as v41 candidates per 02-architecture.md: the fd-anchored walk, summing over all attempts, and the panel's Tier B items.
+
+### IMPL-416 — v41 TASK-276: call.ts attempt deadline reaches the fetch and every body read; `network` retryable; attempt timer cleared
+- **status:** done
+- **traces:** TASK-276, DES-267
+- **greens:** UT-342, UT-371, IT-323
+- **files:** src/direct-models/call.ts, tests/unit/direct-models-call.test.ts
+- **commit:** 8a340f1
+- **iter:** v41
+- **note:** Parallel implementer's code, landed in the Gate 6 WIP commit; integrator re-ran green. UT-342 cases were adapted to the DES-267 v41 signatures only (`makeObservedFetch(deps, maxBodyBytes, signal)`, `attemptSignal` returning `clear`) — call-shape edits, no assertion changed.
+
+### IMPL-417 — v41 TASK-277: one failure word — primitive `failReason` = AttemptReason, `detail` = the thrown message, live and after restart; `agentFailures` mirrors both
+- **status:** done
+- **traces:** TASK-277, DES-273, DES-274, REQ-231
+- **greens:** UT-372, IT-324
+- **files:** src/run-manager.ts, src/agent-executor.ts, src/types.ts
+- **commit:** 8a340f1
+- **iter:** v41
+- **note:** REQ-231 sits on this IMPL, not on TASK-277: TASK-277 leaves it off on purpose so v40 IMPLs that share DES-274 do not count as REQ-231 coverage, and this IMPL is v41-only code. Open test defect, not fixed here because it is outside the authorised edit list: VAL-291 (tests/acceptance/val-v41-nfr.test.ts:96) reads `view.agentFailures`, but MCP `run_status` returns the run under `result` (precedent: val-234-agent-failure-health.test.ts:69 reads `statusView.result?.failedAgentCount`). A debug copy of the test printed `result.agentFailures=[{label:'gate',agentId:'agent-1',reason:'network',message:"decide 'gate' failed: network after 1 attempt"}]`. That message equals the script's `e.message` and `run_agent_log.record.detail`, so the code meets REQ-231. Fix: read `view.result.agentFailures`. IT-324 reads `RunManager.status()` directly, with no envelope, so it is correct as written.
+
+### IMPL-418 — v41 TASK-278: SDK gateway resolves the native CLI path once and passes `pathToClaudeCodeExecutable` on every query(); subpath resolution per R-v41-1
+- **status:** done
+- **traces:** TASK-278, DES-280
+- **greens:** UT-373, IT-325
+- **files:** src/gateway/claude-agent-sdk-client.ts, tests/unit/claude-agent-sdk-gateway-cli-path.test.ts
+- **commit:** 8a340f1 + (uncommitted at write time)
+- **iter:** v41
+- **note:** Integrator fix per ruling R-v41-1: `resolveCliExecutable` hands `resolve` the subpath spec `<pkg>/claude[.exe]` and uses its return as the candidate. The bare-package form threw MODULE_NOT_FOUND on every real host, so the constant was always `undefined` and the fix was inert. `CLI_EXECUTABLE` is exported. UT-373 edits, as authorised: the `seen` assertions now expect the subpath, and the fall-through case's throw predicate is `-x64/claude`. One new case injects no fake resolver and asserts that `CLI_EXECUTABLE` is an existing file under the repo's `node_modules`. On this host it resolves to `node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude`. DES-280 has a v41 Gate 6 delta line. IT-325's committed edit is type-only (`MockInstance`).
+
+### IMPL-419 — v41 TASK-279: served text — retried/not-retried sets, grammar gains `aborted`, disconnected-image billing, `agentFailures.reason` for a primitive
+- **status:** done
+- **traces:** TASK-279, DES-276
+- **greens:** UT-374
+- **files:** src/authoring-guide.ts, src/tool-specs.ts, docs/AUTHORING.md
+- **commit:** 8a340f1 + (uncommitted docs/AUTHORING.md, regenerated via `npm run gen:authoring`)
+- **iter:** v41

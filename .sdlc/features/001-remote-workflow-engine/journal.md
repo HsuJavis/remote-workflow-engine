@@ -10585,3 +10585,4 @@ MODULE_NOT_FOUND → 真實環境 CLI 路徑永遠 undefined → REQ-232 的修�
 orchestrator 實測確認(裸名 FAIL、`<pkg>/claude` 子路徑 OK)。**裁決**:解析一律用子路徑 `<pkg>/claude[ext]`
 (與 SDK 內部 `lI` 相同);UT-373 的 `seen` 斷言是測試缺陷,改為子路徑;另加一個不注入假 resolver 的測試,
 斷言在本 repo 的真實 node_modules 下 `CLI_EXECUTABLE` 解析為存在的檔案。Gate 7.5 須在真實環境確認 RWE_CLI_PATH_UNRESOLVED 不再出現。
+- 2026-10-19 v41 Gate 6 (integrator): IMPL-416..419 for TASK-276..279. Applied R-v41-1: the CLI is resolved through the `<pkg>/claude` subpath, `CLI_EXECUTABLE` is exported, and UT-373 now has a no-fake case. On this host the path is node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude. Full suite: 6367/6368 passed. The one failure is VAL-291 (v41 Gate 5 test defect: `view.agentFailures` should be `view.result.agentFailures`); the code is correct. Both tsc configs are clean. Trace: 2311 items, 103 gaps. gates.impl is passed:false until VAL-291 is fixed.

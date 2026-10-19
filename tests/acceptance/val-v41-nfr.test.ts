@@ -93,7 +93,8 @@ describe('VAL-291: REQ-231 — one failure word across the script, run_agent_log
       expect(log.record?.detail, 'run_agent_log.record.detail').toBe(scriptMessage);
       expect(log.record?.failReason, 'run_agent_log.record.failReason').toBe('network');
 
-      const failure = (view.agentFailures ?? []).find((f: any) => f.agentId === log.record?.agentId);
+      // run_status nests the run under `result`, and an agentFailures entry is keyed by label (no agentId).
+      const failure = (view.result?.agentFailures ?? []).find((f: any) => f.label === 'gate');
       expect(failure, 'no agentFailures entry').toBeDefined();
       expect(failure.message, 'agentFailures[].message').toBe(scriptMessage);
       expect(failure.reason, 'agentFailures[].reason').toBe('network');
