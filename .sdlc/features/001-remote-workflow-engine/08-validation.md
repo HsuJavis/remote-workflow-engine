@@ -13419,3 +13419,201 @@ ambiguities, reading `docs/AUTHORING.md` alone):**
   a decide()+agent()+generateImage() script from `docs/AUTHORING.md` alone and it registered first try.
   Scope note: registration only (no run — no key, by instruction); VAL-266..276 cover the run path.
 - **iter:** v40
+
+
+## v41 Gate 7.5 (2026-10-19, validator) — issue #168 delta: REQ-227 (v41), REQ-231, REQ-232
+
+**Boot (documented steps only).** `./deploy.sh --background` run verbatim from a clean shell against
+commit `a663a13` (`RWE_CONFIG_PATH=/tmp/rwe-val-v41-run/rwe.config.json RWE_BIND=127.0.0.1
+RWE_PORT=8821`, `OPENROUTER_API_KEY` decrypted from the same `systemd-creds --user` credential v40
+used, 0600 scratch file, shredded after): §0's 5-step output matched verbatim, healthcheck
+`version:"0.1.0 (v0.38.0-6-ga663a13)"`. `workRoot=/tmp/rwe-val-v41-workroot` (outside the repo and
+outside any Claude-project path). Production 8899 confirmed untouched (`ss -ltnp`) before/during/
+after. Evidence: `evidence/v41/gate75/deploy.out` (the §0 output), `spend-before.txt`.
+
+This instance was then stopped (documented `kill $(cat .rwe.<instance>.pid)`) and a SECOND instance
+started with the 展開版 Quickstart's own **step 6** command (`node node_modules/tsx/dist/cli.mjs
+src/main.ts`) invoked directly — same precedent as v40's VAL-289 — so a diagnostic `NODE_OPTIONS`
+preload could attach without going through `deploy.sh` itself a second time; §0's one-command path
+had already been proven green by the first boot. **First attempt genuinely failed**: run without the
+Quickstart's documented step 5 (`export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"`), it died
+`spawn litellm ENOENT` (`gateway:"sdk"` needs `litellm` on `PATH`) — re-read DEPLOY.md's own step 5
+and re-ran WITH that export; booted clean. **Not a documentation gap** — DEPLOY.md:137 already states
+this exact export, this gate's own first attempt simply skipped a documented step; no DEPLOY.md edit
+needed, `booted_from_docs_only` stands. `package-lock.json`/`package.json`: untouched by this gate (no
+coverage-tool dance this round), confirmed via `git status` before and after.
+
+**REQ-232 instrumentation (real, no engine code touched).** A scratch `--import` module
+(`monitorEventLoopDelay({resolution:20})`, periodic 2s ticks to a file, outside the repo) was loaded
+via `NODE_OPTIONS`. Discovery during setup: `tsx`'s own `cli.mjs` respawns a CHILD node process with
+a hand-built `execArgv` (`--require preflight.cjs --import loader.mjs`) that OMITS whatever
+`NODE_OPTIONS`/extra CLI flags the parent was started with UNLESS `NODE_OPTIONS` itself survives in
+`process.env` at respawn time (confirmed by reading `tsx/dist/cli.mjs`'s own `rs()` spawn helper:
+`env: {...process.env}` — the respawn passes the FULL env through, so `NODE_OPTIONS` reaches the
+child's own node startup and gets re-processed there); the preload module therefore deletes
+`process.env.NODE_OPTIONS` from its OWN process only once `process.argv` no longer names
+`tsx/dist/cli.mjs` (i.e. once it IS the real listener), so the instrumentation reaches the actual
+HTTP-serving child (confirmed via `ss -ltnp` naming that exact pid) while the later `claude` CLI
+subprocess spawned by `agent()` never inherits the diagnostic import (confirmed: `/proc/<claude-pid>/
+environ` carries no `NODE_OPTIONS`). This is diagnostic tooling only, never shipped — no src/ edit.
+
+### VAL-293 — REQ-227 (v41 delta), real tier: connection-level failures retry, a real provider timeout ends within bound, per-attempt timers cleared
+- **status:** green
+- **traces:** REQ-227
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** A fresh workflow (`v41burst`, registered+published on the live instance) ran 3
+  concurrent `run_start`s (`n:25`, then a second burst `n:40`×5) against the REAL, live
+  `openrouter/typesafe/jev-1.13` model with default `timeoutMs:5000/retries:2` — 600+ real
+  decide()/agent() primitive calls, 0 failures, 0 non-terminal records at any run's end (every run
+  reached `status:"completed"`; see VAL-295 for the full burst numbers, shared evidence). Then a
+  SEPARATE run (`n:8`, `overrides:{"decisions":{"a":{"timeoutMs":50,"retries":1}}}`) forced a real,
+  deterministic timeout — 50ms is far below any real OpenRouter round trip — and all 8 real `decide('a')`
+  calls ended `PRIMITIVE_FAILED: decide 'a' failed: timeout after 2 attempts` (1 initial + 1 retry,
+  exactly `retries+1`), each settling in ≈0.35-0.44s wall-clock (startedAt→endedAt), far inside the
+  `(retries+1)×timeoutMs + retries×10s` bound (≈10.1s) — a hung attempt genuinely ends as `timeout`
+  within bound, not left open. The server's own operator log (`.rwe.<instance>.log`) was grepped for
+  this run's `primitive.call` events: 8 lines `outcome:"retry" attempt:1 reason:"timeout"` + 8 lines
+  `outcome:"failed" attempt:2 reason:"timeout"` — every retry AND the final failure appear in the
+  event log, live, against the real engine (REQ-227's "每次重試與最終失敗都出現在事件 log"). Timer
+  cleanup: after this forced-failure run AND the two large bursts, a plain follow-up `decide()` call
+  on the same live instance completed normally (`failed:0`) and the event-loop instrumentation
+  (VAL-295) kept ticking with no growing lag — no leaked per-attempt timer accumulated into a stall or
+  a stuck process; `UT-371`'s unit-tier `vi.getTimerCount()===0` assertion is the deterministic lock
+  for this clause (flaky-timer counting is not something a live run over real network latency can
+  assert directly).
+  **Not independently reproducible against live wiring (disclosed, same posture as v40's VAL-273 for
+  a live 429)**: a genuine connection-level failure (no HTTP status — connect timeout, reset, dead
+  keep-alive) cannot be deterministically provoked against the real OpenRouter endpoint from this
+  environment (nothing on the client side can safely sever OpenRouter's own TCP connection
+  mid-response without also risking the account/IP). This sub-clause's real-WIRE proof is `IT-323`
+  (05-tests.md) — real local `http.createServer` + the real, unmocked, Node-bundled `undici` client
+  that `call.ts` itself uses, racing the attempt's abort against undici's own `trailers` event 30/30
+  iterations — genuinely real at the wire-protocol layer, just not against the live remote endpoint.
+  `classifyRetryable()`'s inclusion of a seam-invoked-no-status outcome in the retry set is a pure,
+  deterministic function (`UT-371`); nothing about reaching OpenRouter specifically changes that
+  classification.
+  **Files**: `evidence/v41/gate75/{runA.jsonl,runA2.jsonl,v41burst.js,v41burst.mmd,harness.mjs,
+  forced-timeout-primitive-call-lines.jsonl,forced-timeout-run-caff4263.md}` (`grep -rl sk-or- `
+  confirmed empty before landing).
+- **iter:** v41
+
+### VAL-294 — REQ-231, real tier: one failure word across script, run_agent_log, and run_status.result.agentFailures
+- **status:** green
+- **traces:** REQ-231
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Same forced-timeout run as VAL-293 (`runId caff4263-14cb-4eb7-9eb1-f183b03ff999`,
+  live engine, real OpenRouter). Three independent reads, byte-compared:
+  (1) **script** — the workflow's own `try/catch` around each `decide('a', …)` call caught
+  `e.message === "decide 'a' failed: timeout after 2 attempts"` (returned in `run_result.result.fails`,
+  verbatim, for all 8 calls);
+  (2) **`run_agent_log`** (`{runId, label:"a"}`, real MCP `tools/call`) — `record.failReason:"timeout"`,
+  `record.detail:"decide 'a' failed: timeout after 2 attempts"` — the IDENTICAL string, not
+  "no failure detail recorded";
+  (3) **`run_status.result.agentFailures[]`** (the `.result.` nesting is VAL-291's own read-path
+  fix, re-confirmed live here) — `{label:"a", reason:"timeout", message:"decide 'a' failed: timeout
+  after 2 attempts"}` for each of the 8 failed calls.
+  All three name the SAME failure word (`timeout`) and carry the EXACT SAME message text, live,
+  against a real provider call — not a stub. None contain the provider's own response body or a host
+  path (REQ-229 boundary unchanged, confirmed by inspection of all three surfaces above). Other
+  failure classes (`http`/`malformed`/`no_output`/`write`/`aborted`) are proven at integration tier
+  (`IT-324`, 05-tests.md, real RunManager) — forcing a real `401`/`malformed`/`write` against the
+  LIVE provider would require either a wrong credential (already real-verified for `agent()`/
+  `decide()` auth failures in v40's VAL-273/VAL-266..276) or local fs/path tampering outside what a
+  real OpenRouter response can deterministically produce; `timeout` is this gate's own real,
+  deterministic forcing function and suffices to prove the THREE-SURFACE AGREEMENT MECHANISM
+  (DES-274's `failureReason()`/`recordPrimitive` path) for real, which is what REQ-231 is about — the
+  per-failure-class TEXT matching is `IT-324`'s job and already green.
+  **Files**: `evidence/v41/gate75/forced-timeout-run-caff4263.md` (the three raw tool responses,
+  side by side).
+- **iter:** v41
+
+### VAL-295 — REQ-232, real tier: event-loop p99/max under genuine socket load + continuous agent() launches; CLI path resolved for real, no RWE_CLI_PATH_UNRESOLVED
+- **status:** green
+- **traces:** REQ-232
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Two real bursts on the live instance, `monitorEventLoopDelay` instrumenting the REAL
+  HTTP-listening process (pid confirmed via `ss -ltnp`), cumulative histogram from server start
+  (includes one-time boot/DB-hydrate noise, never reset, so these numbers are a WORSE-case ceiling,
+  not a cherry-picked load-only window):
+  **Burst 1** — 3 concurrent `run_start`s, `n:25` each → 75 real `agent()` launches (live
+  `openrouter/anthropic/claude-haiku-5.5`, spawning the real `claude` CLI child each time) + 150 real
+  `decide()` calls (live `jev-1.13`), all 3 runs `status:"completed"`, 0 failures, ≈23s wall clock.
+  p99 peaked 37.78ms, max peaked 573.57ms (up from a 292ms pre-burst/boot-time max).
+  **Burst 2** — 5 concurrent `run_start`s, `n:40` each → 200 real `agent()` launches + 400 real
+  `decide()` calls, `agentSlots:32` genuinely saturated (`ps aux` showed 30-32 live
+  `.../claude-agent-sdk-linux-x64/claude` child processes running concurrently, continuously replaced
+  as each finished — exactly "同時持有大量 socket...且正在連續啟動 agent()"), all 5 runs
+  `status:"completed"`, 0 failures, ≈51s wall clock. p99 peaked 77.20ms (then declined), **max stayed
+  at 573.57ms — did NOT grow further under this larger burst**.
+  Both numbers clear the bound by a wide margin: **p99 ≤ 200ms (actual ≤ 77.2ms) and max ≤ 1s
+  (actual ≤ 0.574s)** — a dramatic improvement over REQ-232's own cited v0.38.0 baseline ("實測最長
+  7.1s"). A plain follow-up `decide()` call after both bursts still completed normally and the tick
+  stream kept flowing with no growing lag (no stall accumulating).
+  **CLI path wiring**: every live `claude` child's own argv (`ps aux`) started with
+  `/home/user/Documents/remote-workflow/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude`
+  — byte-identical to the `<pkg>/claude` subpath `resolveCliExecutable` resolves on this host (R-v41-1,
+  IMPL-416..419) — confirmed across every one of the 275 real `agent()` launches in both bursts, not
+  assumed. `grep -c RWE_CLI_PATH_UNRESOLVED` over the full server log for this gate: **0** (the warning
+  R-v41-1 specifically asked Gate 7.5 to re-check never fired).
+  **Clause 2 (no sync `process.report.getReport` per launch)**: this gate did not re-profile with a
+  CPU snapshot — the deterministic mechanism proof is `IT-325` (05-tests.md, real installed
+  `@anthropic-ai/claude-agent-sdk` package + real `sdkQuery`, spy count 0 with the path set vs ≥1 with
+  `cliExecutable:null`, a live perturbation against the real SDK) per DES-280's own "v41 real-tier
+  validation paths" note ("the IT `getReport` count is the deterministic clause-2 proof"); this gate's
+  275 real launches corroborate it indirectly (no `RWE_CLI_PATH_UNRESOLVED`, no stall consistent with
+  a per-launch sync syscall at this volume).
+  **Clause 3 (existing `agent()` behaviour unchanged)**: tools/confinement/gateway selection untouched
+  by this closure (TASK-278's `files:` list is `claude-agent-sdk-client.ts` only) — the 275 real
+  launches above all used `allowedTools:[]` (declared and honoured) and the real `sdk` gateway
+  end-to-end, no regression observed.
+  **Files**: `evidence/v41/gate75/{evloop-listener.jsonl,evloop-preload.mjs,
+  rwe-cli-path-unresolved-count.txt}`.
+- **iter:** v41
+
+**Real spend**: engine-reported `costUSD` summed across every real run in this gate ≈ $0.052;
+independently cross-checked against OpenRouter's own `/api/v1/auth/key` usage delta
+(5.390815892 → 5.43664144 = **$0.0458**, their billing aggregate vs the engine's own per-call sum —
+small lag/rounding between the two, same observation v40's gate made) — both far inside the
+owner-granted US$1 cap (V40-Q19, carried forward per DES-280's "v41 real-tier validation paths"
+section, itself confirmed in the v41 Gate-1 owner playback). Credential handling: same
+`systemd-creds --user decrypt` → 0600 scratch file → shredded-after pattern as v40; key prefix grepped
+absent from every log copied into this ledger. Cleanup: all `claude` CLI children, the LiteLLM proxy
+subprocess, and the engine process itself were killed by pid (never `pkill -f`, per house memory on
+self-inflicted kills); port 8821 confirmed free; production 8899 confirmed untouched throughout
+(`ss -ltnp` before/during/after).
+
+**Config-file sync check (4b)**: DES-280 states explicitly "no new config key" — confirmed via `grep`
+over `composeConfig()`/`KNOWN_FILE_CONFIG_KEYS` for `cliExecutable`: it is a `ClaudeAgentSdkGatewayConfig`
+constructor-level default, never an `rwe.config.json` key, so there is nothing to add to the §1b
+設定總表. No other config/settings file needed a change for this closure (REQ-227/231's behaviour
+changes are internal to `call.ts`/`run-manager.ts`, no new flag). README.md/DEPLOY.md were re-checked
+for stale text this closure might orphan — none found (`docs/AUTHORING.md`'s retried/not-retried
+wording was already regenerated at Gate 6.5+7's `npm run gen:authoring`; README's decide()/
+generateImage() paragraph is generic and still accurate).
+
+**Mock census** (trace.py, `reachable_from_pred(is_real_test, scan(sdlc_dir))`, run as a library over
+all 192 REQs): **verified-real=175 / mock-only=0 / unverified=17** (REQ-153..169, pre-existing,
+unrelated to this closure — the SAME carried-forward set v40's gate reported; REQ-227/231/232 were
+already inside v40's own 173-verified count via VAL-273/VAL-266..276 for REQ-227 and had no prior
+real-tier item for REQ-231/232, so this gate's net effect is 0 REQs newly crossing from
+mock-only/unverified into verified-real at the REQ level — it instead closes REQ-231/232's own
+previously-absent real-tier coverage and ADDS a second, v41-delta-specific real:true item for
+REQ-227 on top of the existing VAL-273). Confirmed directly: `REQ-227 in real`, `REQ-231 in real`,
+`REQ-232 in real` all `True` after VAL-293/294/295 landed.
+
+**Gate self-check (exit code honesty)**: `sh .sdlc/trace --check` exits **1**, not 0 — this is a
+**closure-scoped pass**, the same posture every prior gate in this ledger has reported (v40's Gate
+7.5 included): REQ-227/231/232 are absent from the gap list after this gate (0 `未真實驗證`, 0
+`未驗證` for the three REQs in scope), `trace --check` moved 2313/103 → 2316/101 with 0 NEW gaps
+(confirmed via `trace.analyze()` filtered by id, both before and after). The exit code stays nonzero
+solely on 101 PRE-EXISTING carried gaps entirely outside this iteration's impact closure: 17
+`未驗證` (REQ-153..169, carried since long before v40), the rest `漂移`/`斷鏈`/`TDD`/`未實作` —
+none of which name REQ-227, REQ-231, REQ-232, or any ARCH/DES/TASK/IMPL/UT/IT/VAL id this gate
+touched. No new debt was introduced or silently inherited without being named here.
+

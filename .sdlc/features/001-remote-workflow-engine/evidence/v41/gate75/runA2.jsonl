@@ -1,0 +1,6 @@
+{"t":"2026-10-19T07:43:24.009Z","started":["80313eee-d443-49cf-8d3f-9b2cba070bcd","7c47557c-4577-43d5-80be-bf184884cacf","669622b8-5258-4d37-b1f7-490a6fe8f69a","786e2b06-f9a5-43f7-9c4d-5d56f9c47e35","52cb5a01-c501-4298-9d15-af5785acef8c"],"raw":[null,null,null,null,null]}
+{"t":"2026-10-19T07:44:15.456Z","runId":"80313eee-d443-49cf-8d3f-9b2cba070bcd","status":"completed","totalAgents":120,"costUSD":0.002832355999999998,"nonDone":[],"result":{"n":40,"decides":80,"failed":0,"fails":[]}}
+{"t":"2026-10-19T07:44:15.460Z","runId":"7c47557c-4577-43d5-80be-bf184884cacf","status":"completed","totalAgents":120,"costUSD":0.002880004000000001,"nonDone":[],"result":{"n":40,"decides":80,"failed":0,"fails":[]}}
+{"t":"2026-10-19T07:44:15.465Z","runId":"669622b8-5258-4d37-b1f7-490a6fe8f69a","status":"completed","totalAgents":120,"costUSD":0.002929842,"nonDone":[],"result":{"n":40,"decides":80,"failed":0,"fails":[]}}
+{"t":"2026-10-19T07:44:15.470Z","runId":"786e2b06-f9a5-43f7-9c4d-5d56f9c47e35","status":"completed","totalAgents":120,"costUSD":0.0028216659999999996,"nonDone":[],"result":{"n":40,"decides":80,"failed":0,"fails":[]}}
+{"t":"2026-10-19T07:44:15.474Z","runId":"52cb5a01-c501-4298-9d15-af5785acef8c","status":"completed","totalAgents":120,"costUSD":0.0028307759999999997,"nonDone":[],"result":{"n":40,"decides":80,"failed":0,"fails":[]}}
