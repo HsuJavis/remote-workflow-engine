@@ -248,16 +248,26 @@ function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: 
   return { args: resolvedArgs ?? rawArgs, resolvedArgs };
 }
 
-/** v40 (DES-274, ARCH-187, TASK-271): maps `direct-models/call.ts`'s `AttemptReason` (the thrown
- *  `PRIMITIVE_FAILED` error's `detail.reason`) onto `AgentRecord.failReason`'s own closed vocabulary
- *  — timeout stays timeout, network becomes unreachable, aborted stays aborted (whether named
- *  directly or inferred from the run's own abort signal, for a throw with no `.detail` at all), and
- *  every other reason (http/no_output/malformed/response_too_large/write) is a definite terminal failure. */
-function primitiveFailReasonFrom(reason: AttemptReason | undefined, runAborted: boolean): 'timeout' | 'unreachable' | 'terminal' | 'aborted' {
-  if (reason === 'timeout') return 'timeout';
-  if (reason === 'network') return 'unreachable';
-  if (reason === 'aborted' || runAborted) return 'aborted';
-  return 'terminal';
+/** v41 (DES-274 delta, ARCH-192, REQ-231, TASK-277): the ONE place a failed decide()/
+ *  generateImage() call computes the reason word AND the script-visible detail text, shared by the
+ *  `AgentRecord` (`failReason`/`detail`), the `primitive.call failed` event, and `agentFailures[]`
+ *  (via `failureReason`/`failureMessage` reading the record back) — replaces the deleted
+ *  `primitiveFailReasonFrom`, which collapsed `network` to the narrower `'unreachable'` and never
+ *  carried `detail` at all (the REQ-231 "two names" defect). `reason` is the raw `AttemptReason`
+ *  word when the throw named one, else `'aborted'`/`'terminal'` inferred from the run's own abort
+ *  signal. `detail` is the coded error's own message verbatim — NEVER a non-coded `err.message`
+ *  (REQ-229: an error message never contains the provider's response, and an uncoded throw is an
+ *  engine bug whose message is not vetted against that rule). */
+function primitiveFailure(
+  kind: 'decide' | 'generateImage',
+  label: string,
+  err: unknown,
+  runAborted: boolean,
+): { reason: AgentRecord['failReason']; detail: string } {
+  const coded = err as { code?: string; message?: string; detail?: { reason?: AttemptReason } };
+  const reason = coded.detail?.reason ?? (runAborted ? 'aborted' : 'terminal');
+  const detail = coded.code === 'PRIMITIVE_FAILED' ? (coded.message ?? '') : `${kind} '${label}' failed: internal error`;
+  return { reason, detail };
 }
 
 /** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate — pure (no fs, no
@@ -631,10 +641,19 @@ function failureReason(a: AgentRecord): AgentFailureSummary['reason'] {
   // `isAgentFailure` predicate below, the actual filter that lets a `done` record through).
   if (a.schemaExhausted === true) return 'schema-exhausted';
   if (a.state === 'refused') return 'refused';
+  // v41 (DES-274 delta, ARCH-192, REQ-231, TASK-277): a `kind`-bearing (primitive) record's
+  // `failReason` names the EXACT word the script's caught message and `agentFailures[].message`
+  // also name — surface it verbatim rather than collapsing it to the generic `'error'` below (the
+  // REQ-231 "two names" defect). Only a genuine `AttemptReason` word qualifies: the inferred
+  // `'terminal'` fallback (no `detail.reason` at all — an uncoded/internal throw) is not one of the
+  // vocabulary any surface documents, so it still falls through to the generic `'error'` bucket,
+  // same as an agent record's unnamed failure. Agent records (`kind` absent) are unaffected (INV-V40-1).
+  if (a.kind !== undefined && a.failReason !== undefined && ATTEMPT_REASONS.has(a.failReason)) return a.failReason as AttemptReason;
   if (a.failReason === 'timeout') return 'timeout';
   if (a.failReason === 'aborted') return 'aborted';
   return 'error';
 }
+const ATTEMPT_REASONS: ReadonlySet<string> = new Set(['http', 'timeout', 'aborted', 'network', 'no_output', 'malformed', 'response_too_large', 'write']);
 /** verify-i LOW-5: the summary is not the diagnostic dump. The gateway folds a short CLI stderr
  *  tail into `detail` after the marker below (`claude-agent-sdk-client.ts` `withStderrDiagnostics`)
  *  — it can name the auth env var in use — and an SDK error result can carry its result subtype as
@@ -3242,10 +3261,10 @@ export class RunManager {
       // no journal row, so a resumed run re-runs this call (and every later one) live.
       const endedAt = this._clock.isoNow();
       const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
-      const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      const primFailure = primitiveFailure('decide', label, err, entry.abortController.signal.aborted);
       const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'decide');
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
@@ -3414,10 +3433,10 @@ export class RunManager {
       }
       const endedAt = this._clock.isoNow();
       const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
-      const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      const primFailure = primitiveFailure('generateImage', label, err, entry.abortController.signal.aborted);
       const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'image');
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
@@ -3446,10 +3465,10 @@ export class RunManager {
     } catch {
       const endedAt = this._clock.isoNow();
       const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal);
-      if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
-      }
       const writeErr = primitiveFailedError('generateImage', label, 'write', outcome.attempts, undefined, false, { wireCostUSD: outcome.wireCostUSD, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}) });
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'write', detail: writeErr.message, startedAt, endedAt });
+      }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, writeErr);
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'write', errorCode: 'PRIMITIVE_FAILED',
@@ -3460,10 +3479,14 @@ export class RunManager {
     const endedAt = this._clock.isoNow();
     const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
     if (written.files.length === 0) {
+      // v41 (DES-274 delta, REQ-231, TASK-277): the grammar-matching message (DES-267) — replaces
+      // the hand-built "produced N dropped" text, which never matched the three-surface word
+      // `expectedReasonWord` other callers (the script, `run_agent_log`, `agentFailures`) agree on.
+      // Spend was already charged above; `wireCostUSD: null` here is metadata only, not a re-charge.
+      const noOutputErr = primitiveFailedError('generateImage', label, 'no_output', outcome.attempts, undefined, false, { wireCostUSD: null });
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'no_output', detail: noOutputErr.message, startedAt, endedAt });
       }
-      const noOutputErr = codedError('PRIMITIVE_FAILED', `PRIMITIVE_FAILED: generateImage('${label}') produced no usable image output after ${written.dropped} dropped`, { reason: 'no_output', attempts: outcome.attempts });
       this._recordPrimitiveRefusal(entry, framePath, callSeq, noOutputErr);
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'no_output', errorCode: 'PRIMITIVE_FAILED',

@@ -45,7 +45,10 @@ export interface DirectDeps {
   fetch: typeof fetch;
   now: () => number;
   sleep: (ms: number, signal: AbortSignal) => Promise<void>;
-  attemptSignal: (ms: number) => { signal: AbortSignal; fired(): boolean };
+  // v41 (DES-267 delta, REQ-227, TASK-276): `clear()` is REQUIRED (not optional) so tsc catches
+  // every fake missing it — the attempt timer must be cleared in the same `finally` that ends the
+  // attempt, before classification and before any backoff sleep (never leaked past the call).
+  attemptSignal: (ms: number) => { signal: AbortSignal; fired(): boolean; clear(): void };
   random: () => number;
   resolveKey: () => string | undefined;
   onAttempt: (o: AttemptObservation) => void;
@@ -86,8 +89,8 @@ export function defaultDirectDeps(secretSource: SecretSource): DirectDeps {
       ctrl.signal.addEventListener('abort', () => {
         fired = true;
       });
-      setTimeout(() => ctrl.abort(), ms);
-      return { signal: ctrl.signal, fired: () => fired };
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      return { signal: ctrl.signal, fired: () => fired, clear: () => clearTimeout(timer) };
     },
     random: () => Math.random(), // det:allow — production default of the injectable `random` seam (backoff jitter only, never a resume-replay key input); tests inject a fixed value
     resolveKey: () => resolveOpenrouterKey(secretSource),
@@ -124,12 +127,45 @@ function parseRetryAfterMs(headers: Headers, nowMs: number): number | null {
   return null;
 }
 
+/** v41 (DES-267 delta, REQ-227, TASK-276): races `p` against `signal` — already-aborted rejects
+ *  synchronously without awaiting `p` at all (so a hung `p` is never even subscribed to); otherwise
+ *  rejects the moment `signal` fires, removing its own listener either way. `onAbort` (if given) is
+ *  called once, exactly on the abort path — the caller's hook to cancel the underlying stream/reader
+ *  without awaiting that cancellation. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal, onAbort?: () => void): Promise<T> {
+  if (signal.aborted) {
+    onAbort?.();
+    return Promise.reject(abortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbortEvent = (): void => {
+      onAbort?.();
+      reject(abortError());
+    };
+    signal.addEventListener('abort', onAbortEvent, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbortEvent);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbortEvent);
+        reject(e);
+      },
+    );
+  });
+}
+
 /** Reads a `Response` body through a reader that stops the moment it would exceed `maxBytes`,
  *  cancelling the stream rather than buffering the rest — the caller treats a truncated read as a
- *  hard failure (never a partial body it tries to parse). */
-async function readCapped(res: Response, maxBytes: number): Promise<{ buf: Uint8Array; truncated: boolean }> {
+ *  hard failure (never a partial body it tries to parse).
+ *  v41 (DES-267 delta, REQ-227, TASK-276): every read — including the no-body `arrayBuffer()` — is
+ *  raced against `signal` via `untilAborted`, so a body that never enqueues/closes (the #168 hang)
+ *  still ends within the attempt's deadline instead of hanging forever; the stream's own `cancel()`
+ *  is fired (never awaited) the moment the signal aborts. */
+async function readCapped(res: Response, maxBytes: number, signal: AbortSignal): Promise<{ buf: Uint8Array; truncated: boolean }> {
   if (!res.body) {
-    const buf = new Uint8Array(await res.arrayBuffer());
+    const buf = new Uint8Array(await untilAborted(res.arrayBuffer(), signal));
     return { buf, truncated: buf.byteLength > maxBytes };
   }
   const reader = res.body.getReader();
@@ -137,7 +173,9 @@ async function readCapped(res: Response, maxBytes: number): Promise<{ buf: Uint8
   let total = 0;
   let truncated = false;
   for (;;) {
-    const { done, value } = await reader.read();
+    const { done, value } = await untilAborted(reader.read(), signal, () => {
+      void reader.cancel().catch(() => {});
+    });
     if (done) break;
     if (!value) continue;
     total += value.byteLength;
@@ -175,17 +213,27 @@ function readWireCostUSD(status: number, buf: Uint8Array): number | null {
  *  fetch settles (so a rejecting fetch — network error or abort — still reports `invoked:true`,
  *  `status:undefined`), the body is read through `readCapped`, and `wireCostUSD` is read from a 2xx
  *  JSON body's `usage.cost` only. One `SeamRecord` per call; `last()` answers the MOST RECENT one
- *  (`null` before any call this instance has made). */
+ *  (`null` before any call this instance has made).
+ *  v41 (DES-267 delta, REQ-227, TASK-276): `signal` is the attempt's own abort signal — the ONLY
+ *  thing this seam races against (never `init.signal`; pi-ai's own forwarding is not relied on).
+ *  Already-aborted on entry → record `invoked:true,status:undefined` and throw WITHOUT calling
+ *  `deps.fetch` at all; otherwise the fetch call itself and every body read are raced against it via
+ *  `untilAborted`/`readCapped`, so a hung body (not just hung headers) still ends on time. */
 export function makeObservedFetch(
   deps: Pick<DirectDeps, 'fetch' | 'now'>,
   maxBodyBytes: number,
+  signal: AbortSignal,
 ): { fetch: typeof fetch; last(): SeamRecord | null } {
   let record: SeamRecord | null = null;
   const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const start = deps.now();
+    if (signal.aborted) {
+      record = { invoked: true, status: undefined, retryAfterMs: null, providerMs: deps.now() - start, truncated: false, wireCostUSD: null };
+      throw abortError();
+    }
     try {
-      const res = await deps.fetch(input, init);
-      const { buf, truncated } = await readCapped(res, maxBodyBytes);
+      const res = await untilAborted(deps.fetch(input, init), signal);
+      const { buf, truncated } = await readCapped(res, maxBodyBytes, signal);
       const providerMs = deps.now() - start;
       if (truncated) {
         record = { invoked: true, status: res.status, retryAfterMs: parseRetryAfterMs(res.headers, deps.now()), providerMs, truncated: true, wireCostUSD: null };
@@ -226,7 +274,10 @@ export function classifyAttempt(i: {
     if (status >= 400) return { outcome: 'fail', reason: 'http', retryable: false, status };
   }
   if (i.piStop === 'error') {
-    if (i.seam?.invoked && status === undefined) return { outcome: 'fail', reason: 'network', retryable: false };
+    // v41 (DES-267 delta, REQ-227, TASK-276): `network` is now retryable — a rejection with no
+    // status (UND_ERR_SOCKET, ETIMEDOUT, a reset) looks exactly like the transient wire failures
+    // #168 reproduced; V40-Q9's "only 429/5xx/timeout" carve-out is withdrawn.
+    if (i.seam?.invoked && status === undefined) return { outcome: 'fail', reason: 'network', retryable: true };
     return { outcome: 'fail', reason: 'malformed', retryable: false };
   }
   if (i.piStop === 'stop' && !i.hasOutput) return { outcome: 'fail', reason: 'no_output', retryable: false };
@@ -331,10 +382,20 @@ async function runWithRetry<T>(
   let providerMsTotal = 0;
   let backoffMsTotal = 0;
   for (let a = 1; ; a++) {
-    const observed = makeObservedFetch({ fetch: deps.fetch, now: deps.now }, maxBodyBytes);
-    const { signal: tSig, fired } = deps.attemptSignal(timeoutMs);
+    // v41 (DES-267 delta, REQ-227, TASK-276): the signal is built BEFORE the seam (so the seam's
+    // fetch and every body read are covered from the start), and the attempt timer is cleared in
+    // the same `finally` that ends the attempt — before classification and before any backoff
+    // sleep — so nothing leaks past the call.
+    const { signal: tSig, fired, clear } = deps.attemptSignal(timeoutMs);
     const signal = AbortSignal.any([tSig, runSignal]);
-    const { piStop, hasOutput, malformed, value, tokens } = await attempt(observed.fetch, signal);
+    const observed = makeObservedFetch({ fetch: deps.fetch, now: deps.now }, maxBodyBytes, signal);
+    let attemptResult: AttemptResult<T>;
+    try {
+      attemptResult = await attempt(observed.fetch, signal);
+    } finally {
+      clear();
+    }
+    const { piStop, hasOutput, malformed, value, tokens } = attemptResult;
     const seam = observed.last();
     const spend: FailedSpend = { wireCostUSD: seam?.wireCostUSD ?? null, ...(tokens !== undefined ? { tokens } : {}) };
     providerMsTotal += seam?.providerMs ?? 0;

@@ -54,7 +54,7 @@ function req(opts: AgentOpts = {}) {
 describe('IT-325: the SDK\'s own getReport() fallback is skipped once pathToClaudeCodeExecutable is wired (DES-280)', () => {
   let ClaudeAgentSdkGatewayClient: typeof import('../../src/gateway/claude-agent-sdk-client.js').ClaudeAgentSdkGatewayClient;
   let sdkQuery: typeof import('@anthropic-ai/claude-agent-sdk').query;
-  let getReportSpy: ReturnType<typeof import('vitest').vi.spyOn>;
+  let getReportSpy: import('vitest').MockInstance;
 
   beforeAll(async () => {
     ({ ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js'));

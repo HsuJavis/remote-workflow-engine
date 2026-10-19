@@ -1,6 +1,7 @@
 // Shared domain types — no implementation, pure TypeScript interfaces.
 import type { ToolName } from './tool-specs.js';
 import type { ErrorCode } from './errors.js';
+import type { AttemptReason } from './event-log.js';
 
 /** v11 Sprint 3 (TASK-066 / DES-063): who triggered a run — total (never undefined/null/throws). */
 export type StartedBy = {
@@ -417,8 +418,13 @@ export interface AgentRecord {
    *  `deriveAgentRecords`'s failed branch from the persisted usage event's `data.reason`) — the
    *  same derived≡snapshot mirror DES-188 already holds every other failed-branch field to.
    *  Absent on a pre-this-slice record (legacy usage event with no `reason`) and on every other
-   *  state. */
-  failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+   *  state.
+   *  v41 (DES-274 delta, ARCH-192, REQ-231, TASK-277): widened to also accept the raw `AttemptReason`
+   *  word a `decide()`/`generateImage()` call's `PRIMITIVE_FAILED` names (`'network'`, `'http'`, …) —
+   *  a `kind`-bearing (primitive) record now carries the EXACT word the script's thrown message and
+   *  `agentFailures[].reason` also name, never the narrower agent-only vocabulary collapsed to.
+   *  Agent records (`kind` absent) are unaffected — still only the four original values. */
+  failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted' | AttemptReason;
   /** issue #20: ISO time of the most recent live transcript event (message/tool_call/tool_result)
    *  the gateway streamed for this still-running agent — bumped per message by the onEvent hook. Lets
    *  workflow_status distinguish a PROGRESSING agent (lastActivityAt advancing past startedAt) from a
@@ -500,7 +506,11 @@ export interface AgentFailureSummary {
   // issue #162 (owner-approved): 'schema-exhausted' is the ONE reason value whose record is still
   // `state:'done'` (every other reason implies `failed`/`refused`) — the gateway call succeeded,
   // only the structured-output schema never conformed across every re-ask attempt.
-  reason: 'timeout' | 'error' | 'aborted' | 'refused' | 'schema-exhausted';
+  // v41 (DES-274 delta, ARCH-192, REQ-231, TASK-277): widened to also carry the raw `AttemptReason`
+  // word for a `kind`-bearing (primitive) record — REQ-231 requires `reason`/`message` to both name
+  // the same failure, and `reason:'error'` next to `failReason:'network'` was the two-names defect.
+  // Agent records keep the original four-value vocabulary, unchanged.
+  reason: 'timeout' | 'error' | 'aborted' | 'refused' | 'schema-exhausted' | AttemptReason;
   message: string;
   /** issue #162: present only on a `reason:'schema-exhausted'` entry — mirrors
    *  `AgentRecord.reaskCount`, the number of re-asks this call made before giving up. */

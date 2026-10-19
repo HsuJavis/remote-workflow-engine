@@ -761,7 +761,7 @@ export class AgentTranscriptSink {
     agentId: string; kind: PrimitiveKind; label: string; model: string;
     phase?: { title: string; index: number }; frame?: string; tokens?: Tokens;
     costUSD: number; unpriced: boolean; state: 'done' | 'failed';
-    failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+    failReason?: AgentRecord['failReason']; detail?: string;
     startedAt: string; endedAt: string;
   }): Promise<void> {
     const record: AgentRecord = {
@@ -772,6 +772,10 @@ export class AgentTranscriptSink {
       costUSD: r.costUSD, unpriced: r.unpriced,
       ...(r.tokens !== undefined ? { tokens: r.tokens } : {}),
       ...(r.failReason !== undefined ? { failReason: r.failReason } : {}),
+      // v41 (DES-273/274 delta, ARCH-192, REQ-231, TASK-277): the same script-visible message
+      // `run_agent_log`/`agentFailures[].message` surface — carried on the live record AND (below)
+      // the persisted usage event, so a restart-derived record matches it too.
+      ...(r.detail !== undefined ? { detail: r.detail } : {}),
     };
     this._records.set(r.agentId, record);
     await this._emit(runId, r.agentId, {
@@ -787,7 +791,7 @@ export class AgentTranscriptSink {
         // v40 Gate 6 delta (DES-273, R-6, TASK-271): `deriveAgentRecords` (run-store.ts) keys
         // `state` on `data.reason`'s presence — without this a failed primitive rebuilds as
         // `done` after a restart (its usage event carried no other state-telling field).
-        ...(r.state === 'failed' ? { reason: r.failReason } : {}),
+        ...(r.state === 'failed' ? { reason: r.failReason, ...(r.detail !== undefined ? { detail: r.detail } : {}) } : {}),
       },
     });
   }
@@ -1278,7 +1282,7 @@ export class AgentExecutor implements AgentSpawner {
     agentId: string; kind: PrimitiveKind; label: string; model: string;
     phase?: { title: string; index: number }; frame?: string; tokens?: Tokens;
     costUSD: number; unpriced: boolean; state: 'done' | 'failed';
-    failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+    failReason?: AgentRecord['failReason']; detail?: string;
     startedAt: string; endedAt: string;
   }): Promise<void> {
     await this._sink.recordPrimitive(runId, r);

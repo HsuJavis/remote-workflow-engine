@@ -903,8 +903,10 @@ function roleAssetMatrixRows(): string {
 // one place that builds the real message; this file has no reason to import that module just for
 // a fixed grammar string, so it is transcribed here once, as prose, the same way the diagram
 // grammar section above transcribes `SHAPES`/`EDGE_FORMS` by reading them, not by re-deriving them).
+// v41 (DES-276, ARCH-194, TASK-279): adds `aborted` (a run_suspend/run_stop cutoff mid-attempt);
+// `write` was already present.
 const PRIMITIVE_FAILED_GRAMMAR =
-  "`^(decide|generateImage) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large|write) after \\d+ attempts?$`";
+  "`^(decide|generateImage) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large|write|aborted) after \\d+ attempts?$`";
 
 /** v40 (DES-276, ARCH-194, TASK-273): decide()/generateImage() — declaration shape, call
  *  signature/return shape, the v40 error codes (one cause + one fix line each), the
@@ -973,13 +975,16 @@ function decideImageSectionBody(): string {
       '- `PRIMITIVE_FAILED` — the call did not succeed after the retry policy; message grammar: ' +
       `${PRIMITIVE_FAILED_GRAMMAR} — e.g. "decide 'ready' failed: HTTP 429 after 3 attempts" (the ` +
       "provider's own response text never appears in it) → fix: raise `retries`/`timeoutMs`, or " +
-      'retry the run later if the provider is down.\n\n' +
+      'retry the run later if the provider is down. 429, 5xx, a per-attempt timeout and a ' +
+      'connection-level failure (no HTTP status: connect timeout, reset, dead keep-alive) are ' +
+      'retried up to `retries`; any other 4xx, `malformed`, `no_output`, `response_too_large` and ' +
+      '`write` are not.\n\n' +
       'decide()/generateImage() calls count toward the SAME run budget and the same ' +
       '1000-model-calls-per-run ceiling as every `agent()` call. Worst-case wall time for one call ' +
       `(every attempt timing out) is bounded by \`(retries+1) × timeoutMs + retries × ` +
-      `${RETRY_AFTER_CAP_MS / 1000}s\` (the per-retry backoff cap); a timed-out image call may still ` +
-      'be billed if the provider had already started rendering. Suggested starting defaults: ' +
-      '`decide` `timeoutMs: 5000, retries: 2`; `generateImage` `timeoutMs: 120000, retries: 0`.'
+      `${RETRY_AFTER_CAP_MS / 1000}s\` (the per-retry backoff cap); a timed-out or disconnected image ` +
+      'call may still be billed if the provider had already started rendering. Suggested starting ' +
+      'defaults: `decide` `timeoutMs: 5000, retries: 2`; `generateImage` `timeoutMs: 120000, retries: 0`.'
   );
 }
 

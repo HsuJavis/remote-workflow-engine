@@ -125,7 +125,7 @@ describe('UT-342: toPiAiModel (DES-267)', () => {
 describe('UT-342: makeObservedFetch (DES-267)', () => {
   it('invoked=true, providerMs measured, wireCostUSD read from a 2xx JSON usage.cost', async () => {
     const stub = makeStubFetch([{ status: 200, body: { answers: {}, usage: { cost: 0.0042 } } }]);
-    const { fetch: observed, last } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES);
+    const { fetch: observed, last } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES, new AbortController().signal);
     await observed('https://openrouter.ai/api/v1/systemone');
     const rec = last();
     expect(rec?.invoked).toBe(true);
@@ -136,20 +136,20 @@ describe('UT-342: makeObservedFetch (DES-267)', () => {
 
   it('a body over maxBodyBytes is reported truncated and the read throws', async () => {
     const stub = makeStubFetch([{ status: 200, bodyBytes: new Uint8Array(1024) }]);
-    const { fetch: observed } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, 16);
+    const { fetch: observed } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, 16, new AbortController().signal);
     await expect(observed('https://openrouter.ai/api/v1/systemone')).rejects.toThrow();
   });
 
   it('retryAfterMs is parsed from retry-after-ms, falling back to retry-after seconds', async () => {
     const stub = makeStubFetch([{ status: 429, headers: { 'retry-after-ms': '1500' } }]);
-    const { fetch: observed, last } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES);
+    const { fetch: observed, last } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES, new AbortController().signal);
     await observed('https://openrouter.ai/api/v1/systemone').catch(() => {});
     expect(last()?.retryAfterMs).toBe(1500);
   });
 
   it('no 2xx -> wireCostUSD is null', async () => {
     const stub = makeStubFetch([{ status: 500, body: {} }]);
-    const { fetch: observed, last } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES);
+    const { fetch: observed, last } = makeObservedFetch({ fetch: stub.fetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES, new AbortController().signal);
     await observed('https://openrouter.ai/api/v1/systemone').catch(() => {});
     expect(last()?.wireCostUSD).toBeNull();
   });
@@ -173,7 +173,7 @@ function fakeDeps(opts: { fetchSteps: StubFetchStep[]; timeoutOnAttempts?: Set<n
       attempt++;
       const ctrl = new AbortController();
       if (opts.timeoutOnAttempts?.has(attempt)) ctrl.abort();
-      return { signal: ctrl.signal, fired: () => ctrl.signal.aborted };
+      return { signal: ctrl.signal, fired: () => ctrl.signal.aborted, clear: () => {} };
     },
     random: () => 0.5,
     resolveKey: () => 'test-openrouter-key',

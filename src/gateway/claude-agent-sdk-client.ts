@@ -50,6 +50,64 @@ function resolveSdkVersion(): string {
 }
 const SDK_VERSION = resolveSdkVersion();
 
+const CLI_PACKAGE_PREFIX = '@anthropic-ai/claude-agent-sdk';
+
+/** v41 (DES-280, REQ-232, TASK-278): the SDK 0.3.199 `lI` candidate order — android gets exactly
+ *  the one android-arch package; linux tries musl-first or glibc-first depending on `d.musl`; every
+ *  other platform gets its one `<platform>-<arch>` package. `d.resolve` is given each BARE package
+ *  spec in turn (never `require.resolve`'s own subpath form) and only the path IT returns has
+ *  `/claude` (`.exe` on win32) appended before `d.exists` is asked about it — a candidate whose
+ *  `resolve` throws (package not installed) or whose final path does not exist is skipped, never
+ *  thrown out of this function. Pure — no fs/require of its own. */
+export function resolveCliExecutable(d: {
+  platform: NodeJS.Platform; arch: string; musl: boolean;
+  resolve: (spec: string) => string; exists: (p: string) => boolean;
+}): string | undefined {
+  const exeSuffix = d.platform === 'win32' ? '.exe' : '';
+  const specs: string[] =
+    d.platform === 'android' ? [`${CLI_PACKAGE_PREFIX}-linux-${d.arch}-android`]
+    : d.platform === 'linux'
+      ? (d.musl
+          ? [`${CLI_PACKAGE_PREFIX}-linux-${d.arch}-musl`, `${CLI_PACKAGE_PREFIX}-linux-${d.arch}`]
+          : [`${CLI_PACKAGE_PREFIX}-linux-${d.arch}`, `${CLI_PACKAGE_PREFIX}-linux-${d.arch}-musl`])
+      : [`${CLI_PACKAGE_PREFIX}-${d.platform}-${d.arch}`];
+  for (const spec of specs) {
+    try {
+      const candidate = `${d.resolve(spec)}/claude${exeSuffix}`;
+      if (d.exists(candidate)) return candidate;
+    } catch {
+      // this candidate's platform package is not installed — try the next one.
+    }
+  }
+  return undefined;
+}
+
+/** v41 (DES-280, REQ-232, TASK-278): mirrors the SDK's own `D6`/musl-detection — linux only;
+ *  glibc's runtime report always carries `header.glibcVersionRuntime`, a musl runtime never does.
+ *  Any throw (e.g. `process.report` disabled) reads as "not musl", never a crash at import time. */
+function detectMusl(): boolean {
+  if (process.platform !== 'linux') return false;
+  try {
+    const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: unknown } } | null;
+    return report != null && report.header?.glibcVersionRuntime === undefined;
+  } catch {
+    return false;
+  }
+}
+
+// v41 (DES-280, REQ-232, TASK-278): resolved ONCE at module load (beside SDK_VERSION) — the whole
+// point is that `query()` never has to ask the SDK's own `process.report.getReport()`-driven
+// fallback to find this per call (REQ-232's hot-path clause). `undefined` (package not installed,
+// or this platform/arch has none) is fail-open: `ClaudeAgentSdkGatewayConfig.cliExecutable` stays
+// unset and every `query()` falls back to the SDK's own per-call lookup, unchanged from before this.
+const CLI_EXECUTABLE: string | undefined = resolveCliExecutable({
+  platform: process.platform, arch: process.arch, musl: detectMusl(),
+  resolve: createRequire(import.meta.url).resolve, exists: existsSync,
+});
+if (CLI_EXECUTABLE === undefined) {
+  process.emitWarning('claude-agent-sdk native CLI not resolved; the SDK will resolve it per call', { code: 'RWE_CLI_PATH_UNRESOLVED' });
+}
+
 type QueryImpl = typeof sdkQuery;
 
 export interface ClaudeAgentSdkGatewayConfig {
@@ -141,6 +199,12 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  `buildBashConfinement()` is not even
    *  called; a host that cannot measure a working nested user namespace does not get asked to try. */
   confinementPosture?: 'confined' | 'unconfined';
+  /** v41 (DES-280, REQ-232, TASK-278): the native CLI binary path passed as every `query()` call's
+   *  `options.pathToClaudeCodeExecutable`. `undefined` (the default) -> the module-level
+   *  `CLI_EXECUTABLE` resolved once at import; an explicit string always wins; `null` leaves the key
+   *  unset entirely (the SDK's own per-call `process.report.getReport()`-driven lookup) — the only
+   *  way to exercise that legacy path on purpose (a real test fixture, or an operator override). */
+  cliExecutable?: string | null;
 }
 
 /** REQ-037: resolves the Anthropic-direct auth material for the chosen mode, reading the injected
@@ -838,9 +902,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   // consumes only its `killGroup` method) — one instance per gateway, stateless beyond the default
   // node:child_process/process.kill primitives it wraps.
   private readonly _cliLifecycle = new RealCliLifecycle({});
+  // v41 (DES-280, REQ-232, TASK-278): resolved once per instance, not per `query()` call — `null`
+  // and "fell through to no module-level resolution" both collapse to `undefined` here, since both
+  // mean the same thing downstream: omit `options.pathToClaudeCodeExecutable` entirely.
+  private readonly _cliExecutable: string | undefined;
 
   constructor(private readonly _config: ClaudeAgentSdkGatewayConfig) {
     this._query = _config.queryImpl ?? sdkQuery;
+    this._cliExecutable = (_config.cliExecutable === undefined ? CLI_EXECUTABLE : _config.cliExecutable) ?? undefined;
   }
 
   /** v37 (DES-256, ARCH-178, TASK-253): binds the operational-event sink AFTER construction — same
@@ -1458,6 +1527,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // v26 (DES-179, ARCH-117, TASK-179): `wireEffort` already resolved the flat `Options.effort`
       // field alongside `thinking` above — set only when it actually applies (the anthropic arm).
       if (wired.effort !== undefined) options.effort = wired.effort;
+      // v41 (DES-280, REQ-232, TASK-278): skips the SDK's own `process.report.getReport()`-driven
+      // per-call CLI-path detection — nothing else in `options` changes. Absent entirely (never a
+      // key set to `undefined`) when unresolved, so the SDK falls back to its own lookup unchanged.
+      if (this._cliExecutable) options.pathToClaudeCodeExecutable = this._cliExecutable;
       // v37 (ARCH-178, DES-256, TASK-253, REQ-218): the policy applied is OUR data, so it is
       // unconditional — emitted from `sandbox`, the object the builder above JUST returned, never
       // re-derived. Once per ATTEMPT (the `attempt` param threaded from `invoke()`'s retry loop, NOT
