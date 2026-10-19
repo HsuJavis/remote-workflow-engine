@@ -1,0 +1,671 @@
+// Domain error types. Implemented fully — pure value classes, no business logic.
+import { MARKER_PREFIX, redact } from './secret-resolver.js';
+// issue #89 item 1: PARAM_LOCKED's hint used to hand-type the locked-key list (and had drifted —
+// six names, omitting `bash`, while LOCKED_KEYS itself has carried seven since issue #78(c)). A
+// VALUE import here is safe: params/contract.ts imports only `type { ErrorCode }` from this file
+// (type-only, erased at compile time), so this is not a runtime cycle.
+import { LOCKED_KEYS } from './params/contract.js';
+// issue #93 item 1: the SAME operator remediation the boot banner (main.ts) states — imported, not
+// re-typed, so a caller reading CONFINEMENT_UNAVAILABLE's hint and an operator reading the boot log
+// are always told the identical fix. Value import, no runtime cycle: confinement-probe.ts imports
+// only `node:child_process`.
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
+//
+// v24 (DES-137, ARCH-087, TASK-131): ERROR_CATALOG is the closed `ErrorCode` union — every coded
+// refusal this engine can throw is a key here, with the `see` pointer (workflow_authoring_guide|null)
+// attached in this ONE place (never hand-typed again at a call site). NO `message` field: the call
+// site always supplies its own, so the same code can carry a different message per occurrence.
+//
+// TASK-143 (DES-148) update: `HARNESS_DEFAULTS_INVALID` is retired below — `workflow-catalog.ts`'s
+// v15-era `register(name, script, defaults, principal)` positional shape is gone (v24
+// `register()`/`validateRegistration()`/`insertVersion()` take `{name, script, mermaid, ...}`, no
+// `defaults` field at all, per ADR-035). The three dependent files this key's prior note named
+// (`harness-defaults-validation.test.ts`, `val-098-harness-defaults.test.ts`,
+// `val-103-effort-real.test.ts`) were already red before this change — a sibling v24 change
+// (DES-144's `parseParamContract`) made every `registerPublished()`-based fixture throw
+// `AGENT_UNDECLARED` first — so removing this key changes zero passing tests either way. See
+// TASK-143's PARIMPL report (test_defects) for the full cross-task trace.
+//
+// TASK-154 (2026-09-04) update: the retirement forewarned above has now happened. All three files'
+// `HARNESS_DEFAULTS_INVALID`/`defaults`-door assertions are deleted or replaced by a compact
+// DEFAULTS_RETIRED regression suite (real HTTP + real SQLite catalog, each file's own original
+// mock policy) — `grep -rn "HARNESS_DEFAULTS_INVALID" tests/` now returns only rows asserting the
+// code is GONE, never asserting it as live. Case counts: harness-defaults-validation.test.ts 38->5,
+// val-098-harness-defaults.test.ts 6->1 (REQ-088 itself is `superseded-by: REQ-110`, whose live
+// acceptance coverage is VAL-121), val-103-effort-real.test.ts 4->2 (the 2 removed cases were the
+// only ones touching the retired `defaults.effort` door; the 2 kept are per-call `overrides`/
+// `agent(label,{effort})` cases unrelated to it).
+export const ERROR_CATALOG = {
+  // Generic / cross-cutting
+  INVALID_ARGUMENT: { see: null, hint: 'the call did not match its declared inputSchema' },
+  INTERNAL_ERROR: { see: null, hint: 'an unclassified engine fault; detail.rawCode carries the original signal when known' },
+  FORBIDDEN_ROLE: { see: null, hint: 'the caller\'s role is below the tool\'s minRole' },
+  NOT_FOUND: { see: null, hint: 'generic not-found for an entity with no more specific code' },
+  // Round-3 reverify (#166 decision 3): `system_info`'s own probe failed (a host fs/CPU/memory
+  // read threw) — kept as its own code, distinct from `INTERNAL_ERROR`, so a caller can tell
+  // "this ONE diagnostics call failed" from "something is generally wrong with the engine". Its
+  // message is scrubbed through the SAME `toErrEnvelope` branch INTERNAL_ERROR uses (below) —
+  // never the raw caught error, which could carry this engine's absolute host path.
+  PROBE_ERROR: { see: null, hint: 'system_info could not collect one or more host diagnostics; detail.rawCode carries the original signal when known' },
+
+  // Ownership
+  // Issue #116 (OWNER DECISION a, 2026-10-10): on workflow_deregister/workflow_publish AND
+  // (reverify round-6 finding 5, 4th repair round) EVERY other `ownership:'workflow'`/`'asset'`
+  // tool too — workspace_list/_delete's own `workflow` mode, and workspace_push's own `asset`
+  // mode — a non-admin caller now receives WORKFLOW_NOT_FOUND instead (masked — indistinguishable
+  // from the name not existing at all); see authz.ts's `notFoundTemplate` for the exact,
+  // documented scope (it is now total over every `ownership:'workflow'`/`'asset'` row). The ONE
+  // remaining place this code still reaches the wire as-is, unmasked and audited (review round 6
+  // finding 2), is workflow-catalog.ts's OWN pre-insert ownership gate on a TAKEN name
+  // (validateRegistration/insertVersion) — that check has no `*_NOT_FOUND` sibling to mask toward
+  // at all for a brand-new name, so decision a's masking does not apply there.
+  NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
+  // Issue #116 (OWNER DECISION a): on run_status/run_result/run_suspend/run_resume/run_stop/
+  // run_agent_log/issue_report AND (review round 6 finding 1) workspace_pull, workspace_purge,
+  // and workspace_list/workspace_delete's own `run` mode — every `ownership:'run'` tool/mode this
+  // engine has — a non-admin caller now receives RUN_NOT_FOUND instead (masked —
+  // indistinguishable from the run not existing at all). No residual gap: authz.ts's
+  // `notFoundTemplate` is total over `ownership:'run'`, so this code never reaches the wire to any
+  // non-admin caller any more (it survives only as `AuthzVerdict.internalReason` and the refusal
+  // audit trail's `realReason`, same as its NOT_WORKFLOW_OWNER/NOT_TRIGGER_OWNER siblings).
+  NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
+  // v24 Gate 8 (AF-3, TASK-162): `authz.ts`'s loopback-exempt refusal — a caller reaching a tool
+  // that needs an identity over a connection that carries none. It was DECLARED in
+  // `AuthzErrorCode` and RETURNED by `authorize()` while missing here, so `call-tool.ts:136`
+  // (`verdict.code ?? 'FORBIDDEN_ROLE'` — the fallback only covers a verdict with no code at all)
+  // put an uncatalogued string on the wire. `see: null` like its role/ownership siblings: the fix
+  // is to authenticate, which is a deployment matter, not an authoring one.
+  PRINCIPAL_REQUIRED: { see: null, hint: 'this tool requires an authenticated principal; the caller supplied none' },
+  // Dashboard auth spec §A2 (2026-09-30): the two runtime role-change lockout refusals
+  // (principal_set_role and the dashboard admin page share them).
+  ROLE_LOCKED: { see: null, hint: 'this principal is an admin in rwe.config.json principals; config admins are locked and can only be changed by editing the config and restarting' },
+  // Owner decision 2026-09-30 (verify-i MEDIUM-1): a signed-in principal with no role is pending.
+  ACCOUNT_PENDING_APPROVAL: { see: null, hint: 'this account signed in but has no role yet; an administrator must grant one (principal_set_role, or the dashboard admin page) before any tool or dashboard data is available' },
+  LAST_ADMIN: { see: null, hint: 'this change would leave no admin; promote another principal to admin first' },
+  // v24 adjudication #6 F-3 (D-14, REQ-116): thrown from the REGISTRATION path (mcp-facade.ts:313)
+  // when a registration declares a trigger someone else created. REQ-116 requires a registration
+  // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
+  // the guide is where the create-then-claim lifecycle is explained.
+  // Issue #116 (OWNER DECISION a): on schedule_delete/schedule_setEnabled/webhook_delete AND
+  // (review round 6 finding 2) workflow_register's own trigger-claim step, a non-admin caller now
+  // receives TRIGGER_NOT_FOUND instead (masked — indistinguishable from the id not existing at
+  // all; TRIGGER_NOT_FOUND IS the sibling here, unlike a brand-new WORKFLOW name, which has none).
+  // Admin bypasses the ownership check entirely on all four, so this code is never returned on the
+  // wire to ANY caller any more — it survives only as `AuthzVerdict.internalReason` and the
+  // refusal audit trail's `realReason` (authz.ts's `notFoundTemplate`; mcp-facade.ts's own masked
+  // throw in the trigger-claim loop).
+  // Issue #116 reverify round-6 finding 1: masked to TRIGGER_NOT_FOUND for every non-admin caller
+  // (authz.ts's notFoundTemplate) — this code is never returned on the wire to ANY caller any
+  // more (same as its NOT_RUN_OWNER/NOT_WORKFLOW_OWNER siblings just above), so `see` must NOT
+  // point at workflow_authoring_guide: authoringErrorRows() renders every `see:
+  // 'workflow_authoring_guide'` entry under "Authoring rules this engine enforces (refused with
+  // this code)", and a code no caller can ever receive has no business in that list — a cold
+  // reader would write a dead branch for it. The entry itself stays (it is the `realReason` an
+  // admin sees via audit_refusals_list, and an AuthzErrorCode `satisfies ErrorCode` member).
+  NOT_TRIGGER_OWNER: { see: null, hint: 'the caller does not own (did not create) this trigger' },
+  // Service accounts spec (owner decision 2026-10-03): a service account created with a
+  // `workflows` allowlist, naming a workflow outside it on a workflow-scoped tool.
+  WORKFLOW_NOT_ALLOWED: { see: 'workflow_authoring_guide', hint: 'this service account is restricted to a workflows allowlist (service_account_create/_update) and this workflow is not in it' },
+
+  // Script / registration authoring (workflow_authoring_guide-pointing)
+  PARSE_ERROR: { see: 'workflow_authoring_guide', hint: 'the script body failed to parse as TypeScript' },
+  // Renamed from UNKNOWN_ALIAS (2026-09-26, alias mechanism removed): a model string is not a valid
+  // full <provider>/<model-id> ref, names an unsupported provider, or (for openrouter/ollama) was
+  // not found in the live catalog listing.
+  UNKNOWN_MODEL: { see: 'workflow_authoring_guide', hint: 'the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list' },
+  // pi harness v1 owner decision 2: this engine runs `gateway:"pi"`, which supports only
+  // openrouter/ollama — no Anthropic subscription token/API key is used under pi (the spike found a
+  // subscription token through a third-party harness billed as "extra usage"). Thrown wherever a
+  // model ref is validated (checkModelRef's own harnessProviders gate): workflow_register, run_start/
+  // run_resume admission, and nested workflow() admission. An existing registered version that still
+  // pins anthropic/* fails with this code at run time — never a silent fallback to another provider.
+  // issue #136: no hard-coded example ref here any more — Anthropic hyphenates a version
+  // (`claude-sonnet-4-5`) where OpenRouter dots it (`claude-sonnet-4.5`), so a static example drifts
+  // out of date and sends an author straight into a SECOND error (UNKNOWN_MODEL) after they copy it.
+  // The actual refusal (providers.ts's `checkModelRef`) names a real, catalog-linked ref when one
+  // exists; this static guide text can't do that lookup, so it points at models_list instead.
+  PROVIDER_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness, which supports only openrouter/ollama models — use an openrouter/anthropic/... model instead (check models_list({query:'anthropic/'}) or models_list({provider:'openrouter'}) for the exact id) or an ollama/* model, never \"anthropic/*\" directly" },
+  // pi harness v1 (spec "Tool mapping"): an agent declares a tool the pi harness has no mapping for
+  // (WebFetch, WebSearch, Task, NotebookEdit, or any other name outside Read/Write/Edit/Bash/Grep/
+  // Glob/LS) — refused at registration AND dispatch, never silently dropped from the tool surface.
+  TOOL_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this tool has no mapping under the pi harness (gateway:"pi") — only Read/Write/Edit/Bash/Grep/Glob/LS are supported; declare a supported tool or switch this engine back to gateway:"sdk"' },
+  // pi harness v1 (spec "Skills"): pi only lists a skill in its system prompt when the tool set
+  // includes `read` or `bash` (pi's own system-prompt.js: skillFileReadTool = ["read","bash"].find(...)
+  // — no separate Skill tool exists on pi, unlike the sdk gateway's dedicated Skill tool). A skill
+  // declared with neither tool is refused up front, never silently shipping a materialized skill the
+  // model is never even told exists.
+  SKILL_REQUIRES_READ_TOOL: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness (gateway:\"pi\"); a declared skill requires 'Read' or 'Bash' in this dispatch's allowedTools — pi only lists a skill in its system prompt when one of those two tools is present (no separate Skill tool exists on pi)" },
+  // review round 4 (R4-1): the pi gateway's own per-dispatch scratch-directory failures — these are
+  // NOT thrown as a typed `ErrorCode` anywhere (GatewayResult.detail is a bare `string`, by the SAME
+  // `CODE: message` convention PLANTED_CONFIG_UNREMOVABLE/CONFINEMENT_UNAVAILABLE already use), so
+  // they never reach a tool's own `errors[]` list — they surface in a failed agent's own
+  // run_status.agentFailures[].message / run_agent_log, not as a direct MCP tool-call response.
+  // Catalogued anyway so an operator reading either has a `hint` to act on, not just a raw detail
+  // string.
+  AGENTDIR_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'the pi gateway could not create or verify its own private per-dispatch directory (agentDir) under confinement.workRoot, or a private per-process fallback — check that workRoot (or the host tmp dir, with no workRoot configured) is writable by this engine\'s own user and that nothing else (a symlink, a foreign-owned directory, a stray file) occupies the `pi-agentdirs` path there' },
+  TMPDIR_SCRATCH_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'the pi gateway could not create or verify its own private per-dispatch TMPDIR scratch directory under confinement.workRoot (the `pi-tmp` sibling of `pi-agentdirs`) — same remediation as AGENTDIR_UNAVAILABLE: check that workRoot is writable and nothing foreign occupies that path' },
+  // pi harness v1: srt (the confined-Bash sandbox library) refuses to initialize when it cannot find
+  // a usable ripgrep-capable CLI binary, or when it did initialize but the resulting invocation is
+  // not actually wrapped in a real bwrap sandbox (a defense-in-depth check, never silently running a
+  // Bash call unconfined when confinement was claimed).
+  SANDBOX_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'the pi gateway\'s confined Bash sandbox (srt / @anthropic-ai/sandbox-runtime) could not be initialized on this host — check that bwrap and socat are installed, and that a ripgrep-capable CLI binary is reachable (the engine normally supplies its own via the bundled @anthropic-ai/claude-agent-sdk-<platform> package; see DEPLOY.md §1b2 for the platform-support caveat)' },
+  // Shared with the sdk gateway's own bash:'readonly' refusal (bash-confinement.ts) — kept here
+  // under the same catalog rather than two near-duplicate keys.
+  BASH_READONLY_UNENFORCEABLE: { see: 'workflow_authoring_guide', hint: "an agent() call declared bash:'readonly', but this engine cannot enforce it on this dispatch — either the boot confinement probe measured this host as unconfined (no working kernel Bash sandbox), or the call has no known workspace root to deny writes to; drop bash:'readonly' on this deployment, or fix host confinement (DEPLOY.md's confinement remediation) and retry" },
+  // pi harness v1: no OpenRouter key reachable (RWE_SECRET_OPENROUTER_API_KEY in the secret store, or
+  // a bare OPENROUTER_API_KEY env var) at the moment an openrouter/* model was about to dispatch.
+  OPENROUTER_AUTH_MISSING: { see: 'workflow_authoring_guide', hint: 'no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or a bare OPENROUTER_API_KEY environment variable before dispatching an openrouter/* model under gateway:"pi"' },
+  // pi harness v1 (file-tool jail, session-runner.ts): the SAME path-containment check the sdk
+  // gateway's own tools enforce, under a different literal — a Read/Write/Edit/Glob/Grep/LS call
+  // resolved to a path outside the run's own workspace.
+  // issue #159 B8 (DOC): `Bash` used to be listed here too — wrong. `assertJailed` (the JS check
+  // that throws this exact code) is never on Bash's path at all; confined Bash's containment is a
+  // SEPARATE, kernel-level mechanism (the OS sandbox's denyRead/denyWrite, bash-confinement.ts) that
+  // fails with a different symptom (a command result like "No such file or directory" or "Read-only
+  // file system" from the shell itself, never this JS-thrown error) and a different scope (denies
+  // $HOME and the whole workRoot, not merely "outside the workspace" — see the Host path grants
+  // section of this guide for what it actually denies and re-opens).
+  PATH_ESCAPES_WORKSPACE: { see: 'workflow_authoring_guide', hint: "a tool call (Read/Write/Edit/Glob/Grep/LS) under gateway:\"pi\" resolved to a path outside this run's own workspace — including through a symlink planted inside the workspace that points outside it; every one of those five file tools is jailed to the workspace root and refuses rather than follow the link. `Bash` is NOT jailed this way: its containment is the kernel sandbox (see the Host path grants section) — a confined Bash command reading outside the workspace fails with an ordinary shell-level error (e.g. \"No such file or directory\"), never this code, and is not limited to the workspace alone (it also denies $HOME and the whole workRoot, while leaving the system toolchain and any operator-granted host path readable)" },
+  // pi harness v1 (mcp-config-resolver.ts / session-runner.ts): a declared MCP server's resolved
+  // config has neither an `http`/`https` url nor a `command` to spawn — nothing runnable for pi's
+  // own `pi.registerMcpServer()` to connect.
+  MCP_SERVER_CONFIG_INVALID: { see: 'workflow_authoring_guide', hint: 'a declared MCP server\'s resolved configuration has no runnable transport — it needs either {type:"http", url:...} or {command:...}; check the workspace_push({kind:"mcp"}) config that provisioned it' },
+  // pi harness v1 (session-runner.ts): pi's own ModelRuntime failed to register the dispatch's
+  // openrouter/ollama model object — a pi-internal/provider-side failure, not a model-ref validation
+  // problem (that is UNKNOWN_MODEL/PROVIDER_UNSUPPORTED_BY_HARNESS, both checked well before this).
+  MODEL_REGISTRATION_FAILED: { see: 'workflow_authoring_guide', hint: 'the pi harness could not register this dispatch\'s model with its own ModelRuntime — usually transient (a provider-side hiccup) or a sign the model id itself is not one openrouter/ollama actually serves; retry, and verify the exact ref against models_list' },
+  // issue #103(a): registration WARNS (result.warnings), never throws this any more — the code now
+  // fires only at admission (run_start, a schedule/webhook firing, or a nested workflow() call),
+  // BEFORE any side effect, naming the agent label(s) + the missing mcp name(s) + the fix
+  // (workspace_push({workflow, kind:'mcp', name, config}) then re-run/re-register).
+  MCP_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call declares an mcp name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns' },
+  // issue #103(a): the skill sibling of MCP_NOT_PROVISIONED — same admission-time-only refusal, same
+  // resolver (workflow-scoped skill tree, then global), same registration-time warning instead.
+  SKILL_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns' },
+  SCRIPT_INVALID: { see: 'workflow_authoring_guide', hint: 'the script violates a sandbox-enforced structural rule' },
+  SCAN_VIOLATION: { see: 'workflow_authoring_guide', hint: 'an agent() call is not scannable — label/options must be literal' },
+  // v39 (owner decision 2026-09-30): meta.phases is required on every NEW registration and must
+  // equal the script's own phase() call titles (count/order/title; a non-literal title matches any
+  // non-empty declared title at that position, same rule LANE_MISMATCH applies to a dynamic lane).
+  // Existing (pre-v39) rows are immutable and never re-checked against this rule.
+  PHASES_REQUIRED: { see: 'workflow_authoring_guide', hint: 'meta.phases is missing or not a valid array of {title:string} — declare it, matching your phase() calls in count/order (phases: [] when the script calls phase() zero times)' },
+  PHASES_MISMATCH: { see: 'workflow_authoring_guide', hint: 'meta.phases disagrees with the script\'s own phase() calls in count, order, or title' },
+  MERMAID_INVALID: { see: 'workflow_authoring_guide', hint: 'the diagram does not parse under checkMermaid\'s grammar' },
+  // issue #155 B2a (owner-approved, 2026-10-07): split out of MERMAID_INVALID — a diagram that
+  // parses FINE but disagrees with the script on a single declared value, or writes the `&`
+  // fan-out shorthand, is not "unparsable" and a client branching on `code` could not otherwise
+  // tell the two apart. See workflow-catalog.ts's RULE_CODE (now self-mapped) and
+  // check-mermaid.ts's own VALUE_MISMATCH/COLLAPSED_EDGE rules.
+  VALUE_MISMATCH: { see: 'workflow_authoring_guide', hint: "an agent node's `<br/>model · effort · timeout` triple disagrees with that label's declared default(s) — detail names the label and which field(s) disagree" },
+  COLLAPSED_EDGE: { see: 'workflow_authoring_guide', hint: 'an edge uses the `&` fan-out shorthand (e.g. `a-->b & c`) — write one edge per line instead' },
+  MERMAID_REQUIRED: { see: 'workflow_authoring_guide', hint: 'registration requires a non-empty mermaid diagram string' },
+  DIAGRAM_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s agent labels disagree with the script\'s' },
+  // v26 (DES-184, ARCH-119, ADR-043/039, TASK-189): checkMermaid v2 — four rules compared against
+  // the script's own derived ExpectedGraph (lane/slot/edge shape), each carrying {rule, line, expected}.
+  DIAGRAM_DIRECTION: { see: 'workflow_authoring_guide', hint: 'a v2 diagram header must be graph LR / flowchart LR' },
+  LANE_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s subgraph lanes (count/order/title, or a stadium\'s containing lane) disagree with the script\'s phases' },
+  TOOLS_MISMATCH: { see: 'workflow_authoring_guide', hint: 'a stadium\'s tools: line disagrees with the script\'s allowedTools for that label' },
+  EDGE_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s edges do not realise the script\'s consecutive-slot flow' },
+  // v26 integration (DES-184 boundary, REQ-128, REQ-117): `deriveExpectedGraph`'s one refusal.
+  // Registration must answer this with its OWN line-pointed code, because a bare SCAN_VIOLATION
+  // fails REQ-117's first-try bar — an author told only "scan violation" cannot find the phase().
+  // v26 (M-5 send-back repair, ARCH-119/121's catalog drift-lock): `UNDECIDABLE_SHAPE` — a second,
+  // speculative union arm — was deleted here, from the `DeriveResult` type ARCH-113 defines and from
+  // `workflow_register`'s advertised `errors[]` (tool-specs.ts), together: it had ZERO producers
+  // (`grep -rn UNDECIDABLE_SHAPE src/` found only the three declarations), and ADR-039's own
+  // decision already routes every narrowing case it would have covered (a `switch`, a loop-body
+  // `agent()`, a helper-reached `agent()`) through the EXISTING `SCAN_VIOLATION` — advertising a
+  // code the checker can never emit is a branch a client may implement and never exercise.
+  AGENT_BEFORE_PHASE: { see: 'workflow_authoring_guide', hint: 'under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()' },
+  AGENT_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script agent() label has no params.agents.<label> declaration' },
+  AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
+  // v40 (DES-264, ARCH-194/192/190, TASK-260): decide()/generateImage() share AGENT_UNDECLARED's
+  // declared-vs-used pattern over their own params.decisions/params.images tables.
+  DECISION_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script decide() label has no params.decisions.<label> declaration' },
+  DECISION_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.decisions declares a label no decide() call in the script uses' },
+  IMAGE_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script generateImage() label has no params.images.<label> declaration' },
+  IMAGE_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.images declares a label no generateImage() call in the script uses' },
+  // v40 (DES-270, ADR-095, TASK-267): registration-time model/catalog checks for decide()/generateImage().
+  // v40 Gate 6 delta (OD-1): generateImage()'s own requirement restated as "output modalities
+  // include image" (checkPrimitiveModelType's real, `modalitiesOut`-based check), not the retired
+  // "modelType is 'image-gen'" phrasing — a chat model whose output modalities include image
+  // (e.g. gemini-2.5-flash-image) passes too.
+  MODEL_TYPE_MISMATCH: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model is catalogued the wrong way for the primitive (decide() needs modelType 'decision'; generateImage() needs a model whose output modalities include 'image')" },
+  PRIMITIVE_PROVIDER_UNSUPPORTED: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model.default does not start with 'openrouter/' — decide()/generateImage() only dispatch through the openrouter gateway" },
+  // WARNING, never a refusal by itself: the catalog could not verify this model's modelType (e.g.
+  // catalog unavailable, or the model is unknown/id-heuristic) — the call proceeds.
+  MODEL_TYPE_UNVERIFIED: { see: 'workflow_authoring_guide', hint: "warning: this model's modelType could not be verified against the catalog; the decide()/generateImage() call proceeds unchecked" },
+  // v40 (DES-266, TASK-262): pure input-layer validation for decide()/generateImage() call args.
+  PRIMITIVE_INPUT_INVALID: { see: 'workflow_authoring_guide', hint: 'a decide()/generateImage() call argument (state, questions, prompt, inputImages, or outDir) does not match its required shape' },
+  // v40 (DES-268, ADR-090, TASK-264): generateImage() file-path/content refusals (traversal,
+  // symlink escape, wrong type, oversize).
+  IMAGE_PATH_REFUSED: { see: 'workflow_authoring_guide', hint: 'a generateImage() inputImages entry or outDir resolves outside the run/asset workspace, or is not a plain regular file of an accepted type/size' },
+  // v40 (DES-264 boundary, TASK-260): pre-flight refusal when a decisions/images label's model has
+  // no catalogued price — joins both ENGINE_REFUSAL_CODES (guards.ts) and RECORDED_REFUSAL_CODES
+  // (run-manager.ts), the same footing as BUDGET_EXCEEDED, so a script can legitimately catch it.
+  PRICE_UNKNOWN: { see: 'workflow_authoring_guide', hint: "a decisions/images label's model has no catalogued price (pricing.image_output or the chat price fields are absent) — the engine refused the call rather than dispatch at an unknown cost" },
+  // v40 (DES-267, TASK-263): the decide()/generateImage() engine retry loop gave up (non-retryable
+  // status, or retries exhausted) and surfaces this terminal code to the script's catch.
+  PRIMITIVE_FAILED: { see: 'workflow_authoring_guide', hint: 'a decide()/generateImage() call did not succeed after the engine\'s retry policy; detail.reason carries http|timeout|aborted|network|no_output|malformed|response_too_large|write' },
+  // issue #156 NEW-2 reverify: also returned at run_start ADMISSION (not only registration) when
+  // `overrides.agents`/`overrides.agents.<label>` is the wrong shape (e.g. a bare string/array/null
+  // instead of an object) — a reader of this one generic table had no way to learn that case existed.
+  PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds; also returned at run_start admission when overrides.agents (or overrides.agents.<label>) is not an object' },
+  PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
+  // issue #162 item C: an agent()'s `schema` option is not a valid JSON Schema (e.g. a string, or
+  // any shape Ajv itself rejects at compile time, such as `schema must be object or boolean`) — a
+  // refused, terminal, RECORDED dispatch (same pre-dispatch-guard shape as PARAM_OUT_OF_RANGE/
+  // PARAM_UNKNOWN just above/below in agent-executor.ts), never an uncaught engine-side crash that
+  // leaves the agent's transcript record stuck at `running` forever.
+  INVALID_SCHEMA: { see: 'workflow_authoring_guide', hint: "an agent()'s declared `schema` option is not a valid JSON Schema; see the thrown message for Ajv's own compile error" },
+  // issue #89 item 1: rendered from LOCKED_KEYS itself — never re-typed — so this hint cannot
+  // drift from the constant the validator actually enforces (it had: six names here, omitting
+  // `bash`, against LOCKED_KEYS's real seven).
+  PARAM_LOCKED: { see: 'workflow_authoring_guide', hint: `a caller override targets a key the author locked (${LOCKED_KEYS.join('/')})` },
+  PARAM_UNKNOWN: { see: 'workflow_authoring_guide', hint: 'a caller override names a parameter the contract does not declare' },
+  UNKNOWN_AGENT_LABEL: { see: 'workflow_authoring_guide', hint: 'a caller override names an agent label the contract does not declare' },
+  DEFAULTS_RETIRED: { see: 'workflow_authoring_guide', hint: 'meta.params.knobs / meta.defaults are not accepted; declare params.agents.<label> instead' },
+  LEGACY_REREGISTER: { see: 'workflow_authoring_guide', hint: 'this stored version does not satisfy the current contract and cannot run; register it again' },
+  INLINE_SCRIPT_CLOSED: { see: 'workflow_authoring_guide', hint: 'inline run-time scripts are closed; register once, then run by name' },
+  // v37 Gate-8 send-back (finding C-1, ARCH-181/ARCH-182): `call-tool.ts`'s remote-submission door
+  // (ADR-083 owner_decision posture C) throws this code BEFORE schema/authz, same precedent as
+  // INLINE_SCRIPT_CLOSED above — a real, remotely-reachable refusal is uncatalogued (invisible to
+  // any cold MCP client reading `tools/list`/ERROR_CATALOG) unless it is a key here too.
+  // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): the hint used to end
+  // "(a local/loopback submission still runs, unconfined)" — no longer true. A local run_start of
+  // a REMOTELY-REGISTERED script is refused identically; only a submission that is local AND
+  // resolves to a locally-registered script still runs unconfined.
+  // issue #93 item 1: the hint used to end at "registered remotely" — silent about HOW an operator
+  // fixes the underlying probe failure. `CONFINEMENT_REMEDIATION` (confinement-probe.ts) appends the
+  // Ubuntu/AppArmor remediation this iteration verified end to end on the host that reported it.
+  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: "this host could not measure a working Bash sandbox at boot; a run is refused when EITHER its trigger's provenance OR its resolved script version's registering submission is remote — a remote run_start/run_resume, a webhook delivery or schedule firing whose trigger was created remotely, or ANY run (including a local one) resolving to a version registered remotely. Remediation: " + CONFINEMENT_REMEDIATION },
+  NESTING_DEPTH_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDepth' },
+  NESTING_CYCLE: { see: 'workflow_authoring_guide', hint: 'a workflow() call would re-enter an ancestor already on this call\'s chain' },
+  DESCENDANT_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDescendants' },
+
+  // Registration / versioning / triggers (operational, not authoring content)
+  WORKFLOW_NOT_FOUND: { see: null, hint: 'no workflow is registered under this name' },
+  WORKFLOW_ALREADY_EXISTS: { see: null, hint: 'a workflow with this name is already registered under a different owner' },
+  REGISTRATION_CONFLICT: { see: null, hint: 'a concurrent registration of this name raced this one; retry' },
+  VERSION_CEILING_EXCEEDED: { see: null, hint: 'this workflow name already has the configured maxWorkflowVersions; deregister an old one with workflow_deregister({name, version})' },
+  VERSION_NOT_FOUND: { see: null, hint: 'the requested version is not a registered version of this workflow' },
+  // v36 (DES-246, TASK-244): `workflow_deregister({name, version})`'s three version-scoped refusals.
+  // Issue #98 item 8: names the exact call — `workflow_publish` now accepts an explicit
+  // `version: null` to clear a channel (there was previously no tool that could ever satisfy this).
+  VERSION_PINNED_BY_CHANNEL: { see: null, hint: "this version is published to a channel (release or beta) — clear it first: workflow_publish({name, channel, version: null})" },
+  VERSION_LAST_REMAINING: { see: null, hint: 'this is the only version of the workflow — use workflow_deregister({name}) to remove the whole workflow' },
+  VERSION_PINNED_BY_RUN: { see: null, hint: 'a non-terminal run is pinned to this version' },
+  INVALID_CHANNEL: { see: null, hint: 'the channel value is not "beta" or "release"' },
+  CHANNEL_UNPUBLISHED: { see: null, hint: 'the requested channel has no published version' },
+  DANGLING_CHANNEL: { see: null, hint: 'the channel points at a version that no longer exists (invariant violation)' },
+  NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. it does not satisfy the current registration contract, or its registration was refused)' },
+  INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
+  INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
+  // issue #160 BUG-3: distinct from INVALID_CRON — this names the tz field, not the cron field,
+  // when the two were previously conflated (an invalid IANA zone surfaced as field:'cron').
+  INVALID_TZ: { see: null, hint: 'the `tz` value is not a valid IANA time zone name' },
+  // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
+  // (mcp-facade.ts:308/322). Issue #116 reverify round-6 finding 1: the stale cross-reference this
+  // comment used to carry ("see NOT_TRIGGER_OWNER above") is removed — NOT_TRIGGER_OWNER's own
+  // `see` is now `null` (it is masked to THIS code for every non-admin caller), so there is
+  // nothing left to see there any more.
+  TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
+  TRIGGER_ALREADY_CLAIMED: { see: 'workflow_authoring_guide', hint: 'this trigger id is already claimed by a different workflow' },
+  UNCLAIMED: { see: null, hint: 'this trigger has not been claimed by any workflow; it will not fire' },
+  // issue #160 (owner-approved 2026-10-07): a webhook `workflow_deregister` disabled (see
+  // `TriggerClaimStore.disable`, mcp-facade.ts) now refuses delivery with this CODED reason instead
+  // of a bare, code-less 403 — "the webhook is disabled" previously carried no `code` at all.
+  TRIGGER_DISABLED: { see: null, hint: 'this trigger was disabled (its workflow was deregistered); delete it and create a new one, or re-enable it if it is a schedule' },
+  CLAIMED_WORKFLOW_MISSING: { see: null, hint: 'the workflow this trigger is claimed by no longer resolves' },
+  // issue #160 (owner-approved 2026-10-07): RETIRED from the fire path — a claimed trigger is now
+  // pinned to the version that declared it (`WorkflowCatalog.boundVersionFor`) and fires THAT
+  // version regardless of what `release` points at, so "omitted from the currently released
+  // version" is no longer a question either fire path ever asks. Left in `RefusalReason`/the
+  // catalog (never removed) only because it is a real `ErrorCode` a pre-existing caller could still
+  // reference; no code path produces it any more.
+  NOT_IN_RELEASE: { see: null, hint: 'unreachable: a claimed trigger fires the version it is bound to, never a release-channel membership check' },
+
+  // Run lifecycle
+  RUN_NOT_FOUND: { see: null, hint: 'no run is recorded under this runId' },
+  RUN_NOT_TERMINAL: { see: null, hint: 'this operation requires the run to be in a terminal state' },
+  // issue #160 BUG-1: a stopped run IS terminal (run_status/run_list already report it that way),
+  // but run_stop records no script result — run_result answers this typed code instead of either
+  // forging a fake success or misreporting RUN_NOT_TERMINAL.
+  RUN_STOPPED: { see: null, hint: 'the run was stopped (run_stop) before it completed; it has no script return value' },
+  RUN_ADMISSION_LIMIT: { see: null, hint: 'the configured maxConcurrentRuns is already reached' },
+  ILLEGAL_TRANSITION: { see: null, hint: 'the requested run-status transition is not allowed from its current state' },
+  AGENT_LOG_NOT_FOUND: { see: null, hint: 'no transcript is recorded for this agentId on this run' },
+  // v25 (DES-167, REQ-120, issue #61): the budget refusal finally has a CODE. It was thrown by
+  // `RunGuard` since v1 as a bare `BudgetExceededError` whose class NAME reached the wire (the same
+  // defect v24 fixed for IllegalTransitionError/CatalogNotFoundError/WorkspaceEscapeError), and
+  // `parallel()` swallowed it to `null` on the way, so a refused dispatch left no code, no record
+  // and no event. `see` points at the guide because REQ-120 requires the guide to explain how a
+  // budget interacts with fan-out width — the refusal is now self-documenting.
+  BUDGET_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'a budget limit (tokens or USD) is spent; the engine refused to dispatch this agent() call' },
+  // Issue #154 NEW HIGH (blocker, 2026-10-07 reverify): a dispatch-time refusal, same family as
+  // BUDGET_EXCEEDED/PARAM_UNKNOWN just above/below — the REAL opts an agent() call dispatched with
+  // do not match any literal allowedTools/bash shape that label's registered script scanned at
+  // registration. The usual cause is not an author mistake but a planted Array.prototype.toJSON (or
+  // another post-registration tamper of the opts object) smuggling a tool surface past the static
+  // scan at the child->host IPC hop, which re-serializes the opts object through JSON and therefore
+  // honours a script-planted toJSON — this refusal is the dispatch-time backstop for that gap.
+  AGENT_OPTS_TAMPERED: { see: 'workflow_authoring_guide', hint: "the agent() call's dispatched allowedTools/bash does not match any options literal this script's registered scan recorded for that label — the options object was altered after registration (e.g. by a planted Array.prototype.toJSON)" },
+  PARAM_SECRET_UNAVAILABLE: { see: null, hint: 'a resumed run\'s admission-time parameters carry a redaction marker that resume cannot restore' },
+
+  // Workspace / assets / seeds / CAS
+  WORKSPACE_ESCAPE: { see: null, hint: 'the resolved path escapes the run or asset workspace root' },
+  // Issue #154 (round-3 INFO): the match is case-INSENSITIVE (path-verdict.ts's `isReservedPrefixed`
+  // lowercases before comparing) — `RWE-x`/`Rwe-x` are refused exactly like `rwe-x`, a caller
+  // cannot claim the reserved segment back just by varying case.
+  RESERVED_PREFIX: { see: 'workflow_authoring_guide', hint: "the name or a path segment starts with the engine-reserved 'rwe-' prefix, case-insensitively — 'RWE-x'/'Rwe-x' are refused the same as 'rwe-x' (ARCH-093)" },
+  // Issue #154 B4: a workflow name that is empty, whitespace, contains `/` or is exactly `.`/`..`,
+  // or exceeds the length bound — distinct from RESERVED_PREFIX (a well-formed name the engine still
+  // refuses) since this is "not a name at all", checked by path-verdict.ts's isValidBareName.
+  // Issue #154 (round-3 INFO): also rejects a C0 control character (0x00-0x1F) or DEL (0x7F)
+  // anywhere in the name, embedded or not (e.g. a tab in the middle) — not just the leading/
+  // trailing whitespace `trim()` alone would catch.
+  // issue #166 decision 2: a byte ceiling (200 UTF-8 bytes) is checked ALONGSIDE the pre-existing
+  // 128-character one — a multi-byte name (e.g. CJK) can stay under 128 characters while still
+  // exceeding Linux's NAME_MAX (255 bytes per path component).
+  INVALID_NAME: { see: 'workflow_authoring_guide', hint: "the name must be a single path segment: non-empty, no leading/trailing whitespace, no control characters (0x00-0x1F, 0x7F) anywhere in the name, no '/' or '\\', not '.' or '..', at most 128 characters AND at most 200 UTF-8 bytes (a multi-byte name can satisfy one ceiling while still exceeding the other)" },
+  HOOKS_UNSUPPORTED: { see: null, hint: 'the requested Claude hook is not supported by the sandbox' },
+  // v26 (DES-170, TASK-175, issue #64): now guide-pointing — a caller reading tools/list's item
+  // schemas needs the same door to workflow_authoring_guide the other authoring refusals get.
+  INVALID_SEED_SPEC: { see: 'workflow_authoring_guide', hint: 'the seed/seedManifest/seedManifestRef payload does not match its declared shape' },
+  SEED_SOURCE_CONFLICT: { see: null, hint: 'more than one of seed/seedManifest/seedRef/seedManifestRef was supplied' },
+  MISSING_BLOBS: { see: null, hint: 'one or more referenced blobs are not present in the content store' },
+  INVALID_BLOB_REQUEST: { see: null, hint: 'a blob upload/manifest request is malformed' },
+  BLOB_HASH_MISMATCH: { see: null, hint: 'the declared sha256 does not match the computed one' },
+  BLOB_SHA_MISMATCH: { see: null, hint: 'the declared sha256 does not match the computed one' },
+  BLOB_TOO_LARGE: { see: null, hint: 'the blob exceeds the configured maxBlobBytes' },
+  BLOB_UPLOAD_TIMEOUT: { see: null, hint: 'the blob upload stalled past the configured idle timeout' },
+  CAS_UNAVAILABLE: { see: null, hint: 'this operation requires a configured content store (cas) and none is available' },
+  // Owner decision 2026-10-02: per-principal CAS quota (refused BEFORE storing; detail carries
+  // {usedBytes, limitBytes, requestedBytes, hint}) and the engine's disk floor (TRANSIENT — uploads
+  // and new run admissions only; detail {freeBytes, floorBytes}).
+  QUOTA_EXCEEDED: { see: null, hint: 'this upload would take your content-store usage past your quota; free space with workspace_prune_blobs (dryRun first) or ask an administrator to raise your quota (principal_set_quota)' },
+  DISK_LOW: { see: null, hint: "the engine's disk is below its free-space floor; new uploads and new runs are refused until space is freed (runs already in flight continue) — transient, retry later" },
+  SEEDREF_DISABLED: { see: null, hint: 'seedRef requires seedRefAllowlist in engine config' },
+  SEEDREF_ALLOWLIST_INVALID: { see: null, hint: 'the configured seedRefAllowlist itself is malformed' },
+  SEEDREF_FETCH_FAILED: { see: null, hint: 'the engine-pull git fetch of the seedRef failed' },
+  SEEDREF_SHA_MISMATCH: { see: null, hint: 'the fetched commit sha does not match the requested one' },
+  SEEDREF_TOO_LARGE: { see: null, hint: 'the fetched seedRef tree exceeds a configured size bound' },
+
+  // MCP / issues / misc surfaces
+  MCP_PROBE_FAILED: { see: null, hint: 'the MCP probe could not reach or validate the configured server' },
+  EGRESS_DENIED: { see: null, hint: 'the requested network egress (seedRef repoUrl or MCP server URL) does not match any allowlisted prefix' },
+  // issue #126 B: a pushed mcp config's env/args referenced `${run:xxx}` with an xxx outside the
+  // closed vocabulary (`dir`, `id` — mcp-run-state.ts) — refused at push time, before the probe.
+  UNKNOWN_RUN_PLACEHOLDER: { see: 'workflow_authoring_guide', hint: 'a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run\'s id) are supported' },
+  ISSUE_NOT_FOUND: { see: null, hint: 'no GitHub issue matches this reference' },
+  // issue #164: issue_reopen — the caller is neither the issue's original reporter (its hidden
+  // rwe-reporter marker) nor an admin.
+  NOT_ISSUE_REPORTER: { see: null, hint: 'only the issue\'s original reporter or an admin may reopen it' },
+
+  // Service accounts (owner decision 2026-10-03): the 6 service_account_* admin tools, and the
+  // /token client_credentials grant's per-request re-check of an already-issued bearer.
+  SERVICE_ACCOUNT_EXISTS: { see: null, hint: 'a service account with this name already exists' },
+  // Send-back D2 (owner decision: tombstone deleted names): `sa:<name>` is also the catalog/run/
+  // webhook/schedule/CAS-namespace ownership string, so re-creating a deleted name would silently
+  // inherit everything the old account ever touched. A deleted name is retired forever.
+  SERVICE_ACCOUNT_NAME_RETIRED: { see: null, hint: 'this name belonged to a deleted service account and can never be reused (it would inherit the old account\'s workflows/runs/webhooks/CAS pool) — pick a different name' },
+  SERVICE_ACCOUNT_NOT_FOUND: { see: null, hint: 'no service account is registered under this name' },
+  SERVICE_ACCOUNT_SECRET_NOT_FOUND: { see: null, hint: 'this service account has no secret with that id' },
+  TOO_MANY_SECRETS: { see: null, hint: 'a service account may hold at most 2 active secrets (rotation overlap) — revoke one before rotating again' },
+  // Spec §Model: disabled/expired/deleted is refused everywhere with this code, never the
+  // ACCOUNT_PENDING_APPROVAL ('none' role) semantics a human principal gets — a service account's
+  // role is never 'none', so the two refusals must stay visibly distinct on the wire.
+  SERVICE_ACCOUNT_DISABLED: { see: null, hint: 'this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one' },
+
+  // issue #163 (B2/DOC): two codes that were thrown for years (guards.ts's parallel()/pipeline()
+  // item-cap refusal, and toErr()'s own uncaught-throw fallback) but were never catalog members —
+  // at TOP level this was invisible (the top-level completion path never runs a thrown error
+  // through toErrorCode() at all), but the instant either code crosses a nested workflow() boundary
+  // (_handleWorkflowRequest's `toErrorCode(err.code)`), an unrecognized string folds to
+  // INTERNAL_ERROR and the child's real failure (its own business-logic throw, or its own item-cap
+  // refusal) is hidden behind an engine-fault code. Adding both here is a closed-catalog-membership
+  // fix only — no call site, no toErrorCode()/toErrEnvelope() logic, and no throw-site code
+  // assignment changes.
+  SCRIPT_ERROR: { see: null, hint: "the script itself threw an uncaught error (not an engine refusal); at a nested workflow() frame this is the CHILD workflow's own thrown error, not a fault in the engine" },
+  ITEM_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'parallel()/pipeline() refused: either the argument was not an array at all, or the array exceeds the configured item cap — see the thrown message for which' },
+  // issue #162 A/B: an agent()/workflow() script's RETURN value that cannot cross the sandbox's
+  // child->parent IPC boundary — either because it is not JSON-serializable (a circular reference,
+  // a BigInt) or because it exceeds the engine's return-value size cap (child-entry.ts). Before
+  // this, the child's own uncaught serialization throw escaped as an unhandled rejection and could
+  // crash the child with a raw Node-internal stack trace, surfaced to the caller as an opaque
+  // ABORTED with a leaked internal path/Node version in the message.
+  RESULT_NOT_SERIALIZABLE: { see: 'workflow_authoring_guide', hint: 'an agent()/workflow() script returned a value that is not JSON-serializable (e.g. a circular reference or a BigInt) — return only JSON-compatible values' },
+  RESULT_TOO_LARGE: { see: 'workflow_authoring_guide', hint: "an agent()/workflow() script's returned value exceeds the engine's return-value size cap — return a smaller value (e.g. a summary or a reference), not the full payload" },
+  // F-1 (sandbox robustness sweep): a HOST-side (not vm-internal) wall-clock deadline on the whole
+  // run — covers a synchronous infinite loop (`while(true){}`, which blocks the sandboxed child's own
+  // event loop and so cannot be caught from inside it) just as much as a hung/looping sequence of
+  // awaited agent()/workflow() calls. Catalogued (not left to fold to INTERNAL_ERROR) so a nested
+  // workflow()'s own timeout surfaces to its parent script with this same code — see run-manager.ts's
+  // `toErrorCode(err.code)` at the nested-workflow() boundary for why an uncatalogued code would
+  // otherwise lose its identity there.
+  SCRIPT_TIMEOUT: { see: 'workflow_authoring_guide', hint: "the sandboxed script did not complete within the engine's run-duration deadline (maxRunDurationMs) and was terminated — reduce the work per run, or split it across multiple shorter runs/phases" },
+  // F-1: the sandbox child's own V8 heap limit (SANDBOX_CHILD_EXEC_ARGV's `--max-old-space-size`) was
+  // reached and the process was terminated — same catalog-membership rationale as SCRIPT_TIMEOUT
+  // above (closed-catalog, not INTERNAL_ERROR, at a nested workflow() boundary).
+  SCRIPT_OOM: { see: 'workflow_authoring_guide', hint: "the sandboxed script exhausted its memory limit and was terminated — avoid unbounded in-memory accumulation (e.g. append-only arrays/strings across many agent() calls); process data in smaller chunks or summarize incrementally" },
+} as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
+
+export type ErrorCode = keyof typeof ERROR_CATALOG;
+
+/** A branchable Error carrying a `.code` (surfaced to the calling script via the sandbox IPC's code
+ *  derivation — see host.ts ipcErrorCode / child-entry). One shared factory so run-manager, cas-store,
+ *  and the tools never drift on the coded-error shape. `detail` (v24, DES-137) is attached only when
+ *  supplied — the same optional-property convention every caller already uses via `Object.assign`. */
+export function codedError(code: ErrorCode, message: string, detail?: Record<string, unknown>): Error & { code: ErrorCode; detail?: Record<string, unknown> } {
+  return Object.assign(new Error(message), { code, detail });
+}
+
+/** v24 (DES-137): maps an arbitrary thrown-error `.code`-shaped string back to a catalog member —
+ *  an unrecognized string (e.g. a raw JS `Error.name` at the one genuinely-string site,
+ *  `run-manager.ts`'s `toErr()`) becomes `INTERNAL_ERROR`; the caller attaches `detail.rawCode`. */
+export function toErrorCode(code: string): ErrorCode {
+  return Object.hasOwn(ERROR_CATALOG, code) ? (code as ErrorCode) : 'INTERNAL_ERROR';
+}
+
+/** v24 (DES-137): the one place a thrown `codedError` becomes the wire envelope — `see` is ALWAYS
+ *  read from the catalog, never hand-typed at a call site.
+ *
+ *  Issue #166 decision 3: `INTERNAL_ERROR` is the ONE code whose message this function has never
+ *  controlled — `toErrorCode` folds every uncatalogued/unrecognized thrown code onto it (an
+ *  ordinary Node fs error's `.code`, e.g. `ENAMETOOLONG`/`EACCES`, is never a member of the closed
+ *  `ErrorCode` union), and a raw fs error's `.message` carries this engine's absolute host
+ *  filesystem layout verbatim (`ENAMETOOLONG: … unlink '/home/rwe/.local/share/rwe-data/assets/
+ *  <name>'` was the live #166 repro, out of `workflow_deregister`'s asset-tree cleanup). Every
+ *  call site that builds an MCP-facing envelope (mcp-facade.ts, ~10 of them) funnels through this
+ *  ONE function, so the fix belongs here rather than at each throw site: the real message (and any
+ *  host path it carries) is logged server-side only; the wire envelope gets the SAME catalogued,
+ *  path-free hint `tools/list` already advertises for INTERNAL_ERROR
+ *  (`ERROR_CATALOG.INTERNAL_ERROR.hint`), so a cold caller sees nothing it couldn't already have
+ *  read from the tool surface. `detail` (e.g. `.rawCode`, a short code string, never a path) is
+ *  untouched — only `message` was ever the leak vector.
+ *
+ *  Round-3 reverify (low): the scrub below now ALSO applies to `PROBE_ERROR` (system_info's own
+ *  probe-failure code, call-tool.ts) — generalized from a hardcoded `'INTERNAL_ERROR'` literal to
+ *  the resolved `code` variable so a future similarly-sourced-from-a-raw-caught-error code gets
+ *  the same treatment for free. `PROBE_ERROR` is deliberately kept as its OWN code here (never
+ *  folded onto `INTERNAL_ERROR` — it already survives `toErrorCode` unchanged because it is now a
+ *  real `ERROR_CATALOG` member), so the caller still learns "the probe failed" specifically; only
+ *  the message is scrubbed, exactly like `INTERNAL_ERROR`'s always was. */
+export function toErrEnvelope(err: unknown): { code: ErrorCode; message: string; see: 'workflow_authoring_guide' | null; detail?: Record<string, unknown> } {
+  const e = err as { code?: unknown; message?: unknown; detail?: Record<string, unknown> } | null | undefined;
+  const code = toErrorCode(typeof e?.code === 'string' ? e.code : '');
+  const message = typeof e?.message === 'string' ? e.message : String(err);
+  if (code === 'INTERNAL_ERROR' || code === 'PROBE_ERROR') {
+    console.error(`[internal-error] ${message}`);
+    // The hint itself promises "detail.rawCode carries the original signal when known" — so when
+    // the thrown value carried an uncatalogued `.code` (a raw fs error's `ENAMETOOLONG`/`EACCES`,
+    // or any other string `toErrorCode` folded onto this branch's code) and no caller already
+    // attached `rawCode` upstream (e.g. run-manager.ts's own `toErr()` wrapping), attach it HERE —
+    // it is a short code string, never a path, so it carries none of the leak this branch exists
+    // to close.
+    const rawCode = typeof e?.code === 'string' && e.code !== '' && e.code !== code ? e.code : undefined;
+    const detail = rawCode !== undefined || e?.detail ? { ...e?.detail, ...(rawCode !== undefined ? { rawCode } : {}) } : undefined;
+    return { code, message: `${code}: ${ERROR_CATALOG[code].hint}`, see: ERROR_CATALOG[code].see, detail };
+  }
+  return { code, message, see: ERROR_CATALOG[code].see, detail: e?.detail };
+}
+
+export class NotImplementedError extends Error {
+  constructor(name: string) {
+    super(`${name}: not implemented`);
+    this.name = 'NotImplementedError';
+  }
+}
+
+export class AgentCapError extends Error {
+  constructor() {
+    super('Agent count cap (1000) exceeded for this run');
+    this.name = 'AgentCapError';
+  }
+}
+
+export class BudgetExceededError extends Error {
+  /** v25 (DES-167, REQ-120): carries the catalog code, so `ipcErrorCode`/`toErrEnvelope` surface
+   *  `BUDGET_EXCEEDED` instead of the class name — same fix, same reason, as the three v24 classes
+   *  below. A script catching it reads `e.code`/`e.name === 'BUDGET_EXCEEDED'`. */
+  readonly code: ErrorCode = 'BUDGET_EXCEEDED';
+  /** v26 (DES-181, ARCH-118, TASK-181): which of the two independent limits (`usd`/`tokens`) was
+   *  hit — absent on the pre-v26 positional form (kept for `sandbox-refusal-error-code.test.ts`,
+   *  which only needs A BudgetExceededError instance, not a real limit). */
+  readonly limit?: 'usd' | 'tokens';
+  readonly spent: number;
+  readonly total: number;
+  constructor(spentOrDetail: number | { limit: 'usd' | 'tokens'; spent: number; total: number }, total?: number) {
+    if (typeof spentOrDetail === 'number') {
+      super(`Budget exceeded: spent ${spentOrDetail} >= total ${total}`);
+      this.spent = spentOrDetail;
+      this.total = total as number;
+    } else {
+      super(`Budget exceeded (${spentOrDetail.limit}): spent ${spentOrDetail.spent} >= total ${spentOrDetail.total}`);
+      this.limit = spentOrDetail.limit;
+      this.spent = spentOrDetail.spent;
+      this.total = spentOrDetail.total;
+    }
+    this.name = 'BudgetExceededError';
+  }
+}
+
+// v24 (integrator, DES-137 + adjudication #4 C-1/[31]): these three pre-v24 Error CLASSES predate
+// `ERROR_CATALOG` and carried no `.code`, so every envelope built from them (`toErrEnvelope` falls
+// back to `err.name`) surfaced `IllegalTransitionError` / `CatalogNotFoundError` /
+// `WorkspaceEscapeError` as the machine-readable code — three names that are not members of the
+// closed `ErrorCode` union and that no `tools/list` reader can ever anticipate. Verified live by
+// the REQ-118 table: `run_suspend` on a terminal run answered `IllegalTransitionError` while its
+// own advertised `errors[]` promises `ILLEGAL_TRANSITION`. Attaching the catalog code at the ONE
+// place each class is constructed fixes every call site at once and cannot drift, which is why the
+// fix is here and not in each of the (nine + n) throw sites.
+export class IllegalTransitionError extends Error {
+  readonly code: ErrorCode = 'ILLEGAL_TRANSITION';
+  constructor(from: string, to: string) {
+    super(`Illegal state transition: ${from} → ${to}`);
+    this.name = 'IllegalTransitionError';
+  }
+}
+
+export class CatalogNotFoundError extends Error {
+  readonly code: ErrorCode = 'WORKFLOW_NOT_FOUND';
+  constructor(name: string) {
+    super(`Workflow not found in catalog: ${name}`);
+    this.name = 'CatalogNotFoundError';
+  }
+}
+
+export class WorkspaceEscapeError extends Error {
+  readonly code: ErrorCode = 'WORKSPACE_ESCAPE';
+  constructor(path: string) {
+    super(`Path escapes run workspace: ${path}`);
+    this.name = 'WorkspaceEscapeError';
+  }
+}
+
+// v35 (DES-230, ARCH-141, TASK-236, REQ-205): `toErr` moved VERBATIM from `run-manager.ts:150`
+// (behaviour byte-identical) and exported, so both of `run-manager.ts`'s call sites (the dispatch
+// outcome and the nested-`workflow()` outcome) import the SAME function instead of each keeping a
+// private copy. Deliberately gains no `detail` forwarding and no bound of its own — see
+// DES-230's `owner_decision` (REQ-205's 4th acceptance criterion is out of scope this iteration).
+export function toErr(err: unknown): { code: string; message: string } {
+  if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+    return { code: String((err as { code: unknown }).code), message: String((err as { message: unknown }).message) };
+  }
+  if (err instanceof Error) return { code: err.name || 'SCRIPT_ERROR', message: err.message };
+  return { code: 'SCRIPT_ERROR', message: String(err) };
+}
+
+/** v35 (DES-230): the pre-eval bound moved off `toErr` (which stays total/unbounded) onto the
+ *  SERIALIZED envelope that is actually persisted — `message` is `String(err.message)` off a
+ *  script-thrown value and is the one unbounded, script-controlled string this slice newly writes
+ *  to disk (`code` is bounded by construction: it comes from `toErrorCode`/the IPC wire, never
+ *  from script text). */
+export const MAX_ERROR_ENVELOPE_BYTES = 4096;
+
+/** v35 send-back (C-2): the forward extension below (to complete a marker split by the cut) must
+ *  itself be bounded — a marker's NAME is config-time (set by whoever configures a secret), so it
+ *  is legitimately bounded, but the `›` the old code scanned for was found via
+ *  `e.message.indexOf('›', markerStart)` against the REST of a script-controlled message with no
+ *  end bound: a crafted thrown Error with a `‹secret:` look-alike near the cut and no real `›`
+ *  anywhere close by made the scan (and the resulting persisted string) grow with the ENTIRE
+ *  remainder of the message — unbounded, demonstrated at ~50MB from a single throw. 256 bytes is
+ *  generous for any real secret name (env-var-style identifiers are a few dozen chars at most). */
+export const MAX_SECRET_NAME_CHARS = 256;
+
+/** Bounds `e.message` to `MAX_ERROR_ENVELOPE_BYTES`. MUST run AFTER `redact()`, never before: a
+ *  substring cut applied to the RAW message first can split a secret so `redact()`'s value-exact
+ *  match finds neither half (R-G9, `agent-executor.ts:662-671`, INV-V26-5). Identity when under
+ *  bound; `code` is never truncated. The cut is utf8-safe — it never splits a multi-byte
+ *  character, AND it never splits a `redact()` marker (`‹secret:NAME›`) that already survived the
+ *  redaction pass — a naive byte cut landing inside one leaves a mangled, unrecognizable fragment
+ *  where the caller depends on an INTACT marker surviving (`hasSecretMarker`, and any reader
+ *  looking for `‹secret:NAME›` verbatim) (v35 GREEN-phase fix: found via the ordering test,
+ *  `errors-to-err.test.ts`). If the UTF-8-safe head opens a marker it does not also close, the cut
+ *  extends forward just far enough to include the marker's closing `›` — bounded to at most
+ *  `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS` past the marker's start (v35 send-back C-2: NOT
+ *  an unbounded scan of the rest of the message), unlike backing off and dropping the marker, which
+ *  would satisfy the byte bound while breaking the one thing this function's caller reads the
+ *  message FOR. Both the pathological case (no closing `›` anywhere, which `redact()` never
+ *  produces) AND the case where `›` exists but only past the bounded window still back off,
+ *  dropping the incomplete marker, rather than shipping a mangled fragment or scanning unbounded. */
+export function capErrorEnvelope(e: { code: string; message: string }, maxBytes: number = MAX_ERROR_ENVELOPE_BYTES): { code: string; message: string } {
+  const buf = Buffer.from(e.message, 'utf8');
+  if (buf.length <= maxBytes) return e;
+  let cut = maxBytes;
+  // back off while `cut` sits inside a multi-byte sequence — a UTF-8 continuation byte's top two
+  // bits are `10`.
+  while (cut > 0 && (buf[cut]! & 0xc0) === 0x80) cut--;
+  let head = buf.subarray(0, cut).toString('utf8');
+  // Anchor on the marker's opening glyph alone (`‹`), not the 8-char `MARKER_PREFIX` — the cut can
+  // land inside the PREFIX itself (e.g. after `‹se`), and `lastIndexOf(MARKER_PREFIX)` would then
+  // find nothing and silently drop the marker instead of completing it.
+  const glyphStart = head.lastIndexOf('‹');
+  const markerStart = glyphStart !== -1 && e.message.startsWith(MARKER_PREFIX, glyphStart) ? glyphStart : -1;
+  if (markerStart !== -1 && !head.slice(markerStart).includes('›')) {
+    // Bounded forward scan (v35 send-back C-2): look for the closing `›` only within
+    // MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS chars of the marker's start, never further.
+    const scanEnd = markerStart + MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS;
+    const window = e.message.slice(markerStart, scanEnd + 1); // +1 to include the closing glyph itself
+    const relClose = window.indexOf('›');
+    const closeIdx = relClose === -1 ? -1 : markerStart + relClose;
+    head = closeIdx === -1 ? head.slice(0, markerStart) : e.message.slice(0, closeIdx + 1);
+    cut = Buffer.byteLength(head, 'utf8');
+  }
+  const omitted = buf.length - cut;
+  return { code: e.code, message: `${head}… [truncated: ${omitted} bytes omitted]` };
+}
+
+/** v36 (DES-241, ARCH-169/170, TASK-239, REQ-216/K2): one pure capture — redact THEN bound, in
+ *  that order (INV-V26-5: a substring cut applied first can split a secret so redact()'s
+ *  value-exact match finds neither half). `maxBytes` is a parameter, not shared constant, because
+ *  the two pre-existing call sites never agreed on one (4096 at the envelope site, 200 at the
+ *  seedRef site) — unifying either would silently widen or narrow the other twentyfold. */
+export function captureFailure(
+  err: unknown,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+  maxBytes: number = MAX_ERROR_ENVELOPE_BYTES,
+): { code: string; message: string } {
+  return capErrorEnvelope(redact(toErr(err), secrets) as { code: string; message: string }, maxBytes);
+}
+

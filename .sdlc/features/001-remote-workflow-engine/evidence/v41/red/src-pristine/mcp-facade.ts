@@ -1,0 +1,1621 @@
+// McpFacade (v24 rewrite — DES-149/151/152/155, ARCH-091, TASK-148): the 35-handler v24 tool
+// surface behind the new names. Pure delegation + uniform ResultEnvelope, same DES-001 discipline
+// as before (never throws across the tool boundary) plus three v24 additions: the register→claim→
+// insert→compensate trigger sequence, the six workspace_* modes, and the audited admin cross-read.
+import { existsSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { readArtifactChunk, type ArtifactEntry, type ChunkResult } from './workspace-artifacts.js';
+import type { Clock } from './clock.js';
+import { SystemClock } from './clock.js';
+import type { RunStore } from './run-store.js';
+import { InMemoryRunStore, TERMINAL } from './run-store.js';
+import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal, summarizeAgentFailures } from './run-manager.js';
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
+import { resolveVersionRequest, canMutate, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
+import { SubmissionValidator } from './submission-validator.js';
+// v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
+// private copy whose envelope had no `see` field at all, and since every `workflow_*` handler
+// called the local one, the catalog's `see:'workflow_authoring_guide'` pointer never reached the
+// wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
+import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView, AgentRecord, RunStatus } from './types.js';
+import { parseMeta, resolvePhases, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
+import { buildAuthoringGuide } from './authoring-guide.js';
+import type { Provider } from './providers.js';
+import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec, type ModelRefWarning } from './params/contract.js';
+import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
+import { scanAgentCalls } from './scan-agent-calls.js';
+import { predictedLanes } from './dashboard.js';
+import type { Principal } from './authz.js';
+import { authMethodFor } from './authz-refusal.js';
+import { pathVerdict } from './path-verdict.js';
+import { auditedWorkspaceRead } from './audited-read.js';
+import type { CasStore } from './cas-store.js';
+import { casNamespaceFor } from './cas-store.js';
+import type { QuotaView } from './auth/principal-admin.js';
+import type { AssetSyncService, AssetKind, AssetScope } from './asset-sync.js';
+import { mcpStateRunDir, workflowFolderOfWorkspace } from './mcp-run-state.js';
+
+// v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_source/list) at read
+// time — TASK-100 wires the live values from ServerConfig via McpFacadeDeps.ceilings (server.ts);
+// contract.ts's shared DEFAULT_CEILINGS applies only when a caller omits them.
+
+/** Read surfaces never serve null/unbounded (DES-103): a missing contract reads back as the
+ *  canonical 4-knob contract, and every contract is bounded by the engine ceilings at read time. */
+/** v24 (DES-144): the "canonical 4-knob contract" fallback is RETIRED — a missing/legacy contract
+ *  reads back as the zero-label `{agents:{},args:{}}` shape; `effectiveAgentBounds` bounds each
+ *  declared agent's spec individually (the whole-contract `effectiveBounds` it replaces operated
+ *  on the now-deleted `knobs` shape). */
+function readParams(stored: unknown, ceilings: Ceilings): ParamContract {
+  const c = (stored as ParamContract | undefined) ?? { agents: {}, args: {} };
+  const agents: Record<string, AgentParamSpec> = {};
+  for (const [label, spec] of Object.entries(c.agents ?? {})) {
+    agents[label] = effectiveAgentBounds(spec, ceilings);
+  }
+  return { agents, args: c.args ?? {} };
+}
+
+/** v24 (DES-142, ADR-028): the ONE namespace expression — CAS namespace = the caller's own
+ *  identity, `'local'` for the no-identity kinds (auth-disabled single-operator, loopback-exempt). */
+function nsOf(p: Principal): string {
+  // Delegates to `casNamespaceFor` (cas-store.ts) — the ONE expression, shared with the READ side
+  // in run-manager.ts, which used to spell it `'_default'` and so never found what this stored.
+  return casNamespaceFor(p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? null : p.id);
+}
+
+/** Structural port both SqliteSchedulerPort and WebhookRegistry satisfy (DES-149) — the facade's
+ *  register/deregister sequence only needs these three trigger-claim primitives from either store. */
+interface TriggerClaimStore {
+  ownerOf(id: string): string | null | undefined;
+  /** v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): back to a plain
+   *  two-argument claim — `createdRemote` is write-once at trigger creation and `claim()` no
+   *  longer re-stamps it (that rule, `3e3c331`+`2cf5f32`, is SUPERSEDED). "Who wrote the script
+   *  about to run" now lives on the version row (`workflow_versions.registeredRemote`), written by
+   *  `insertVersion`, not by this call. */
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
+  release(id: string, workflow: string): void;
+  /** issue #160 (owner-approved 2026-10-07): `workflow_deregister` releases a trigger's CLAIM
+   *  (`release()`, above) but that alone leaves it `enabled:true` — reachable by any future claimant
+   *  the instant something re-registers the id, with no explicit re-enable step. `disable()` is the
+   *  deregister-only hygiene DES-150's own claim model was missing: idempotent (disabling an
+   *  already-disabled or unknown id is a no-op, never an error — mirrors `release`'s own contract),
+   *  called on every id `workflowDeregister` releases, right alongside `release()`. REQUIRED, not
+   *  optional, for the SAME fail-closed reason `claim`/`release` already are. */
+  disable(id: string): void;
+  /** v24 (integrator; DES-156/REQ-103): the by-id snapshot `workflow_describe.triggers[]` serves,
+   *  and the id set for one workflow. Optional so a unit-tier construction with no trigger stores
+   *  still satisfies the port. */
+  get?(id: string): unknown;
+  claimedIdsFor?(workflow: string): string[];
+}
+
+const NEVER_CLAIMS: TriggerClaimStore = {
+  ownerOf: () => undefined,
+  claim: () => 'NOT_FOUND',
+  release: () => { /* no-op */ },
+  disable: () => { /* no-op */ },
+  get: () => null,
+  claimedIdsFor: () => [],
+};
+
+/** v24 (DES-148): the two catalog methods the facade's register sequence calls SEPARATELY (with a
+ *  trigger-claim step in between) — a structural port so this file does not need the concrete
+ *  WorkflowCatalog class beyond what's already imported for read-side helpers. */
+interface RegistrationCatalog {
+  validateRegistration(req: { name: string; script: string; mermaid: string; actor?: Actor }): Promise<{ params: ParamContract; warnings?: ModelRefWarning[] }>;
+  /** v37 P1 (DES-263's 第三次修訂): `registeredRemote` — the SAME `isRemoteSubmission` the trigger
+   *  stores' creation stamp already reads, forwarded one hop further so the version row records
+   *  who wrote the script it holds. */
+  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; actor?: Actor; registeredRemote?: boolean; seedManifestRef?: string; seedNamespace?: string }): Promise<{ version: string }>;
+  /** v33 (DES-222, REQ-201): the v22 read (DES-111) — type-only addition, no new catalog method or
+   *  behaviour. Read AFTER insertVersion so the register response shows the version loop. */
+  resolveDetail(name: string, sel: { version?: string }): Promise<{ versions: string[]; channels: { release: string | null; beta: string | null } }>;
+}
+
+export interface McpFacadeDeps {
+  clock?: Clock;
+  store?: RunStore;
+  runManager?: RunManager;
+  validator?: SubmissionValidator;
+  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_source/list's read-time
+   *  effective bounds — forwarded from ServerConfig (see server.ts's createServer). */
+  ceilings?: Ceilings;
+  /** v25 (DES-168, REQ-120, issue #61): this deployment's resolved per-run in-flight agent() cap, so
+   *  `workflow_authoring_guide` states the REAL fan-out width instead of a literal. Same
+   *  "resolved, never hard-coded" rule as `ceilings` above. */
+  runConcurrency?: number;
+  /** v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt
+   *  count, forwarded from server.ts's composition root — so `workflow_describe`'s
+   *  `timeoutMs.attempts`/`worstCaseMs` are COMPUTED from what this deployment actually retries,
+   *  never a hard-coded number. **Owner decision 2026-10-06 (describe/retries mismatch fix)**: the
+   *  formula is `1 + max(0, config?.retries ?? gatewayDefaultRetries)`, where
+   *  `gatewayDefaultRetries` is `0` when an sdk/pi gateway is deployed (their own `attemptsFor()`
+   *  default) and `1` only for direct-fetch (`LiteLLMGatewayClient`'s own default) — NOT a single
+   *  `?? 1` for every gateway (see server.ts's `gatewayAttempts` computation for the real branch).
+   *  Absent (unit construction) defaults inside `projectWorkflowDescribe` itself to the deployed
+   *  default (1 + 1 = 2). */
+  gatewayAttempts?: number;
+  /** v37 (DES-258 owner ruling 2026-09-22, ARCH-181, ADR-083 posture C): this deployment's
+   *  MEASURED Bash-confinement posture, forwarded from `ServerConfig.confinementPosture`
+   *  (server.ts's composition root — the SAME value `main.ts`'s boot probe already set for the
+   *  remote-submission door, ARCH-181/DES-262; not a new `ServerConfig` field). So
+   *  `workflow_authoring_guide` states the posture actually in force instead of leaving a cold
+   *  author to learn it from a refused run. Absent (unit construction, or a deployment where the
+   *  probe never ran) renders the guide's dual-posture generic text rather than asserting either. */
+  confinementPosture?: 'confined' | 'unconfined';
+  /** issue #150: this deployment's `ServerConfig.harnessProviders` (present, `['openrouter',
+   *  'ollama']`, only under `gateway:"pi"`) — forwarded so `workflow_authoring_guide` renders the
+   *  pi-harness-correct provider-effort text instead of the sdk gateway's, on a pi deployment. Same
+   *  "absent renders the generic/sdk text" rule `confinementPosture` above already has. */
+  harnessProviders?: readonly Provider[];
+  /** Issue #147: this deployment's ACTUAL harness (`server.ts`'s `activeHarness`, the direct
+   *  gateway-transport signal issue #138 introduced for the probe/observed-stats wiring — a second
+   *  reader of the SAME value, not a new fact). So `workflow_authoring_guide`'s Skills section
+   *  states the harness actually in force first, and `BASH_SUBSUMES_FILE_TOOLS` can explain the
+   *  pi + declared-skill exception. Absent (unit construction, or a deployment that never forwarded
+   *  it) renders the guide's dual-harness generic text and leaves the warning unchanged — same
+   *  "absent degrades honestly" convention as `confinementPosture` just above. */
+  activeHarness?: 'sdk' | 'pi';
+  cas?: CasStore;
+  assetSync?: AssetSyncService;
+  /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
+   *  Absent (unit-test construction with no triggers ever passed) degrades to a store that answers
+   *  NOT_FOUND for everything, rather than crashing. */
+  schedulerClaims?: TriggerClaimStore;
+  webhookClaims?: TriggerClaimStore;
+  /** v25 (REQ-119, DES-166): the rendered-diagram cache, so `workflow_deregister` can drop this
+   *  name's entries. REQ-111 makes a version's `mermaid` immutable, so a DELETE is the only event
+   *  that can stale the cache — and it can, because `insertVersion` allocates `v${max+1}` over the
+   *  name's own rows: deregister + re-register reuses the same (name, 'v1') key. Optional, exactly
+   *  like `assetSync` — a unit-constructed facade has no cache bound. */
+  diagramCache?: DiagramInvalidator;
+}
+
+/** The one method `workflowDeregister` needs from `DiagramRenderer` (v25, DES-166). */
+export interface DiagramInvalidator {
+  invalidate(name: string): void;
+}
+
+/** Robustness at the MCP boundary: some MCP clients serialize the untyped `args` object into a JSON
+ *  STRING before it reaches the tool (observed with the Claude Code plugin — the script then read
+ *  `args.inquiry` off a string and silently got `undefined`). If `args` arrives as a string that is
+ *  valid JSON, parse it back into the object the caller intended; a non-JSON string is left as-is
+ *  here. Issue #161 B6: downstream admission (`validateDeclaredArgs`) now refuses any non-object
+ *  top-level `args` with `PARAM_OUT_OF_RANGE` regardless of what this workflow declares, so a
+ *  left-as-is non-JSON string never actually reaches a script — only a JSON-string or object `args`
+ *  does. Non-string values pass through this function unchanged. */
+function normalizeArgs(args: unknown): unknown {
+  if (typeof args !== 'string') return args;
+  try {
+    return JSON.parse(args);
+  } catch {
+    return args;
+  }
+}
+
+/** v24 (integrator, DES-137 + REQ-118): `readArtifactChunk` answers with its own INTERNAL reason
+ *  vocabulary (`workspace-artifacts.ts`'s `ArtifactError`), which used to be handed to the caller
+ *  verbatim as the error code — so `workspace_pull` advertised `WORKSPACE_ESCAPE`/`NOT_FOUND` in
+ *  `tools/list` and actually returned `PATH_OUTSIDE_WORKSPACE`/`NOT_A_FILE`, neither of them a
+ *  member of the closed `ErrorCode` union. This is the one translation point between the internal
+ *  reason and the advertised code; anything unmapped is `NOT_FOUND` (the tool's generic miss). */
+const PULL_REASON_TO_CODE: Record<string, ErrorCode> = {
+  PATH_OUTSIDE_WORKSPACE: 'WORKSPACE_ESCAPE',
+  NOT_A_FILE: 'NOT_FOUND',
+  RUN_WORKSPACE_MISSING: 'NOT_FOUND',
+};
+
+function notFound(runId: string): ErrEnvelope {
+  return { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` };
+}
+
+/** v23 Gate 6.5 simplify: the `{code, error}` half of a failed `catalog.resolveDetail`, shared by
+ *  `workflow_describe`/`workflow_source` (byte-identical in both before this extraction). Unknown
+ *  NAME keeps the pre-v22 `WORKFLOW_NOT_FOUND` code; a known name with an unresolvable version/
+ *  channel selector surfaces its own typed code. */
+function catalogResolveFailure(err: unknown, name: string): { code: string; error: ErrEnvelope } {
+  const error = err instanceof CatalogNotFoundError
+    ? { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${name}` }
+    : toErrEnvelope(err);
+  return { code: error.code, error };
+}
+
+function reportProblemFor(name: string, owner: string | null): string {
+  return owner === null
+    ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${name}"})`
+    : `issue_report({workflow: "${name}"})`;
+}
+
+export const INLINE_SCRIPT_CLOSED_MESSAGE = 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({name, script, mermaid}) then run_start({name})';
+
+// Shared body for suspend/resume/stop: pre-check, delegate action, post-read new status (or old on error).
+async function lifecycle(store: RunStore, runId: string, action: () => Promise<void>): Promise<ResultEnvelope> {
+  const view = await store.getRun(runId);
+  if (!view) return { runId, status: 'failed', error: notFound(runId) };
+  try {
+    await action();
+    const after = await store.getRun(runId);
+    return { runId, status: after?.status ?? view.status };
+  } catch (err) {
+    // issue #98 item 9: a refusal (ILLEGAL_TRANSITION and any other coded error) reports the SAME
+    // failed-refusal envelope every other tool uses (`status: 'failed'`), never the run's own status
+    // — echoing `view.status` here (e.g. `{status: 'completed', error}`) made a refusal invisible to
+    // a caller that branches on `status === 'failed'`. The run's actual (unchanged) status still
+    // travels, in `error.detail.runStatus`, for a caller that wants it.
+    return { runId, status: 'failed', error: refusalError(err, view.status) };
+  }
+}
+
+/** issue #98 item 9: the one place a run-control refusal becomes its wire `ErrEnvelope` — always
+ *  `toErrEnvelope(err)` plus the run's own (unchanged) status folded into `detail.runStatus`, shared
+ *  by `lifecycle()` and `runResume()` (which cannot use `lifecycle()` — it has its own pre-`resume()`
+ *  admission check) so the two can never drift onto different shapes. */
+function refusalError(err: unknown, runStatus: RunStatusView['status']): ErrEnvelope {
+  const error = toErrEnvelope(err);
+  return { ...error, detail: { ...error.detail, runStatus } };
+}
+
+/** DES-149: `null` for the two no-real-identity Principal kinds; the CATALOG's own internal
+ *  ownership re-check (`existing.owner !== principal`, unchanged since v15) treats `principal ===
+ *  null` as "bypass" — the mechanism an `admin`/`auth-disabled` caller uses to act on ANY owner's
+ *  row, since authorize() already permitted it structurally and the catalog method itself has no
+ *  concept of roles. */
+function bypassPrincipal(p: Principal): string | null {
+  return p.kind === 'admin' || p.kind === 'auth-disabled' ? null : p.kind === 'loopback-exempt' ? null : p.id;
+}
+
+/** DES-149: attribution for a NEW row — always the caller's own id (never a bypass), so an
+ *  admin's own registrations/creations are attributed to them, not silently ownerless. */
+function attributionPrincipal(p: Principal): string | null {
+  return p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? null : p.id;
+}
+
+/** v24 (integrator; RESTORES 04-design.md:3526, the v22 send-back round-2 wrinkle-1 ruling, which
+ *  the v24 dispatch rewrite dropped with no amending design row — found by the Batch-C executor).
+ *
+ *  That ruling says, in terms: *"while `authEnabled` is false, `args.principal` remains legitimate
+ *  identity for all three writes … the gate is `authEnabled`, never 'does a principal exist'."*
+ *  v24's `callTool` builds identity only from the edge-resolved `Principal`, so on a no-auth server
+ *  EVERY registration was stored ownerless and workflow ownership was neither recorded nor
+ *  enforced — REQ-100's whole subject, silently off for the single-operator deployment that is this
+ *  engine's default shape.
+ *
+ *  Scoped exactly as the ruling scopes it, and no wider: the argument is honoured ONLY for
+ *  `kind:'auth-disabled'`. A `loopback-exempt` caller on an auth-ENABLED server is deliberately
+ *  excluded — self-asserted identity reaching an authenticated deployment is the hole v22's H1
+ *  closed, and it stays closed. This is ATTRIBUTION and OWNERSHIP only; it never grants a role
+ *  (authorization already short-circuited for `auth-disabled` before this is reached). */
+function attributionWithArg(p: Principal, a: unknown): string | null {
+  const supplied = (a as { principal?: unknown } | null | undefined)?.principal;
+  if (p.kind === 'auth-disabled' && typeof supplied === 'string' && supplied !== '') return supplied;
+  return attributionPrincipal(p);
+}
+
+/** The ownership-COMPARISON identity, same rule. `bypassPrincipal` answers `null` for admin and for
+ *  the no-identity kinds, which the catalog reads as "skip the ownership gate"; with an
+ *  `args.principal` on a no-auth server there IS an identity to compare, so the gate applies. */
+function bypassWithArg(p: Principal, a: unknown): string | null {
+  const supplied = (a as { principal?: unknown } | null | undefined)?.principal;
+  if (p.kind === 'auth-disabled' && typeof supplied === 'string' && supplied !== '') return supplied;
+  return bypassPrincipal(p);
+}
+
+/** v36 (DES-244, ARCH-157/158/161, TASK-242, REQ-212/REQ-114): `id` is ALWAYS the attribution
+ *  rule's answer (`attributionWithArg`) — even on a `'bypass'`-gated call, so an admin's own id is
+ *  recorded WHILE bypassing, never silently ownerless. `bypass` is true exactly when the
+ *  call-site's OWN gate rule (`gate`) would have answered `null` — `bypass ≡ (today's gate value
+ *  === null)`, which reproduces the pre-v36 ownership-refusal expression exactly, for all four
+ *  principal kinds, at every call site. */
+function idSourceOf(p: Principal, a: unknown): 'authenticated' | 'claimed' | 'none' {
+  const supplied = (a as { principal?: unknown } | null | undefined)?.principal;
+  if (p.kind === 'auth-disabled' && typeof supplied === 'string' && supplied !== '') return 'claimed';
+  return attributionPrincipal(p) === null ? 'none' : 'authenticated';
+}
+type Gate = 'bypass' | 'attribution';
+export function actorFor(p: Principal, a: unknown, gate: Gate): Actor {
+  // `id` is always the attribution answer (see the comment above) — computed once and reused for
+  // `gateId` on the 'attribution' gate rather than calling the same pure function twice.
+  const attributionId = attributionWithArg(p, a);
+  const gateId = gate === 'bypass' ? bypassWithArg(p, a) : attributionId;
+  return { id: attributionId, bypass: gateId === null, idSource: idSourceOf(p, a) };
+}
+
+/** Dashboard auth spec §A (2026-09-30): the `run_list` scoping rule, declared ONCE — `run_list`
+ *  and every dashboard run listing (`/api/runs`, `/api/home`) apply it, so the two surfaces cannot
+ *  disagree on whose runs a caller sees. `undefined` = unfiltered (admin, auth disabled). */
+export function runListScope(p: Principal): string | undefined {
+  return p.kind !== 'admin' && p.kind !== 'auth-disabled' ? nsOf(p) : undefined;
+}
+
+/** Dashboard auth spec §A: the per-row version masking `workflow_list` applies (issue #100 Q5 owner
+ *  follow-up), declared ONCE — also applied by the dashboard's `/api/workflows`. A non-owner (not
+ *  owner, not admin/bypass, not an ownerless legacy row) never sees a non-release version id:
+ *  `versions` collapses to `[release]` (or `[]`) and `channels.beta` to null. */
+export function viewerWorkflowVersions(
+  w: { owner: string | null; versions: string[]; channels: { release: string | null; beta: string | null } },
+  actor: Actor,
+): { viewerIsOwner: boolean; versions: string[]; channels: { release: string | null; beta: string | null } } {
+  const viewerIsOwner = canMutate(w.owner, actor);
+  return viewerIsOwner
+    ? { viewerIsOwner, versions: w.versions, channels: w.channels }
+    : { viewerIsOwner, versions: w.channels.release !== null ? [w.channels.release] : [], channels: { release: w.channels.release, beta: null } };
+}
+
+/** issue #162(1) (owner decision, 2026-10-10): shared by `McpFacade.runStatus` and `_resultMeta`
+ *  (run_result) — a fire-and-forget `agent()` call the script never awaited can still be
+ *  `queued`/`running` the moment ITS run reaches a terminal state (adjudication #9 I-2: the engine
+ *  never aborts in-flight work just because the run around it finished; issue #162 D already fixes
+ *  its usage eventually back-filling into `meta.usage`/`run_list` once it settles). Before this, a
+ *  caller reading right at the terminal moment had no way to tell that was happening at all — the
+ *  response looked complete. GATED on `status` being terminal (`TERMINAL.has`) — a `queued`/
+ *  `running` agent on a run that is ITSELF still `running` is the normal, unremarkable case (every
+ *  agent passes through exactly those two states on the way to settling), not a warning; without
+ *  this gate every poll of an ordinary in-progress run would carry a spurious warning on its very
+ *  first agent() call. `undefined` when the run is not terminal, or nothing is `queued`/`running`,
+ *  so both callers' own `warnings` array stays absent rather than `[]` on every healthy run.
+ *
+ *  issue #162(1) reverify-2 (independent-verifier finding, 2026-10-10): `inflightAgentCount` is read
+ *  from `RunManager.inflightAgentCount(runId)` — THIS process's own live records — never from
+ *  `agents.filter(...)` over a persisted snapshot (the prior shape). Counting off the snapshot made
+ *  this warning PERMANENT once the process that owned an in-flight fire-and-forget call restarted:
+ *  the snapshot still shows it `queued`/`running` forever, nothing will ever settle it again, and
+ *  "poll again" stops being true advice. See `RunManager.inflightAgentCount`'s own doc. */
+function agentStillRunningWarning(status: RunStatus, inflightAgentCount: number): { code: 'AGENT_STILL_RUNNING'; message: string } | undefined {
+  if (!TERMINAL.has(status)) return undefined;
+  if (inflightAgentCount === 0) return undefined;
+  return { code: 'AGENT_STILL_RUNNING', message: `${inflightAgentCount} agent() call(s) still in flight; usage will be back-filled once they settle — poll again` };
+}
+
+export class McpFacade {
+  private readonly store: RunStore;
+  private readonly runManager: RunManager;
+  private readonly validator: SubmissionValidator;
+  private readonly ceilings: Ceilings;
+  private readonly runConcurrency: number;
+  private readonly gatewayAttempts?: number;
+  private readonly confinementPosture?: 'confined' | 'unconfined';
+  private readonly harnessProviders?: readonly Provider[];
+  private readonly activeHarness?: 'sdk' | 'pi';
+  private readonly cas?: CasStore;
+  // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
+  // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
+  // composition root supply it once that port is known.
+  private assetSync?: AssetSyncService;
+  private readonly diagramCache?: DiagramInvalidator;
+  private readonly schedulerClaims: TriggerClaimStore;
+  private readonly webhookClaims: TriggerClaimStore;
+  private readonly _clock: Clock;
+  // Owner decision 2026-10-02: a namespace's quota view (usage + effective limit + source). Late-bound
+  // like `assetSync`: the principal/role store it reads is built after the facade.
+  private _quotaView?: (namespace: string) => QuotaView;
+
+  constructor(deps: McpFacadeDeps) {
+    const clock = deps.clock ?? new SystemClock();
+    this._clock = clock;
+    // Construct the store FIRST and inject it into RunManager (D-I1) — otherwise RunManager
+    // builds its own private InMemoryRunStore and every lookup through `this.store` 404s
+    // (RUN_NOT_FOUND) even for runs that really are in flight.
+    this.store = deps.store ?? new InMemoryRunStore(clock);
+    this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
+    this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
+    this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
+    this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
+    this.gatewayAttempts = deps.gatewayAttempts;
+    this.confinementPosture = deps.confinementPosture;
+    this.harnessProviders = deps.harnessProviders;
+    this.activeHarness = deps.activeHarness;
+    this.cas = deps.cas;
+    this.assetSync = deps.assetSync;
+    this.diagramCache = deps.diagramCache;
+    this.schedulerClaims = deps.schedulerClaims ?? NEVER_CLAIMS;
+    this.webhookClaims = deps.webhookClaims ?? NEVER_CLAIMS;
+  }
+
+  /** See the `assetSync` field comment — called once by the composition root after
+   *  `AssetSyncService` is constructed (needs the server's bound port). */
+  bindAssetSync(assetSync: AssetSyncService): void {
+    this.assetSync = assetSync;
+  }
+
+  /** See the `_quotaView` field comment — called once by the composition root. */
+  bindQuotaView(fn: (namespace: string) => QuotaView): void {
+    this._quotaView = fn;
+  }
+
+  private _triggerOwner(id: string): string | null | undefined {
+    const s = this.schedulerClaims.ownerOf(id);
+    if (s !== undefined) return s;
+    return this.webhookClaims.ownerOf(id);
+  }
+
+  /** One row per declared trigger id, in declaration order. An id that resolves in NEITHER store is
+   *  reported as `{id, status:'TRIGGER_NOT_FOUND'}` rather than dropped — a trigger the released
+   *  version claims but no store knows is precisely what the reader needs to see. */
+  private _resolveTriggers(workflow: string, declaredIds: readonly string[]): unknown[] {
+    // Both binding doors, de-duplicated in declaration-then-discovery order: the ids the RESOLVED
+    // VERSION declares, plus the ids either store reports as bound to this workflow (a create-time
+    // `schedule_create({workflow})` binding never entered a version's `triggers[]`). v24
+    // adjudication #8 (H-2) closed the create-time door, so the second source now reaches PRE-v24
+    // legacy rows only — and still must, or those rows become invisible here.
+    const ids = [...new Set([
+      ...declaredIds,
+      ...(this.schedulerClaims.claimedIdsFor?.(workflow) ?? []),
+      ...(this.webhookClaims.claimedIdsFor?.(workflow) ?? []),
+    ])];
+    return ids.map((id) => this.schedulerClaims.get?.(id) ?? this.webhookClaims.get?.(id) ?? { id, status: 'TRIGGER_NOT_FOUND' });
+  }
+
+  private _storeFor(id: string): TriggerClaimStore {
+    return this.schedulerClaims.ownerOf(id) !== undefined ? this.schedulerClaims : this.webhookClaims;
+  }
+
+  // ============================================================================================
+  // workflow_* (7)
+  // ============================================================================================
+
+  /** DES-149: the register→claim→insert→compensate sequence. `validateRegistration` (nothing
+   *  written) → every trigger id located + ownership-checked → `claim()` each (first non-'claimed'
+   *  releases the ids THIS call claimed, in reverse, and refuses) → `insertVersion` → on throw,
+   *  release exactly the ids this call claimed. */
+  // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): `isRemoteSubmission` is
+  // threaded here for the SAME reason `runStart` already takes it, but it no longer feeds the
+  // trigger claims below (that re-stamp rule, `3e3c331`+`2cf5f32`, is SUPERSEDED) — it feeds
+  // `insertVersion`'s new `registeredRemote` column instead, one row over, so a re-registration of
+  // an already-claimed trigger taints the VERSION rather than laundering/upgrading the TRIGGER.
+  // Defaults to `false` (local) so the pre-existing call sites that omit it keep compiling and keep
+  // their prior behaviour.
+  // Issue #116 (decision b, finding 2): `requestId` is a TRAILING optional param, defaulting to a
+  // fresh `randomUUID()` — every existing call site (tests included) keeps compiling unmodified;
+  // `call-tool.ts`'s real dispatch passes the SAME id it generates once per call, so the masked
+  // trigger-claim refusal below echoes the one request id that also tags every other refusal or
+  // success this call could have produced.
+  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[]; seedManifestRef?: string }, principal: Principal, isRemoteSubmission = false, requestId: string = randomUUID()): Promise<Record<string, unknown>> {
+    const claimedThisCall: string[] = [];
+    try {
+      // v24 Gate 7.5 (D-2, REQ-110's last clause + adjudication #2 A-2): the pre-v24 workflow-wide
+      // `defaults` ARGUMENT is retired (ADR-035). It was not declared on the schema and the schema
+      // is open, so it arrived, was never forwarded anywhere, and the caller got
+      // `status:"completed"` — a cold model working from an older example discovers from the BILL
+      // that its knobs did nothing. Refused by name, exactly as `meta.params.knobs` already is.
+      if (Object.hasOwn(a as object, 'defaults')) {
+        throw codedError(
+          'DEFAULTS_RETIRED',
+          'DEFAULTS_RETIRED: the workflow-wide `defaults` argument is retired (ADR-035) — declare meta.params.agents.<label>.<key>.default instead',
+          { param: 'defaults' },
+        );
+      }
+      // Issue #82 (option B): a version's default seed is a REF only (`seedManifestRef`) — rows stay
+      // small and the content goes through the CAS's own upload path. The register schema is
+      // open, so an inline key would otherwise be dropped silently; refuse it by name instead.
+      const inlineSeedKey = (['seed', 'seedManifest', 'seedRef'] as const).find((k) => Object.hasOwn(a as object, k));
+      if (inlineSeedKey !== undefined) {
+        throw codedError(
+          'INVALID_ARGUMENT',
+          `INVALID_ARGUMENT: workflow_register does not accept \`${inlineSeedKey}\` — a version's default seed is a reference only: upload the files (POST /assets/blob/<sha>, then POST /assets/manifest) and pass the returned seedManifestRef`,
+          { param: inlineSeedKey },
+        );
+      }
+      // Issue #82: validated NOW, in the registrant's own CAS namespace (the same ladder and the same
+      // per-namespace ownership check run_start({seedManifestRef}) uses), so a bad or foreign ref is
+      // refused here — before any trigger is claimed — rather than first at fire time.
+      const seedNamespace = a.seedManifestRef !== undefined ? nsOf(principal) : undefined;
+      if (a.seedManifestRef !== undefined) await this.runManager.loadSeedManifestRef(seedNamespace!, a.seedManifestRef);
+      const triggers = a.triggers ?? [];
+      if (new Set(triggers).size !== triggers.length) {
+        throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: duplicate ids in triggers[]');
+      }
+      const isAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled';
+      const actorId = principal.kind === 'loopback-exempt' ? undefined : (principal as { id: string }).id;
+      for (const id of triggers) {
+        const owner = this._triggerOwner(id);
+        // Issue #116 (decision a, review round 6 finding 2): `detail:{requestId}` on BOTH this
+        // throw and the masked one below — on only one it would itself be the tell. Both share
+        // the SAME `codedError`->`toErrEnvelope` conversion path (the outer `catch` below), so
+        // they are byte-identical by construction once the code/message match too.
+        if (owner === undefined) throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`, { requestId });
+        // DES-139's stated operator consequence, matching `authorize()`'s own ownerless rule: an
+        // OWNERLESS trigger (`createdBy NULL`, a migrated pre-v24 row) is ADMIN-ONLY — including a
+        // re-registration naming a legacy trigger id. The removed `owner !== null` escape let any
+        // caller adopt one (Gate 6.5+7 round 2; the arm was reached by no test at all).
+        //
+        // Issue #116 (decision a, finding 2): masked for a non-admin — SAME code/message as a
+        // genuinely-missing id (TRIGGER_NOT_FOUND is the sibling HERE, unlike the workflow NAME
+        // check below, which has none for a brand-new name) — closing the existence oracle this
+        // registration step would otherwise create for the schedule/webhook ids
+        // `schedule_delete`/`schedule_setEnabled`/`webhook_delete` already mask (authz.ts).
+        // Audited (decision b) BEFORE the throw — admin is never audited here (never reaches this
+        // branch at all: `isAdmin` short-circuits it, same as `authorize()`'s own admin bypass).
+        if (!isAdmin && owner !== actorId) {
+          try {
+            this.store.appendRefusal({
+              ts: this._clock.isoNow(), requestId, actor: actorId ?? null,
+              ...(actorId !== undefined ? { authMethod: authMethodFor(principal) } : {}),
+              tool: 'workflow_register', targetKind: 'trigger', targetId: id,
+              realReason: 'NOT_TRIGGER_OWNER', returnedCode: 'TRIGGER_NOT_FOUND',
+            });
+          } catch (err) {
+            console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool: 'workflow_register', error: err instanceof Error ? err.message : String(err) }));
+          }
+          throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`, { requestId });
+        }
+      }
+      const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
+      const actor = actorFor(principal, a, 'attribution');
+      // 2026-09-26 (owner decision 6): `modelWarnings` (MODEL_CATALOG_UNVERIFIED) travel to the
+      // response's `result.warnings`, merged with `toolSurfaceWarnings` below — one array, same as
+      // every other non-fatal registration note.
+      const { params, warnings: modelWarnings } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, actor });
+      for (const id of triggers) {
+        const outcome = this._storeFor(id).claim(id, a.name);
+        if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
+        if (outcome === 'held') continue; // already this workflow's from an earlier version — never released by compensation
+        for (const rid of [...claimedThisCall].reverse()) this._storeFor(rid).release(rid, a.name);
+        // Issue #89 item 7: the message must start with its OWN code, like every other refusal in
+        // this engine (codedError's convention throughout workflow-catalog.ts/mcp-facade.ts) — not
+        // with `outcome`, the bare `'NOT_FOUND' | 'ALREADY_CLAIMED'` string `claim()` itself answers.
+        const code = outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED';
+        // Issue #116 (review round 6 finding 2, advisor follow-up): same `detail:{requestId}` as
+        // the ownership pre-check's own TRIGGER_NOT_FOUND throws above — a TOCTOU race (the id is
+        // claimed/removed between that pre-check and this `claim()` call) must not make this
+        // facade answer the SAME code in TWO different shapes depending on which arm fired.
+        throw codedError(code, `${code}: ${id}`, { requestId });
+      }
+      let version: string;
+      try {
+        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, actor, registeredRemote: isRemoteSubmission, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef, seedNamespace } : {}) }));
+      } catch (err) {
+        for (const id of [...claimedThisCall].reverse()) this._storeFor(id).release(id, a.name);
+        throw err;
+      }
+      const versionNum = Number(version.replace(/^v/, '')) || 1;
+      // v33 (DES-222, REQ-201): one additional read, OUTSIDE the compensating try/catch above — a
+      // read failure after a committed insert must never release a working trigger (DES-222's
+      // boundary). Only `versions`/`channels` are lifted off the detail; the rest of WorkflowDetail
+      // (notably `script`) is discarded here, never on the envelope.
+      const { versions, channels } = await catalog.resolveDetail(a.name, { version });
+      // issue #103(a): a declared-but-unprovisioned mcp/skill name is a non-fatal registration
+      // WARNING now (never a refusal — see script-checks.ts's own header for why the OLD
+      // MCP_NOT_PROVISIONED registration throw is retired), resolved against the REAL asset catalog
+      // via the SAME resolver dispatch uses (`AssetSyncService.resolveDeclaredAssets`) so
+      // registration and admission (run-manager.ts's `start()`) can never disagree. `this.assetSync`
+      // is bound post-construction (see its own field comment) — absent only in a test harness that
+      // never wired one, which then honestly reports no provisioning warnings rather than crashing.
+      const provisioningWarnings: RegistrationWarning[] = [];
+      if (this.assetSync) {
+        for (const [label, spec] of Object.entries(params.agents)) {
+          const declared = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
+          if (declared.skills.length === 0 && declared.mcp.length === 0) continue;
+          const missing = await this.assetSync.resolveDeclaredAssets(a.name, declared);
+          provisioningWarnings.push(...provisioningWarningsFor(a.name, label, missing));
+        }
+      }
+      // Issue #147: each label's own declared skills, so toolSurfaceWarnings can explain the
+      // pi + declared-skill BASH_SUBSUMES_FILE_TOOLS exception — built from the SAME
+      // `params.agents` the provisioning-warning loop above already iterates, never a second read.
+      const skillsByLabel: Record<string, readonly string[]> = {};
+      for (const [label, spec] of Object.entries(params.agents)) {
+        if (spec.skills && spec.skills.length > 0) skillsByLabel[label] = spec.skills;
+      }
+      // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
+      // unaffected registration keeps exactly the reply keys it had before. 2026-09-26 (owner
+      // decision 6): merged with any MODEL_CATALOG_UNVERIFIED notes from validateRegistration above.
+      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture, { skillsByLabel, harness: this.activeHarness }), ...(modelWarnings ?? []), ...provisioningWarnings];
+      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
+  /** DES-149 (ARCH-091): the catalog deletes; the facade releases each claimed trigger and reports
+   *  the union as `releasedTriggers`. v36 (DES-246, TASK-244): an optional `version` switches to the
+   *  version-scoped sibling. 2026-09-22 (Gate-8 F6 send-back): the pinned-run FACT is still gathered
+   *  HERE — runs and workflows live in two separate SQLite files and this facade is the only
+   *  production caller holding both handles (ARCH-156) — but the REFUSAL no longer is: this facade
+   *  passes the fact down as the catalog's required `pinnedRunId` 4th argument and the catalog
+   *  refuses from its own ladder, after its own ownership check (ARCH-155). Absent `version` runs
+   *  today's whole-name path, byte-identical, below. */
+  async workflowDeregister(a: { name: string; version?: string }, principal: Principal): Promise<Record<string, unknown>> {
+    try {
+      if (a.version !== undefined) {
+        // Both sides of the compare are normalized: a non-terminal run's pin is stored
+        // NUMERIC/normalized (`Number(version.replace(/^v/,''))`) while a catalog row's version is
+        // free TEXT and may legitimately be unprefixed ("3") — an un-normalized compare would make
+        // this security gate silently never fire for such a row.
+        const norm = (v: string) => String(v).replace(/^v/, '');
+        const actor = actorFor(principal, a, 'bypass'); // minted ONCE, above the probe (F6)
+        const runs = await this.store.listRuns();
+        const pinned = runs.find((r) => r.name === a.name && norm(r.scriptVersion) === norm(a.version!) && !TERMINAL.has(r.status));
+        const pinnedRunId = pinned?.runId ?? null;
+        const { removed, remaining, claimedTriggers } = await this.runManager.catalog.deregisterVersion(a.name, a.version, actor, pinnedRunId);
+        // v36 (DES-246 boundary): only the before/after `declaredTriggers` difference is released —
+        // NOT the union with `claimedIdsFor()` the whole-name path below also pulls in. A trigger
+        // claim binds to the workflow NAME, not a version, and the name row survives a version
+        // delete (outcome 5 guarantees it), so a create-time-bound legacy claim is never orphaned by
+        // deleting one version and must not be released just because one was.
+        // issue #160 (owner-approved 2026-10-07): `disable()` alongside `release()` — a version
+        // delete that drops a trigger's only declaring version must not leave it `enabled:true` for
+        // the next claimant to inherit live.
+        for (const id of claimedTriggers) { const store = this._storeFor(id); store.release(id, a.name); store.disable(id); }
+        if (!removed) {
+          const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
+          return { runId: '', status: 'failed', code: error.code, error };
+        }
+        // Gate-8 send-back (real defect), UPDATED by issue #87 (2026-09-26): originally this
+        // invalidated because `insertVersion` allocated `v${MAX+1}` over the REMAINING rows, so
+        // deleting the highest version freed its key for the next registration to reuse. Issue #87's
+        // monotonic per-name high-water mark makes that reuse impossible now — a deleted version's
+        // number is never reallocated — so the invalidation below no longer prevents a COLLISION;
+        // it just clears the deleted version's now-permanently-dead cache slot. Left in place as a
+        // straightforward hygiene measure. `invalidate(name)` is name-wide (the cache has no
+        // per-version method), which is over-broad but safe: the cache is a defence against
+        // anonymous-route render abuse, not an optimization (diagram-render.ts header), so wiping a
+        // surviving sibling version's entry just costs one extra re-render.
+        if (removed) this.diagramCache?.invalidate(a.name);
+        return { runId: '', status: 'completed', name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, result: { name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, remaining } };
+      }
+      // v24 Gate 7.5 (D-1b, REQ-115/ADR-026): the catalog reports the ids the VERSION ROWS declare
+      // — the claim door, and since adjudication #8 (H-2, issue #56) the only one a new trigger can
+      // use. A trigger bound AT CREATION (`schedule_create({workflow})`, now reachable only as a
+      // pre-v24 legacy row) never enters a version's `triggers[]`, so deregister released nothing, the row
+      // kept pointing at the deleted name, and a same-name re-registration inherited it: live, a
+      // real cron fired a run for the new registration 47 s later. `claimedIdsFor()` — the exact
+      // reader `workflow_describe` already uses to SHOW both doors — is now consulted here too, so
+      // what is released is what was shown.
+      const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, actorFor(principal, a, 'bypass'));
+      const releasedTriggers = [...new Set([
+        ...claimedTriggers,
+        ...(this.schedulerClaims.claimedIdsFor?.(a.name) ?? []),
+        ...(this.webhookClaims.claimedIdsFor?.(a.name) ?? []),
+      ])];
+      // issue #160 (owner-approved 2026-10-07): `disable()` alongside `release()` — a whole-name
+      // deregister used to leave every released trigger `enabled:true`, live for whatever claims it
+      // next (a same-name re-registration, or any other workflow) the instant it is claimed, with
+      // no explicit re-enable step in between. Disabling it here closes that window.
+      for (const id of releasedTriggers) { const store = this._storeFor(id); store.release(id, a.name); store.disable(id); }
+      // v24 Gate 7.5 (D-10, REQ-113): the catalog transaction deletes the workflow's `assets` ROWS;
+      // the tree under `<assetRoot>/<name>/` is filesystem state no SQL statement can reach, and it
+      // was surviving the delete — the next registrant of the freed name could declare a skill it
+      // had never pushed and receive the previous owner's file, byte-identical, in its own agent
+      // workspace. Only on an actual removal (`removed:false` deleted nothing and must delete
+      // nothing here either), and optional-chained because a unit-constructed facade may have no
+      // asset sync bound at all.
+      // Issue #166 decision 1: by this point the catalog's DB-side delete has ALREADY committed —
+      // `deleteWorkflowTree` itself never throws any more (ENOENT/ENAMETOOLONG mean "nothing to
+      // remove"; any other fs error is logged server-side and comes back as `warning` instead),
+      // so this can only ever ADD an advisory note to the otherwise-successful response below,
+      // never flip it to a failure for a delete that already happened.
+      const treeResult = removed ? this.assetSync?.deleteWorkflowTree(a.name) : undefined;
+      // v25 (REQ-119, DES-166): and the rendered diagrams — same reason as the asset tree above.
+      // Issue #87 (2026-09-26): a re-registration of the freed NAME no longer starts its version
+      // numbering back at 'v1' (the per-name high-water mark in `workflow_version_hwm` survives a
+      // whole-name deregister), so this no longer prevents a version-number collision either — same
+      // hygiene reasoning as the version-scoped branch above: clears the dead name's cache slots.
+      if (removed) this.diagramCache?.invalidate(a.name);
+      // v24 (integrator, REQ-118): the CATALOG method is deliberately total (`removed:false`, never
+      // throws — catalog-v24.test.ts pins that contract, and it stays). The TOOL is not: its own
+      // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`, and a caller that deletes a name that
+      // was never there must be told so rather than reading `removed:false` out of a success
+      // envelope it has no schema reason to inspect.
+      if (!removed) {
+        const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
+        return { runId: '', status: 'failed', code: error.code, error };
+      }
+      // Issue #166 decision 1: `treeResult?.warning` surfaces ONLY when asset-tree cleanup hit a
+      // real (non-ENOENT/ENAMETOOLONG) fs error — never for the common "nothing to clean up" case,
+      // and never in place of `removed:true`, which is already guaranteed by this point.
+      return {
+        runId: '', status: 'completed', name: a.name, removed, releasedTriggers,
+        result: { name: a.name, removed, releasedTriggers, ...(treeResult?.warning ? { warning: treeResult.warning } : {}) },
+      };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
+  // Issue #98 item 8: `version: null` (an explicit JSON null, never an omitted key) CLEARS the
+  // named channel instead of pointing it — same authz as a normal publish (owner/admin only).
+  async workflowPublish(a: { name: string; version: string | null; channel?: Channel }, principal: Principal): Promise<Record<string, unknown>> {
+    try {
+      // v24 (integrator, REQ-097 — found by the Batch-B executor): the channel DEFAULTS to
+      // 'release'. `catalog.publish` sends everything that is not the literal 'release' to
+      // `beta_version`, so an omitted channel — which is exactly what the advertised schema allowed
+      // — silently published to beta, and the caller's next `run_start` answered
+      // CHANNEL_UNPUBLISHED. An unrecognised channel is now refused rather than quietly meaning
+      // beta: "point the release pointer" is what this tool says it does.
+      const channel = a.channel ?? 'release';
+      if (channel !== 'release' && channel !== 'beta') {
+        throw codedError('INVALID_CHANNEL', `INVALID_CHANNEL: '${String(channel)}' — the channel must be 'release' or 'beta'`);
+      }
+      const result = await this.runManager.catalog.publish(a.name, a.version, channel, actorFor(principal, a, 'bypass'));
+      return { runId: '', status: 'completed', result };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
+  /** v23 (REQ-101, DES-125/126, v24 rename of workflow_describe): the ONE response, same shape for
+   *  every principal (DES-125 already dropped the owner/non-owner split — v24 threads `Principal`
+   *  only for signature consistency, no masking decision here). */
+  // issue #93 item 3: `isRemoteSubmission` mirrors `runStart`'s own added parameter (same default,
+  // same "existing test call sites keep compiling" reasoning) — THIS caller's own socket peer
+  // locality, folded into `runnable`/`runnableReason` below alongside the resolved version's own
+  // `registeredRemote` (already read off `full`, a few lines down) so a caller who would actually
+  // be refused CONFINEMENT_UNAVAILABLE by `run_start` is told so here too, truthfully.
+  async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
+    const catalog = this.runManager.catalog;
+    const sel: VersionSelector = { version: a.version, channel: a.channel };
+    // v38 (issue #100 Q5, owner-approved policy) / issue #108 (2026-10-02, oracle fix): a non-owner
+    // explicitly asking for a version/channel other than the current release is answered EXACTLY
+    // like an unknown version — `catalogResolveFailure` on a hand-built VERSION_NOT_FOUND, same
+    // code+message shape `resolveVersionRequest` itself uses — so describe never discloses more
+    // about a version a non-owner could not run anyway (mermaid/params/triggers/etc, all built below
+    // this point), NOR whether that forbidden version/channel even exists or is published (issue
+    // #108: `resolveDetail` itself used to throw the REAL `CHANNEL_UNPUBLISHED`/`VERSION_NOT_FOUND`
+    // before a POST-hoc `canRunResolved` gate ever ran — `resolveForActor` folds the SAME predicate
+    // to BEFORE resolution, same `RunManager.start()` fix). `actor` is minted ONCE and reused below
+    // for `viewerIsOwner` (owner follow-up) — a second mint would risk the two falling out of step
+    // under a future `actorFor` change.
+    const actor = actorFor(principal, a, 'bypass');
+    let full: WorkflowDetail;
+    try {
+      full = await catalog.resolveForActor(a.name, sel, actor);
+    } catch (err) {
+      return { runId: '', status: 'failed', ...catalogResolveFailure(err, a.name) };
+    }
+    const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
+    const meta = parseMeta(full.script);
+    // v39 (owner decision 2026-09-30, Part B): a version registered since v39 always carries a
+    // valid `meta.phases` (workflow_register checked it against the script's own `phase()` calls) —
+    // `resolvePhases` reads that back verbatim (`'declared'`). An EXISTING, pre-v39 version is
+    // immutable and never re-checked; for one with no valid `meta.phases` this instead DERIVES
+    // `phases` from the stored script's own `phase()` calls (`'derived'`) — never `phases:[]` just
+    // because the author registered before the rule existed.
+    const { phases: resolvedPhases, phasesSource } = resolvePhases(full.script);
+    const check = catalog.validateCurrent(full.script);
+    const ownerView: WorkflowOwnerView = {
+      name: full.name, version: full.version,
+      resolvedBy: requested.ok ? requested.requested.kind : 'default-release',
+      channels: full.channels as unknown as Record<string, string>,
+      versions: full.versions,
+      description: meta.description, phases: resolvedPhases,
+      // v24 (integrator): the RAW stored contract, deliberately NOT `readParams`-normalized here.
+      // `readParams` turns an ABSENT contract into `{agents:{},args:{}}`, which erased the one
+      // discriminator `projectWorkflowDescribe` uses to answer `runnableReason:'LEGACY_REREGISTER'`
+      // — so a migrated pre-v22 row reported `runnable:true` while `run_start` refused it. The
+      // projection applies `effectiveAgentBounds` itself (`projectAgentParams`), so nothing is lost
+      // by handing it the raw value; `workflow_source`, which has no runnable field, keeps its own
+      // `readParams` call.
+      params: full.params, owner: full.owner, createdAt: full.createdAt,
+      // v24 Gate 7.5 (D-8, REQ-111): the resolved version's own diagram, forwarded verbatim. The
+      // projection has read `full.mermaid` since TASK-149 and this view never set it, so even after
+      // the catalog started selecting the column the answer would still have been null — the two
+      // halves of "author-supplied diagram, served back" are the read and this hand-off.
+      mermaid: full.mermaid,
+      reportProblem: reportProblemFor(full.name, full.owner),
+      validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
+      script: full.script,
+    };
+    // v24 (integrator; DES-156/REQ-103 — found by the Batch-E executor): `triggers` was a hardcoded
+    // `[]` behind an "until TASK-149 wires the by-id lookup" comment, so a workflow's schedules and
+    // webhooks were invisible on the ONE surface that is supposed to describe it. Resolved BY ID
+    // (`scheduler.get(id) ?? webhooks.get(id)`) from the RESOLVED VERSION's own `triggers` column —
+    // never by workflow, because `listByWorkflow` was retired with `trigger-bindings.ts` and
+    // because a claim belongs to a version, not to a name.
+    // issue #154 B1-B4 (2026-10-07 reverify): computed here (async, this facade's own catalog
+    // access) and handed to the pure projector below as a plain fact, same convention as
+    // `confinementPosture`/`isRemoteSubmission`/`registeredRemote`.
+    const staleness = await this.runManager.catalog.validateStoredVersion(full.name, full.version);
+    const view = projectWorkflowDescribe(ownerView, {
+      ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []), attempts: this.gatewayAttempts,
+      confinementPosture: this.confinementPosture, isRemoteSubmission, registeredRemote: full.registeredRemote,
+      // Owner follow-up (issue #100 Q5): the SAME `canMutate` notion `canRunResolved` above already
+      // folds in — an owner, a bypass actor, or an ownerless row sees every version/channel.
+      viewerIsOwner: canMutate(full.owner, actor),
+      notRunnable: !staleness.ok,
+      // Issue #154 residual: names the specific rule `validateStoredVersion` found this stored row
+      // failing (e.g. RESERVED_PREFIX) — the SAME `staleness` result `notRunnable` above already
+      // booleanizes, never a second call.
+      // Issue #166 tail (low item 2): `rule`/`limit`/`actual` ride along for the one `violation`
+      // value that has sub-rules (INVALID_NAME) — `staleness.detail` carries them only for that
+      // case (workflow-catalog.ts's `_computeStoredVersionValidity`), so a plain `String(...)`/
+      // `undefined` read is correct for every other violation too.
+      notRunnableDetail: staleness.ok ? undefined : {
+        violation: String(staleness.detail?.['violation'] ?? staleness.code),
+        message: staleness.message,
+        ...(typeof staleness.detail?.['rule'] === 'string' ? { rule: staleness.detail['rule'] as string } : {}),
+        ...(typeof staleness.detail?.['limit'] === 'number' ? { limit: staleness.detail['limit'] as number } : {}),
+        ...(typeof staleness.detail?.['actual'] === 'number' ? { actual: staleness.detail['actual'] as number } : {}),
+      },
+    });
+    // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
+    // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
+    // list): `full.diagramContract` ('v1'/'v2', catalog-computed) is exactly the resolved version's
+    // own value, so a spread over the projected view is the same fact, one hop shorter.
+    // v26 integration (REQ-128 acceptance "dashboard 的 workflow 頁 … tools", clarification 24):
+    // `toolSurface` — the literal `allowedTools` each label's `agent()` call declares, or
+    // `'default'` when it declares none. Added here, on the `diagramContract` precedent one line
+    // above, rather than on `WorkflowDescribeView`: it is derived from the SCRIPT (which the
+    // projection deliberately never sees), read with the SAME `scanAgentCalls` the registration
+    // checker and `deriveExpectedGraph` use, so the dashboard's tools column and the diagram's
+    // `tools:` segment can never disagree. Names only — never a resolved list, never prompt text.
+    const toolSurface: Record<string, string[] | 'default'> = {};
+    const toolScan = scanAgentCalls(full.script);
+    for (const call of toolScan.calls) {
+      if (call.label === '') continue;
+      toolSurface[call.label] = call.allowedTools === undefined || call.allowedTools === 'absent'
+        ? 'default'
+        : [...call.allowedTools].sort();
+    }
+    // v35 (DES-239, ARCH-151, TASK-237, REQ-209): this per-call projection cannot refuse either —
+    // `scan.unscannable` is surfaced as a visible marker rather than an indistinguishable empty
+    // `toolSurface` (a truly agent()-less script vs. an oracle parse failure).
+    // v27b (DES-197, ARCH-131, TASK-202, ADR-051): `phases[].agents` — predicted per-lane agent
+    // labels, joined by lane ORDINAL against `view.phases` (the author-declared, registered
+    // metadata). Served UNCONDITIONALLY to every caller; no masking predicate. A phase ordinal
+    // with a derived lane gets its labels (`[]` when the lane is dynamic and declares none, never
+    // absent); a phase ordinal with NO derived lane gets no `agents` key at all (never `[]`
+    // standing in for "unavailable" — `describe.phases` is the author's contract and this
+    // projection may not invent a row in it, so lanes beyond `phases.length` are dropped).
+    const lanes = predictedLanes(full.script);
+    const phases = view.phases.map((p, i) => {
+      const lane = lanes.find((l) => l.index === i);
+      return lane ? { ...p, agents: lane.agents } : p;
+    });
+    return {
+      runId: '', status: 'completed',
+      // v37 P1 (ADR-086's third owner ruling, DES-263's 第三次修訂): `registeredRemote` — same
+      // seam as `diagramContract` just above (computed off `full`, not carried through
+      // `WorkflowOwnerView`). Without it, an operator following the recovery instruction (P1's
+      // whole point — re-register+publish locally) has no way to CONFIRM which version is tainted.
+      // Issue #82: the version's default seed ref (absent when none was bound). The namespace is
+      // not shown — it is the registrant's identity, already on `owner`/attribution surfaces.
+      // v39 (owner decision 2026-09-30, Part B): `phasesSource` joins the spread on the same seam as
+      // `diagramContract`/`registeredRemote` just above — computed off `full.script`, not carried
+      // through `WorkflowOwnerView`/`WorkflowDescribeView`, so the EXACT-key-set guard on
+      // `projectWorkflowDescribe`'s own return (`EXPECTED_DESCRIBE_KEYS`) never has to change for it.
+      result: { ...view, phases, diagramContract: full.diagramContract, registeredRemote: full.registeredRemote, phasesSource, ...(full.seedManifestRef !== undefined ? { seedManifestRef: full.seedManifestRef } : {}), toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
+    };
+  }
+
+  /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,
+   *  non-owner `author` gets the masked projection (`scriptWithheld:true, see:'workflow_describe'`). */
+  async workflowSource(a: { name: string; version?: string }, principal: Principal): Promise<Record<string, unknown>> {
+    // Independent-verification follow-up (2026-09-28, issue #100 Q5) / issue #108 (2026-10-02,
+    // oracle fix): the SAME masking gate `workflowDescribe`/`RunManager.start()` already apply —
+    // now applied BEFORE resolution (`resolveForActor`, not a post-hoc `canRunResolved` over an
+    // already-resolved row), so a non-owner naming an explicit non-release version by id learns
+    // nothing beyond VERSION_NOT_FOUND — not even whether that version exists, is published, or is
+    // merely not theirs to run (`CHANNEL_UNPUBLISHED` vs `VERSION_NOT_FOUND` was itself a disclosure
+    // before this fix). `workflow_source` has no `channel` selector at all (`requestedChannel` is
+    // always `undefined`), so a bare/default call is unaffected — it always resolves the release
+    // version already, same as before.
+    let full: WorkflowDetail;
+    try {
+      full = await this.runManager.catalog.resolveForActor(a.name, { version: a.version }, actorFor(principal, a, 'bypass'));
+    } catch (err) {
+      if (err instanceof CatalogNotFoundError) {
+        return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
+      }
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+    const meta = parseMeta(full.script);
+    // v39 (owner decision 2026-09-30, Part B): same resolution `workflow_describe` uses — declared
+    // verbatim when the script has a valid `meta.phases`, else derived from its own `phase()` calls
+    // (a pre-v39, immutable row) — so `workflow_source`'s `phases` can never disagree with
+    // `workflow_describe`'s for the identical version.
+    const { phases: resolvedPhases } = resolvePhases(full.script);
+    const params = readParams(full.params, this.ceilings);
+    const isOwnerOrAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled'
+      || (principal.kind !== 'loopback-exempt' && principal.id === full.owner);
+    const check = this.runManager.catalog.validateCurrent(full.script);
+    const validation = check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors };
+
+    if (!isOwnerOrAdmin) {
+      const ownerView: WorkflowOwnerView = {
+        name: full.name, version: full.version,
+        channels: full.channels as unknown as Record<string, string>,
+        versions: full.versions,
+        description: meta.description, phases: resolvedPhases,
+        params, owner: full.owner, createdAt: full.createdAt,
+        reportProblem: reportProblemFor(full.name, full.owner),
+        validation,
+        script: full.script,
+      };
+      return { runId: '', status: 'completed', result: projectWorkflowForRead(ownerView, false) };
+    }
+    const resultObj = {
+      name: full.name, version: full.version, createdAt: full.createdAt,
+      description: meta.description, phases: resolvedPhases, script: full.script,
+      owner: full.owner, params, validation,
+    };
+    return { runId: '', status: 'completed', owner: full.owner, params, script: full.script, result: resultObj };
+  }
+
+  /** v24 (ARCH-091): "workflows only" — the mixed workflow+run listing moves to `run_list`.
+   *  issue #93 item 3: `isRemoteSubmission` (mirrors `workflowDescribe`'s own added parameter) folds
+   *  into `runnable`/`runnableReason` alongside each row's own `catalog.list()`-reported
+   *  `registeredRemote`, the SAME `admissionRefusal()` predicate `RunManager.start()` and
+   *  `workflowDescribe` use — a version this host would actually refuse to run is never reported
+   *  `runnable:true` here either. `runnableReason` is present ONLY on a row this fires for (an
+   *  additive key — nothing walks this array expecting the field to always exist). */
+  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal, isRemoteSubmission = false): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean; runnableReason?: 'CONFINEMENT_UNAVAILABLE' | 'NOT_RUNNABLE'; description: string; lastRunAt: string | null }>>> {
+    const workflows = await this.runManager.catalog.list();
+    // v36 (DES-247, ARCH-163, TASK-245): ONE lookup for the whole request, never one per row — a
+    // name absent from the map has never run, which is what turns `?? null` into the honest
+    // "never run" sentinel rather than a coincidental null timestamp.
+    const lastRuns = await this.store.lastRunAtByName();
+    const onlyRunnable = a.onlyRunnable ?? (principal.kind === 'user');
+    // Owner follow-up (issue #100 Q5, "don't reveal existence"): minted ONCE per request, reused
+    // per row below — `canMutate`'s owner/bypass/ownerless notion, the SAME one `workflowDescribe`
+    // and `RunManager.start()` apply.
+    const actor = actorFor(principal, a, 'bypass');
+    const rows = (await Promise.all(workflows
+      // v24 adjudication #6 F-4: `w.owner` directly — the `as unknown as {owner?}` cast this line
+      // used to carry is what let tsc stay green while `catalog.list()` had no `owner` field at all.
+      .map(async (w) => {
+        const channels = w.channels as unknown as { release: string | null; beta: string | null };
+        const published = channels.release != null;
+        const confinementRefused = published && admissionRefusal({
+          posture: this.confinementPosture,
+          origin: isRemoteSubmission || w.registeredRemote ? 'remote' : 'local',
+        }) !== null;
+        // issue #154 B1-B4 (2026-10-07 reverify): the SAME re-validation `run_start`/`run_resume`
+        // apply against the resolved VERSION's stored script — `runnable` must agree with what a
+        // real run_start against this exact row would do, not merely with publish state and
+        // confinement. `w.version` is the SAME resolved-version string `catalog.list()` already
+        // used to fetch this row's `description`/`params` above it.
+        const staleness = published ? await this.runManager.catalog.validateStoredVersion(w.name, w.version) : { ok: true as const };
+        // Owner follow-up: a non-owner (not owner, not admin/bypass, not an ownerless legacy row —
+        // `canMutate` false) never sees a non-release version id through this row — `versions[]`
+        // collapses to `[release]` (or `[]` with none) and `channels.beta` is masked to `null`. The
+        // released version itself (`channels.release`) stays visible on purpose: it IS what
+        // run_start/describe would run for this caller (Q1/Q2), so it names nothing new.
+        const view = viewerWorkflowVersions({ owner: w.owner, versions: w.versions, channels }, actor);
+        return {
+          name: w.name,
+          owner: w.owner,
+          versions: view.versions,
+          channels: view.channels as unknown as Record<string, string>,
+          runnable: published && !confinementRefused && staleness.ok,
+          ...(confinementRefused
+            ? { runnableReason: 'CONFINEMENT_UNAVAILABLE' as const }
+            : !staleness.ok
+              ? { runnableReason: 'NOT_RUNNABLE' as const }
+              : {}),
+          // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
+          // this (v9/REQ-061); this projection's `.map` was silently dropping it.
+          description: w.description,
+          lastRunAt: lastRuns.get(w.name) ?? null,
+        };
+      })))
+      // Service accounts spec (owner decision 2026-10-03), §Authorization: an allowlisted
+      // service-account principal sees only the workflows named in its allowlist — run_list needs
+      // no equivalent filter (it is already scoped to the caller's OWN runs via runListScope/nsOf,
+      // which an allowlisted SA can only ever have for an allowlisted workflow in the first place).
+      .filter((w) => !onlyRunnable || w.runnable)
+      .filter((w) => !(principal.kind === 'user' || principal.kind === 'author') || !principal.workflows || principal.workflows.length === 0 || principal.workflows.includes(w.name));
+    return { runId: '', status: 'completed', result: rows };
+  }
+
+  /** Dashboard auth spec §A: the catalog rows `GET /api/workflows` serves (the dashboard's own
+   *  wider shape — params, createdAt, registeredRemote), masked for `principal` by the SAME
+   *  `viewerWorkflowVersions` rule `workflowList` applies. A non-owner also never gets the
+   *  version/params of a row that has NO release (the catalog would otherwise describe the beta or
+   *  newest draft — a version `workflow_describe` refuses that caller). */
+  async workflowCatalogFor(principal: Principal): Promise<Array<Record<string, unknown>>> {
+    const actor = actorFor(principal, {}, 'bypass');
+    return (await this.runManager.catalog.list()).map((w) => {
+      const channels = w.channels as unknown as { release: string | null; beta: string | null };
+      const view = viewerWorkflowVersions({ owner: w.owner, versions: w.versions, channels }, actor);
+      if (view.viewerIsOwner) return { ...w };
+      const hidden = channels.release === null;
+      return { ...w, versions: view.versions, channels: view.channels, ...(hidden ? { version: '', params: undefined } : {}) };
+    });
+  }
+
+  /** v24 (DES-157/TASK-150 owns the full builder + GUIDE_EXAMPLES) — a minimal, real (not a stub)
+   *  guide assembled from what already exists (ERROR_CATALOG-shaped rules stated in prose) so the
+   *  tool is genuinely answerable today; TASK-150 replaces this body with the generated one. */
+  /** v24 (integrator; DES-157/ADR-032, REQ-116/REQ-117 — the C-2 wiring class again): this served
+   *  a HAND-TYPED nine-line paragraph while `buildAuthoringGuide()` — the 16 KB guide assembled
+   *  from the engine's OWN enforcement constants, with the ten registered examples — sat with
+   *  exactly one caller, `scripts/gen-authoring-md.ts`. DES-157 says in terms that this builder is
+   *  "the ONE builder both `workflow_authoring_guide` (the MCP tool, over the composition root's
+   *  RESOLVED ceilings) and `scripts/gen-authoring-md.ts` call". A cold model, whose only
+   *  documentation is this tool, was being handed the summary instead of the guide — and the
+   *  summary is hand-typed, i.e. exactly the drift ADR-032 introduced the builder to end.
+   *  `this.ceilings` is the RESOLVED ServerConfig value (operator-overridable), not
+   *  DEFAULT_CEILINGS — the distinction DES-157's own signature insists on. */
+  async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
+    // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` travels with the ceilings — this
+    // is the LIVE tool response, so it states the posture actually measured on THIS deployment,
+    // never the generic dual-posture text the generated static docs/AUTHORING.md falls back to.
+    // 2026-09-26 (alias mechanism removed): the model-ref rule is now static text (no resolved
+    // alias table, no example-alias thunk) — see `authoring-guide.ts`'s `modelRefSentence()`.
+    return {
+      runId: '',
+      status: 'completed',
+      result: {
+        text: buildAuthoringGuide({
+          ...this.ceilings,
+          runConcurrency: this.runConcurrency,
+          confinementPosture: this.confinementPosture,
+          harnessProviders: this.harnessProviders,
+          activeHarness: this.activeHarness,
+        }),
+      },
+    };
+  }
+
+  // ============================================================================================
+  // run_* (8)
+  // ============================================================================================
+
+  /** v24 (adjudication #2 A-2, then #4's wiring sweep): the four seed entry points are declared on
+   *  `run_start`'s inputSchema AND documented by the TASK-153 plugin, but this handler used to
+   *  destructure only `{name,args,budget,version,overrides}` — so ajv admitted `seedManifestRef`
+   *  and the facade silently dropped it on the floor, i.e. every seeded run started EMPTY and
+   *  REQ-117's seed probe could never pass. Same built-but-unwired class as REQ-113's `assets`
+   *  (C-2): the mechanism exists end to end except for the one line that hands the value over.
+   *  `seedNamespace` is deliberately NOT accepted — ADR-028 derives the CAS namespace from the
+   *  principal, and `run_start`'s schema is `additionalProperties:false` so a caller-supplied one
+   *  is refused before reaching here. */
+  async runStart(
+    a: {
+      name?: string; args?: unknown; budget?: number | null; version?: string; channel?: RunSpec['channel']; overrides?: unknown;
+      seed?: RunSpec['seed']; seedManifest?: RunSpec['seedManifest']; seedRef?: RunSpec['seedRef']; seedManifestRef?: string;
+    },
+    principal: Principal,
+    // v37 (ARCH-182, DES-263, TASK-258, REQ-218): the ONE `tools/call`-driven admission site —
+    // threaded as one more per-request fact, exactly as `runAgentLog(a, principal,
+    // crossPrincipalRead, actor)` already threads one. Defaults to `false` (local) so the ~5
+    // pre-existing test call sites that omit it keep compiling AND keep their prior behaviour —
+    // no test anywhere newly gates on a param it never supplied.
+    isRemoteSubmission = false,
+  ): Promise<ResultEnvelope<{ runId: string; warnings?: unknown[] }>> {
+    const validation = await this.validator.validate({ name: a.name });
+    if (!validation.ok) return { runId: '', status: 'failed', error: validation.errors[0] };
+    try {
+      // v38 (issue #100 owner-approved policy): minted via the SAME `actorFor(...,'bypass')`
+      // `workflowDeregister`/`workflowPublish` already use (L461/L497/L546) — `.id` is the
+      // attribution answer (byte-identical to the old `attributionPrincipal(principal)`: run_start's
+      // schema is `additionalProperties:false` and declares no `principal` property, so
+      // `attributionWithArg`'s `args.principal` override is never actually reachable here — see its
+      // own doc comment), `.bypass` is the NEW fact `RunManager.start()`'s non-owner version-pin
+      // gate needs and did not have before.
+      const actor = actorFor(principal, a, 'bypass');
+      const runId = await this.runManager.start({
+        name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' },
+        origin: isRemoteSubmission ? 'remote' : 'local',
+        // v24 (integrator, REQ-097): `channel` was dropped here too — `RunSpec.channel` and
+        // `run-manager.ts`'s resolve both consume it, and without this line the schema's channel
+        // would be admitted and then ignored, which is worse than refusing it.
+        ...(a.channel !== undefined ? { channel: a.channel } : {}),
+        ...(a.seed !== undefined ? { seed: a.seed } : {}),
+        ...(a.seedManifest !== undefined ? { seedManifest: a.seedManifest } : {}),
+        ...(a.seedRef !== undefined ? { seedRef: a.seedRef } : {}),
+        ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}),
+        ...(actor.id ? { principal: actor.id } : {}),
+      }, a.overrides, actor);
+      const view = await this.store.getRun(runId);
+      // Issue #73 (d): non-fatal — the run is already admitted; these only say what to expect.
+      const warnings = this.runManager.takeAdmissionWarnings?.(runId) ?? [];
+      return { runId, status: view?.status ?? 'queued', result: { runId, ...(warnings.length > 0 ? { warnings } : {}) } };
+    } catch (err) {
+      return { runId: '', status: 'failed', error: toErrEnvelope(err) };
+    }
+  }
+
+  /** DES-151: `adminReads` is attached HERE, at this projection, only for the run's OWNER —
+   *  never a field of `RunStatusView` itself (DES-162's ungated `/api/*` routes therefore cannot
+   *  serve it by construction). */
+  async runStatus(a: { runId: string }, principal: Principal, _crossPrincipalRead: boolean, _actor: string | null): Promise<ResultEnvelope<RunStatusView>> {
+    const view = await this.store.getRun(a.runId);
+    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    const merged = await this.runManager.status(a.runId).catch(() => view);
+    const isOwner = merged.principal !== undefined && principal.kind !== 'auth-disabled' && principal.kind !== 'loopback-exempt' && principal.id === merged.principal;
+    const adminReads = isOwner ? this.store.auditFor(a.runId) : undefined;
+    // issue #162(1) (owner decision): `run_status` gets the SAME `AGENT_STILL_RUNNING` signal
+    // `_resultMeta` computes for `run_result` (below) — never the heavier usage/budgetEnforceable
+    // machinery `run_result`'s own `meta` carries, which nothing here needs. `warnings` here is
+    // the ONLY populated key, matching `ResultEnvelope.meta`'s own doc ("`run_status` populates
+    // ONLY `warnings`"). issue #162(1) reverify-2: the COUNT comes from `runManager.inflightAgentCount`
+    // (this process's own live records), not from `merged.agents` (see that accessor's own doc
+    // for why a persisted snapshot cannot tell a restart-orphaned call apart from a live one).
+    const stillRunning = agentStillRunningWarning(merged.status, this.runManager.inflightAgentCount(a.runId));
+    return {
+      runId: merged.runId, status: merged.status,
+      ...(merged.principal ? { principal: merged.principal } : {}),
+      ...(adminReads !== undefined ? { adminReads } : {}),
+      result: merged,
+      ...(stillRunning !== undefined ? { meta: { warnings: [stillRunning] } } : {}),
+    };
+  }
+
+  async runResult(a: { runId: string }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope> {
+    const view = await this.store.getRun(a.runId);
+    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    const owner = view.principal ?? 'local';
+    const doRead = () => this.runManager.result(a.runId);
+    const outcome = crossPrincipalRead
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'run_result' as AuditAction, runId: a.runId, owner }, doRead)
+      : await doRead();
+    const o = outcome as Awaited<ReturnType<RunManager['result']>>;
+    // issue #159 (4th reverification): `seedConfigStripped` lives ONLY on the in-memory RunEntry,
+    // overlaid by `_mergeLive` — `view` (raw store.getRun) never carries it, same as `seedRef`/
+    // `seedManifestRef`. `runStatus` already reads it through `runManager.status()`; `run_result`
+    // must read the SAME live overlay or the guide's "both run_status and run_result" claim is false.
+    const merged = await this.runManager.status(a.runId).catch(() => view);
+    const meta = await this._resultMeta(a.runId, view, merged.seedConfigStripped);
+    if (o.ok) return { runId: a.runId, status: view.status, result: o.value, meta };
+    return { runId: a.runId, status: view.status, error: o.error, meta };
+  }
+
+  /** v26 (DES-183, ARCH-118, TASK-183, REQ-127): `run_result.meta` — the run's persisted usage
+   *  (`store.getRun` already folds/snapshots it, mirroring `agents`) plus `budgetEnforceable`,
+   *  derived at READ from the run's price pin — never stored twice. A pre-v26 run (no pin
+   *  persisted) reports `usd:false`: "we cannot claim every reachable model is priced" is the
+   *  honest answer, never a crash.
+   *
+   *  `warnings` (dash-auth-spec.md section C, 2026-09-30): `view` here is the RAW `store.getRun()`
+   *  read — it never carries `failedAgentCount`/`agentFailures` (those are `RunManager.status()`'s
+   *  own overlay, DES-234) — so this computes fresh via the SAME `summarizeAgentFailures` predicate
+   *  `status()`/`listSummaries()` use, directly off `view.agents`. Called from BOTH of `runResult`'s
+   *  exits — the `o.ok` one (always terminal, `RunManager.result()`'s own `RUN_NOT_TERMINAL` gate)
+   *  AND its error path, which also attaches `meta` to a `RUN_NOT_TERMINAL` (non-terminal `view`)
+   *  response — so `view.status` is NOT always terminal here, and `view.agents` is NOT always the
+   *  settled, final list either: `agentStillRunningWarning` (below) is what makes that distinction
+   *  safe, gating on `TERMINAL.has(view.status)` rather than assuming it. */
+  private async _resultMeta(runId: string, view: RunStatusView, seedConfigStripped?: string[]): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] }; warnings?: Array<{ code: 'AGENT_FAILED' | 'AGENT_STILL_RUNNING'; message: string }>; seedConfigStripped?: string[] }> {
+    const usage = view.usage ?? { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpricedCalls: 0, unmappedMessages: {} };
+    const priceBook = await this.store.getPriceBook(runId);
+    const pinnedUnpriced = priceBook ? Object.entries(priceBook.pinned).filter(([, e]) => e.price === null).map(([k]) => k) : [];
+    // issue #85: the pin is a PREDICTION of what the run may call; the records are what it DID call.
+    // A call that actually went unpriced (a done record with `unpriced:true`) means the USD limit did
+    // not bind on it, whatever the pin claimed — so its model is named here and `usd` goes false. The
+    // run once reported `usd:true, unpricedModels:[]` beside `unpricedCalls:2`.
+    const usedUnpriced = view.agents.filter((a) => a.state === 'done' && a.unpriced === true).map((a) => `${a.provider}/${a.model}`);
+    const unpricedModels = [...new Set([...pinnedUnpriced, ...usedUnpriced])];
+    const budgetEnforceable = { usd: priceBook !== null && unpricedModels.length === 0 && usage.unpricedCalls === 0, tokens: true, unpricedModels };
+    const { failedAgentCount } = summarizeAgentFailures(view.agents);
+    // issue #162(1) (owner decision): a fire-and-forget call still in flight the moment this run
+    // went terminal is exactly what `agent_live_at_terminal` (run-manager.ts) also observes at that
+    // same moment. issue #162(1) reverify-2: the COUNT here is `runManager.inflightAgentCount(runId)`
+    // — this process's own live records — never `view.agents` (the persisted snapshot
+    // `_transition` wrote). A snapshot-only read cannot tell a call that genuinely is still
+    // settling apart from one whose owning process restarted and will NEVER settle it again; see
+    // `RunManager.inflightAgentCount`'s own doc.
+    const stillRunning = agentStillRunningWarning(view.status, this.runManager.inflightAgentCount(runId));
+    const warnings = [
+      ...(failedAgentCount !== undefined && failedAgentCount > 0
+        ? [{ code: 'AGENT_FAILED' as const, message: `${failedAgentCount} agent(s) failed; see run_status.agentFailures for detail` }]
+        : []),
+      ...(stillRunning !== undefined ? [stillRunning] : []),
+    ];
+    return {
+      usage,
+      budgetEnforceable,
+      ...(warnings.length > 0 ? { warnings } : {}),
+      // issue #159: mirrors RunStatusView's own rule — present only when something was actually
+      // stripped, never an empty array.
+      ...(seedConfigStripped !== undefined && seedConfigStripped.length > 0 ? { seedConfigStripped } : {}),
+    };
+  }
+
+  async runSuspend(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {
+    return lifecycle(this.store, a.runId, () => this.runManager.suspend(a.runId));
+  }
+
+  // issue #93 item 2 (2026-09-26): `isRemoteSubmission` mirrors `runStart`'s own added parameter
+  // (same default, same ~5 pre-existing test call sites that omit it and must keep compiling
+  // unchanged). Unlike `runStart`, this is NOT delegated into `RunManager.resume()` — that method's
+  // ONE admission stage covers only the legacy-substitution case (a run whose pinned version is
+  // gone), by the owner's own deliberate ruling that an ordinary PINNED resume stays ungated
+  // (INV-V37-5(c), R5-F1's comment on `resume()`). A remote peer resuming a run whose pinned
+  // version is intact must still be refused when this host is unconfined — `call-tool.ts`'s own
+  // early door used to be the sole cover for that case; it is gone now (moved here so a
+  // nonexistent runId still answers RUN_NOT_FOUND first, never a blanket CONFINEMENT_UNAVAILABLE).
+  async runResume(a: { runId: string }, _principal: Principal, isRemoteSubmission = false): Promise<ResultEnvelope> {
+    const view = await this.store.getRun(a.runId);
+    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    if (isRemoteSubmission) {
+      const refusal = admissionRefusal({ posture: this.confinementPosture, origin: 'remote' });
+      if (refusal !== null) {
+        // issue #98 item 9: `status: 'failed'`, matching every other tool's refusal envelope —
+        // see `refusalError`'s doc comment (shared with `lifecycle()`, which `runResume` cannot use).
+        return {
+          runId: a.runId, status: 'failed',
+          error: refusalError(codedError(
+            refusal,
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run_resume submissions are refused. Remediation: ${CONFINEMENT_REMEDIATION}`,
+          ), view.status),
+        };
+      }
+    }
+    try {
+      await this.runManager.resume(a.runId);
+      const after = await this.store.getRun(a.runId);
+      return { runId: a.runId, status: after?.status ?? view.status };
+    } catch (err) {
+      return { runId: a.runId, status: 'failed', error: refusalError(err, view.status) };
+    }
+  }
+
+  async runStop(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {
+    return lifecycle(this.store, a.runId, () => this.runManager.stop(a.runId));
+  }
+
+  async runAgentLog(a: { runId: string; agentId?: string; label?: string; limit?: number; offset?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<AgentLogView> {
+    const stored = await this.store.getRun(a.runId);
+    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId), harness: null, events: [], hasMore: false };
+    const view = await this.runManager.status(a.runId).catch(() => stored);
+    // v24 (integrator, REQ-118 + DES-161): `run_agent_log`'s ADVERTISED schema takes `{runId,
+    // label}` and nothing else — a cold model has no way to learn an `agentId`, which is an
+    // engine-minted counter. This used to read `a.agentId ?? a.label`, i.e. it looked the LABEL up
+    // in the agentId column, so every schema-conformant call answered AGENT_LOG_NOT_FOUND. The
+    // label column DES-161 added to `AgentRecord` had no reader until here. `agentId` stays
+    // accepted for the pre-v24 callers that already had one (val-019 reads it off `run_status`).
+    const requested = a.agentId ?? a.label ?? '';
+    // issue #165: `label` now matches EITHER `AgentRecord.label` (the cosmetic display name,
+    // `opts.label ?? positional`) OR `AgentRecord.agentKey` (the positional itself) — before this,
+    // `agent('a', {label:'b'})` had NOTHING on its record equal to 'a', so `run_agent_log({label:
+    // 'a'})` fell all the way through to AGENT_LOG_NOT_FOUND even though 'a' is exactly the
+    // `meta.params.agents.<label>` contract key the script declared and this call dispatched
+    // under.
+    //
+    // TIERED, not a single two-field `.find()` (review send-back, issue #165 reverify-1): a query
+    // value is checked against `agentKey` across the WHOLE array FIRST, and only falls through to
+    // `label` when nothing's `agentKey` matches. A single combined `.find()` (array order, either
+    // field) silently resurrects the exact bug this fix exists to close whenever the query value is
+    // ANOTHER record's `agentKey` but THIS record's (colliding) display `label`: with
+    // `agent('a',{label:'b'})` queued before `agent('b')`, `run_agent_log({label:'b'})` would match
+    // 'a''s record on its `label` (array order puts it first) before ever reaching 'b''s own
+    // `agentKey:'b'` — i.e. the caller asking for the 'b' contract key gets the 'a' call's
+    // model/skills/log, the EXACT symptom #165 reports. Checking `agentKey` first means a query that
+    // IS a positional contract key always resolves to the call dispatched under it, however many
+    // other records' cosmetic `label` happens to collide with that value.
+    // Duplicate-match semantics WITHIN one tier are UNCHANGED from before this fix: still a plain
+    // `.find()` in `view.agents` array order — the first record whose `agentKey` (tier 1) or, failing
+    // that, `label` (tier 2) equals the query wins, same "first match, never disambiguated" rule
+    // issue #158 NEW already documents. This only matters for a GENUINE duplicate (two `agent()`
+    // calls sharing the same positional name, or two sharing the same `opts.label` override) — for
+    // the plain case `agent()` always put its own positional into BOTH `label` and `agentKey` when
+    // no `opts.label` override is given, so tier 1 alone reproduces the old single-field behaviour
+    // byte for byte. `agentId` (tier 3, pre-#165 callers) is the only reliable way to reach ONE
+    // specific agent() call site when several candidates match the SAME value in the same tier.
+    const agent = a.agentId !== undefined
+      ? view.agents.find((ag) => ag.agentId === a.agentId)
+      : view.agents.find((ag) => ag.agentKey === a.label)
+        ?? view.agents.find((ag) => ag.label === a.label)
+        ?? view.agents.find((ag) => ag.agentId === a.label);
+    if (!agent) {
+      // issue #103(e): same failed-refusal envelope as workspace_pull's fix — never the run's own
+      // (here possibly 'completed') status beside an error; the real status travels in
+      // `error.detail.runStatus`.
+      return { runId: a.runId, status: 'failed', error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${requested}`, field: a.agentId !== undefined ? 'agentId' : 'label', detail: { runStatus: view.status } }, harness: null, events: [], hasMore: false };
+    }
+    const agentId = agent.agentId;
+    const owner = stored.principal ?? 'local';
+    const doRead = () => this.store.getTranscript(a.runId, agentId);
+    const transcript = crossPrincipalRead
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'run_agent_log' as AuditAction, runId: a.runId, owner }, doRead)
+      : await doRead();
+    const harnessEvents = transcript.filter((e) => e.kind === 'harness');
+    const lastHarness = harnessEvents[harnessEvents.length - 1];
+    const harness: HarnessDescriptor | null = lastHarness
+      ? ((lastHarness.data as { descriptor?: HarnessDescriptor }).descriptor ?? null)
+      : null;
+    const nonHarness = transcript.filter((e) => e.kind !== 'harness');
+    const cap = a.limit ?? 50;
+    const offset = a.offset ?? 0;
+    const window = nonHarness.slice(offset, offset + cap);
+    const hasMore = offset + cap < nonHarness.length;
+    // v27b (DES-192/197, ARCH-131, TASK-202): `record` — the full `AgentRecord` this method already
+    // resolved above (`agent`), added on the success branch only; the not-found/error branches above
+    // return before this point and carry no `record`.
+    return { runId: a.runId, status: view.status, harness, events: window, result: window, hasMore, record: agent };
+  }
+
+  /** DES-152: filtered/paginated in SQL — `principal` is set by the facade from the caller's own
+   *  id, never from caller args (the tool schema does not even carry a `principal` key). */
+  async runList(a: { workflow?: string; status?: string; limit?: number }, principal: Principal): Promise<ResultEnvelope<RunSummary[]>> {
+    const filter: RunListFilter = { workflow: a.workflow, status: a.status as RunListFilter['status'], limit: a.limit };
+    const scope = runListScope(principal);
+    if (scope !== undefined) filter.principal = scope;
+    const rows = await this.store.list(filter);
+    return { runId: '', status: 'completed', result: rows };
+  }
+
+  // ============================================================================================
+  // workspace_* (6)
+  // ============================================================================================
+
+  async workspaceDiff(a: { manifest?: Array<{ sha256: string }> }, principal: Principal): Promise<ResultEnvelope<{ missing: string[]; quota?: QuotaView }>> {
+    const ns = nsOf(principal);
+    const shas = (a.manifest ?? []).map((e) => e.sha256).filter(Boolean);
+    const missing = this.cas ? await this.cas.missing(ns, shas) : shas;
+    const quota = this._quotaView?.(ns);
+    return { runId: '', status: 'completed', result: { missing, ...(quota ? { quota } : {}) } };
+  }
+
+  /** Owner decision 2026-10-02 (CAS cleanup): see workspace_prune_blobs' tool description for the
+   *  contract. Live roots for `ns` = every registered version bound from `ns` (its manifest ref +
+   *  every sha it lists); `keepFiles` = the same roots across ALL namespaces (belt and braces: a
+   *  file another namespace's version needs is never unlinked, even if its ref rows were somehow
+   *  gone). Authorization (another namespace = admin) is the `pruneMode` authz row. */
+  async workspacePruneBlobs(a: { dryRun?: boolean; olderThanDays?: number; namespace?: string }, principal: Principal): Promise<Record<string, unknown>> {
+    if (!this.cas) {
+      return { runId: '', status: 'failed', code: 'CAS_UNAVAILABLE', error: toErrEnvelope(codedError('CAS_UNAVAILABLE', 'CAS_UNAVAILABLE: no content store configured')) };
+    }
+    const ns = a.namespace ?? nsOf(principal);
+    const dryRun = a.dryRun !== false;
+    const olderThanDays = a.olderThanDays ?? 30;
+    const protect = new Set<string>();
+    const keepFiles = new Set<string>();
+    for (const root of this.runManager.catalog.seedManifestRoots()) {
+      const shas = [root.ref];
+      try {
+        const listed = JSON.parse(this.cas.readBlobSync(root.ref)?.toString('utf8') ?? '[]') as unknown;
+        if (Array.isArray(listed)) for (const e of listed) if (typeof (e as { sha256?: unknown })?.sha256 === 'string') shas.push((e as { sha256: string }).sha256);
+      } catch { /* unreadable manifest: its own ref is still protected */ }
+      for (const s of shas) {
+        keepFiles.add(s);
+        if ((root.namespace ?? casNamespaceFor(null)) === ns) protect.add(s);
+      }
+    }
+    const r = this.cas.prune(ns, { protect, keepFiles, dryRun, keepUsedSinceMs: this._clock.now() - olderThanDays * 86_400_000 });
+    const LIST_CAP = 500;
+    const quota = this._quotaView?.(ns);
+    return {
+      runId: '', status: 'completed',
+      result: {
+        namespace: ns, dryRun, olderThanDays,
+        refs: r.refs.slice(0, LIST_CAP), refsCount: r.refs.length, truncated: r.refs.length > LIST_CAP,
+        freedBytes: r.freedBytes, blobFilesDeleted: r.blobFilesDeleted, diskBytesFreed: r.diskBytesFreed,
+        ...(quota ? { quota } : {}),
+      },
+    };
+  }
+
+  async workspacePush(a: Record<string, unknown>, principal: Principal): Promise<Record<string, unknown>> {
+    try {
+      if (typeof a['sha256'] === 'string' && typeof a['contentB64'] === 'string') {
+        if (!this.cas) throw codedError('CAS_UNAVAILABLE', 'CAS_UNAVAILABLE: no content store configured');
+        const ns = nsOf(principal);
+        const r = await this.cas.putBlob(ns, a['sha256'] as string, Buffer.from((a['contentB64'] as string) ?? '', 'base64'));
+        return { runId: '', status: 'completed', result: { sha256: r.sha256, accepted: r.accepted } };
+      }
+      const scope: AssetScope = a['scope'] === 'global' ? 'global' : 'workflow';
+      const kind = a['kind'] as string;
+      const name = a['name'] as string;
+      // Issue #92 part B/C follow-up: an arg set naming neither `scope:'global'` nor `workflow`
+      // still computed `scope:'workflow'` above, with `a['workflow']` `undefined` — `pushMode()`
+      // (tool-specs.ts) resolves that same shape to 'invalid' (role-only, `minRole:'user'`), so
+      // every authenticated principal, not just admin, reached this far. For `kind:'mcp'` there is
+      // no on-disk step to fail on, so the request went straight to `assetSync.push`, and the
+      // server.ts catalog adapter's `?? ''` used to resolve the missing workflow to the SAME
+      // sentinel a real `scope:'global'` produces — a non-admin could write a global asset by
+      // simply omitting `scope`. Refused here, before assetSync is ever touched (matching
+      // workspaceDelete's twin guard just above in this file).
+      if (!this.assetSync || !name || (kind !== 'skill' && kind !== 'mcp') || (scope !== 'global' && !a['workflow'])) {
+        throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_push arguments matched no known mode (see workflow_authoring_guide)');
+      }
+      // Issue #102 (asset squatting): a workflow-scoped push into a name NOBODY has registered
+      // used to be stored anyway — `authorize()`'s ownership check answers `ok:true` for a
+      // workflow that does not exist (DES-139's tri-state: "does not exist" defers to the HANDLER
+      // answering `*_NOT_FOUND`, never leaking existence from authz itself), and until now no
+      // handler ever asked. That let any principal park a skill/mcp asset under an unclaimed name
+      // and have it silently INHERITED by whoever registered that name later — prompt injection via
+      // SKILL.md. Same `catalog.exists` guard `workspaceList` already runs below; the supported
+      // order is now `workflow_register` first, `workspace_push` second (see workspace_push's own
+      // description and workflow_register's).
+      if (scope === 'workflow' && !(await this.runManager.catalog.exists(a['workflow'] as string))) {
+        throw codedError('WORKFLOW_NOT_FOUND', `WORKFLOW_NOT_FOUND: unknown workflow '${a['workflow']}' — register it first (workflow_register), then push its assets`);
+      }
+      const pushedBy = attributionPrincipal(principal) ?? 'local';
+      const body = kind === 'skill' ? { files: a['files'] } : { config: a['config'] };
+      const req = scope === 'global'
+        ? { scope: 'global' as const, kind: kind as AssetKind, name, pushedBy, ...body }
+        : { scope: 'workflow' as const, workflow: a['workflow'] as string, kind: kind as AssetKind, name, pushedBy, ...body };
+      const r = await this.assetSync.push(req as never);
+      if ('error' in r) {
+        // issue #103(b): MCP_PROBE_FAILED is the one `push()` error whose `detail` carries a
+        // `transport` (the probe's own redacted code/message/transport/timeoutMs) — its message
+        // keeps the "(transport: …)" suffix unchanged. Owner decision 2026-09-30: EGRESS_DENIED
+        // now ALSO carries a `detail.message` (a pointer at system_info's policy field,
+        // asset-sync.ts) but no `transport` key — the suffix is appended only when `detail`
+        // actually has one, so EGRESS_DENIED's message doesn't grow a nonsensical
+        // "(transport: unknown)" tail. Every other bare-code `push()` refusal (RESERVED_PREFIX,
+        // BLOB_HASH_MISMATCH, …) is unaffected, message stays the bare code exactly as before.
+        const transportSuffix = r.detail?.['transport'] !== undefined ? ` (transport: ${String(r.detail['transport'])})` : '';
+        const message = r.detail !== undefined ? `${r.error}: ${String(r.detail['message'] ?? '')}${transportSuffix}` : r.error;
+        return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message, ...(r.detail !== undefined ? { detail: r.detail } : {}) } };
+      }
+      return { runId: '', status: 'completed', result: r };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
+  async workspacePull(a: { runId: string; path: string; offset?: number; length?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ChunkResult>> {
+    const stored = await this.store.getRun(a.runId);
+    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    const owner = stored.principal ?? 'local';
+    const doRead = async (): Promise<ChunkResult | { error: string }> => {
+      const workspace = await this.runManager.workspacePath(a.runId);
+      if (!workspace) return { error: 'RUN_WORKSPACE_MISSING' };
+      return readArtifactChunk(workspace, String(a.path ?? ''), a.offset, a.length);
+    };
+    const r = crossPrincipalRead
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }, doRead)
+      : await doRead();
+    if ('error' in r) {
+      // issue #103(e): the standard failed-refusal envelope every other tool uses (`status:
+      // 'failed'`, mcp-facade.ts's `lifecycle()`/`refusalError`, issue #98 item 9) — never the
+      // run's own (here possibly 'completed') status beside an error, which reads as success to a
+      // caller that only branches on `status === 'failed'`. The run's actual status still travels,
+      // in `error.detail.runStatus`.
+      const code = PULL_REASON_TO_CODE[r.error] ?? 'NOT_FOUND';
+      return { runId: a.runId, status: 'failed', error: { code, message: `workspace_pull denied: ${r.error} (${a.path})`, detail: { runStatus: stored.status } } };
+    }
+    return { runId: a.runId, status: stored.status, result: r };
+  }
+
+  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind; scope?: AssetScope; includeBody?: boolean }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+    // issue #146: `includeBody` only means something for the dedicated `{scope:'global', kind:
+    // 'skill'}` discovery door (it opts into that skill's own SKILL.md body) — refused for every
+    // other shape rather than silently ignored, same house style as the other malformed-request
+    // checks below (an argument that reads as accepted but does nothing is the defect, not a
+    // convenience).
+    if (a.includeBody !== undefined && !(a.scope === 'global' && a.kind === 'skill')) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list includeBody is only valid with scope:'global' and kind:'skill'" } };
+    }
+    if (a.runId) {
+      const stored = await this.store.getRun(a.runId);
+      if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+      const owner = stored.principal ?? 'local';
+      const doRead = () => this.runManager.listArtifacts(a.runId!);
+      const files = crossPrincipalRead
+        ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_list' as AuditAction, runId: a.runId, owner }, doRead)
+        : await doRead();
+      return { runId: a.runId, status: stored.status, result: files ?? [] };
+    }
+    // issue #109: the GLOBAL-scope discovery branch — role gating (`user`+, `none` refused) lives
+    // entirely in `tool-specs.ts`'s authz row (`global: {minRole:'user', ownership:'none'}`); by the
+    // time control reaches here the caller has already cleared that. `scope:'global'` with a
+    // `workflow` is a self-contradictory request (global assets are engine-wide, not scoped to any
+    // one workflow) — refused clearly rather than silently picking one meaning.
+    if (a.scope === 'global') {
+      if (a.workflow !== undefined) {
+        return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list scope:'global' does not take a workflow — global assets are engine-wide, not scoped to one workflow" } };
+      }
+      // `kind` is REQUIRED for a global listing — same "an empty list must be a fact, never a
+      // missing-argument's silent stand-in" rule the per-workflow branch below already states
+      // (REQ-118); `a.kind` absent is a malformed request, not "no global assets of no kind".
+      if (!a.kind) {
+        return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list scope:'global' requires kind:'skill'|'mcp'" } };
+      }
+      const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind, { includeBody: a.includeBody === true }) : [];
+      return { runId: '', status: 'completed', result: rows };
+    }
+    // issue #109 review send-back (LOW-4): `{kind}` (or nothing at all) with neither `workflow` nor
+    // `scope:'global'` is a malformed request — there is no asset tree to answer about — not "zero
+    // assets of that kind", which is what it used to fall through to below. Same REQ-118 "an empty
+    // list must be a fact, never a missing-argument's silent stand-in" rule this file already
+    // states one comment down for the workflow-exists check.
+    if (a.workflow === undefined) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list requires runId, workflow (with kind), or scope:'global' (with kind) — pass workflow or scope:'global'" } };
+    }
+    // Issue #116 (final verify): `{workflow}` without `kind` resolves to listMode 'invalid', whose
+    // authz row has no ownership check — so it must be refused BEFORE the existence check below,
+    // or an existing workflow (`completed []`) and a missing one (WORKFLOW_NOT_FOUND) differ.
+    if (!a.kind) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list with workflow requires kind:'skill'|'mcp'" } };
+    }
+    // v24 (integrator, REQ-118): the asset-scope branch used to answer `[]` for a workflow that was
+    // never registered, which reads identically to "registered, no assets" — and the row's own
+    // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`. An empty list is a fact about an
+    // existing workflow, never an answer about a name the engine has never heard of.
+    if (a.workflow !== undefined && !(await this.runManager.catalog.exists(a.workflow))) {
+      return { runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.workflow}` } };
+    }
+    const rows = this.assetSync && a.workflow && a.kind ? await this.assetSync.list({ workflow: a.workflow, kind: a.kind }) : [];
+    return { runId: '', status: 'completed', result: rows };
+  }
+
+  async workspaceDelete(a: { runId?: string; paths?: string[]; workflow?: string; kind?: AssetKind; name?: string; scope?: AssetScope }, _principal: Principal): Promise<Record<string, unknown>> {
+    try {
+      if (a.runId) {
+        return await this.runManager.withTerminalRun(a.runId, async () => {
+          const stored = await this.store.getRun(a.runId!);
+          const workspace = await this.runManager.workspacePath(a.runId!);
+          const paths = a.paths ?? [];
+          // Issue #96: a batch used to ABORT on the first rejected path — every valid path in the
+          // same call vanished from the response (not in `deleted`, not in `missing`, not in
+          // `rejected`), so a caller reading an empty `deleted`/`missing` concluded there was
+          // nothing to delete while the file it asked for was left on disk. Every input path now
+          // lands in exactly one of the three buckets, independent of every other path's verdict.
+          const deleted: string[] = [];
+          const missing: string[] = [];
+          const rejected: Array<{ path: string; reason: string }> = [];
+          for (const p of paths) {
+            const v = workspace ? pathVerdict(workspace, p, undefined, 'run-workspace') : { kind: 'reject' as const, reason: 'ESCAPE' as const };
+            if (v.kind === 'ok' && v.abs) {
+              if (!existsSync(v.abs)) { missing.push(p); continue; }
+              rmSync(v.abs, { recursive: true, force: true });
+              deleted.push(p);
+            } else {
+              rejected.push({ path: p, reason: v.kind !== 'ok' ? v.reason : 'ESCAPE' });
+            }
+          }
+          return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted, missing, rejected } };
+        });
+      }
+      // Issue #92 part B follow-up: `deleteMode()` (tool-specs.ts) resolves an arg set carrying
+      // neither `scope:'global'` nor `workflow` to 'invalid' — a role-only row every authenticated
+      // principal clears. This guard must independently refuse that same shape: without it, the
+      // branch below fell through to `workflow: a.workflow!` (`undefined`), and the server.ts
+      // adapter's `c.workflow ?? ''` silently resolved that `undefined` to the GLOBAL-scope
+      // sentinel — a non-admin caller could delete a global (admin-only-pushed) asset merely by
+      // omitting `scope`, and for `kind:'skill'` the on-disk tree lookup then threw on the same
+      // `undefined` workflow, so the caller saw INTERNAL_ERROR while the row was already gone.
+      if (!this.assetSync || !a.kind || !a.name || (a.scope !== 'global' && !a.workflow)) {
+        throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_delete arguments matched no known mode (see workflow_authoring_guide)');
+      }
+      // Issue #102 (asset squatting, delete-side twin of workspacePush's guard above): a
+      // workflow-scoped delete against a name nobody has registered is refused the same way a
+      // push is — the row's own advertised `errors[]` has promised `WORKFLOW_NOT_FOUND` here since
+      // before this fix; nothing ever produced it.
+      if (a.scope !== 'global' && !(await this.runManager.catalog.exists(a.workflow!))) {
+        throw codedError('WORKFLOW_NOT_FOUND', `WORKFLOW_NOT_FOUND: unknown workflow '${a.workflow}'`);
+      }
+      // Issue #92 part B: thread the real `{deleted}` boolean through rather than hardcoding
+      // `true` — a caller could not otherwise tell "removed" from "there was never any such asset".
+      const r = a.scope === 'global'
+        ? await this.assetSync.delete({ scope: 'global', kind: a.kind, name: a.name })
+        : await this.assetSync.delete({ scope: 'workflow', workflow: a.workflow!, kind: a.kind, name: a.name });
+      // Issue #166 decision 1 (r5-a round-3 reverify): same convention as `workflowDeregister`'s
+      // own `treeResult?.warning` forwarding above — `delete()`'s on-disk cleanup is best-effort
+      // and never turns a completed catalog delete into a reported failure; a non-ENOENT/
+      // ENAMETOOLONG fs error surfaces here as an advisory `warning`, present only when it fired.
+      return { runId: '', status: 'completed', result: { deleted: r.deleted, ...(r.warning ? { warning: r.warning } : {}) } };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: a.runId ?? '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
+  async workspacePurge(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope<{ purged: boolean }>> {
+    try {
+      return await this.runManager.withTerminalRun(a.runId, async () => {
+        const workspace = await this.runManager.workspacePath(a.runId);
+        const existed = !!workspace && existsSync(workspace);
+        if (workspace && existed) {
+          try { rmSync(workspace, { recursive: true, force: true }); } catch { /* already gone — idempotent */ }
+        }
+        // Review v035 M-1: a purge used to delete only `runs/<runId>`, leaving the run's own
+        // MCP state dir (`mcp-run-state.ts`'s `mcpStateRunDir` — a SIBLING of the workspace,
+        // never inside it, so the `rmSync` above never reaches it) on disk forever — the one
+        // run-deletion path `workspace-gc.ts`'s terminal+TTL sweep can never catch, because
+        // that sweep only ever finds a run's mcp-state dir by walking `runs/<runId>`, and this
+        // purge has already made that lookup come up empty. Removed here too, independently
+        // try/catch'd (same "no mcp-state dir at all" no-op as the GC's own cleanup) so a run
+        // that declared no stateful MCP server is unaffected. Nested child workflows share the
+        // PARENT run's runId/workspace (mcp-run-state.ts's own doc), so this single dir purge
+        // already covers a child's state too — there is no separate child-scoped dir to miss.
+        if (workspace) {
+          try { rmSync(mcpStateRunDir(workflowFolderOfWorkspace(workspace), a.runId), { recursive: true, force: true }); } catch { /* no mcp-state dir for this run — nothing to purge */ }
+        }
+        return { runId: a.runId, status: 'completed', result: { purged: existed } };
+      });
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: a.runId, status: 'failed', error: e };
+    }
+  }
+}

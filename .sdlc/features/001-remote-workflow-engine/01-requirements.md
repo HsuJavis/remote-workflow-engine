@@ -3179,7 +3179,11 @@ run 啟動開銷優化;把 decide/generateImage 經 harness(sdk/pi gateway)轉�
   **Given** provider 回 429 / 5xx 或逾時 **Then** 引擎重試至多 `retries` 次(宣告值,可被 run 覆寫),然後以具名錯誤碼拋給 script,script 可 `try/catch` 並降級;
   **And Given** 4xx(429 以外)**Then** 不重試、立即拋錯;
   **And** 每次重試與最終失敗都出現在事件 log。
-- **iter:** v40
+  **v41 增補(issue #168)**:
+  **And Given** 連線層失敗(連線逾時、`UND_ERR_SOCKET` 等,provider 沒有回任何 HTTP 狀態)**Then** 與 429/5xx/逾時同樣可重試;
+  **And Given** 回應 header 已到、body 卻永遠不結束(stream 不送資料、不關閉、不理會 abort)**Then** 該次嘗試在 `timeoutMs` 內以 `timeout` 結束並依重試規則處理 —— 單次 decide()/generateImage() 的總耗時不超過 `(retries+1)×timeoutMs + retries×10s` 再加一個小的固定寬限;
+  **And** 每次嘗試的計時器在該嘗試結束時清除,成功的呼叫之後不再有殘留計時器觸發。
+- **iter:** v41
 
 ### REQ-228 — (nfr) 獨立、可設定的並行上限
 
@@ -3214,3 +3218,44 @@ run 啟動開銷優化;把 decide/generateImage 經 harness(sdk/pi gateway)轉�
 影響面跨 sandbox / IPC / run-manager / params / catalog / 預算 / resume / served text,
 走完整 Gate 2→8。Gate 1.5:QM(開發工具,無安全或實體影響),不需安全工作產物;
 但 REQ-221 的路徑約束與 REQ-229 的個資邊界由 Gate 2 panel 的安全視角審查。
+
+
+## 迭代 v41 — 2026-10-19:issue #168 —— decide() 卡死、網路錯誤不重試、失敗原因三處不一致、event loop 卡頓
+
+**起點**:issue #168(agent-reported,severity:high,v0.38.0 回歸)。reporter 提供確定性重現 `rwe168-repro@v2`(decide 與 agent() 混在同一個 parallel() 裡)。
+本機重現 3/3 輪(scratch 8811,真實 OpenRouter,花費約 $0.09)。根因(CDP 檢視卡住的 16 個呼叫):
+Node 22.22.3 內建的 undici 在「回應已收完、body 尚未交給 reader」這個空檔收到 abort 時會直接丟棄,
+`readCapped` 的 `reader.read()` 永不結束;空檔由 event loop 6–7 秒的卡頓撐開,卡頓來自
+claude-agent-sdk 在每次 `query()` 呼叫 `process.report.getReport()`(未設定 `pathToClaudeCodeExecutable` 時)。
+同一個卡頓也造成 ETIMEDOUT / 重用已關閉 keep-alive 連線的網路錯誤,而這類錯誤被標為不重試。
+擁有者在 session 中核准修法與範圍(2026-10-18:「可以,照這樣重現」;2026-10-19:event loop 卡頓「一起修」)。
+影響閉包跨多個 ARCH 模組,依 fix 模式的規模限制改走 delta-gates 迭代。REQ-227 已加 v41 增補(見該條)。
+
+### REQ-231 — 一次失敗的 decide()/generateImage(),三處回報同一個失敗類型
+
+- **status:** draft
+- **kind:** functional
+- **traces:** REQ-227、REQ-229
+- **acceptance:**
+  **Given** 一次 decide() 因連線層錯誤在用完重試後失敗
+  **Then** 丟給 script 的 `PRIMITIVE_FAILED` 訊息、`run_agent_log` 該筆紀錄的 `failReason`、`run_status.agentFailures` 該筆的 reason/message,三者都指名同一個失敗類型(例如 `network`),且 `agentFailures` 不再出現 "no failure detail recorded";
+  **And** 逾時、HTTP 狀態、malformed、no_output、write 等其他失敗類型同樣三處一致;
+  **And** 三處都不含 provider 的回應原文或主機路徑(REQ-229 邊界不變)。
+- **iter:** v41
+
+### REQ-232 — (nfr) 啟動 agent() 不得讓引擎 event loop 長時間停頓
+
+- **status:** draft
+- **kind:** nfr
+- **traces:** REQ-037
+- **acceptance:**
+  **Given** 引擎同時持有大量 socket(例如數十個進行中的 decide() 與 agent() 呼叫)且正在連續啟動 agent()
+  **Then** 以 event loop 延遲監看量測,單次停頓 p99 ≤ 200ms、最長 ≤ 1s(v0.38.0 實測最長 7.1s);
+  **And** 不再在每次 agent() 啟動時同步產生 process report(以 CPU profile 或等效量測證明 `process.report.getReport` 不在熱路徑上);
+  **And** agent() 的既有行為(工具面、confinement、gateway 選擇)不變。
+- **iter:** v41
+
+**擁有者確認**:「可以,開始跑」(2026-10-19,對 REQ-227 增補、REQ-231、REQ-232 及 REQ-232 門檻 p99≤200ms/最長≤1s 的回放)。
+
+**路徑**:delta-gates 迭代 v41 —— gates [design, tests, impl, verify, validation, review],impactIds = REQ-227、REQ-231、REQ-232 及其閉包。
+確定性 RED 已備:(A) 永不送資料的 body stream(不需網路);(B) 真實 undici、於 `undici:request:trailers` 的 microtask 觸發 abort(30/30 卡住)。

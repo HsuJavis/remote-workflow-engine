@@ -1,0 +1,603 @@
+// SandboxHost (DES-005 / DES-006 / ARCH-003, TASK-006). Spawns a real OS child process per
+// run (node:child_process) so a hung/looping script can be killed from outside its own V8
+// isolate, then runs the workflow script inside that child's restricted VM context
+// (child-entry.ts -> guards.ts). The child's only channel back to this trusted host is the
+// IPC seam (DES-006); it holds no secrets/store/network access.
+import { fork, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { mkdirSync, realpathSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
+import type { Tokens } from '../types.js';
+// Issue #161 B2: marks an explicit own-key `undefined` in `args` so it survives THIS 'start'
+// message's own IPC 'json' serialization into the child (the same hop child-entry.ts's own
+// ipc-sentinel.ts note describes for the reverse direction) — undone by child-entry.ts's `main()`
+// before `args` is exposed to the script.
+import { encodeExplicitUndefined } from './ipc-sentinel.js';
+
+const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.ts');
+
+// #157 B1 layer 2: the sandbox child's own env — empty, not the parent's. See the `fork()` call
+// site's own doc for why this is both the strictest posture and sufficient for this child's needs.
+const SANDBOX_CHILD_ENV: NodeJS.ProcessEnv = {};
+
+// #157 layer 3 (OS/Node-level containment, defense in depth under layers 1+2): even if a future
+// regression reopens the in-realm escape (layer 1) AND somehow the child carried secrets anyway
+// (layer 2), Node's permission model (stable since Node 22.19) still denies the child fs/child-
+// process/worker/addon access outright. `--allow-fs-read` is scoped to exactly the engine's OWN
+// source directory (`src/`, resolved to its REAL path — a production install may be reached through
+// a symlink swapped atomically by self-update, and the permission model matches the literal path the
+// loader resolves to, not the symlink it was entered through) — the only reads child-entry.ts/
+// guards.ts's own module graph needs (confirmed empirically: no `node_modules` read ever occurs —
+// every import across that module graph is either a relative `.ts` file or a `node:` builtin).
+// Deliberately NOT granted: --allow-fs-write, --allow-child-process, --allow-worker, --allow-addons,
+// --allow-wasi — the sandbox child has no legitimate need for any of them (agent()/workflow() calls
+// round-trip over IPC to this trusted host, which dispatches its OWN, separately-confined child for
+// agent work; the sandbox child itself never spawns anything).
+const SANDBOX_SRC_DIR = realpathSync(dirname(dirname(CHILD_ENTRY)));
+
+// F-1 (sandbox robustness sweep): caps the sandbox child's own V8 heap. A memory-growth loop in a
+// script (e.g. an unbounded array/string accumulation across many agent() calls) now surfaces as a
+// coded SCRIPT_OOM (see `run()`'s `exit` handler below) instead of the OS eventually OOM-killing the
+// process with no diagnosis, or — worse — degrading the whole host under memory pressure. 512 MiB is
+// generous for a workflow script's own bookkeeping (it never holds model output itself: that streams
+// back over IPC into the run's own journal/store, not into the script's variables) while still
+// bounding the worst case. NOT currently configurable, by choice: making it config-driven would turn
+// `SANDBOX_CHILD_EXEC_ARGV` from a constant into a per-run-computed array, which breaks the "exact
+// array fork() receives" invariant `sandbox-host-env-scrub.test.ts` pins — revisit with a real
+// operator need, not speculatively.
+export const SANDBOX_CHILD_MAX_OLD_SPACE_MB = 512;
+
+export const SANDBOX_CHILD_EXEC_ARGV: readonly string[] = [
+  '--experimental-transform-types',
+  '--disable-warning=ExperimentalWarning',
+  '--permission',
+  `--allow-fs-read=${SANDBOX_SRC_DIR}/*`,
+  `--max-old-space-size=${SANDBOX_CHILD_MAX_OLD_SPACE_MB}`,
+];
+
+// F-1: generous default for `SandboxHostConfig.maxRunDurationMs` — a run's script lifetime spans
+// EVERY agent()/workflow() round trip across every phase (bounded per-call by `maxTimeoutMs`,
+// default 600_000ms), not a single call, so the run-wide deadline must be much larger. 4 hours
+// comfortably covers a long multi-phase workflow while still catching a genuine infinite loop
+// (`while(true){}`, which blocks the child's own event loop and so can never be caught from inside
+// it) or an abandoned/hung run instead of holding its concurrency slot forever.
+export const DEFAULT_MAX_RUN_DURATION_MS = 4 * 60 * 60 * 1000;
+
+// F-1: the V8 fingerprint printed to stderr when a child is terminated for exceeding its own heap
+// limit (`--max-old-space-size`) — a FATAL ERROR that aborts the process (Node has no catchable JS
+// exception for this; it is not a normal uncaught exception). Matched against the RAW stderr tail
+// (never the sanitized one — the OOM branch below never surfaces ANY of the raw text to the caller,
+// sanitized or not, since it is V8's own internal crash dump: heap statistics, absolute source
+// paths, the Node version).
+const V8_OOM_FINGERPRINT_RE = /FATAL ERROR:.*heap|JavaScript heap out of memory/i;
+
+export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
+export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
+// v40 (DES-272, ARCH-186, TASK-269): mirrors `AgentRequestHandler`'s own shape — `msg` is the raw
+// `{t:'decide', ...}`/`{t:'image', ...}` child message, `phase` the SAME synchronous snapshot
+// `case 'agent'` takes (see `currentPhase`'s own doc for why it must be read before the deferred
+// handler below, not inside it).
+export type DecideRequestHandler = (msg: { runId: string; callSeq: number; label: string; state: unknown; questions: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
+export type ImageRequestHandler = (msg: { runId: string; callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
+
+/** C-2 (review finding): carry the underlying error's OWN code across the sandbox IPC boundary
+ *  instead of flattening every agent()/workflow() failure to one of two generic codes — so a caller
+ *  can branch on the code the error itself carries. Falls back to `fallback` only for anonymous
+ *  errors (a bare `new Error()`, name === 'Error').
+ *
+ *  v25 (DES-167, REQ-120): the `.code` branch above is now the live one for budget refusals. This
+ *  docblock used to name `BudgetExceededError` / `AgentCapError` / `CatalogNotFoundError` /
+ *  `WorkspaceEscapeError` — CLASS NAMES — as what a script branches on, because those classes
+ *  carried no `.code` and `e.name` was all that crossed the boundary. v24 gave the last two (plus
+ *  `IllegalTransitionError`) their catalog codes and v25 gives `BudgetExceededError` its
+ *  `BUDGET_EXCEEDED`, so a script now reads a closed-catalog code a `tools/list` reader can
+ *  anticipate. `AgentCapError` is the one still surfacing as its class name (out of scope here,
+ *  recorded so the next reader knows it is a leftover, not a design). */
+/** issue #162 A/B (defense in depth): `stderrTail` below is RAW text from the child's own stdio
+ *  pipe — if the child crashes for ANY reason (OOM, a real engine bug, a future change to
+ *  child-entry.ts that reintroduces an uncaught throw), Node's default uncaught-exception
+ *  reporting prints a stack trace through its own internal modules, which names absolute source
+ *  paths (this engine's own install path on the host it's running on) and the exact Node version —
+ *  implementation details that must never cross the trust boundary into a caller-visible ABORTED
+ *  message (a possibly-remote, possibly-untrusted caller). Scrubs unconditionally, whether or not
+ *  the crash was ever classified — the one place this content is surfaced to a caller. */
+// g2 minor (sandbox robustness sweep): the prior `\bv\d+\.\d+\.\d+\b` matched ANY vX.Y.Z-shaped
+// substring — including a legitimate script-authored message naming a dependency/semver version
+// (e.g. "dependency v1.2.3 failed"), mangling it into unreadable nonsense. Narrowed to the two
+// shapes that are actually NODE'S OWN version: the exact running `process.version` (the sandbox
+// child is forked from this same binary, so a leaked version string is always this literal), and/or
+// Node's own "Node.js vX.Y.Z" uncaught-exception trailer line format — never a bare "vX.Y.Z" with no
+// Node-identifying context.
+const NODE_VERSION_LITERAL_RE = new RegExp(process.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+const NODE_JS_VERSION_LINE_RE = /\bNode\.js v\d+\.\d+\.\d+\b/g;
+
+export function sanitizeStderrTail(raw: string): string {
+  return raw
+    .replace(/node:internal\/[^\s:)]+/g, '<node internal>')
+    .replace(/(?:\/[\w.-]+)+\.(?:ts|js|mjs|cjs)(?=:\d+|\b)/g, '<path>')
+    .replace(NODE_JS_VERSION_LINE_RE, 'Node.js <node version>')
+    .replace(NODE_VERSION_LITERAL_RE, '<node version>');
+}
+
+export function ipcErrorCode(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object') {
+    const e = err as { code?: unknown; name?: unknown };
+    if (typeof e.code === 'string' && e.code) return e.code;
+    if (typeof e.name === 'string' && e.name && e.name !== 'Error') return e.name;
+  }
+  return fallback;
+}
+
+export interface SandboxHostConfig {
+  workspaceRoot: string;
+  /** Handles a child's agent() call. Defaults to a canned response (no model call) — the
+   *  master test seam (DES-006) that lets callers dry-run scripts with zero model calls;
+   *  real wiring (RunManager -> AgentExecutor) injects the real handler. */
+  onAgentRequest?: AgentRequestHandler;
+  /** Handles a child's workflow() call. Absent -> the child has no delegate, so guards.ts's
+   *  own nesting guard throws NESTING_ERROR inside the script (no IPC round trip needed). */
+  onWorkflowRequest?: WorkflowRequestHandler;
+  /** v40 (DES-272, ARCH-186, TASK-269): handles a child's decide()/generateImage() call — mirrors
+   *  `onAgentRequest` (sync phase snapshot, deferred handler, reply via the existing `agentResult`/
+   *  `agentThrow` messages). Absent -> the SAME coded fallback `case 'workflow'` uses when
+   *  `onWorkflowRequest` is absent (an immediate `agentThrow`, no dispatch attempt) — real wiring
+   *  (RunManager) always supplies both. */
+  onDecideRequest?: DecideRequestHandler;
+  onImageRequest?: ImageRequestHandler;
+  /** Handles a child's phase(title) notification (DES-006/DES-008 observability). */
+  onPhase?: (title: string) => void;
+  /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the run's two independent limits — `undefined`
+   *  (key absent) falls back to `run()`'s legacy `budget: number|null` positional argument (a
+   *  bare token count, the pre-v26 shape every existing non-budget-shape test still passes there);
+   *  a key PRESENT here (even `null`) wins outright, which is what lets a caller who already holds
+   *  both limits (RunManager, post-TASK-181) hand them over directly instead of collapsing to one
+   *  legacy number. */
+  budget?: { usd: number | null; tokens: number | null } | null;
+  /** Returns the run's real live cumulative spend — piggybacked onto every agentResult message
+   *  (D-F8) AND onto the initial `start` message (so a frame that never calls agent() still sees
+   *  the spend it inherited, e.g. a nested frame reading the parent's spend at entry) so the
+   *  sandboxed child's budget.spent()/tokens() reflect real accounting instead of a hard-coded
+   *  stub. v26 (DES-182): reshaped from a bare token number to `{usd, tokens}` — `spent()` is USD,
+   *  `tokens()` is the four-column breakdown. Absent -> no `spent` field is sent (dry-run seam). */
+  onBudgetSnapshot?: () => { usd: number; tokens: Tokens };
+  /** v26 (DES-175, ARCH-114, TASK-186): the CURRENT phase lane, snapshotted at the moment `case
+   *  'agent'` calls it — SYNCHRONOUSLY, before the `Promise.resolve().then(handler)` deferral
+   *  below. `case 'phase'` calls `onPhase` synchronously while `case 'agent'` defers to a
+   *  microtask, and Node drains the IPC message queue before that microtask runs — a handler-time
+   *  read would stamp the LATER phase, not the one the agent() call was actually issued under.
+   *  Absent -> no phase snapshot travels with this call (dry-run seam / no phase tracking wired). */
+  currentPhase?: () => { title: string; index: number } | undefined;
+  /** F-1 (sandbox robustness sweep): wall-clock deadline for ONE `run()` execution — covers the
+   *  WHOLE script lifetime, including every awaited agent()/workflow() round trip, not just CPU
+   *  time: a synchronous `while(true){}` blocks the child's own event loop, so only a HOST-side
+   *  timer (running in a separate OS process) can ever terminate it. Defaults to
+   *  `DEFAULT_MAX_RUN_DURATION_MS`. Suspend/resume are unaffected: `resume()` installs a brand-new
+   *  `SandboxHost`/`run()` call (run-manager.ts's own issue #53 note on `entry.sandbox` identity), so
+   *  each LIVE execution gets its own fresh deadline — time spent suspended never counts against it. */
+  maxRunDurationMs?: number;
+  /** Issue #162 (boot-time sweep): when set, every real child this host forks is recorded here
+   *  (`recordChildPid`) the instant it spawns, and de-recorded (`clearChildPidRecord`) the instant
+   *  it settles — the on-disk trail a FUTURE engine boot's `sweepOrphanSandboxChildren` reads to
+   *  reap anything still alive from a process instance that never got to shut down gracefully.
+   *  Absent -> no bookkeeping (every existing non-production caller/test that constructs
+   *  `SandboxHost` directly, with no workRoot to anchor a registry under). */
+  childRegistryDir?: string;
+  /** issue #163 B1 (test seam): injects a `fork()`-alike for a deterministic fake-child race test —
+   *  mirrors `PiGatewayClient`'s own `spawnChild` seam. Absent -> the real `node:child_process.fork`
+   *  (every production caller). */
+  forkChild?: typeof fork;
+  /** issue #163 B1 (test seam): overrides the safety-bound timer below (see `concludeNoMessage`'s
+   *  own doc) — tests inject a short value so the one real remaining branch (a child that genuinely
+   *  never sends done/error AND never fires 'close', which this test seam's fake `EventEmitter`
+   *  child never does) stays fast and deterministic. Absent -> the real `EXIT_MESSAGE_GRACE_MS`
+   *  default. Does not affect the common cases (message before exit, or message delivered after exit
+   *  but before 'close') — those settle immediately, via the 'message' handler or `child.on('close',
+   *  ...)`, never via this timer. */
+  exitMessageGraceMs?: number;
+}
+
+const DEFAULT_AGENT_RESPONSE = 'stub-response';
+
+// issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): a FIXED grace window armed on 'exit' alone used
+// to decide ABORTED the instant it elapsed, independent of whether a 'done'/'error' `message` (IPC-
+// pipe-driven) or the rest of `stderr` (also pipe-driven) had actually finished arriving — 'exit'
+// (SIGCHLD-driven) is not ordered against either. A real-engine check under genuine concurrent load
+// (~150 sandbox forks + ~48 pi children, no global backpressure) measured this HOST process's own
+// event-loop delay peaking at 6136-8384ms, which blew straight through the old 200ms window: 227
+// terminal messages in one run arrived more than 200ms after 'exit', the slowest 3314ms after, and 9
+// children in the same run had their write queued-but-not-yet-flushed when the (then-2000ms)
+// child-side flush bound gave up and exited anyway, dropping the message for real.
+//
+// The fix: `child.on('close', ...)` (below), never a fixed timer, is now the PRIMARY decision point.
+// `close` fires only once the process has exited AND every stdio stream Node manages for it — the
+// IPC channel included — has itself finished, which is ordered strictly AFTER every 'message' this
+// child already sent and every stderr chunk it already wrote (verified empirically: a real fork(),
+// 60 concurrent children, each writing 50 stderr lines and a 400KB IPC message right before exiting
+// SIGABRT/SIGKILL/normally, under a 2.5s parent event-loop stall — 'close' was last in every run, 0
+// exceptions). `EXIT_MESSAGE_GRACE_MS` below is now a SAFETY BOUND only, armed on 'exit' as a
+// fallback for the case 'close' never fires at all (not expected for this sandbox child specifically
+// — empty env, no child_process capability reachable from inside the vm context, so unlike a pi
+// child's setsid grandchild, nothing here can hold a stdio fd open past this process's own death) —
+// long enough to never fire while a real flush/drain is merely slow, short enough that a child whose
+// IPC machinery is somehow never going to close is still reported in a bounded time.
+const EXIT_MESSAGE_GRACE_MS = 30_000;
+
+// v36 (DES-248, ARCH-167, TASK-246): `refusalRef`, when the child's terminal error carried one —
+// read from the wire message, never invented here.
+type RunOutcome = { result: unknown } | { error: unknown; refusalRef?: number };
+
+interface ActiveRun {
+  child: ChildProcess;
+  settle: (outcome: RunOutcome) => void;
+}
+
+// Issue #162 (reverify-2, boot-time sweep): the shutdown hook (RunManager.shutdown(), issue #162
+// commit 9c444d5) only runs on a GRACEFUL SIGINT/SIGTERM. A hard kill (kill -9, OOM, a crash) never
+// reaches that handler, so a forked sandbox child can outlive the engine process entirely — the
+// actual reported incident (pid alive 44+ hours, surviving an engine RESTART). This is the other
+// layer: a small on-disk record, written while a child is live and removed when it settles, that
+// the NEXT engine boot reads BEFORE serving traffic to SIGKILL anything still alive from a previous
+// instance. One file per pid, named `<pid>.json`, holding `{ pid, startTime }` — `startTime` is the
+// kernel's own process-start timestamp (read from /proc/<pid>/stat), not a timestamp this process
+// invents, so a LATER, unrelated process that the OS happens to reuse the same pid for (the one
+// real hazard of trusting a bare pid across a reboot/long gap) is never mistaken for the recorded
+// child and never killed.
+export function sandboxChildRegistryDir(workRoot: string): string {
+  return join(workRoot, 'sandbox-children');
+}
+
+// Linux-only (the only platform this engine ships/tests on — see src/main.ts's own install-path
+// assumptions). `/proc/<pid>/stat`'s 2nd field (`comm`) is parenthesized and may itself contain
+// spaces/parens, so field 22 (starttime) is located from the LAST ')' rather than by a naive
+// whitespace split — the standard, well-known parse for this file. Returns undefined when the pid
+// is not a live process right now, or `/proc` is unavailable (non-Linux) — both callers treat that
+// as "cannot verify," never as license to kill.
+function readProcStartTime(pid: number): string | undefined {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const afterComm = raw.slice(raw.lastIndexOf(')') + 2).trim().split(' ');
+    // afterComm[0] is field 3 (state); starttime is field 22, i.e. index 22-3 = 19.
+    return afterComm[19];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Issue #162: called once, synchronously, right after a sandbox child is forked (while its real
+ *  pid and the kernel's own start-time for it are both freshly knowable) — best-effort, never
+ *  throws into the caller's spawn path over bookkeeping. */
+export function recordChildPid(registryDir: string, pid: number): void {
+  try {
+    const startTime = readProcStartTime(pid);
+    if (startTime === undefined) return; // can't verify later -> don't record an unverifiable entry
+    mkdirSync(registryDir, { recursive: true });
+    writeFileSync(join(registryDir, `${pid}.json`), JSON.stringify({ pid, startTime }));
+  } catch { /* best-effort bookkeeping; a run must never fail over this */ }
+}
+
+/** Issue #162: called once a sandbox child has settled (normally, by timeout, or via abort()) —
+ *  the child is no longer "possibly orphaned," so its record must not survive to be acted on by a
+ *  future boot sweep (which would otherwise try to kill a pid the kernel may have since reused for
+ *  something else entirely unrelated). Best-effort, never throws. */
+export function clearChildPidRecord(registryDir: string, pid: number): void {
+  try { unlinkSync(join(registryDir, `${pid}.json`)); } catch { /* already gone, or never written */ }
+}
+
+/** Issue #162 (boot-time sweep): main.ts's own boot path calls this ONCE, before `createServer()`
+ *  starts accepting traffic — the layer that covers a kill -9/OOM/crash/manual-restart, which a
+ *  graceful-shutdown-only hook (RunManager.shutdown()) cannot reach. For every `<pid>.json` record
+ *  left behind by whatever process instance was running before this one: re-read that pid's CURRENT
+ *  kernel start-time and compare it against the recorded one. A match means the same OS process is
+ *  still alive and is still the one that was recorded (not a later, unrelated reuse of the same
+ *  pid) — SIGKILL it. Either way (killed, already-dead, or a mismatched/unverifiable record) the
+ *  file is removed, so a record is never read twice and can never accumulate across many restarts.
+ *  Best-effort throughout: one entry's failure never stops the rest from being swept, and a missing
+ *  or empty directory is a silent no-op. Never throws. */
+export function sweepOrphanSandboxChildren(registryDir: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(registryDir);
+  } catch {
+    return; // no registry dir at all -> nothing to sweep
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    const recordPath = join(registryDir, name);
+    try {
+      const record = JSON.parse(readFileSync(recordPath, 'utf8')) as { pid?: unknown; startTime?: unknown };
+      if (typeof record.pid === 'number' && typeof record.startTime === 'string') {
+        const currentStartTime = readProcStartTime(record.pid);
+        if (currentStartTime !== undefined && currentStartTime === record.startTime) {
+          try { process.kill(record.pid, 'SIGKILL'); } catch { /* ESRCH: already gone */ }
+        }
+      }
+    } catch { /* malformed record: fall through to removal below */ }
+    try { unlinkSync(recordPath); } catch { /* already gone */ }
+  }
+}
+
+export class SandboxHost {
+  private readonly _config: SandboxHostConfig;
+  private readonly _active = new Map<string, ActiveRun>();
+
+  constructor(config: SandboxHostConfig) {
+    this._config = config;
+  }
+
+  /** Spawn child process, send init, stream IPC, return when child emits done/error.
+   *  `budget` is the LEGACY positional (a bare token count, or `null`) — kept for every existing
+   *  caller that predates the two-limit shape; `SandboxHostConfig.budget`, when the key is present
+   *  at all, wins over it (see the config field's own doc). */
+  run(runId: string, script: string, args: unknown, budget: number | null): Promise<RunOutcome> {
+    // v26 (DES-182, ARCH-118, TASK-182, ADR-037): the IPC `start` message's `budget` field —
+    // `SandboxHostConfig.budget` if the caller set the key at all (even to `null`), else the
+    // legacy positional collapsed into the v25-true meaning (a bare number was always TOKENS).
+    const wireBudget = this._config.budget !== undefined ? this._config.budget : budget === null ? null : { usd: null, tokens: budget };
+    return new Promise((resolve) => {
+      let settled = false;
+      // F-1: cleared inside `settle` itself (every settle path — done/error/exit/spawn-error, AND
+      // the deadline firing on itself below) so exactly one of "the run finished" / "the deadline
+      // fired" ever wins, and a run that finishes normally never leaves a live timer behind.
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      // Issue #162 (boot-time sweep): captured once the child is actually forked (below) so
+      // `settle` — the single choke point every outcome (done/error/exit/spawn-error/timeout)
+      // funnels through — can de-record it there, in one place, regardless of which path settled.
+      let childPidForRegistry: number | undefined;
+      const childRegistryDir = this._config.childRegistryDir;
+      const settle = (outcome: RunOutcome) => {
+        if (settled) return;
+        settled = true;
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+        this._active.delete(runId);
+        if (childRegistryDir !== undefined && childPidForRegistry !== undefined) {
+          clearChildPidRecord(childRegistryDir, childPidForRegistry);
+        }
+        resolve(outcome);
+      };
+
+      mkdirSync(this._config.workspaceRoot, { recursive: true });
+      const forkImpl = this._config.forkChild ?? fork;
+      const child = forkImpl(CHILD_ENTRY, [], {
+        cwd: this._config.workspaceRoot,
+        execArgv: [...SANDBOX_CHILD_EXEC_ARGV],
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        // #157 B1 layer 2 (defense in depth): `fork()` defaults to inheriting the FULL parent env —
+        // this engine process's own (provider API keys, per main.ts's documented "read straight from
+        // process.env"). The script-escape path that could have READ that env is closed in
+        // guards.ts (commit 149d887); this independently ensures the child never CARRIES it at all,
+        // so a future regression in the reachability fix would not also be a secrets leak.
+        // child-entry.ts/guards.ts read no `process.env.*` of their own, so an empty env is both the
+        // strictest posture and sufficient (verified: a child forked with `env: {}` boots and runs a
+        // real script to completion).
+        env: SANDBOX_CHILD_ENV,
+      });
+      this._active.set(runId, { child, settle });
+      // Issue #162: record AFTER the real OS pid is known — a crash between this line and the
+      // write below just means this one child is unprotected by the sweep for that narrow window,
+      // the same best-effort posture the rest of this bookkeeping already accepts.
+      if (childRegistryDir !== undefined && typeof child.pid === 'number') {
+        childPidForRegistry = child.pid;
+        recordChildPid(childRegistryDir, child.pid);
+      }
+
+      // F-1: the wall-clock deadline for this ONE execution. Started here (not after 'ready') so a
+      // child that never even boots (a corrupt install, a missing CHILD_ENTRY file) is also bounded,
+      // not just a child that boots and then hangs. Fires in the HOST process, never the child's own
+      // event loop — the only thing that can terminate a synchronous `while(true){}`, which blocks
+      // the child's event loop and so can never notice its own deadline from the inside.
+      const deadlineMs = this._config.maxRunDurationMs ?? DEFAULT_MAX_RUN_DURATION_MS;
+      deadlineTimer = setTimeout(() => {
+        settle({
+          error: {
+            code: 'SCRIPT_TIMEOUT',
+            message: `the script did not complete within its ${deadlineMs}ms run-duration deadline (maxRunDurationMs) and was terminated`,
+          },
+        });
+        child.kill('SIGKILL');
+      }, deadlineMs);
+      // Node-only API (no-op under some non-Node runtimes' timer shims) — don't hold this process's
+      // event loop open for a potentially multi-hour timer when every OTHER reason to stay alive
+      // (the HTTP listener, other in-flight runs) has already gone away.
+      deadlineTimer.unref?.();
+
+      // Capture the child's stderr so an uncaught crash (an exception/rejection that exits the
+      // process before it can send 'done'/'error') is not lost — its tail is surfaced in the
+      // ABORTED message below instead of an opaque "terminated before completion". (Previously the
+      // pipe had no reader, so every sandbox-child crash reason was discarded.)
+      let stderrTail = '';
+      // F-1 (real-check finding): a REAL V8 heap-limit abort prints `<-- Last few GCs -->`, THEN
+      // `<-- JS stacktrace -->`, THEN the `FATAL ERROR: ...` line, THEN 10-20 native frames each
+      // naming the engine's own install path (`N: 0x... node::Abort() [<long path>]`) — measured at
+      // ~2.5KB total. `stderrTail`'s 2000-char windowed trim (needed to bound what an ordinary crash
+      // surfaces in the ABORTED message) can push the FATAL ERROR line itself out of the window
+      // before `exit` fires, which would misclassify a real OOM as a generic ABORTED. Detected
+      // independently, as each chunk arrives, against a SEPARATE small untrimmed buffer (never fed
+      // into the caller-visible `stderrTail`/ABORTED path) — `sawOomFingerprint` is sticky (sets
+      // once, never clears) so a later chunk evicting the fingerprint from `oomCarry` can't un-detect
+      // it; `oomCarry` itself keeps only the last 200 chars of raw stream (prepended to each new
+      // chunk before testing) so a fingerprint split exactly across two `'data'` events is still
+      // matched, without accumulating the whole crash dump a second time.
+      let sawOomFingerprint = false;
+      let oomCarry = '';
+      child.stderr?.on('data', (d: Buffer) => {
+        const text = d.toString();
+        stderrTail = (stderrTail + text).slice(-2000);
+        if (!sawOomFingerprint && V8_OOM_FINGERPRINT_RE.test(oomCarry + text)) sawOomFingerprint = true;
+        oomCarry = (oomCarry + text).slice(-200);
+      });
+
+      child.on('message', (msg: any) => {
+        switch (msg?.t) {
+          case 'ready':
+            // v26 (DES-182): `spent` seeds the child's live counter at start — a frame that never
+            // calls agent() (a nested `workflow()` reading `budget.spent()`/`tokens()` cold) would
+            // otherwise never receive ANY accounting, since today the only other carrier is the
+            // per-call `agentResult` piggyback below.
+            // Issue #161 B2: re-encode immediately before THIS send — `args` may already carry a
+            // true own-key `undefined` (e.g. decoded on the host side from a nested workflow()
+            // request), which this 'start' message's own JSON serialization would otherwise drop
+            // silently, same as any other hop on this channel.
+            child.send({ t: 'start', runId, script, args: encodeExplicitUndefined(args), budget: wireBudget, spent: this._config.onBudgetSnapshot?.() });
+            break;
+          case 'agent': {
+            const handler = this._config.onAgentRequest ?? (() => DEFAULT_AGENT_RESPONSE);
+            // v26 (DES-175): snapshot the phase HERE, synchronously, at IPC receipt — see
+            // SandboxHostConfig.currentPhase's own doc for why a read inside the deferred handler
+            // below would stamp the wrong (later) phase.
+            const phase = this._config.currentPhase?.();
+            Promise.resolve()
+              .then(() => handler(msg.prompt, msg.opts, msg.callSeq, phase))
+              .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  error: { code: ipcErrorCode(err, 'AGENT_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          // v40 (DES-272, ARCH-186, TASK-269): `decide`/`image` mirror `case 'agent'` exactly (sync
+          // phase snapshot, deferred handler, reply via the existing `agentResult`/`agentThrow`
+          // messages — DES-272's own "unchanged shapes") except for two things: (1) an ABSENT
+          // handler is an immediate coded fallback, the same shape `case 'workflow'` uses when
+          // `onWorkflowRequest` is absent, since there is no in-script guard that can refuse this
+          // the way guards.ts's own nesting check refuses workflow() with no delegate; (2) the
+          // fallback CODE for an uncoded handler throw is `INTERNAL_ERROR`, never `AGENT_ERROR` —
+          // DES-272's own text, so a host-side bug surfaces distinctly from an ordinary agent()
+          // dispatch failure.
+          case 'decide': {
+            if (!this._config.onDecideRequest) {
+              child.send({ t: 'agentThrow', callSeq: msg.callSeq, error: { code: 'INTERNAL_ERROR', message: 'no decide() handler is wired on this host' } });
+              break;
+            }
+            const phase = this._config.currentPhase?.();
+            Promise.resolve()
+              .then(() => this._config.onDecideRequest!(msg, phase))
+              .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  error: { code: ipcErrorCode(err, 'INTERNAL_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          case 'image': {
+            if (!this._config.onImageRequest) {
+              child.send({ t: 'agentThrow', callSeq: msg.callSeq, error: { code: 'INTERNAL_ERROR', message: 'no generateImage() handler is wired on this host' } });
+              break;
+            }
+            const phase = this._config.currentPhase?.();
+            Promise.resolve()
+              .then(() => this._config.onImageRequest!(msg, phase))
+              .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  error: { code: ipcErrorCode(err, 'INTERNAL_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          case 'workflow': {
+            if (!this._config.onWorkflowRequest) {
+              child.send({ t: 'agentThrow', callSeq: msg.callSeq, error: { code: 'NESTING_ERROR', message: 'workflow() nesting is limited to one level' } });
+              break;
+            }
+            Promise.resolve()
+              .then(() => this._config.onWorkflowRequest!(msg.ref, msg.args, msg.callSeq))
+              .then((value) => child.send({ t: 'workflowResult', callSeq: msg.callSeq, value }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  // A delegate present-but-throwing is NOT a nesting violation (that's the
+                  // !onWorkflowRequest branch above) — preserve the real code, e.g. CatalogNotFoundError.
+                  error: { code: ipcErrorCode(err, 'WORKFLOW_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          case 'phase':
+            this._config.onPhase?.(msg.title);
+            break;
+          case 'done':
+            settle({ result: msg.result });
+            break;
+          case 'error':
+            settle({ error: msg.error, ...(typeof msg.refusalRef === 'number' ? { refusalRef: msg.refusalRef } : {}) });
+            break;
+        }
+      });
+
+      // issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): the single decision point for "no
+      // done/error message is ever coming" — called from `child.on('close', ...)` (the deterministic
+      // primary signal, below) or from the safety-bound timer armed on 'exit' (the fallback). Reads
+      // `sawOomFingerprint`/`stderrTail` AT CALL TIME, never cached earlier — by the time 'close'
+      // fires every stderr chunk has already been delivered to the `'data'` listener above (same
+      // empirical check as the module doc), so the OOM classification this makes is never stale the
+      // way reading it back at 'exit' time could be.
+      const concludeNoMessage = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if (settled) return;
+        // F-1: a V8 heap-limit abort is NOT an ordinary crash — it is a FATAL ERROR that aborts the
+        // process outright (no catchable JS exception), so it always reaches this branch, never
+        // guards.ts's own classification. Checked via the STICKY `sawOomFingerprint` (see its own doc
+        // above) — NEVER by re-testing the windowed, trimmed `stderrTail` here, which a real crash's
+        // many native frames can push the fingerprint line out of (measured in a real-check: a real
+        // OOM's ~2.5KB dump overflows the 2000-char window). V8's own crash dump content (heap
+        // statistics, absolute source paths, the Node version) must never cross the trust boundary
+        // either way — the code alone is the caller-visible signal, with a clean, fixed message.
+        if (sawOomFingerprint) {
+          settle({ error: { code: 'SCRIPT_OOM', message: 'the sandboxed script exhausted its memory limit and was terminated' } });
+          return;
+        }
+        const detail = sanitizeStderrTail(stderrTail.trim());
+        settle({
+          error: {
+            code: 'ABORTED',
+            message:
+              `sandbox child process terminated before completion (exit ${code ?? 'null'}, signal ${signal ?? 'null'})` +
+              (detail ? `\n--- child stderr (tail) ---\n${detail}` : ''),
+          },
+        });
+      };
+
+      child.on('exit', (code, signal) => {
+        // Safety-bound fallback ONLY — see `EXIT_MESSAGE_GRACE_MS`'s own doc for why `close` (below)
+        // is the primary decision point and this timer is not expected to fire in practice.
+        // `settle()`'s own idempotency guard (inside `concludeNoMessage`) means a 'message' or
+        // 'close' that arrives before this timer elapses still wins.
+        const safety = setTimeout(() => concludeNoMessage(code, signal), this._config.exitMessageGraceMs ?? EXIT_MESSAGE_GRACE_MS);
+        safety.unref?.();
+      });
+
+      // issue #158 F4 / #163 B1 / #162 B (fix-of-the-fix): THE primary decision point. `close` fires
+      // once the process has exited AND every stdio stream Node manages for it (the IPC channel
+      // included) has itself finished — ordered strictly after every 'message' this child already
+      // sent and every stderr chunk it already wrote (see the module-level doc for the empirical
+      // check: 60 concurrent children under a 2.5s parent stall, 0 exceptions to this ordering,
+      // including SIGKILL/SIGABRT/crash exits). A 'message' ('done'/'error') that arrives any time
+      // before 'close' has already settled this run via the 'message' handler above, so
+      // `concludeNoMessage`'s own `settled` check makes this a no-op in every success case.
+      child.on('close', (code, signal) => {
+        concludeNoMessage(code, signal);
+      });
+
+      child.on('error', (err) => {
+        settle({ error: { code: 'SPAWN_ERROR', message: err.message } });
+      });
+    });
+  }
+
+  /** Send abort signal to the running child process (force-kill: a looping script cannot
+   *  process an in-band IPC message, so termination must happen from outside the process). */
+  async abort(runId: string, _reason: 'suspend' | 'stop'): Promise<void> {
+    const active = this._active.get(runId);
+    if (!active) return;
+    active.child.kill('SIGKILL');
+  }
+}
+

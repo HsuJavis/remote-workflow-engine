@@ -1,0 +1,340 @@
+// DES-093 (ARCH-059, TASK-085): opaque sha256-at-rest bearer + single-use auth-code/state.
+// Constructor-injected clock+CSPRNG — no Date.now() or crypto.randomBytes() in this module.
+
+import { createHash } from 'node:crypto';
+import type Database from 'better-sqlite3';
+
+export interface TokenStoreSeams {
+  /** Returns current time in milliseconds (injected — never Date.now() in this module). det:allow — the seam's own doc naming what it replaces; this module calls none of it */
+  clock: () => number;
+  /** Returns `n` cryptographically random bytes (injected — never randomBytes() in this module). */
+  csprng: (n: number) => Buffer;
+}
+
+function sha256hex(data: string): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/**
+ * DCR default grant_types (RFC 7591) — what POST /register has always clamped its response to
+ * (Decision B), and what registerClient() persists when the caller doesn't specify grantTypes.
+ * A pre-#86 registered_clients row has no grant_types value; getClient() treats that missing
+ * value the same way, since this default is what /register would have stored for it (issue #86).
+ */
+export const DEFAULT_DCR_GRANT_TYPES = ['authorization_code', 'refresh_token'];
+
+/** Dashboard browser-session lifetime (spec §A: 7 days, sliding). */
+export const SESSION_TTL_MS = 7 * 24 * 3600_000;
+/** A session is re-extended at most once per this interval (bounds writes to ~1/day/session). */
+const SESSION_SLIDE_EVERY_MS = 24 * 3600_000;
+
+/** Generate a random opaque token string using the injected CSPRNG. */
+function genRandom(csprng: (n: number) => Buffer): string {
+  return csprng(32).toString('hex');
+}
+
+/** 3-table SQLite store for OAuth bearer tokens, single-use auth codes, and PKCE state blobs.
+ *  Raw tokens/codes are NEVER persisted — only their sha256 hashes are stored (DES-093 seam). */
+export class TokenStore {
+  private readonly _db: Database.Database;
+  private readonly _clock: () => number;
+  private readonly _csprng: (n: number) => Buffer;
+
+  constructor(db: Database.Database, seams: TokenStoreSeams) {
+    this._db = db;
+    this._clock = seams.clock;
+    this._csprng = seams.csprng;
+    this._init();
+  }
+
+  private _init(): void {
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS bearer_tokens (
+        token_hash TEXT PRIMARY KEY,
+        principal TEXT NOT NULL,
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS auth_codes (
+        code_hash TEXT PRIMARY KEY,
+        principal TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        scope TEXT
+      );
+      CREATE TABLE IF NOT EXISTS oauth_state (
+        state TEXT PRIMARY KEY,
+        nonce TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        client_state TEXT,
+        scope TEXT
+      );
+      CREATE TABLE IF NOT EXISTS registered_clients (
+        client_id TEXT PRIMARY KEY,
+        redirect_uris TEXT NOT NULL,
+        client_id_issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        grant_types TEXT
+      );
+      CREATE TABLE IF NOT EXISTS dashboard_sessions (
+        token_hash TEXT PRIMARY KEY,
+        principal TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS refresh_tokens (
+        token_hash TEXT PRIMARY KEY,
+        principal TEXT NOT NULL,
+        scope TEXT,
+        client_id TEXT,
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+    `);
+    // v19 idempotent migration: add client_state column to existing oauth_state tables.
+    try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN client_state TEXT'); } catch { /* already exists */ }
+    // v20 idempotent migrations: add scope column to auth_codes and oauth_state.
+    try { this._db.exec('ALTER TABLE auth_codes ADD COLUMN scope TEXT'); } catch { /* already exists */ }
+    try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN scope TEXT'); } catch { /* already exists */ }
+    // issue #86 idempotent migration: add grant_types to pre-existing registered_clients rows.
+    try { this._db.exec('ALTER TABLE registered_clients ADD COLUMN grant_types TEXT'); } catch { /* already exists */ }
+    // Dashboard login (spec §A, 2026-09-30): 'dashboard' marks a browser-login state row (its
+    // redirect_uri column holds the validated `next` path); NULL = the MCP /authorize flow.
+    try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN flow TEXT'); } catch { /* already exists */ }
+  }
+
+  /** Issue a new opaque bearer token.  Returns the RAW token (show once) + expiry timestamp. */
+  issue(principal: string, ttlMs: number): { token: string; expiresAt: number } {
+    const token = genRandom(this._csprng);
+    const now = this._clock();
+    const expiresAt = now + ttlMs;
+    this._db.prepare(
+      'INSERT INTO bearer_tokens (token_hash, principal, issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(sha256hex(token), principal, now, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** Verify a raw bearer token; returns the principal or null (expired/unknown). */
+  verifyByHash(rawToken: string): string | null {
+    const now = this._clock();
+    const row = this._db.prepare(
+      'SELECT principal, expires_at FROM bearer_tokens WHERE token_hash = ?'
+    ).get(sha256hex(rawToken)) as { principal: string; expires_at: number } | undefined;
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return row.principal;
+  }
+
+  /** Mint a single-use auth code (≤60 s TTL).  Returns the RAW code. */
+  mintAuthCode(principal: string, codeChallenge: string, redirectUri: string, scope?: string | null): string {
+    const code = genRandom(this._csprng);
+    const now = this._clock();
+    this._db.prepare(
+      'INSERT INTO auth_codes (code_hash, principal, code_challenge, redirect_uri, expires_at, scope) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(sha256hex(code), principal, codeChallenge, redirectUri, now + 60_000, scope ?? null);
+    return code;
+  }
+
+  /** Consume an auth code atomically (DELETE-then-check).  Returns payload or null. */
+  consumeAuthCode(
+    rawCode: string
+  ): { principal: string; codeChallenge: string; redirectUri: string; scope: string | null } | null {
+    const now = this._clock();
+    const codeHash = sha256hex(rawCode);
+    const row = this._db.transaction(() => {
+      const r = this._db.prepare(
+        'SELECT principal, code_challenge, redirect_uri, expires_at, scope FROM auth_codes WHERE code_hash = ?'
+      ).get(codeHash) as {
+        principal: string;
+        code_challenge: string;
+        redirect_uri: string;
+        expires_at: number;
+        scope: string | null;
+      } | undefined;
+      if (!r) return undefined;
+      this._db.prepare('DELETE FROM auth_codes WHERE code_hash = ?').run(codeHash);
+      return r;
+    })();
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return { principal: row.principal, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, scope: row.scope };
+  }
+
+  /** Store a PKCE state blob (10-minute TTL).  State is the raw PKCE `state` param. */
+  putState(params: {
+    state: string;
+    nonce: string;
+    codeChallenge: string;
+    redirectUri: string;
+    /** The CLIENT's OAuth2 state (RFC 6749 §4.1.2) — distinct from `state` (the engine-leg CSRF token). v19. */
+    clientState?: string | null;
+    /** The CLIENT's requested OAuth2 scope string (verbatim). v20. */
+    scope?: string | null;
+    /** 'dashboard' for a browser login (spec §A); absent = the MCP /authorize flow. */
+    flow?: 'dashboard' | null;
+  }): void {
+    const now = this._clock();
+    this._db.prepare(
+      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at, client_state, scope, flow) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000, params.clientState ?? null, params.scope ?? null, params.flow ?? null);
+  }
+
+  /** Consume a state blob (single-use).  Returns payload or null. */
+  consumeState(
+    state: string
+  ): { nonce: string; codeChallenge: string; redirectUri: string; clientState: string | null; scope: string | null; flow: 'dashboard' | null } | null {
+    const now = this._clock();
+    const row = this._db.transaction(() => {
+      const r = this._db.prepare(
+        'SELECT nonce, code_challenge, redirect_uri, expires_at, client_state, scope, flow FROM oauth_state WHERE state = ?'
+      ).get(state) as {
+        flow: string | null;
+        nonce: string;
+        code_challenge: string;
+        redirect_uri: string;
+        expires_at: number;
+        client_state: string | null;
+        scope: string | null;
+      } | undefined;
+      if (!r) return undefined;
+      this._db.prepare('DELETE FROM oauth_state WHERE state = ?').run(state);
+      return r;
+    })();
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, clientState: row.client_state, scope: row.scope, flow: row.flow === 'dashboard' ? 'dashboard' : null };
+  }
+
+  /** Issue a new opaque refresh token (~90d TTL).  Returns the RAW token (show once) + expiry timestamp. */
+  issueRefresh(principal: string, scope: string | null, clientId: string | null, ttlMs: number): { token: string; expiresAt: number } {
+    const token = genRandom(this._csprng);
+    const now = this._clock();
+    const expiresAt = now + ttlMs;
+    this._db.prepare(
+      'INSERT INTO refresh_tokens (token_hash, principal, scope, client_id, issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(sha256hex(token), principal, scope, clientId, now, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** Consume a refresh token atomically (single-use).  Returns payload or null (expired/unknown/already-consumed). */
+  consumeRefresh(rawToken: string): { principal: string; scope: string | null; clientId: string | null } | null {
+    const now = this._clock();
+    const tokenHash = sha256hex(rawToken);
+    const row = this._db.transaction(() => {
+      const r = this._db.prepare(
+        'SELECT principal, scope, client_id, expires_at FROM refresh_tokens WHERE token_hash = ?'
+      ).get(tokenHash) as {
+        principal: string;
+        scope: string | null;
+        client_id: string | null;
+        expires_at: number;
+      } | undefined;
+      if (!r) return undefined;
+      this._db.prepare('DELETE FROM refresh_tokens WHERE token_hash = ?').run(tokenHash);
+      return r;
+    })();
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return { principal: row.principal, scope: row.scope, clientId: row.client_id };
+  }
+
+  /**
+   * Mint a new RFC 7591 client_id; persists redirect_uris + grant_types and returns the
+   * issued-at timestamp in seconds. `grantTypes` defaults to the DCR default (issue #86) —
+   * pass it explicitly to record what a specific /register response actually clamped to.
+   */
+  registerClient(params: { redirectUris: string[]; ttlMs: number; grantTypes?: string[] }): { clientId: string; clientIdIssuedAt: number } {
+    const clientId = genRandom(this._csprng);
+    const nowMs = this._clock();
+    const clientIdIssuedAt = Math.floor(nowMs / 1000);
+    const expiresAt = nowMs + params.ttlMs;
+    const grantTypes = params.grantTypes ?? DEFAULT_DCR_GRANT_TYPES;
+    this._db.prepare(
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at, grant_types) VALUES (?, ?, ?, ?, ?)'
+    ).run(clientId, JSON.stringify(params.redirectUris), clientIdIssuedAt, expiresAt, JSON.stringify(grantTypes));
+    return { clientId, clientIdIssuedAt };
+  }
+
+  /**
+   * Look up a registered client by id; returns its redirect_uris + grant_types, or null if
+   * unknown/expired. A row with no grant_types value (pre-#86, before the idempotent ALTER
+   * TABLE migration backfilled nothing) defaults to DEFAULT_DCR_GRANT_TYPES — that's what
+   * /register would have stored for it, since the response has always been clamped to it
+   * (issue #86: treat missing as the /register default rather than "no refresh_token support").
+   */
+  getClient(clientId: string): { redirectUris: string[]; grantTypes: string[] } | null {
+    const now = this._clock();
+    const row = this._db.prepare(
+      'SELECT redirect_uris, expires_at, grant_types FROM registered_clients WHERE client_id = ?'
+    ).get(clientId) as { redirect_uris: string; expires_at: number; grant_types: string | null } | undefined;
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return {
+      redirectUris: JSON.parse(row.redirect_uris) as string[],
+      grantTypes: row.grant_types ? (JSON.parse(row.grant_types) as string[]) : DEFAULT_DCR_GRANT_TYPES,
+    };
+  }
+
+  /** Live (unexpired) state rows of one flow — verify-i LOW-3's global cap on anonymous logins. */
+  countLiveStates(flow: 'dashboard'): number {
+    return (this._db.prepare('SELECT COUNT(*) AS n FROM oauth_state WHERE flow = ? AND expires_at > ?').get(flow, this._clock()) as { n: number }).n;
+  }
+
+  /** Create a dashboard browser session (spec §A). Returns the RAW token (the cookie value) —
+   *  only its sha256 is stored. */
+  createSession(principal: string): { token: string; expiresAt: number } {
+    const token = genRandom(this._csprng);
+    const now = this._clock();
+    const expiresAt = now + SESSION_TTL_MS;
+    this._db.prepare(
+      'INSERT INTO dashboard_sessions (token_hash, principal, created_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(sha256hex(token), principal, now, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** Verify a raw session token; null when unknown/expired. Sliding: a session last extended more
+   *  than a day ago is re-extended to a full SESSION_TTL_MS (`slid: true` — the caller re-sets the
+   *  cookie so its Max-Age follows). */
+  verifySession(rawToken: string): { principal: string; expiresAt: number; slid: boolean } | null {
+    const now = this._clock();
+    const hash = sha256hex(rawToken);
+    const row = this._db.prepare(
+      'SELECT principal, expires_at FROM dashboard_sessions WHERE token_hash = ?'
+    ).get(hash) as { principal: string; expires_at: number } | undefined;
+    if (!row || row.expires_at <= now) return null;
+    if (row.expires_at - now < SESSION_TTL_MS - SESSION_SLIDE_EVERY_MS) {
+      const expiresAt = now + SESSION_TTL_MS;
+      this._db.prepare('UPDATE dashboard_sessions SET expires_at = ? WHERE token_hash = ?').run(expiresAt, hash);
+      return { principal: row.principal, expiresAt, slid: true };
+    }
+    return { principal: row.principal, expiresAt: row.expires_at, slid: false };
+  }
+
+  /** Delete a session (logout). Unknown token = no-op. */
+  deleteSession(rawToken: string): void {
+    this._db.prepare('DELETE FROM dashboard_sessions WHERE token_hash = ?').run(sha256hex(rawToken));
+  }
+
+  /** Service accounts spec (owner decision 2026-10-03): revoke every bearer token already issued
+   *  to `principal` — used by service_account_delete so a holder of a live token stops working the
+   *  moment the account is deleted, not merely on its next re-exchange. Returns the count deleted. */
+  revokeAllFor(principal: string): number {
+    return this._db.prepare('DELETE FROM bearer_tokens WHERE principal = ?').run(principal).changes;
+  }
+
+  /** Delete expired rows from all six tables; returns total row count deleted. */
+  gcExpired(): number {
+    const now = this._clock();
+    let n = 0;
+    n += this._db.prepare('DELETE FROM bearer_tokens WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM auth_codes WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM oauth_state WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM registered_clients WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM dashboard_sessions WHERE expires_at <= ?').run(now).changes;
+    return n;
+  }
+}

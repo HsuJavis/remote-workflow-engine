@@ -1,0 +1,277 @@
+// src/dashboard/lib/strings.js
+// DES-201, ARCH-124, ADR-049, TASK-206, REQ-131/133 — the zh/en string table and t(lang, key).
+// C3: neither language may carry the retired UI term that the repo-wide mechanical grep guard
+// (ADR-022, REQ-105) forbids across src/** -- the same term this project always calls "the C3 word".
+//
+// [v27b, ADR-051] warningText(lang, raw) maps the DAG route's warning grammar
+// (`WARNING := TOKEN (': ' DETAIL)?`, DES-198) to a rendered sentence for the two known TOKENs,
+// or passes an unrecognized string through UNCHANGED — a `layoutGraph` prose warning carries no
+// token and must reach the viewer verbatim, in either language.
+
+// [v27 README-fidelity build] `brand` (README "Header / chrome": nav brand text next to the source
+// tag) is the SAME literal in both languages — the design shows zh/en side by side always, it does
+// not swap on the lang toggle — but it still lives here, not as a hard-coded literal in `ui/app.js`,
+// so REQ-131's "both languages come from one source" holds even for a string that happens not to
+// vary by language today.
+export const STR = {
+  zh: {
+    predictedLayout: '預測結構',
+    predictedLayoutUnavailable: '預測結構不可用',
+    predictedLayoutFromFallback: '預測結構來自替代版本 v{resolved}',
+    laneUntitled: '未命名 lane',
+    // [v27m, DES-206 (S)] the ONE Unavailable component's text, for EVERY view — the zh/en pair is
+    // REQ-138's own (01-requirements.md:1874). It lands in both languages in the same edit on
+    // purpose: `t()` has no fallback, so a one-language key renders the literal string `undefined`
+    // (the BF-5/BF-6 defect class, inside the repair for it). `ui/system.js:29`'s zh-only
+    // `UNAVAILABLE` const is the pre-existing second copy — QD-R3 debt, retired when that site is
+    // repaired, not before, or the two diverge.
+    unavailable: '無法取樣',
+    brand: '工作流引擎 / Workflow Engine',
+    // [v28, DES-212, TASK-220, REQ-143] `demoData` is the nav tag's text while demo mode is
+    // engaged (`ui/app.js`'s `demoEngages` arm); `demoBanner` is the shell banner painted OUTSIDE
+    // `mountLazy`'s per-route `replaceChildren()` reach, so it survives every tab/route switch for
+    // as long as demo mode stays engaged.
+    demoData: '示範資料',
+    demoBanner: '示範資料 — 引擎目前無法連線,以下畫面為示範內容',
+    // [v28b, DES-220, TASK-226, REQ-143 amended clause] the per-route disclosure for a route with
+    // no DEMO map entry (DES-212) — shown instead of a frozen/synthesized paint on a demo tick.
+    // [widened v28b, owner ruling 2026-09-18] a colon-terminated PREFIX, not a complete sentence:
+    // every call site appends its OWN literal route string directly after this value.
+    noDemoData: '此路由無示範資料:',
+    // Dashboard auth spec §A/§A2 (2026-09-30): the header identity and the admin (roles) page.
+    signOut: '登出', admLocal: '本機(loopback)',
+    admTab: '管理', admTitle: '使用者與角色', admId: '帳號', admRole: '角色', admSource: '來源',
+    admLastSeen: '最後登入', admChange: '變更', admDefault: '(預設)', admNever: '從未',
+    admSrc_configLocked: '設定檔管理員(鎖定)', admSrc_db: '執行期變更', admSrc_config: '設定檔', admSrc_default: '預設',
+    admBy: '變更者', admConfirm: '將 {id} 的角色改為 {role}?', admError: '變更失敗:',
+    admAuthOff: '未啟用驗證:角色會儲存,但目前不生效',
+    // Owner decision 2026-09-30: role 'none' = signed in, pending approval.
+    pendingTitle: '等待管理員核准', pendingBody: '你已登入,但這個帳號還沒有任何權限。請等待管理員授予角色後再重新整理此頁。',
+    admPending: '待核准', admGrant: '授予',
+    admQuota: '儲存配額(已用/上限)', admQuotaOverride: '個別設定', admQuotaRoleDefault: '角色預設',
+    admQuotaSet: '設定', admQuotaClear: '恢復預設', admQuotaPlaceholder: '例:5GiB、unlimited',
+    admQuotaConfirm: '將 {id} 的儲存配額設為 {limit}?',
+    // Service accounts spec (owner decision 2026-10-03): the admin page's "Service accounts" section.
+    saTitle: '服務帳號', saId: '帳號(client_id)', saRole: '角色', saWorkflows: '工作流程白名單',
+    saWorkflowsNone: '(無限制)', saStatus: '狀態', saEnabled: '啟用中', saDisabledStatus: '已停用',
+    saExpired: '已過期', saLastUsed: '最後使用', saNever: '從未', saSecrets: '密鑰',
+    saNoExpiry: '永不過期', saCreateTitle: '建立服務帳號', saName: '名稱',
+    saNamePlaceholder: '例:ci-bot(小寫英數與 -)', saDescription: '描述(選填)',
+    saWorkflowsPlaceholder: '逗號分隔的工作流程名稱,留空=無限制', saExpiresAtLabel: '到期時間(選填,ISO-8601)',
+    saSubmit: '建立', saCreated: '已建立 {id}', saSecretOnce: '密鑰只顯示這一次,請立刻複製保存:',
+    saCopy: '複製', saCopied: '已複製', saSnippet: 'curl 範例(client_credentials)',
+    saRotate: '輪替密鑰', saRevoke: '撤銷', saDisable: '停用', saEnableAction: '啟用', saDelete: '刪除',
+    saConfirmDelete: '刪除服務帳號 {id}?此操作無法復原,已發出的 bearer 會立即失效。',
+    saConfirmDisable: '停用服務帳號 {id}?已發出的 bearer 下一次請求就會被拒絕。',
+    saConfirmEnable: '啟用服務帳號 {id}?',
+    saConfirmRevoke: '撤銷 {id} 的這把密鑰?',
+    saError: '服務帳號操作失敗:', saEmpty: '尚無服務帳號。',
+    // [v29, REQ-148] run status + trigger type, for the history table's two untranslated columns.
+    // Key names follow the delivery handoff's own STR table (`stCompleted`, `byType_client`) so the
+    // oracle and the implementation use one vocabulary. Only the values the history table can
+    // actually render land here — the rest of REQ-150's sweep is c3, not this commit.
+    stQueued: '排隊', stRunning: '執行中', stCompleted: '完成', stFailed: '失敗',
+    stStopped: '停止', stSuspended: '暫停', stInterrupted: '中斷', stRefused: '拒絕',
+    byType_client: '客戶端', byType_webhook: 'Webhook', byType_schedule: '排程',
+    byType_chain: '鏈結', byType_unknown: '未知',
+    // [v29, REQ-150] The set the side-by-side audit measured as untranslated in the zh UI.
+    // Key names follow the delivery handoff's own STR table wherever it has one.
+    cores: '核心', load: '負載', of: '/', avail: '可用',
+    versionsStored: '個版本', runsStored: '次執行記錄', totalProcs: '總處理程序',
+    model: '模型', tokens: 'Tokens', cost: '費用', timeout: '逾時', effort: '努力程度', activity: '活動',
+    duration: '耗時',
+    // [v32, REQ-200] REQ-150 localized the six CARD labels and stopped there; these are the sub-labels
+    // under them, hardcoded identically for both languages. Wording follows the reference build.
+    tokIn: '輸入', tokOut: '輸出', tokCacheRead: '快取讀取', tokCacheWrite: '快取寫入',
+    effortNotApplied: '未套用', fit: '適應畫面',
+    // [v32, REQ-197] a running call that has not reported yet — distinct from 無活動 (reported, then froze).
+    noReportYet: '尚無回報',
+    stable: '穩定', variable: '變動', bestEffort: '盡力', stabilityDegraded: '降級', stabilityUnavailable: '無法使用', remote: '遠端', local: '本機', free: '免費',
+    issuesOpen: '未解決', issuesResolved: '已解決', openOnGitHub: '在 GitHub 開啟 ↗',
+    stDone: '完成',
+    // [v29c, REQ-153/154/155] the detail page's structural strings. Key names follow the delivery
+    // handoff's own STR table (`home`, `triggers`, `graph`, `selectRun`, `history`, `none`).
+    noResults: '沒有符合的工作流', trigger: '觸發',
+    home: '總覽', triggers: '觸發器', graph: '工作流圖', selectRun: '檢視執行',
+    // [v29d, REQ-156/157] the models/system page headers.
+    modelsTitle: '模型清單', modelCount: '個模型', catalogFetched: '目錄更新',
+    sortHint: '點欄位排序', systemTitle: '系統資源', sampledAt: '取樣於',
+    history: '執行歷史', none: '(無)', stPending: '待執行', legend: '圖例',
+    kind_message: '訊息', kind_tool_call: '工具呼叫', kind_tool_result: '工具結果',
+    kind_usage: '用量', kind_harness: '設定', kind_log: '日誌', kind_refused: '拒絕',
+    // [v35, DES-240, TASK-238, REQ-205] the failure-reason label rendered next to a failed run's
+    // status (detail view + list row), beside error.code/error.message.
+    failureReason: '失敗原因',
+    // Issue #117: `run_status.warnings` (AgentWarningSummary[], rolled up from
+    // AgentRecord.warnings) rendered by `ui/run.js`'s `renderLegend`, via `agentWarningText`
+    // below — the only known code today is MCP_SERVER_NOT_CONNECTED. {agent}/{server}/{status}
+    // interpolated by `agentWarningText`.
+    agentWarningMcpNotConnected: 'Agent {agent}:MCP 伺服器 {server} 未連線({status})',
+    // dash-auth-spec.md section C (2026-09-30): the run-detail badge for a run with >=1 failed
+    // agent — `{n}` is replaced by `agentFailuresBadgeText`, never a hardcoded count baked in here.
+    agentFailuresBadge: '{n} 個 agent 失敗',
+  },
+  en: {
+    predictedLayout: 'predicted layout',
+    predictedLayoutUnavailable: 'predicted layout unavailable',
+    predictedLayoutFromFallback: 'predicted layout from substitute version v{resolved}',
+    laneUntitled: 'untitled lane',
+    unavailable: 'Unavailable',
+    brand: '工作流引擎 / Workflow Engine',
+    demoData: 'Demo data',
+    demoBanner: 'Demo data — the engine is unreachable; this view is showing demo content',
+    noDemoData: 'No demo data for this route: ',
+    signOut: 'Sign out', admLocal: 'Local (loopback)',
+    admTab: 'Admin', admTitle: 'Users & roles', admId: 'Account', admRole: 'Role', admSource: 'Source',
+    admLastSeen: 'Last sign-in', admChange: 'Change', admDefault: '(default)', admNever: 'never',
+    admSrc_configLocked: 'config admin (locked)', admSrc_db: 'set at runtime', admSrc_config: 'config file', admSrc_default: 'default',
+    admBy: 'by', admConfirm: 'Change the role of {id} to {role}?', admError: 'Change refused: ',
+    admAuthOff: 'Authentication is disabled: roles are stored but not enforced',
+    pendingTitle: 'Waiting for an administrator', pendingBody: 'You are signed in, but this account has not been granted access yet. Reload this page after an administrator grants you a role.',
+    admPending: 'pending', admGrant: 'Grant',
+    admQuota: 'Storage (used / limit)', admQuotaOverride: 'per-account override', admQuotaRoleDefault: 'role default',
+    admQuotaSet: 'Set', admQuotaClear: 'Use default', admQuotaPlaceholder: 'e.g. 5GiB, unlimited',
+    admQuotaConfirm: 'Set the storage quota of {id} to {limit}?',
+    // Service accounts spec (owner decision 2026-10-03): the admin page's "Service accounts" section.
+    saTitle: 'Service accounts', saId: 'Account (client_id)', saRole: 'Role', saWorkflows: 'Workflow allowlist',
+    saWorkflowsNone: '(unrestricted)', saStatus: 'Status', saEnabled: 'Enabled', saDisabledStatus: 'Disabled',
+    saExpired: 'Expired', saLastUsed: 'Last used', saNever: 'never', saSecrets: 'Secrets',
+    saNoExpiry: 'never expires', saCreateTitle: 'Create service account', saName: 'Name',
+    saNamePlaceholder: 'e.g. ci-bot (lowercase alnum + -)', saDescription: 'Description (optional)',
+    saWorkflowsPlaceholder: 'Comma-separated workflow names, blank = unrestricted', saExpiresAtLabel: 'Expires at (optional, ISO-8601)',
+    saSubmit: 'Create', saCreated: 'Created {id}', saSecretOnce: 'This secret is shown only once — copy it now:',
+    saCopy: 'Copy', saCopied: 'Copied', saSnippet: 'curl example (client_credentials)',
+    saRotate: 'Rotate secret', saRevoke: 'Revoke', saDisable: 'Disable', saEnableAction: 'Enable', saDelete: 'Delete',
+    saConfirmDelete: 'Delete service account {id}? This cannot be undone; any already-issued bearer is revoked immediately.',
+    saConfirmDisable: 'Disable service account {id}? An already-issued bearer is refused on its very next request.',
+    saConfirmEnable: 'Enable service account {id}?',
+    saConfirmRevoke: 'Revoke this secret for {id}?',
+    saError: 'Service account action failed: ', saEmpty: 'No service accounts yet.',
+    stQueued: 'Queued', stRunning: 'Running', stCompleted: 'Completed', stFailed: 'Failed',
+    stStopped: 'Stopped', stSuspended: 'Suspended', stInterrupted: 'Interrupted', stRefused: 'Refused',
+    byType_client: 'client', byType_webhook: 'webhook', byType_schedule: 'schedule',
+    byType_chain: 'chain', byType_unknown: 'unknown',
+    cores: 'cores', load: 'Load', of: 'of', avail: 'free',
+    versionsStored: 'versions', runsStored: 'run records', totalProcs: 'Total processes',
+    model: 'Model', tokens: 'Tokens', cost: 'Cost', timeout: 'Timeout', effort: 'Effort', activity: 'Activity',
+    duration: 'Duration',
+    tokIn: 'in', tokOut: 'out', tokCacheRead: 'cache read', tokCacheWrite: 'cache write',
+    effortNotApplied: 'not applied', fit: 'Fit',
+    noReportYet: 'no report yet',
+    stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', stabilityDegraded: 'Degraded', stabilityUnavailable: 'Unavailable', remote: 'Remote', local: 'Local', free: 'Free',
+    issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
+    stDone: 'Done',
+    noResults: 'No workflows match', trigger: 'Trigger',
+    home: 'Overview', triggers: 'Triggers', graph: 'Workflow graph', selectRun: 'Viewing run',
+    modelsTitle: 'Model catalog', modelCount: 'models', catalogFetched: 'Catalog fetched',
+    sortHint: 'Click a column to sort', systemTitle: 'System resources', sampledAt: 'Sampled',
+    history: 'Run history', none: '(none)', stPending: 'Pending', legend: 'Legend',
+    kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
+    kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',
+    failureReason: 'Failure reason',
+    agentWarningMcpNotConnected: 'Agent {agent}: MCP server {server} not connected ({status})',
+    agentFailuresBadge: '{n} agent(s) failed',
+  },
+};
+
+export function t(lang, key) {
+  return STR[lang][key];
+}
+
+// The two TOKEN literals DES-198's grammar allows — anything else is layoutGraph prose.
+const TOKEN_KEYS = {
+  PREDICTED_FROM_FALLBACK_VERSION: 'predictedLayoutFromFallback',
+  PREDICTED_OVERLAY_UNAVAILABLE: 'predictedLayoutUnavailable',
+};
+
+// DETAIL := k=v (' ' k=v)* — returns null (malformed) rather than a partial object, so a
+// caller can tell "no detail parsed" from "detail parsed with an unexpected key set".
+function parseDetail(detail) {
+  const kv = {};
+  for (const part of detail.split(' ')) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    if (eq === -1) return null;
+    kv[part.slice(0, eq)] = part.slice(eq + 1);
+  }
+  return kv;
+}
+
+export function warningText(lang, raw) {
+  const splitAt = raw.indexOf(': ');
+  if (splitAt === -1) return raw;
+  const head = raw.slice(0, splitAt);
+  const key = TOKEN_KEYS[head];
+  if (!key) return raw; // unknown head — layoutGraph prose, pass through raw.
+
+  const kv = parseDetail(raw.slice(splitAt + 2));
+  if (!kv) return raw; // malformed detail — never render a guess.
+
+  if (key === 'predictedLayoutFromFallback') {
+    if (!kv.resolved) return raw; // required key missing — never the detail half alone.
+    return t(lang, key).replace('{resolved}', kv.resolved.replace(/^v/, ''));
+  }
+  return t(lang, key);
+}
+
+// Issue #117 (independent-verifier finding, 2026-10-10): `AgentWarningSummary` (run-manager.ts
+// `summarizeAgentWarnings`, rolled up from `AgentRecord.warnings` — today only
+// `MCP_SERVER_NOT_CONNECTED`) is a COMPLETELY different stream from the DAG layout warnings
+// `warningText` above maps — it carries a typed `code`/`server`/`status`/`message` object, never
+// a `TOKEN: DETAIL` string, so it is never fed through `warningText` (whose `raw.indexOf` would
+// throw on an object). A pure decision function (ADR-049, same split as `warningText`/
+// `agentFailuresBadgeText`): the one known `code` renders via the string table, naming the agent
+// (`w.label`, falling back to `w.agentId` when no label was declared) and the server; an unknown
+// future code passes `w.message` through UNCHANGED, the same never-render-a-guess rule
+// `warningText` already follows for an unrecognized TOKEN.
+export function agentWarningText(lang, w) {
+  if (w.code === 'MCP_SERVER_NOT_CONNECTED') {
+    return t(lang, 'agentWarningMcpNotConnected')
+      .replace('{agent}', w.label ?? w.agentId)
+      .replace('{server}', w.server)
+      .replace('{status}', w.status);
+  }
+  return w.message;
+}
+
+// dash-auth-spec.md section C (2026-09-30): the "completed with N failed agents" run-detail badge
+// text — a pure decision over `RunStatusView.failedAgentCount` (ADR-049: no `ui/*.js` DOM module is
+// unit-testable, so this lives here beside `warningText`, and `ui/run.js`'s `renderLegend` only
+// appends the returned string). `null` (never an empty string) when there is nothing to show —
+// mirrors `versionTagText`'s own "render NO tag" convention (lib/status.js) — so the caller's `if
+// (text)` guard is total over every input shape, including an absent `view`.
+export function agentFailuresBadgeText(lang, view) {
+  const n = view && view.failedAgentCount;
+  if (!n) return null;
+  return t(lang, 'agentFailuresBadge').replace('{n}', String(n));
+}
+
+// [v29, REQ-150] One home for the three wire-vocabulary -> label maps. `lib/runlist.js` held a
+// private copy of the first two (v29 c1); `ui/agent-panel.js` needed the same two plus the event
+// kinds, and a second copy is how two surfaces drift apart. Each is TOTAL over the wire: an
+// unrecognised value passes through UNCHANGED rather than rendering the literal string
+// `undefined` — `t()` has no fallback, which is the BF-5/BF-6 defect class this repo has closed
+// before.
+const STATE_KEY = {
+  queued: 'stQueued', running: 'stRunning', completed: 'stCompleted', done: 'stDone',
+  failed: 'stFailed', stopped: 'stStopped', suspended: 'stSuspended',
+  interrupted: 'stInterrupted', refused: 'stRefused',
+};
+const TRIGGER_KEY = {
+  client: 'byType_client', webhook: 'byType_webhook', schedule: 'byType_schedule',
+  chain: 'byType_chain', unknown: 'byType_unknown',
+};
+const KIND_KEY = {
+  message: 'kind_message', tool_call: 'kind_tool_call', tool_result: 'kind_tool_result',
+  usage: 'kind_usage', harness: 'kind_harness', log: 'kind_log', refused: 'kind_refused',
+};
+
+function lookup(map, lang, raw) {
+  if (raw === undefined || raw === null || raw === '') return '—';
+  const key = map[String(raw)];
+  return key ? t(lang, key) : String(raw);
+}
+
+export const stateLabel = (lang, raw) => lookup(STATE_KEY, lang, raw);
+export const triggerLabel = (lang, raw) => lookup(TRIGGER_KEY, lang, raw);
+export const kindLabel = (lang, raw) => lookup(KIND_KEY, lang, raw);

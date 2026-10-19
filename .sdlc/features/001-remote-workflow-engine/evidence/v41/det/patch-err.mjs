@@ -1,0 +1,1 @@
+const rs = new ReadableStream({ type: 'bytes', start(c) { const P = Object.getPrototypeOf(c); const orig = P.error; P.error = function (e) { console.log('controller.error called from:\n' + new Error().stack.split('\n').slice(2, 9).join('\n')); return orig.call(this, e); }; } });

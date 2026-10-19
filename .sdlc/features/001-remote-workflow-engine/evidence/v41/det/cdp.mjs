@@ -1,0 +1,14 @@
+const list = await (await fetch('http://127.0.0.1:9229/json/list')).json();
+const ws = new WebSocket(list[0].webSocketDebuggerUrl);
+let id = 0; const pend = new Map();
+ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); } };
+await new Promise((r) => (ws.onopen = r));
+const send = (method, params = {}) => new Promise((r) => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+export { send, ws };
+const ev = async (expression) => (await send('Runtime.evaluate', { expression, includeCommandLineAPI: true, returnByValue: true, awaitPromise: true })).result;
+const proto = await send('Runtime.evaluate', { expression: 'ReadableStream.prototype' });
+const q = await send('Runtime.queryObjects', { prototypeObjectId: proto.result.result.objectId });
+const fn = process.argv[2] ?? `function(){ const u=require('node:util'); return this.map(s=>u.inspect(s,{depth:0})).reduce((a,k)=>{a[k]=(a[k]||0)+1;return a},{}) }`;
+const r = await send('Runtime.callFunctionOn', { objectId: q.result.objects.objectId, functionDeclaration: fn, returnByValue: true });
+console.log(JSON.stringify(r.result.result?.value ?? r.result, null, 1));
+ws.close();

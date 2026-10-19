@@ -1,0 +1,574 @@
+// WebhookRegistry (v8 Defer B, REQ-057/058): durable external-ingress registry. SQLite-persisted,
+// engine-owned side table (mirrors SqliteSchedulerPort / ContinuationStore). A webhook binds an id →
+// {workflow, secret}; POST /hooks/:id fires the PRE-BOUND workflow (name from the stored row, NEVER
+// from the request body — no workflow-selection injection) after fail-closed verification: HMAC-SHA256
+// (constant-time) over the raw body, a ±300s timestamp window, and a one-shot deliveryId dedup.
+//
+// Secret model (as HMAC requires): the secret IS the HMAC key, so verification needs it — it is
+// generated server-side, stored server-side, and returned to the client EXACTLY ONCE at creation;
+// it is never retrievable again (list exposes only a short sha256 fingerprint, never the secret).
+// This is the same model GitHub/Stripe webhooks use — a one-way hash can't verify an HMAC.
+import Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import type { Clock } from './clock.js';
+import type { ErrEnvelope, RefusalReason, StartedBy } from './types.js';
+import { ERROR_CATALOG } from './errors.js';
+import type { ErrorCode } from './errors.js';
+import { admissionErrorToOutcome } from './run-manager.js';
+
+/** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
+interface RunManagerPort {
+  // v26 (DES-181, ARCH-118, TASK-181): `budget` widened to match `RunSpec` — a fire-path caller
+  // never sets it (undefined), but the port's inline shape must stay a superset of `RunSpec`'s or
+  // `RunManager` stops structurally satisfying this seam.
+  // v37 (ARCH-182, DES-263, TASK-258): `origin` is REQUIRED here too, matching `RunSpec.origin` —
+  // the compiler, not a reviewer, is what stops this call site from silently omitting it.
+  // B1 (dash-auth-spec.md §B1): `principal` — a fired run's attributed owner. Passed as the
+  // trigger's own `createdBy` (never the delivery peer, which carries no identity) so
+  // `run_list`/`run_status` stop refusing NOT_RUN_OWNER to the very principal who created the
+  // trigger. Omitted for a legacy ownerless trigger (`createdBy === null`) — admin-only, unchanged.
+  // 2026-09-30 (webhook B1): `startedBy` now types via the real `StartedBy` (imported from
+  // types.ts) rather than a hand-loosened `{ type: string; id?: string }` — that looser inline
+  // shape happened to structurally satisfy `RunManager.start()` via TS's method-bivariance fallback
+  // ONLY as long as this seam's object type had no OTHER property in common with `RunSpec`; adding
+  // `principal` (a property `RunSpec` also declares) broke that fallback and surfaced the
+  // `startedBy.type: string` vs `StartedBy.type`'s narrow union mismatch as a real compile error.
+  // Importing the real type removes the reliance on the fallback entirely.
+  // issue #160: `version` — RunSpec already declares it; a trigger pinned to a specific version
+  // (`WorkflowCatalog.boundVersionFor`) must hand it straight to `start()` rather than letting the
+  // admission resolver fall back to whatever `release` points at.
+  start(spec: { name?: string; version?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: StartedBy; origin: 'local' | 'remote'; principal?: string }): Promise<string>;
+}
+/** Structural seam — matches WorkflowCatalog's own resolve() signature without importing the class.
+ *  Widened for H4's second site (07-review.md §4.2/§8.1, ARCH-072 note 1): `create()` needs the SAME
+ *  channel-resolution check `workflow_run`/`Scheduler.create()` use, not just "the name exists" —
+ *  a registered-but-unpublished draft (REQ-097's normal author-loop state) must be refused
+ *  CHANNEL_UNPUBLISHED here, not accepted and left to fail at every subsequent delivery. `exists()`
+ *  is dropped — `create()` was its only caller in this file. */
+interface CatalogPort {
+  resolve(name: string, sel: { channel?: string; version?: string }): Promise<{ triggers?: string[] } | unknown>;
+  /** v24 Gate 8 (AF-2, TASK-161): "has this workflow EVER declared this trigger id, in any version?"
+   *  REQUIRED, not optional (ADR-028 fail-closed reasoning applied to a port): a fake that omits it
+   *  must be a compile error, not a silent `undefined` that turns the membership check below into
+   *  whatever `undefined` happens to mean that day. */
+  declaresTrigger(name: string, triggerId: string): boolean;
+  /** issue #160 (owner-approved 2026-10-07): the version this id is PINNED to — see
+   *  `WorkflowCatalog.boundVersionFor`'s own docblock. REQUIRED for the same fail-closed reason as
+   *  `declaresTrigger` above: only called when `declaresTrigger` is true, but a fake satisfying this
+   *  port must say so explicitly, never by omission. */
+  boundVersionFor(name: string, triggerId: string): string | null;
+}
+
+export interface WebhookRegistryDeps {
+  clock: Clock;
+  runManager: RunManagerPort;
+  catalog: CatalogPort;
+  dbPath: string; // ':memory:' for tests, a file path in production
+}
+
+export interface WebhookView {
+  id: string;
+  /** v24 (DES-149): null = created unclaimed (`create({})`) — not yet bound to any workflow. */
+  workflow: string | null;
+  /** v24 (DES-139/DES-149): the CREATING PRINCIPAL — the owner authz checks. `null` = a migrated
+   *  pre-v24 row with no recorded creator (admin-only, per DES-139's tri-state). */
+  createdBy: string | null;
+  enabled: boolean;
+  secretFingerprint: string; // short sha256 prefix — never the secret itself
+  // v24 (DES-150, TASK-142): same coalesced fire-path refusal accounting as the scheduler's
+  // ScheduleStatus (scheduler.ts) — mirrors that shape rather than declaring its own.
+  refusalCount: number;
+  lastRefusedAt?: string;
+  // Widened from `RefusalReason` (webhook B2): a permanent refusal recorded here is now EITHER one
+  // of the four pre-dispatch claim-state reasons (`RefusalReason` proper) OR one of the
+  // `ADMISSION_PERMANENT_CODES` a `RunManager.start()` throw can carry (e.g. `UNKNOWN_MODEL`,
+  // `MCP_NOT_PROVISIONED`) — both are real `ErrorCode` members, so every existing assignment of a
+  // `RefusalReason` literal here still compiles unchanged.
+  lastRefusalReason?: ErrorCode;
+  /** Owner decision (schedule/webhook refusal message visibility): the SAME static, secret-free
+   *  `ERROR_CATALOG[lastRefusalReason].hint` `_replayFromRow`'s own hint lookup already uses for the
+   *  HTTP response body — surfaced here too so `webhook_list` shows a human-readable reason, not
+   *  just the bare machine code, mirroring `ScheduleStatus.lastRefusalMessage` (scheduler.ts). */
+  lastRefusalMessage?: string;
+  /** v37 Gate-8 round-2 (finding B3, ARCH-182 (4)): mirrors `ScheduleStatus.createdRemote`
+   *  (scheduler.ts) — a value that decides whether code executes and cannot be read back is
+   *  unauditable by construction; `webhook_list` needed this to answer "was this webhook created
+   *  remotely" at all. */
+  createdRemote: boolean;
+}
+
+/** The verify+fire outcome, mapped by the HTTP route to a status code. v24 (DES-150) adds 409 for
+ *  a claim-model refusal, carrying the machine-readable `code` alongside the existing `reason` text.
+ *  v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): the 403 arm (a PERMANENT admission refusal from
+ *  `RunManager.start()`) is widened the same way, so a refused delivery leaves the same durable
+ *  trace the 409 reasons already do; 503 is the RETRYABLE twin (a concurrency cap, not a policy
+ *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`.
+ *  Issue #88: 503 is ALSO what a concurrent duplicate gets back when it finds the same deliveryId
+ *  already claimed but not yet finished (`_replayFromRow`'s `httpStatus === 0` arm) — a second,
+ *  distinct reason to retry, still with no `code`; see `deliver()`'s docblock for the full ordering.
+ *  Webhook B2: `code`'s type widens from `RefusalReason` to `ErrorCode` on BOTH the 403 and 409
+ *  arms — a `RunManager.start()` throw mapped through `admissionErrorToOutcome` can now carry any
+ *  `ADMISSION_PERMANENT_CODES` member (e.g. `UNKNOWN_MODEL`, `MCP_NOT_PROVISIONED`), not only the
+ *  four pre-dispatch `RefusalReason` claim-state reasons; every `RefusalReason` literal already in
+ *  use here is itself a valid `ErrorCode`, so this is additive, not a breaking narrowing. The
+ *  500/503 arm now carries an OPTIONAL `code` too (previously none at all — dash-auth-spec.md §B2
+ *  asks for `{code, hint}` at every status, not just the permanent ones): a TRANSIENT outcome is
+ *  never recorded/replayed, but the caller can still be told WHICH catalogued code it was
+ *  (`RUN_ADMISSION_LIMIT`, `CAS_UNAVAILABLE`, …) rather than only the static hint text — `undefined`
+ *  only for the genuinely uncatalogued case (`admissionErrorToOutcome` folds that to
+ *  `INTERNAL_ERROR`, which IS itself a real `ErrorCode`, so in practice this is never actually
+ *  absent from the webhook catch-block's own call site; it stays optional because `deliver()`'s
+ *  OTHER 500/503 producer — the disabled-webhook/bad-signature/etc. arms — has no code to give). */
+export type DeliverResult =
+  | { ok: true; httpStatus: 202 | 200; runId?: string; replayed?: boolean }
+  | { ok: false; httpStatus: 401 | 404; reason: string }
+  | { ok: false; httpStatus: 403; reason: string; code?: ErrorCode }
+  | { ok: false; httpStatus: 409; reason: string; code: ErrorCode }
+  | { ok: false; httpStatus: 500 | 503; reason: string; code?: ErrorCode };
+
+// issue #97: exported so webhook_create's tool description (tool-specs.ts) and the test that
+// pins that description's stated skew window against this real constant both read the SAME value —
+// never a hand-typed "±300s" that can drift from what `deliver()` actually enforces.
+export const REPLAY_WINDOW_MS = 300_000; // ±300s
+
+// issue #97: the THREE header names a delivery is authenticated/deduped by — the single
+// source `server.ts`'s POST /hooks/:id route reads them from, `webhook_create`'s tool description
+// documents them from, and the test pinning that description reads them from. Before this export
+// existed, the description was silent about the delivery contract entirely (issue #97 item 3) —
+// exporting the literal names, not just documenting them by hand, is what lets a test catch either
+// side drifting from the other.
+export const WEBHOOK_HEADERS = {
+  signature: 'x-rwe-signature',
+  timestamp: 'x-rwe-timestamp',
+  deliveryId: 'x-rwe-delivery',
+} as const;
+
+interface WebhookRow {
+  id: string;
+  workflow: string | null;
+  createdBy: string | null;
+  secret: string;
+  enabled: number;
+  createdAt: string;
+  refusalCount: number;
+  lastRefusedAt: string | null;
+  lastRefusalReason: string | null;
+  createdRemote: number;
+}
+
+export class WebhookRegistry {
+  private readonly _db: Database.Database;
+  private readonly _clock: Clock;
+  private readonly _runManager: RunManagerPort;
+  private readonly _catalog: CatalogPort;
+
+  constructor(deps: WebhookRegistryDeps) {
+    this._clock = deps.clock;
+    this._runManager = deps.runManager;
+    this._catalog = deps.catalog;
+    if (deps.dbPath !== ':memory:') mkdirSync(dirname(deps.dbPath), { recursive: true });
+    this._db = new Database(deps.dbPath);
+    this._db.pragma('journal_mode = WAL');
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS webhooks (
+        id TEXT PRIMARY KEY,
+        workflow TEXT,
+        createdBy TEXT,
+        secret TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        createdAt TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS webhook_deliveries (
+        deliveryId TEXT PRIMARY KEY,
+        webhookId TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        httpStatus INTEGER,
+        code TEXT,
+        runId TEXT
+      );
+    `);
+    // v24 (DES-150, TASK-156): a pre-v24 on-disk `webhooks.db` still carries `workflow TEXT NOT
+    // NULL` (created before the unclaimed-webhook shape existed). SQLite cannot drop a NOT NULL
+    // constraint via ALTER, so a NOT NULL `workflow` column is rebuilt: create the v24 shape under
+    // a temp name, copy every row across, drop the old table, rename. Idempotent — a fresh/already
+    // -migrated db has `workflow` nullable already, so this block is skipped entirely.
+    const workflowIsNotNull = (this._db.prepare('PRAGMA table_info(webhooks)').all() as Array<{ name: string; notnull: number }>)
+      .some((c) => c.name === 'workflow' && c.notnull === 1);
+    if (workflowIsNotNull) {
+      // Transactional (SQLite DDL is transactional): a crash mid-rebuild leaves the original
+      // `webhooks` table untouched — the next boot's PRAGMA check redoes the rebuild from
+      // scratch rather than silently stranding rows in a half-renamed table.
+      this._db.transaction(() => {
+        this._db.exec(`
+          CREATE TABLE webhooks__v24_rebuild (
+            id TEXT PRIMARY KEY,
+            workflow TEXT,
+            createdBy TEXT,
+            secret TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            createdAt TEXT NOT NULL,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT,
+            createdRemote INTEGER NOT NULL DEFAULT 0
+          );
+          INSERT INTO webhooks__v24_rebuild (id, workflow, secret, enabled, createdAt)
+            SELECT id, workflow, secret, enabled, createdAt FROM webhooks;
+          DROP TABLE webhooks;
+          ALTER TABLE webhooks__v24_rebuild RENAME TO webhooks;
+        `);
+      })();
+    }
+    // v24 (DES-149/150, TASK-142): additive migration — the claim-model refusal accounting columns.
+    // A no-op after the rebuild above (those columns already exist on the rebuilt table).
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdBy TEXT'); } catch { /* already exists */ }
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusedAt TEXT'); } catch { /* already exists */ }
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusalReason TEXT'); } catch { /* already exists */ }
+    // v37 P1 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at
+    // `webhook_create` from `ToolDeps.isRemoteSubmission`, never updated afterwards (see the
+    // column's own comment below), read back by `deliver()` to stamp `RunSpec.origin`.
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+
+    // Issue #88 fix: additive migration for `webhook_deliveries` — a pre-fix on-disk db has the
+    // three-column shape from the CREATE TABLE above (no outcome tracking). `CREATE TABLE IF NOT
+    // EXISTS` is a no-op against it, so the new columns are added with a guarded `ALTER TABLE`
+    // (checked via PRAGMA, not try/catch — three columns share one clear guard here). NO column
+    // gets a DEFAULT: an existing row therefore has `httpStatus IS NULL`, which `_replayFromRow`
+    // treats as accepted. That is NOT a claim that every legacy row actually WAS accepted — this is
+    // exactly the bug this fix closes: the pre-fix `INSERT OR IGNORE` ran before `start()`, so a
+    // legacy row can belong to a delivery that then went on to get 403/503/500, and that delivery's
+    // true outcome is unrecoverable now (the old schema never stored it). The choice is between two
+    // failure modes for that unrecoverable minority: treat legacy = accepted (a handful of
+    // pre-existing refused deliveries stay lost, exactly as lost as they already were under the old
+    // code) or treat legacy = re-processable (every genuinely-accepted legacy delivery re-fires on
+    // its next replay, actively creating NEW duplicate runs post-upgrade). The former is strictly
+    // smaller harm, so `_replayFromRow` picks it — see that method's own docblock. `0` is reserved
+    // below as the CLAIMED-BUT-NOT-YET-RECORDED sentinel, so legacy-NULL / in-flight-0 /
+    // recorded-terminal are three distinguishable states without a fourth boolean column.
+    const deliveryCols = (this._db.prepare('PRAGMA table_info(webhook_deliveries)').all() as Array<{ name: string }>).map((c) => c.name);
+    if (!deliveryCols.includes('httpStatus')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN httpStatus INTEGER');
+    if (!deliveryCols.includes('code')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN code TEXT');
+    if (!deliveryCols.includes('runId')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN runId TEXT');
+    // A process crash between the claim INSERT (`httpStatus=0`) and the finalize UPDATE/DELETE in
+    // `deliver()` leaves a `0` row stranded forever — every retry would see it as "in flight" and
+    // get a retryable-but-never-actually-retried 503. A fresh process boot has nothing genuinely in
+    // flight (this constructor runs before any `deliver()` call can), so clearing stray `0` rows
+    // here is safe and is the only place that can reliably do it. Residual risk: this assumes a
+    // single live `WebhookRegistry` process per db (true today, per the file's WAL/single-writer
+    // dedup model) — see the report accompanying this fix for the multi-process caveat.
+    this._db.prepare('DELETE FROM webhook_deliveries WHERE httpStatus = 0').run();
+  }
+
+  /** Issue #88: replays the ORIGINAL outcome recorded for an existing `webhook_deliveries` row,
+   *  instead of the pre-fix bare `200 {replayed:true}` regardless of what actually happened.
+   *  - `httpStatus IS NULL` — a legacy pre-migration row (this code itself never leaves a row at
+   *    NULL — see the migration comment above). Treated as accepted: NOT because that is provably
+   *    what happened (the pre-fix bug this row predates means it might not be), but because it is
+   *    the smaller of two unrecoverable harms — see the migration comment's full reasoning. A
+   *    legacy row belonging to a delivery that was actually refused stays lost, exactly as it
+   *    already was; the alternative (treat legacy as re-processable) would re-fire every
+   *    genuinely-accepted legacy delivery instead.
+   *  - `httpStatus === 0` — claimed by another delivery attempt that has not finished yet (or a
+   *    concurrent duplicate racing it, or the current attempt lost the INSERT race — see `deliver`).
+   *    NOT a 2xx: the sender must not be told "replayed" for work that may still fail.
+   *  - `httpStatus === 202` — accepted and a run was started; replay keeps the 200/`replayed:true`
+   *    wire shape callers already depend on, with `runId` added back in when it was recorded.
+   *  - `httpStatus === 403` or `409` — a PERMANENT admission refusal (webhook B2 widens this arm
+   *    from 403-only to "whatever `ADMISSION_STATUS` recorded" — 403 for `CONFINEMENT_UNAVAILABLE`,
+   *    409 for every other permanent code); replay must answer with the SAME status+code, never a
+   *    2xx (a permanent refusal will not resolve itself, unlike 503/500 below, which are never
+   *    persisted as a terminal outcome at all — see `deliver`'s catch block). The hint is looked up
+   *    by the STORED code, never hardcoded to `CONFINEMENT_UNAVAILABLE` — a legacy pre-B2 row with
+   *    `code IS NULL` (every row this code itself ever wrote for a 403 outcome, before B2, was
+   *    ALWAYS `CONFINEMENT_UNAVAILABLE` — no other code reached this branch yet) is the only case
+   *    the null-fallback below covers. */
+  private _replayFromRow(row: { httpStatus: number | null; code: string | null; runId: string | null }): DeliverResult {
+    if (row.httpStatus === null) return { ok: true, httpStatus: 200, replayed: true };
+    if (row.httpStatus === 0) return { ok: false, httpStatus: 503, reason: 'delivery already in progress; retry' };
+    if (row.httpStatus === 403 || row.httpStatus === 409) {
+      const code = (row.code ?? 'CONFINEMENT_UNAVAILABLE') as ErrorCode;
+      const hint = ERROR_CATALOG[code]?.hint ?? ERROR_CATALOG['CONFINEMENT_UNAVAILABLE'].hint;
+      // Two literal returns, not `httpStatus: row.httpStatus` — see the SAME note in `deliver()`'s
+      // catch block; a `403 | 409`-typed value does not narrow to either `DeliverResult` arm alone.
+      if (row.httpStatus === 403) return { ok: false, httpStatus: 403, reason: hint, code };
+      return { ok: false, httpStatus: 409, reason: hint, code };
+    }
+    return { ok: true, httpStatus: 200, replayed: true, ...(row.runId ? { runId: row.runId } : {}) };
+  }
+
+  /** Registers a webhook. v24 (DES-149): `workflow` is now OPTIONAL — omitted, the webhook is
+   *  created UNCLAIMED (fires nothing until `claim()`, typically via a workflow's registration
+   *  `triggers[]`); supplied, it is claimed immediately (this is a brand-new row, so no other
+   *  claimant can race it). Generates the secret server-side and returns it EXACTLY ONCE — it is
+   *  never retrievable again (list shows only a fingerprint).
+   *
+   *  v24 Gate 7.5 (D-1): the H4 create-time catalog-resolve check is GONE here for the same reason
+   *  it is gone from `Scheduler.create()` — REQ-115's last clause moves it. An unclaimed webhook
+   *  that is delivered to is refused at DELIVERY (`UNCLAIMED` / `CLAIMED_WORKFLOW_MISSING` /
+   *  `CHANNEL_UNPUBLISHED`) and the refusal is recorded on the row, which is where the answer is
+   *  still true when it matters. */
+  async create(spec: { workflow?: string; enabled?: boolean; createdBy?: string; createdRemote?: boolean }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
+    const id = randomUUID();
+    const secret = randomBytes(32).toString('hex');
+    this._db
+      .prepare('INSERT INTO webhooks (id, workflow, createdBy, createdRemote, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      // v37 P1 (ARCH-182, DES-263, TASK-258): the ONLY write this column ever gets — `claim()`
+      // below does NOT touch it (that re-stamp rule is superseded); this INSERT never runs again
+      // for an existing row either, so the value is frozen from creation onward.
+      .run(id, spec.workflow ?? null, spec.createdBy ?? null, spec.createdRemote ? 1 : 0, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
+    return { webhookId: id, secret };
+  }
+
+  /** v24 (integrator; DES-156/REQ-103): the by-id reader `workflow_describe.triggers[]` needs —
+   *  same reason as `SqliteSchedulerPort.get`. */
+  get(id: string): WebhookView | null {
+    return this.list().find((w) => w.id === id) ?? null;
+  }
+
+  /** v24 (integrator; DES-156/REQ-103) — see `SqliteSchedulerPort.claimedIdsFor` for why ids only. */
+  claimedIdsFor(workflow: string): string[] {
+    const rows = this._db.prepare('SELECT id FROM webhooks WHERE workflow = ?').all(workflow) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  list(): WebhookView[] {
+    const rows = this._db.prepare('SELECT * FROM webhooks ORDER BY createdAt').all() as WebhookRow[];
+    return rows.map((r) => ({
+      id: r.id, workflow: r.workflow, createdBy: r.createdBy ?? null, enabled: r.enabled === 1,
+      secretFingerprint: createHash('sha256').update(r.secret).digest('hex').slice(0, 16),
+      refusalCount: r.refusalCount ?? 0,
+      createdRemote: r.createdRemote === 1,
+      ...(r.lastRefusedAt ? { lastRefusedAt: r.lastRefusedAt } : {}),
+      ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as ErrorCode, lastRefusalMessage: ERROR_CATALOG[r.lastRefusalReason as ErrorCode]?.hint ?? ERROR_CATALOG['CONFINEMENT_UNAVAILABLE'].hint } : {}),
+    }));
+  }
+
+  delete(id: string): { deleted: boolean } {
+    const info = this._db.prepare('DELETE FROM webhooks WHERE id = ?').run(id);
+    return { deleted: info.changes > 0 };
+  }
+
+  /** v24 (DES-149): claims an unclaimed webhook for `workflow` inside one transaction — the same
+   *  claim model the trigger stores share. `'held'` (already claimed BY this workflow) is never
+   *  released by compensation; `'ALREADY_CLAIMED'` (claimed by someone else) leaves the row untouched.
+   *  v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂) — twin of
+   *  `SqliteSchedulerPort.claim()`: back to its pre-v24.5 shape, `createdRemote` is NOT touched on
+   *  any outcome. The one-iteration re-stamp rule (`3e3c331`+`2cf5f32`, ADR-086's second ruling) is
+   *  SUPERSEDED and deleted — the re-registration hole it closed by rewriting this row is now
+   *  closed one row over, by `WorkflowCatalog.insertVersion`'s `registeredRemote` column, OR'd
+   *  against this one at admission. */
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
+    return this._db.transaction((): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' => {
+      const row = this._db.prepare('SELECT workflow FROM webhooks WHERE id = ?').get(id) as { workflow: string | null } | undefined;
+      if (!row) return 'NOT_FOUND';
+      if (row.workflow === workflow) return 'held';
+      if (row.workflow !== null) return 'ALREADY_CLAIMED';
+      const info = this._db.prepare('UPDATE webhooks SET workflow = ? WHERE id = ? AND workflow IS NULL').run(workflow, id);
+      return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
+    })();
+  }
+
+  /** v24 (DES-149): idempotent — releasing an id not claimed by `workflow` (including one already
+   *  unclaimed) is a no-op, never an error. */
+  release(id: string, workflow: string): void {
+    this._db.prepare('UPDATE webhooks SET workflow = NULL WHERE id = ? AND workflow = ?').run(id, workflow);
+  }
+
+  /** issue #160 (owner-approved 2026-10-07): deregister-only hygiene alongside `release()` — see
+   *  `TriggerClaimStore.disable`'s own docblock (mcp-facade.ts). Idempotent, like `release`: an
+   *  already-disabled or unknown id is a no-op, never an error. Disable, not delete — the safer of
+   *  the two options the owner left to pick: the webhook's id/secret/URL stay valid (an external
+   *  sender's config is not broken), the row's refusal history survives, and `deliver()` now answers
+   *  a CLEAR CODED refusal (`TRIGGER_DISABLED`) rather than silently discarding every future POST. */
+  disable(id: string): void {
+    this._db.prepare('UPDATE webhooks SET enabled = 0 WHERE id = ?').run(id);
+  }
+
+  /** DES-139/DES-149 step 2: the OWNER is the CREATING PRINCIPAL (`createdBy`), never the claiming
+   *  workflow — claiming a trigger for a workflow does not transfer its ownership. Tri-state:
+   *  `undefined` = no such webhook id in this store; `null` = exists with no recorded creator
+   *  (a migrated pre-v24 row, admin-only per DES-139); a string = the creator's principal id. */
+  ownerOf(id: string): string | null | undefined {
+    const row = this._db.prepare('SELECT createdBy FROM webhooks WHERE id = ?').get(id) as { createdBy: string | null } | undefined;
+    return row ? row.createdBy : undefined;
+  }
+
+  /** v24 (DES-150): shares `markFailed`'s advance-and-record shape — increments `refusalCount`,
+   *  records `lastRefusedAt`/`lastRefusalReason`, never touches `lastError` (the two are mutually
+   *  exclusive: dispatch failure vs policy refusal, stated once here). Webhook B2: `reason` widens
+   *  from `RefusalReason` to `ErrorCode` — a permanent `RunManager.start()` throw (`UNKNOWN_MODEL`,
+   *  `MCP_NOT_PROVISIONED`, …) is now ALSO recorded here, alongside the four pre-dispatch reasons. */
+  private _recordRefusal(id: string, reason: ErrorCode): void {
+    this._db.prepare('UPDATE webhooks SET refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
+      .run(this._clock.isoNow(), reason, id);
+  }
+
+  /** Fail-closed verify + fire. Order (v24 DES-150; issue #88 revises the dedup step): exists+enabled
+   *  → HMAC signature (constant-time, over the RAW body) → ±300s timestamp window → one-shot
+   *  deliveryId dedup CHECK (before the claim checks — a caller must not learn claim state without a
+   *  valid signature; a record found here REPLAYS ITS ORIGINAL OUTCOME via `_replayFromRow`, not a
+   *  bare 200) → claim checks (UNCLAIMED/CLAIMED_WORKFLOW_MISSING/CHANNEL_UNPUBLISHED — issue #160
+   *  retired NOT_IN_RELEASE, see the version-pin block below — none of these ever write a dedup row,
+   *  so they stay retryable forever, same as before) → claim
+   *  the delivery id (INSERT, `httpStatus=0` sentinel — "admitted past policy, outcome pending"; a
+   *  losing INSERT means a concurrent duplicate is already in flight or already finished, and this
+   *  call replays THAT row instead of starting a second run) → start the claimed workflow with the
+   *  parsed body as args.event → finalize the claimed row with the real outcome: 202 accepted (kept,
+   *  with `runId`), or 403 permanent refusal (kept — replay must not upgrade a policy refusal to
+   *  2xx), or DELETED on a transient 503/500 (issue #88: a transient admission failure must not
+   *  permanently poison the id — the row is removed so a retry actually reprocesses, not just
+   *  replays a cached failure). Any failure starts NO run. */
+  async deliver(id: string, req: { signature?: string; timestamp?: string; deliveryId?: string; rawBody: string; parsedBody: unknown }): Promise<DeliverResult> {
+    const row = this._db.prepare('SELECT * FROM webhooks WHERE id = ?').get(id) as WebhookRow | undefined;
+    if (!row) return { ok: false, httpStatus: 404, reason: 'unknown webhook' };
+    // issue #160 (owner-approved 2026-10-07): a CODED refusal — a webhook `workflow_deregister`
+    // disabled previously answered a bare, code-less 403 ("webhook disabled"), indistinguishable
+    // from any other disabled-for-no-stated-reason row. `TRIGGER_DISABLED`'s hint names the cause.
+    if (row.enabled !== 1) return { ok: false, httpStatus: 403, reason: ERROR_CATALOG.TRIGGER_DISABLED.hint, code: 'TRIGGER_DISABLED' };
+
+    const expected = createHmac('sha256', row.secret).update(req.rawBody).digest('hex');
+    const provided = (req.signature ?? '').replace(/^sha256=/, '');
+    if (!signatureEquals(provided, expected)) return { ok: false, httpStatus: 401, reason: 'bad signature' };
+
+    const tsMs = req.timestamp ? Date.parse(req.timestamp) : NaN;
+    if (!Number.isFinite(tsMs) || Math.abs(this._clock.now() - tsMs) > REPLAY_WINDOW_MS) {
+      return { ok: false, httpStatus: 401, reason: 'stale or missing timestamp' };
+    }
+
+    // Dedup CHECK — before the claim checks, never writes a record (that happens only below, on
+    // admission). A replay of a delivery that was refused (unclaimed) is therefore NOT a replay —
+    // no record was ever written for it — and fires for real once the webhook is claimed. Issue #88:
+    // a record found here now replays the ORIGINAL outcome (`_replayFromRow`) instead of an
+    // unconditional 200 — see that method for the httpStatus NULL/0/403/202 states it distinguishes.
+    if (req.deliveryId) {
+      const existing = this._db.prepare('SELECT httpStatus, code, runId FROM webhook_deliveries WHERE deliveryId = ?')
+        .get(req.deliveryId) as { httpStatus: number | null; code: string | null; runId: string | null } | undefined;
+      if (existing) return this._replayFromRow(existing);
+    }
+
+    if (row.workflow === null) {
+      this._recordRefusal(id, 'UNCLAIMED');
+      return { ok: false, httpStatus: 409, reason: 'webhook is not claimed by any workflow', code: 'UNCLAIMED' };
+    }
+
+    // issue #160 (owner-approved 2026-10-07): a webhook CLAIMED through a version's `triggers[]`
+    // (`declaresTrigger` true) is PINNED to the HIGHEST version that still declares it
+    // (`boundVersionFor`) — it fires THAT version, never whatever `release` happens to point at.
+    // This REPLACES the old release-channel-membership gate (`NOT_IN_RELEASE`): that question
+    // ("does the CURRENT release still list this id") is simply the wrong one once a bound version
+    // is itself the fire target — resolving `{version: bound}` either succeeds (fires it) or throws
+    // because the version/workflow is gone (CLAIMED_WORKFLOW_MISSING below), and there is no third
+    // state left for NOT_IN_RELEASE to name. A trigger bound at CREATION (`webhook_create({workflow})`,
+    // now reachable only as a pre-v24 legacy row — `declaresTrigger` false) never entered any
+    // version's `triggers[]`, so it keeps the pre-v24 behaviour: resolve the RELEASE channel, same
+    // as always.
+    const boundVersion = this._catalog.declaresTrigger(row.workflow, id) ? this._catalog.boundVersionFor(row.workflow, id) : null;
+    const resolveSel = boundVersion !== null ? { version: boundVersion } : { channel: 'release' };
+    try {
+      await this._catalog.resolve(row.workflow, resolveSel);
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      const reason: RefusalReason = code === 'CHANNEL_UNPUBLISHED' ? 'CHANNEL_UNPUBLISHED' : 'CLAIMED_WORKFLOW_MISSING';
+      this._recordRefusal(id, reason);
+      return { ok: false, httpStatus: 409, reason: `claimed workflow '${row.workflow}' cannot be fired: ${reason}`, code: reason };
+    }
+
+    // Issue #88: claim the delivery id BEFORE calling `start()`, with `httpStatus=0` as the
+    // "admitted past policy, outcome not yet recorded" sentinel — and check `changes`, unlike the
+    // pre-fix unconditional INSERT OR IGNORE. Six concurrent identical deliveries (the issue's
+    // reported scenario) all reach this line before any of them finishes `start()`: exactly one
+    // INSERT wins (`changes === 1`); the other five lose it (`changes === 0`) and MUST NOT proceed
+    // to call `start()` a second time — they replay whatever the winner's row currently says, which
+    // is `0` (in-flight, a non-2xx 503) until the winner finishes, then its real terminal outcome.
+    // This is also what makes a dedup record for an ADMITTED delivery exactly-once even though the
+    // claim checks above ran without any lock across the same race window.
+    if (req.deliveryId) {
+      const claim = this._db.prepare('INSERT OR IGNORE INTO webhook_deliveries (deliveryId, webhookId, ts, httpStatus) VALUES (?, ?, ?, 0)')
+        .run(req.deliveryId, id, this._clock.isoNow());
+      if (claim.changes === 0) {
+        const existing = this._db.prepare('SELECT httpStatus, code, runId FROM webhook_deliveries WHERE deliveryId = ?')
+          .get(req.deliveryId) as { httpStatus: number | null; code: string | null; runId: string | null };
+        return this._replayFromRow(existing);
+      }
+    }
+
+    // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the delivery
+    // PEER is deliberately NOT part of this predicate (DES-262's own note) — what decides is who
+    // CREATED the trigger ROW: `row.createdRemote`, written once at creation and never updated
+    // afterwards (the `claim()` re-stamp `3e3c331`+`2cf5f32` applied for one iteration is
+    // superseded). `RunManager.start()`'s own second admission stage separately ORs in "who
+    // registered the resolved VERSION" (`workflow_versions.registeredRemote`) — this call site
+    // only has to supply the TRIGGER half. A thrown admission error is mapped into this function's
+    // own typed DeliverResult rather than escaping as a rejected promise.
+    let runId: string;
+    try {
+      // B1 (dash-auth-spec.md §B1): `principal` is the trigger's own CREATOR (`row.createdBy`),
+      // never the delivery peer (which carries no identity) — so the run this delivery starts is
+      // readable by the person who created the trigger, exactly as a manual run_start already is
+      // for its caller. `row.createdBy` is `null` for a legacy ownerless trigger (a migrated pre-v24
+      // row) — `?? undefined` keeps that case exactly as it was (no principal, admin-only reads).
+      // issue #160: `version: boundVersion ?? undefined` — a version-pinned trigger runs THAT
+      // version explicitly; a legacy create-time-bound one (`boundVersion === null`) omits it, same
+      // as before, so `start()` falls back to its own default (release).
+      runId = await this._runManager.start({ name: row.workflow, version: boundVersion ?? undefined, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local', principal: row.createdBy ?? undefined });
+    } catch (err) {
+      // Webhook B2 (dash-auth-spec.md §B2): `admissionErrorToOutcome` classifies EVERY
+      // ERROR_CATALOG code `RunManager.start()` can throw — see its own docblock (run-manager.ts)
+      // for the full table and the reasoning. `outcome.permanent` (`httpStatus < 500`) replaces the
+      // old bare `=== 403` branch: 403 (CONFINEMENT_UNAVAILABLE) and 409 (every other permanent
+      // code — bad params/model/seed, an unprovisioned mcp/skill asset, a legacy/unrunnable
+      // version, …) are now BOTH recorded + replayed the same way; 503/500 stay TRANSIENT. Only the
+      // static catalog hint crosses the wire — never `err.message`, which can carry host-measured
+      // detail (the sandbox-probe posture, `maxConcurrentRuns=N`) nobody decided to disclose to an
+      // HMAC-authenticated peer.
+      const outcome = admissionErrorToOutcome(err);
+      const hint = ERROR_CATALOG[outcome.code].hint;
+      if (outcome.permanent) {
+        this._recordRefusal(id, outcome.code);
+        // Issue #88: a PERMANENT refusal IS the final answer for this delivery id — finalize the
+        // claimed row so a replay gets back the SAME status+code, never a 2xx. `refusalCount` is
+        // only incremented here, on the one call that actually reached `start()`; a later replay of
+        // this same id answers straight from `_replayFromRow` and never re-decides admission.
+        if (req.deliveryId) {
+          this._db.prepare('UPDATE webhook_deliveries SET httpStatus = ?, code = ? WHERE deliveryId = ?')
+            .run(outcome.httpStatus, outcome.code, req.deliveryId);
+        }
+        // Two literal returns, not one generic `httpStatus: outcome.httpStatus` — `DeliverResult`'s
+        // 403 and 409 arms are each pinned to a SINGLE status literal (403 carries `code?`
+        // optionally, since the disabled-webhook 403 above has none; 409 carries it always), and a
+        // union-typed `403 | 409` value does not narrow to either arm on its own.
+        if (outcome.httpStatus === 403) return { ok: false, httpStatus: 403, reason: hint, code: outcome.code };
+        return { ok: false, httpStatus: 409, reason: hint, code: outcome.code };
+      }
+      // 503 (RUN_ADMISSION_LIMIT — explicitly retryable) and 500 (anything else, including a
+      // catalogued-but-not-permanent code like CAS_UNAVAILABLE) are TRANSIENT: this is the crux of
+      // issue #88 — the pre-fix code left the claim row in place after either, so a sender's retry
+      // hit the dedup check and got "200 replayed" for work that never happened. The claimed row is
+      // removed instead, so the SAME deliveryId, retried, is treated as brand new and actually
+      // re-processed (re-runs the claim checks too — a webhook claimed/reclaimed in the interim is
+      // re-evaluated, which is correct: nothing durable was ever decided for this id).
+      if (req.deliveryId) {
+        this._db.prepare('DELETE FROM webhook_deliveries WHERE deliveryId = ? AND httpStatus = 0').run(req.deliveryId);
+      }
+      return { ok: false, httpStatus: outcome.httpStatus as 500 | 503, reason: hint, code: outcome.code };
+    }
+    // Issue #88: finalize the claim with the real accepted outcome (kept for a future replay of this
+    // SAME deliveryId — `_replayFromRow` turns `httpStatus=202` back into `200 {replayed:true}`,
+    // adding `runId` back in). The FIRST response to the sender is still 202 with `runId`, unchanged.
+    if (req.deliveryId) {
+      this._db.prepare('UPDATE webhook_deliveries SET httpStatus = 202, runId = ? WHERE deliveryId = ?').run(runId, req.deliveryId);
+    }
+    return { ok: true, httpStatus: 202, runId };
+  }
+}
+
+/** Constant-time hex-string compare (length-safe: unequal lengths short-circuit to false). */
+function signatureEquals(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}

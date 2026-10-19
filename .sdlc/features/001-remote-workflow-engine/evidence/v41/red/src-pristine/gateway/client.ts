@@ -1,0 +1,646 @@
+// GatewayClient interface + LiteLLMGatewayClient (DES-009 / ARCH-005 / TASK-011/012).
+// Narrow invoke(prompt,opts) over the configured provider; bounded timeout -> retry -> null semantics
+// (D-G): a dead/hung/misconfigured provider resolves { ok:false } rather than hanging or throwing.
+// Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
+import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
+import type { Options } from '@anthropic-ai/claude-agent-sdk';
+import { LiteLLMProxyManager } from './litellm-proxy.js';
+import { redactHarness } from '../agent-executor.js';
+import { PROVIDER_CAPS, parseModelRef } from '../providers.js';
+import type { Provider } from '../providers.js';
+
+/** v26 (DES-178/DES-179, ARCH-116/ARCH-117): the fail-safe capability BOTH gateways resolve
+ *  `wireEffort` against when no run pin was threaded onto `req.caps` (no admission-time pin
+ *  available, or a caller that never wires one) — the single shared copy of what used to be a
+ *  private constant on the SDK client only, so a direct-fetch call without a pin degrades exactly
+ *  the same way an SDK call without one does. */
+export const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
+
+/** issue #24/#22: validate a caller-supplied per-call timeout (AgentOpts.timeoutMs). Only a positive,
+ *  finite number is honored; anything else (0, negative, NaN, a string from an untrusted script) →
+ *  undefined so the caller falls back to the gateway's configured default — a bad value can never
+ *  DISABLE the bound. Shared by both gateway clients so the predicate can't drift. */
+export function resolveTimeout(t: unknown): number | undefined {
+  return typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : undefined;
+}
+
+/** DES-106/ARCH-069 (TASK-102): the tri-state record of whether/how a requested `effort` directive
+ *  reached the wire — `applied:true` names the outbound placement + value; `applied:false`
+ *  degrades the run without failing it and records why (e.g. no reasoning dial for this provider).
+ *  `param` is the flat Agent SDK Options field; `restPath` is the (possibly nested) REST-body path —
+ *  the two wire shapes place the same reasoning-effort concept differently (E-1/P-A1: the Anthropic
+ *  Messages API nests it at `output_config.effort`, never top-level, while the Agent SDK's own
+ *  `Options` object takes it as a flat field), so one flat name cannot describe both placements. */
+export type EffortApplied =
+  | { applied: true; param: string; restPath: string[]; value: unknown }
+  | { applied: false; reason: string };
+
+/** v26 (DES-179, ARCH-117, TASK-179, REQ-126, issue #71): the reasoning-effort budget levels the
+ *  deployed LiteLLM proxy translates into upstream `reasoning_effort` low/medium/high for the
+ *  openrouter `thinking.budgetTokens` dial. A claim about a THIRD PARTY: `result.usage` carries no
+ *  `reasoning_tokens` through the SDK, so unit tests can only assert the wire SHAPE — the real-tier
+ *  confirmation (a Gate 7.5 `--detailed_debug` proxy capture grepping `reasoning_effort`, plus an
+ *  observable low-vs-high difference on a declared-reasoning model) is still pending at Gate 6; this
+ *  comment records that honestly rather than pinning a LiteLLM version never actually observed. */
+export const REASONING_BUDGET: Record<NonNullable<AgentOpts['effort']>, number> = {
+  low: 1024, medium: 2048, high: 4096, xhigh: 4096, max: 4096,
+};
+
+/** v26 (DES-179, ARCH-117, TASK-179, REQ-126, issue #71): the SINGLE writer of both `options.thinking`
+ *  AND `options.effort` on the SDK transport — resolved as provider profile × the PINNED model
+ *  capability (`caps` — the run's admission-time pin, ARCH-116; never a fresh lookup at dispatch).
+ *  Total over provider x caps.reasoning; `applied` is ALWAYS present (an optional field is one a
+ *  lower tier omits on exactly the path anyone will debug). No `effort` requested at all reproduces
+ *  the pre-v26 byte-identical shape: `anthropic` leaves `thinking` at the SDK default (`undefined`),
+ *  every other (or absent) provider disables it explicitly — independent of `caps`, matching
+ *  `resolveThinkingMode`'s retired alias-aware behavior (claude-agent-sdk-client.ts) byte for byte.
+ *  This is the ONE function that reads `PROVIDER_CAPS` for the effort placement (the anthropic arm,
+ *  below) — `LiteLLMGatewayClient.invoke` (direct-fetch) calls this SAME function for its own
+ *  `applied`, exactly like `ClaudeAgentSdkGatewayClient` does, so the two transports can never
+ *  disagree; `effortBodyFields` below only PROJECTS the already-resolved `EffortApplied` into REST
+ *  body fields — one table, one reader, no third (ADR-045). */
+export function wireEffort(
+  provider: Provider | undefined,
+  caps: Caps,
+  effort?: AgentOpts['effort'],
+): { thinking: Options['thinking']; effort?: AgentOpts['effort']; applied: EffortApplied } {
+  if (effort === undefined) {
+    return {
+      thinking: provider === 'anthropic' ? undefined : { type: 'disabled' },
+      applied: { applied: false, reason: 'no effort requested' },
+    };
+  }
+  if (provider === 'anthropic') {
+    // ADR-045: the ONE effort table — read here instead of a hardcoded literal, so this is the
+    // single source both transports' `applied` ultimately comes from.
+    const profile = PROVIDER_CAPS.anthropic.effort;
+    return {
+      thinking: undefined, // SDK default
+      effort,
+      applied: profile
+        ? { applied: true, param: profile.param, restPath: profile.restPath, value: effort }
+        : { applied: false, reason: 'no reasoning dial for this provider' },
+    };
+  }
+  if (provider === 'openrouter') {
+    if (caps.reasoning === true) {
+      const budgetTokens = REASONING_BUDGET[effort];
+      // v26 Gate 7.5 round 1 (fix-order item 8, REQ-126, VAL-186): the ROUTING is unchanged — the
+      // SDK is still handed the budget — but the RECORD no longer claims it landed. A recording
+      // pass-through in front of the REAL OpenRouter API captured both bodies: neither carries
+      // `reasoning`, `reasoning_effort` or `thinking`, and low and high are byte-identical. The
+      // chain, isolated hop by hop: the SDK maps `thinking:{type:'enabled',budgetTokens:N}` to
+      // `--max-thinking-tokens N`; the Claude CLI then sends `thinking:{type:'adaptive'}`, which
+      // has no budget in it, so low and high collapse to the same request; LiteLLM turns that into
+      // `reasoning_effort` and DROPS it for OpenRouter. `{applied:true, value:1024}` for a request
+      // with no reasoning field on it is the exact class of false record REQ-125 exists to prevent.
+      // Whether the routing should change (a proxy `allowed_openai_params`, a different hop) is the
+      // OWNER's call, deliberately not made here.
+      return {
+        thinking: { type: 'enabled', budgetTokens },
+        applied: {
+          applied: false,
+          reason:
+            `effort mapped to a ${budgetTokens}-token thinking budget, but the Claude CLI collapses it to ` +
+            'thinking:{type:"adaptive"} and LiteLLM drops the parameter for openrouter — low and high are ' +
+            'byte-identical on the wire (verified against the real API, VAL-186)',
+        },
+      };
+    }
+    return {
+      thinking: { type: 'disabled' },
+      applied: {
+        applied: false,
+        reason: caps.reasoning === 'unknown' ? 'model reasoning support unknown' : 'model does not declare reasoning',
+      },
+    };
+  }
+  // ollama, or any provider outside the closed union (including undefined) — the fail-safe branch.
+  return { thinking: { type: 'disabled' }, applied: { applied: false, reason: 'no reasoning dial for this provider' } };
+}
+
+export type GatewayResult =
+  | {
+      ok: true; provider: string; model: string;
+      /** v26 (DES-180, ARCH-118, TASK-180): widened to four columns (cache read/write priced
+       *  separately from a fresh input/output token) — `cacheRead`/`cacheWrite` stay OPTIONAL
+       *  (never required) for the same backward-compat reason `AgentRecord.tokens` does: dozens of
+       *  existing test-fake `GatewayResult` literals across this codebase carry only
+       *  `{input, output}`, and none of them are this task's to touch. Every REAL gateway
+       *  implementation (below, and claude-agent-sdk-client.ts) populates all four. */
+      tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; content: unknown;
+      /** D-G8-2: the real message/tool_call/tool_result turns this call's session produced, in
+       *  order — only ClaudeAgentSdkGatewayClient populates this today (a real SDK session
+       *  actually has a turn-by-turn stream to capture); absent/undefined for gateways with no
+       *  such stream (unchanged legacy behavior — a call still yields only the terminal usage
+       *  event via AgentTranscriptSink.capture()). */
+      events?: TranscriptEvent[];
+      /** v26 (DES-171, ARCH-111): unmapped `system` message subtypes observed this call (counted,
+       *  never their payload — see classifyApiError's neighbour, ClaudeAgentSdkGatewayClient._drain). */
+      unmapped?: string[];
+      /** v26 (DES-177, ARCH-115, TASK-177, REQ-125): which wire carried this call — `provider`/
+       *  `model` above are now the RESOLVED provider/model (never the transport name). Optional
+       *  (not `?:` in the DES's own signature line) because ~30 existing GatewayResult literals
+       *  across this codebase — `NULL_GATEWAY`, per-call error literals, every test fake — would
+       *  otherwise need a mechanical edit unrelated to what they test; `capture()` (agent-executor.ts)
+       *  already treats an absent `transport` as the pre-v26 case. */
+      transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
+      /** v26 (DES-177, TASK-177): the proxy-facing model id actually put on the wire (LiteLLM's
+       *  resolution target) — present only on a call that went through a LiteLLM proxy, absent on a
+       *  direct-to-provider dispatch (there is no cloak to report). */
+      proxyModel?: string;
+      /** issue #127: `true` iff `tokens` is a lower-bound accumulated sum rather than the provider's
+       *  own finalized total — see `AgentRecord.partial`'s own doc for when that happens. Only ever
+       *  set when retrying a call whose earlier attempt(s) contributed a partial figure (the ok:true
+       *  arm's own `tokens` are always authoritative for the attempt that actually finished). */
+      partial?: true;
+    }
+  | {
+      // dash-auth-spec.md section C (2026-09-30): `'aborted'` is produced by exactly ONE site —
+      // `AgentExecutor._finalizeAborted` (agent-executor.ts), when `run_suspend`/`run_stop` cuts a
+      // call short — never by a real gateway's OWN classified failure (an SDK/HTTP failure is
+      // always 'timeout'/'unreachable'/'terminal'). issue #160 BUG-4 correction: a gateway CAN also
+      // build this reason directly, when its OWN internal abort check (`pi-gateway-client.ts`'s
+      // `req.signal?.aborted` branch) wins the race against `AgentExecutor`'s — `_runTracked`'s
+      // generic `!result.ok` branch then handles it exactly like `_finalizeAborted`'s own result,
+      // including `applyAbortEstimate`'s estimate fallback (agent-executor.ts), which is why that
+      // helper keys off `reason === 'aborted'` rather than off which site built the object. Kept in
+      // the SAME union rather than a sibling type so every existing `ok:false` branch (capture()'s
+      // failed path, `deriveAgentRecords`) handles it by construction instead of needing a second
+      // parallel type to stay in sync.
+      ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+      /** Observability: when a real SDK session ends in a non-success `result` message, the CLI's
+       *  error subtype (e.g. `error_during_execution`, `error_max_turns`) and any error text — so a
+       *  0-token `terminal` failure is diagnosable instead of opaque. Also carries the partial
+       *  transcript captured before the failure. */
+      detail?: string;
+      events?: TranscriptEvent[];
+      /** issue #127: usage spent before this call ended without success — a terminal `result`
+       *  message (e.g. `error_max_turns`) carries its own finalized `usage`, reported here verbatim
+       *  (not `partial`); an abort/timeout/no-result failure has no such message, so this is the
+       *  deduped sum of every streamed assistant turn's own `usage` seen before the cutoff instead
+       *  (`partial:true`, a lower bound — see `AgentRecord.partial`). Absent when the gateway never
+       *  saw any usage at all before failing (e.g. refused before dispatch, or a pre-#127 gateway). */
+      tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+      partial?: true;
+      /** issue #160 BUG-4 (owner decision): `true` iff `tokens` is `applyAbortEstimate`'s
+       *  client-side `ceil(chars/4)` floor over the dispatched text, not anything a provider or
+       *  harness reported — see `AgentRecord.estimated`'s own doc. Set only alongside
+       *  `reason:'aborted'` and `partial:true`; absent on every other failure. */
+      estimated?: true;
+      /** v26 (DES-171, ARCH-111, TASK-176, issue #65): `false` on a `classifyApiError`-terminal
+       *  failure — `invoke()`'s retry loop stops immediately instead of burning the full
+       *  `timeoutMs × (1+retries)` bound against a provider that already said no. Absent (not
+       *  `true`) on every other failure reason, which keeps retrying (unchanged legacy behavior).
+       *  v37 (DES-259, ADR-083, REQ-218) gives this field a SECOND producer: a sandbox-unavailable
+       *  failure (`SANDBOX_UNAVAILABLE`, `claude-agent-sdk-client.ts`'s `_drain`) is also
+       *  `retryable:false` — a retry cannot install a working nested user namespace either. */
+      retryable?: false;
+      /** v26 (DES-171): the classified provider error this terminal failure came from. */
+      error?: { kind: string; status: number | null; attempt: number };
+      /** v26 (DES-171): unmapped `system` message subtypes observed before this failure. */
+      unmapped?: string[];
+      /** v26 (DES-177): which wire this failed attempt went out on — see the ok:true arm's doc. */
+      transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
+    };
+
+/** DES-249 (ARCH-171/173, TASK-247, REQ-216/K6+K7, REQ-207): the one `attempts` formula both
+ *  `GatewayClient` conformers call — homed on the port because two implementations with private
+ *  retry semantics is the divergence class that produced C-1/K7. An untimed call always gets
+ *  exactly ONE attempt (the guide's own promise); a timed call gets `1 + retries` (clamped at 0). */
+export function attemptsFor(retries: number | undefined, timeoutMs: number | undefined): number {
+  return timeoutMs === undefined ? 1 : 1 + Math.max(0, retries ?? 0);
+}
+
+/** pi harness v1 (research doc §3.1: "Generalize this to an optional interface ... instead of
+ *  adding a second `instanceof`"): the two late binds `server.ts` wires onto a constructed gateway
+ *  AFTER composeConfig() builds it (the asset-catalog-backed MCP resolver, and the confinement-event
+ *  sink) — both optional, both a structural capability check (`'bindResolveMcp' in gateway`) rather
+ *  than a concrete-class `instanceof`, so a second `GatewayClient` implementation (PiGatewayClient)
+ *  can opt in without server.ts growing a second `instanceof` branch. A gateway that implements
+ *  neither (LiteLLMGatewayClient today) is untouched — omitting both methods is a complete, valid
+ *  implementation of this interface. */
+export interface BindableGateway {
+  /** Same shape as `ClaudeAgentSdkGatewayConfig['resolveMcp']` / `ResolveMcpFn`
+   *  (mcp-config-resolver.ts) — not imported from either to avoid a cross-import between the two
+   *  gateway modules; the structural shape is the contract. */
+  bindResolveMcp?(resolve: (workflow: string, names: string[]) => Promise<{ configs: Record<string, unknown>; missing: string[] }>): void;
+  /** Same shape as `EventSink` (event-log.ts: `(event: EngineEvent) => void`) — not imported here
+   *  for the same cross-import reason as `bindResolveMcp` above. `any` (not `unknown`) deliberately:
+   *  this is a structural bridge type, not a safety boundary — `unknown` would make a real,
+   *  narrower-parameter `EventSink` function unassignable here (contravariance), defeating the
+   *  whole point of the bridge. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  bindEventSink?(sink: (event: any) => void): void;
+}
+
+/** issue #138 review L-138-3: the SAME structural-capability pattern as `BindableGateway` above
+ *  (never an `instanceof` branch) — a `GatewayClient` MAY carry a fixed, per-class `transport`
+ *  identity (`PiGatewayClient`/`ClaudeAgentSdkGatewayClient`/`LiteLLMGatewayClient` all do). Used
+ *  ONLY by `server.ts`'s active-harness detection, which prefers this DIRECT signal over the
+ *  indirect `ServerConfig.harnessProviders` proxy when it is present, and falls back to that proxy
+ *  for a gateway that implements neither (a plain test fake implementing the bare `GatewayClient`
+ *  interface) — omitting it is a complete, valid implementation, same as `BindableGateway`. */
+export interface TransportTagged {
+  readonly transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
+}
+
+export interface GatewayClient {
+  /** `signal` (D-F9a): an optional external AbortSignal — RunManager's own per-run
+   *  abortController, threaded through AgentExecutor — that a real implementation should honor to
+   *  actually cancel an in-flight provider call on workflow_suspend, not merely stop waiting for it.
+   *  `workspace` (D-V2V-1): the run's own on-disk workspace (AgentReq.workspace, always set by
+   *  AgentExecutor) — only ClaudeAgentSdkGatewayClient consumes it (to re-scope `cwd`/materialize
+   *  assets per call); other gateways ignore it, unchanged. */
+  /** `onHarness` (DES-066 / TASK-069): optional hook called eagerly at session-build time (post-curation,
+   *  before any query) with the redacted `HarnessDescriptor`. The executor wires this to append a
+   *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model.
+   *  `applied` (DES-106 / TASK-102): the same `EffortApplied` object `wireEffort` computed, when any
+   *  effort directive was requested — recorded ≡ applied by object identity, never a re-lookup. */
+  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
+    /** v24 (ARCH-103/DES-154, TASK-145): this label's declared skill/mcp asset names + the asset
+     *  store's two scope roots — only `ClaudeAgentSdkGatewayClient` consumes it (selective
+     *  materialization); other gateways ignore it, unchanged. Absent -> nothing materialized. */
+    assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string };
+    onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
+    /** issue #20: called per live transcript event as the session streams it (before the terminal
+     *  result), so agent_log grows and lastActivityAt advances DURING the call. Gateways with no
+     *  turn-by-turn stream (LiteLLMGatewayClient) never call it — unchanged terminal-only behavior. */
+    onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
+    /** issue #127: called with the LIVE cumulative (deduped-by-message.id) token sum as the session
+     *  streams it — before any terminal outcome, so a caller that abandons this call's own returned
+     *  Promise (AgentExecutor's abort race) still has the latest known spend to record. Gateways with
+     *  no turn-by-turn usage to report (LiteLLMGatewayClient) never call it. */
+    onUsage?: (cumulative: Tokens) => void;
+    /** v26 (DES-179, ARCH-117, TASK-179): the run's admission-time pinned capability for THIS call's
+     *  model (ARCH-116) — both gateways thread it into their own `wireEffort` call. Absent -> the
+     *  fail-safe branch (see `wireEffort` / `UNKNOWN_CAPS`). */
+    caps?: Caps }): Promise<GatewayResult>;
+  /** D-V2I-6: optional lifecycle hook — a gateway that owns a subprocess (e.g.
+   *  `LiteLLMGatewayClient`'s managed `LiteLLMProxyManager`) cascades the stop here so
+   *  `Server.close()` can reap it regardless of which gateway-selection branch built it. Gateways
+   *  with nothing to release (e.g. the plain direct-fetch path with no proxy) simply omit it. */
+  stop?(): Promise<void>;
+}
+
+export interface GatewayConfig {
+  timeoutMs: number;
+  retries: number;
+  /** Injectable HTTP transport — defaults to the global fetch. Unit tests inject a fake
+   *  transport here instead of hitting a live provider (D-I6: unit tier never requires live creds). */
+  fetchImpl?: typeof fetch;
+  /**
+   * D-V1: route agent() calls through a managed LiteLLM proxy subprocess — the same
+   * ANTHROPIC_BASE_URL wiring a real @anthropic-ai/claude-agent-sdk headless session would use
+   * (confirmed: LiteLLM's proxy serves an Anthropic-Messages-shaped /v1/messages endpoint that
+   * resolves the full ref to whichever provider its prefix names) — instead of calling each
+   * provider's native API directly. Explicit opt-in (defaults to false/unset): the direct-fetch
+   * path above remains the default so existing callers/tests are unaffected; a caller that wants
+   * the proxy path sets this to true.
+   */
+  useLiteLLMProxy?: boolean;
+  /** Injectable proxy manager (tests) — defaults to a real LiteLLMProxyManager (2026-09-26: static
+   *  config, no alias table to build it from any more). */
+  proxyManager?: LiteLLMProxyManager;
+  /** TASK-027: overrides the managed LiteLLM proxy's port (default 4000) when this client builds
+   *  its own default LiteLLMProxyManager (i.e. `proxyManager` above is not injected). Only takes
+   *  effect the same way `useLiteLLMProxy` does — no `proxyManager` injected. */
+  litellmPort?: number;
+}
+
+type ProviderTarget = { provider: Provider; model: string };
+type AttemptFailure = Extract<GatewayResult, { ok: false }>;
+
+/** DES-106/P-A1: the wire-level fields an applied effort directive contributes to an outbound
+ *  Anthropic-Messages-shaped request body — nested per `applied.restPath` (the documented contract
+ *  is `output_config:{effort:…}`, never a top-level `effort` field) — a no-op `{}` when no dial
+ *  applies (untargeted provider) or no effort was requested. */
+function effortBodyFields(applied: EffortApplied | undefined): Record<string, unknown> {
+  return applied?.applied ? applied.restPath.reduceRight<unknown>((acc, key) => ({ [key]: acc }), applied.value) as Record<string, unknown> : {};
+}
+
+/** v26 (H-2 repair, ARCH-111, ADR-040, issue #65): the direct-fetch transport's own terminal
+ *  classification — the SAME 401/403/404 the SDK client's `classifyApiError` treats as un-retryable
+ *  (`claude-agent-sdk-client.ts`'s `TERMINAL_ERROR_KINDS`/status heuristic). `retryable:false` ends
+ *  the attempt immediately instead of burning the full `timeoutMs × (1+retries)` bound against a
+ *  provider that already said no; `detail` names the status so a 401 vs 403 vs 404 vs a 5xx is
+ *  distinguishable in the record (previously indistinguishable — issue #65's own cost). */
+function terminalHttpFailure(provider: string, reason: 'timeout' | 'unreachable' | 'terminal', res: { status: number; statusText: string }): AttemptFailure {
+  const isTerminal = res.status === 401 || res.status === 403 || res.status === 404;
+  return {
+    ok: false, provider, reason,
+    detail: `${res.status} ${res.statusText}`,
+    ...(isTerminal ? { retryable: false as const } : {}),
+  };
+}
+
+/** v26 (M-1 send-back repair, ADR-046 D-V26-projection): reads a numeric usage field from a parsed
+ *  provider body, naming the drop (pushed onto `gaps` as `usage.<name>`, the SAME `unmapped` array
+ *  REQ-125's unmapped-subtype counter already reaches `run_result.meta.unmappedMessages` through —
+ *  ADR-046 groups both under one class) when the field is missing or not a number, rather than
+ *  silently reading 0. Used ONLY for `input`/`output` — unambiguous on every provider's healthy
+ *  response. Cache columns are NOT run through this: openrouter's are documented optional and
+ *  LiteLLM may strip anthropic's on the proxy branch, so a healthy call routinely omits them; a
+ *  counter that fires on every healthy call has no reader. */
+function numField(v: unknown, name: string, gaps: string[]): number {
+  if (typeof v === 'number') return v;
+  gaps.push(`usage.${name}`);
+  return 0;
+}
+
+/** issue #53: an attempt refused because the caller's signal was already aborted — nothing was
+ *  dispatched; `retryable:false` so the retry loop never re-attempts it. */
+function abortedBeforeDispatch(provider: string): AttemptFailure {
+  return { ok: false, provider, reason: 'terminal', retryable: false, detail: 'aborted by caller before dispatch (run suspended or stopped)' };
+}
+
+/** Real provider call — one impl per provider, all sharing the same bounded-timeout contract. */
+async function callProvider(
+  target: ProviderTarget,
+  req: { prompt: string; runId: string; agentId: string },
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+  signal?: AbortSignal,
+  applied?: EffortApplied,
+): Promise<GatewayResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // D-F10(c): a caller-supplied signal (RunManager's own abortController, threaded through
+  // AgentExecutor) genuinely cancels the in-flight fetch on workflow_suspend, not just the
+  // timeoutMs-bounded internal timer.
+  const onExternalAbort = (): void => controller.abort();
+  // issue #53: an attempt that begins already aborted dispatches nothing (a listener added to an
+  // already-aborted signal never fires, so the fetch below would run to its own timeout).
+  if (signal?.aborted) { clearTimeout(timer); return abortedBeforeDispatch(target.provider); }
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+  const correlationHeaders = { 'x-run-id': req.runId, 'x-agent-id': req.agentId };
+  try {
+    switch (target.provider) {
+      case 'anthropic': {
+        const apiKey = process.env['ANTHROPIC_API_KEY'];
+        if (!apiKey) return { ok: false, provider: 'anthropic', reason: 'terminal', detail: 'ANTHROPIC_API_KEY not set' };
+        const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', ...correlationHeaders },
+          body: JSON.stringify({ model: target.model, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
+        });
+        if (!res.ok) return terminalHttpFailure('anthropic', res.status >= 500 ? 'unreachable' : 'terminal', res);
+        const data = (await res.json()) as any;
+        const content = Array.isArray(data.content) ? data.content.map((c: any) => c.text ?? '').join('') : data.content;
+        const anthropicGaps: string[] = [];
+        return {
+          ok: true, provider: 'anthropic', model: target.model,
+          // v26 (DES-180): the real Anthropic Messages API shape — same four fields the SDK path
+          // reads (claude-agent-sdk-client.ts's _drain).
+          tokens: {
+            input: numField(data.usage?.input_tokens, 'input_tokens', anthropicGaps),
+            output: numField(data.usage?.output_tokens, 'output_tokens', anthropicGaps),
+            cacheRead: data.usage?.cache_read_input_tokens ?? 0, cacheWrite: data.usage?.cache_creation_input_tokens ?? 0,
+          },
+          content,
+          ...(anthropicGaps.length > 0 ? { unmapped: anthropicGaps } : {}),
+        };
+      }
+      case 'openrouter': {
+        // REQ-038: OpenRouter speaks an OpenAI-shaped chat-completions API; its key is its OWN env
+        // var (OPENROUTER_API_KEY), independent of any other provider's credentials.
+        const apiKey = process.env['OPENROUTER_API_KEY'];
+        if (!apiKey) return { ok: false, provider: 'openrouter', reason: 'terminal', detail: 'OPENROUTER_API_KEY not set' };
+        const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', ...correlationHeaders },
+          // v26 (H-1 repair): same `...effortBodyFields(applied)` spread as the anthropic (above)
+          // and proxy (callViaLiteLLMProxy) branches — a no-op `{}` today (VAL-186: `wireEffort`'s
+          // openrouter arm never resolves `applied:true`), but the branch shape now matches its
+          // siblings instead of silently omitting the field.
+          body: JSON.stringify({ model: target.model, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
+        });
+        if (!res.ok) return terminalHttpFailure('openrouter', res.status >= 500 ? 'unreachable' : 'terminal', res);
+        const data = (await res.json()) as any;
+        const openrouterGaps: string[] = [];
+        return {
+          ok: true, provider: 'openrouter', model: target.model,
+          // v26 (DES-180): OpenRouter's OpenAI-shaped usage carries cache read under
+          // `prompt_tokens_details.cached_tokens` and cache write as a top-level `cache_write_tokens`
+          // (present for providers OpenRouter fronts that report it, e.g. an Anthropic passthrough).
+          tokens: {
+            input: numField(data.usage?.prompt_tokens, 'prompt_tokens', openrouterGaps),
+            output: numField(data.usage?.completion_tokens, 'completion_tokens', openrouterGaps),
+            cacheRead: data.usage?.prompt_tokens_details?.cached_tokens ?? 0, cacheWrite: data.usage?.cache_write_tokens ?? 0,
+          },
+          content: data.choices?.[0]?.message?.content,
+          ...(openrouterGaps.length > 0 ? { unmapped: openrouterGaps } : {}),
+        };
+      }
+      case 'ollama': {
+        const base = process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434';
+        const res = await fetchImpl(`${base}/api/generate`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'content-type': 'application/json', ...correlationHeaders },
+          body: JSON.stringify({ model: target.model, prompt: req.prompt, stream: false }),
+        });
+        if (!res.ok) return terminalHttpFailure('ollama', res.status === 404 ? 'terminal' : 'unreachable', res);
+        const data = (await res.json()) as any;
+        const ollamaGaps: string[] = [];
+        return {
+          ok: true, provider: 'ollama', model: target.model,
+          // v26 (DES-180): ollama has no prompt-cache concept — cache columns are a KNOWN 0, never
+          // an absence.
+          tokens: {
+            input: numField(data.prompt_eval_count, 'prompt_eval_count', ollamaGaps),
+            output: numField(data.eval_count, 'eval_count', ollamaGaps),
+            cacheRead: 0, cacheWrite: 0,
+          },
+          content: data.response,
+          ...(ollamaGaps.length > 0 ? { unmapped: ollamaGaps } : {}),
+        };
+      }
+      default:
+        return { ok: false, provider: target.provider, reason: 'terminal' };
+    }
+  } catch (err) {
+    const failure: AttemptFailure = {
+      ok: false,
+      provider: target.provider,
+      reason: err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'unreachable',
+    };
+    return failure;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+/**
+ * D-V1: routes one agent() call through the managed LiteLLM proxy's Anthropic-Messages-shaped
+ * `/v1/messages` endpoint — the same request shape a real @anthropic-ai/claude-agent-sdk headless
+ * session sends when ANTHROPIC_BASE_URL points at this proxy — using the full `<provider>/<model-id>`
+ * ref VERBATIM as `model` (LiteLLM's static `openrouter/*`/`ollama/*` wildcards resolve it natively;
+ * 2026-09-26 no cloak is needed any more — a slashed ref is never a bare CLI shorthand).
+ */
+async function callViaLiteLLMProxy(
+  proxy: LiteLLMProxyManager,
+  ref: string,
+  target: ProviderTarget,
+  req: { prompt: string; runId: string; agentId: string },
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+  signal?: AbortSignal,
+  applied?: EffortApplied,
+): Promise<GatewayResult> {
+  let baseUrl: string;
+  try {
+    ({ baseUrl } = await proxy.start());
+  } catch {
+    return { ok: false, provider: target.provider, reason: 'unreachable' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // D-F10(c): same external-signal linkage as callProvider above.
+  const onExternalAbort = (): void => controller.abort();
+  // issue #53: same already-aborted refusal as callProvider — checked AFTER `proxy.start()`, whose
+  // await is itself a window the caller can abort in.
+  if (signal?.aborted) { clearTimeout(timer); return abortedBeforeDispatch(target.provider); }
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+  try {
+    const res = await fetchImpl(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'x-api-key': 'litellm-proxy', 'anthropic-version': '2023-06-01', 'content-type': 'application/json',
+        'x-run-id': req.runId, 'x-agent-id': req.agentId,
+      },
+      // 2026-09-26: the RAW full ref, matching the static LiteLLM model_list wildcard entries
+      // (`generateLiteLLMConfig`) — no cloak, no per-model registered row.
+      body: JSON.stringify({ model: ref, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
+    });
+    if (!res.ok) return terminalHttpFailure(target.provider, res.status >= 500 ? 'unreachable' : 'terminal', res);
+    const data = (await res.json()) as any;
+    const content = Array.isArray(data.content) ? data.content.map((c: any) => c.text ?? '').join('') : data.content;
+    const proxyGaps: string[] = [];
+    return {
+      ok: true, provider: target.provider, model: target.model,
+      // v26 (DES-180): the Anthropic-Messages-shaped proxy response — same four fields as the
+      // anthropic-direct branch above.
+      tokens: {
+        input: numField(data.usage?.input_tokens, 'input_tokens', proxyGaps),
+        output: numField(data.usage?.output_tokens, 'output_tokens', proxyGaps),
+        cacheRead: data.usage?.cache_read_input_tokens ?? 0, cacheWrite: data.usage?.cache_creation_input_tokens ?? 0,
+      },
+      content,
+      ...(proxyGaps.length > 0 ? { unmapped: proxyGaps } : {}),
+    };
+  } catch (err) {
+    return { ok: false, provider: target.provider, reason: err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'unreachable' };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+export class LiteLLMGatewayClient implements GatewayClient {
+  /** issue #138 review L-138-3: same fixed structural identity property as `PiGatewayClient.transport`
+   *  — see that field's own doc. This class is a `direct-fetch` transport regardless of its own
+   *  LiteLLM-proxy-or-not branch (the SAME fact its own `stamp()` below already carries per call). */
+  readonly transport = 'direct-fetch' as const;
+  private readonly _proxy: LiteLLMProxyManager | undefined;
+
+  constructor(private readonly _config: GatewayConfig) {
+    if (this._config.useLiteLLMProxy) {
+      // 2026-09-26 (alias mechanism removed): the proxy's config is now STATIC (no alias table to
+      // build it from) — `LiteLLMProxyManager` takes no model-source argument any more.
+      this._proxy = this._config.proxyManager ?? new LiteLLMProxyManager({ port: this._config.litellmPort });
+    }
+  }
+
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
+    /** v26 (DES-179, ARCH-117): the run's admission-time pinned capability (ARCH-116) — the
+     *  `GatewayClient` interface's own field, now actually declared and read here (previously
+     *  dropped in silence by structural typing: `AgentExecutor` always sent it). Absent -> `wireEffort`'s
+     *  fail-safe (`UNKNOWN_CAPS`), same as the SDK transport. */
+    caps?: Caps }): Promise<GatewayResult> {
+    // 2026-09-26 (alias mechanism removed, rule 3): no `?? 'default'` fallback — `req.opts.model` is
+    // the run's admission-resolved full ref and is never absent by the time a call reaches here
+    // (admission refuses any label with no resolved model); an absent one at THIS point is an
+    // internal error, never silently rerouted to a fictitious 'default' alias.
+    const ref = req.opts.model;
+    const parsed = ref !== undefined ? parseModelRef(ref) : undefined;
+    if (ref === undefined || !parsed) {
+      return { ok: false, provider: 'unknown', reason: 'terminal', detail: `INTERNAL_ERROR: no valid model ref reached the gateway (got ${JSON.stringify(ref)}) — admission should have refused this dispatch` };
+    }
+    const target: ProviderTarget = parsed;
+    // DES-106 (TASK-102): computed ONCE per invoke, inside the gateway — the provider is only
+    // resolvable here. The SAME object travels to onHarness AND (below) onto the outbound request.
+    // v26 (H-1 repair): routed through the SAME `wireEffort` the SDK transport uses (ADR-045's one
+    // table, one reader) instead of a second hardcoded mapper — the two transports can no longer
+    // disagree about what `effortApplied` says for the same (provider, caps, effort). Gated on
+    // `req.opts.effort !== undefined` to keep the pre-v26 byte-identical shape (no `effortApplied`
+    // field at all when no effort was ever requested) — `wireEffort.applied` is ALWAYS present,
+    // unlike the retired `resolveEffortApplied`'s `undefined` short-circuit.
+    const applied: EffortApplied | undefined =
+      req.opts.effort !== undefined ? wireEffort(target.provider, req.caps ?? UNKNOWN_CAPS, req.opts.effort).applied : undefined;
+    // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
+    // — direct-fetch has no curated tool surface, so no Bash either: issue #78(c)'s `bash:'readonly'`
+    // is trivially true here and needs no sandbox or refusal). The prompt rides UNCUT: the 4KB head+tail cap is
+    // applied at the persist site after `redact()` (review §R2 R-G9 — capping first can split a
+    // secret across the seam and defeat the value-exact match).
+    if (req.onHarness) {
+      const descriptor: HarnessDescriptor = {
+        ...redactHarness({
+          // v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED model id, not the
+          // full ref — `stamp()` below reports the full ref as `proxyModel` on the proxied arm (the
+          // literal value actually put on the wire) — so the descriptor names the two the same way
+          // the result does.
+          surfaceType: 'none', modelName: target.model, provider: target.provider, prompt: req.prompt,
+          // v26 Gate 7.5 round 1 (defect D2): the value that is actually on the wire (DES-177: "the
+          // proxy-facing model id actually put on the wire"), same value `stamp()` reports.
+          ...(this._proxy ? { proxyModel: ref } : {}),
+          curatedTools: [], mergedMcp: [], skills: [],
+        }),
+        // issue #138: this gateway always dispatches through the direct-fetch transport.
+        transport: 'direct-fetch',
+        ...(applied !== undefined ? { effortApplied: applied } : {}),
+      };
+      await req.onHarness(descriptor, applied);
+    }
+
+    const fetchImpl = this._config.fetchImpl ?? fetch;
+    // issue #24/#22: a per-call AgentOpts.timeoutMs overrides the configured default (both directions).
+    const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
+    const attempts = attemptsFor(this._config.retries, effTimeout);
+    // v26 (DES-177, TASK-177): this whole class is a `direct-fetch` transport regardless of which
+    // branch below fires — a LiteLLM-proxied call is still a raw HTTP fetch, never the SDK. The
+    // proxy branch also reports the full ref actually sent, on the ok:true arm only (the type's own
+    // convention — see GatewayResult).
+    const stamp = (r: GatewayResult): GatewayResult =>
+      r.ok && this._proxy ? { ...r, transport: 'direct-fetch', proxyModel: ref } : { ...r, transport: 'direct-fetch' };
+    let last: GatewayResult = { ok: false, provider: target.provider, reason: 'terminal' };
+    for (let i = 0; i < attempts; i++) {
+      last = stamp(
+        this._proxy
+          ? await callViaLiteLLMProxy(this._proxy, ref, target, req, effTimeout, fetchImpl, req.signal, applied)
+          : await callProvider(target, req, effTimeout, fetchImpl, req.signal, applied),
+      );
+      if (last.ok) return last;
+      // v26 (H-2 repair, ARCH-111, ADR-040): the same terminal break the SDK client already has
+      // (claude-agent-sdk-client.ts's own `invoke()` loop) — a `retryable:false` attempt (401/403/404)
+      // ends here instead of burning the rest of the configured retry bound.
+      if (!last.ok && last.retryable === false) break;
+      // issue #53: the caller aborted (run_suspend/run_stop) — no further attempt may start. Keyed
+      // on the caller's signal, never on `reason` (an abort and a genuine timeout share 'timeout').
+      if (req.signal?.aborted) break;
+    }
+    return last;
+  }
+
+  /** D-V2I-6: cascades to whichever `LiteLLMProxyManager` this client holds (injected OR
+   *  internally-constructed by the constructor above, same private field either way) — a safe
+   *  no-op when `useLiteLLMProxy` was never set (no proxy was ever built). */
+  async stop(): Promise<void> {
+    await this._proxy?.stop();
+  }
+}

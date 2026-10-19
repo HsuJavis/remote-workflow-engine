@@ -1,0 +1,1267 @@
+// v9 — workflow discovery helpers (REQ-061 purpose + REQ-062 static DAG skeleton). Pure functions:
+// no I/O, never execute the workflow, never throw on odd input. Used by the catalog (store purpose at
+// register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
+import { runInNewContext } from 'node:vm';
+import { parse } from 'acorn';
+import { checkMeta } from './sandbox/guards.js';
+import { nonCodeSpans, blankSpans } from './script-spans.js';
+import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
+// v25 (#55): the scanner's accepted-key set is derived from the AgentOpts TYPE, so the two
+// cannot drift apart (see AGENT_OPT_KEYS below).
+import type { AgentOpts } from './types.js';
+import { READONLY_BASH_FORBIDDEN_TOOLS } from './gateway/bash-confinement.js';
+
+export interface WorkflowMeta {
+  description: string;
+  phases: Array<{ title: string }>;
+}
+
+/** Extracts {description, phases} from a script's `export const meta = {…}` block. The meta object is
+ *  already a validated PURE LITERAL (checkMeta.pureLiteral) — no calls/vars/spreads/templates — so
+ *  evaluating it in an empty, timeout-bounded VM context is side-effect-free. Missing/impure/odd meta
+ *  degrades to empty (never throws). */
+export function parseMeta(script: string): WorkflowMeta {
+  const empty: WorkflowMeta = { description: '', phases: [] };
+  const m = checkMeta(script);
+  if (!m.found || !m.pureLiteral || !m.objectText) return empty;
+  let obj: unknown;
+  try {
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+  } catch {
+    return empty;
+  }
+  if (!obj || typeof obj !== 'object') return empty;
+  const o = obj as { description?: unknown; phases?: unknown };
+  const description = typeof o.description === 'string' ? o.description : '';
+  const phases = Array.isArray(o.phases)
+    ? o.phases
+        .map((p) => (p && typeof p === 'object' && typeof (p as { title?: unknown }).title === 'string'
+          ? { title: (p as { title: string }).title }
+          : null))
+        .filter((p): p is { title: string } => p !== null)
+    : [];
+  return { description, phases };
+}
+
+/** v39 (owner decision 2026-09-30): a STRICT (never lenient-filtering) read of `meta.phases`,
+ *  distinguishing "not declared at all" from "declared, but not a valid `{title:string}[]`" from
+ *  "declared and valid" — `parseMeta` above collapses the first two into `phases:[]` on purpose
+ *  (a read-surface default), which is exactly the distinction the registration gate and the
+ *  read-side derivation below both need and `parseMeta` cannot give them. Re-runs the same
+ *  `checkMeta` + timeout-bounded `runInNewContext` eval `parseMeta`/`parseMetaParams` already do —
+ *  a second read of the same pure literal, not a new side effect. */
+function rawMetaPhases(script: string):
+  | { declared: false }
+  | { declared: true; ok: true; phases: Array<{ title: string }> }
+  | { declared: true; ok: false; reason: string } {
+  const m = checkMeta(script);
+  if (!m.found || !m.pureLiteral || m.objectText === undefined) return { declared: false };
+  let obj: unknown;
+  try {
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+  } catch {
+    return { declared: false };
+  }
+  if (!obj || typeof obj !== 'object') return { declared: false };
+  const o = obj as { phases?: unknown };
+  if (!('phases' in o) || o.phases === undefined) return { declared: false };
+  const raw = o.phases;
+  if (!Array.isArray(raw)) {
+    return { declared: true, ok: false, reason: 'meta.phases must be an array of {title:string} objects' };
+  }
+  const phases: Array<{ title: string }> = [];
+  for (const p of raw) {
+    const title = p && typeof p === 'object' ? (p as { title?: unknown }).title : undefined;
+    // v39 follow-up (mirrors checkMermaid's own SUBGRAPH_TITLE refusal — an empty subgraph title
+    // is refused there, so an empty meta.phases[].title must be refused here too, not silently
+    // accepted as a "non-empty" declared title at a dynamic (null) position).
+    if (typeof title !== 'string' || title === '') {
+      return { declared: true, ok: false, reason: 'every meta.phases entry must be an object with a non-empty string title' };
+    }
+    phases.push({ title });
+  }
+  return { declared: true, ok: true, phases };
+}
+
+export interface PhasesCheckResult {
+  ok: boolean;
+  code?: 'PHASES_REQUIRED' | 'PHASES_MISMATCH';
+  message?: string;
+}
+
+/** v39 (owner decision 2026-09-30, catalog codes PHASES_REQUIRED / PHASES_MISMATCH): the
+ *  registration-time gate — `meta.phases` must be declared as an array of `{title:string}` and
+ *  must equal `scriptTitles` (the script's own `phase()` calls, in source order — the SAME nodes
+ *  `parseWorkflowSkeleton`/`deriveExpectedGraph` turn into lanes) in count, order, and (where the
+ *  script's own title is STATICALLY KNOWN) text. A `null` entry in `scriptTitles` is a `phase()`
+ *  call whose title argument is not a string literal (e.g. `phase('tier:' + args.tier)`) — mirrors
+ *  `checkMermaid`'s own LANE_MISMATCH rule (check-mermaid.ts `checkLanes`: "a `null` title accepts
+ *  any non-empty title at that position") — so the declared title there may be anything non-empty;
+ *  only its POSITION is checked. A script with zero `phase()` calls must still declare `phases: []`
+ *  explicitly — an absent key is PHASES_REQUIRED even when the "correct" value would be empty. */
+export function checkMetaPhases(script: string, scriptTitles: Array<string | null>): PhasesCheckResult {
+  const raw = rawMetaPhases(script);
+  if (!raw.declared || !raw.ok) {
+    const why = raw.declared ? raw.reason : 'meta.phases is missing';
+    const noPhaseCalls = scriptTitles.length === 0 ? ' (this script has no phase() calls — declare phases: [])' : '';
+    return {
+      ok: false,
+      code: 'PHASES_REQUIRED',
+      message: `${why} — declare meta.phases: [{title}, ...] matching this script's phase() calls in count and order${noPhaseCalls}`,
+    };
+  }
+  const declared = raw.phases.map((p) => p.title);
+  const renderScript = (t: string | null): string => (t === null ? '<dynamic>' : JSON.stringify(t));
+  const bothLists = `declared: [${declared.map((t) => JSON.stringify(t)).join(', ')}], script phase() calls: [${scriptTitles.map(renderScript).join(', ')}]`;
+  if (declared.length !== scriptTitles.length) {
+    return {
+      ok: false,
+      code: 'PHASES_MISMATCH',
+      message: `meta.phases has ${declared.length} entr${declared.length === 1 ? 'y' : 'ies'} but the script calls phase() ${scriptTitles.length} time(s) — ${bothLists}`,
+    };
+  }
+  for (let i = 0; i < scriptTitles.length; i++) {
+    const expected = scriptTitles[i]!;
+    if (expected !== null && declared[i] !== expected) {
+      return {
+        ok: false,
+        code: 'PHASES_MISMATCH',
+        message: `meta.phases[${i}].title is ${JSON.stringify(declared[i])} but phase() call #${i + 1} in the script is ${JSON.stringify(expected)} — ${bothLists}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** v39: the read-side placeholder for a DERIVED phase lane whose script `phase()` title is not a
+ *  string literal — `resolvePhases` never returns `null`/`undefined` in a `{title:string}` slot. */
+export const DYNAMIC_PHASE_TITLE = '(dynamic)';
+
+export interface ResolvedPhases {
+  phases: Array<{ title: string }>;
+  phasesSource: 'declared' | 'derived';
+}
+
+/** v39 (owner decision 2026-09-30, Part B): the ONE read-side resolution of a stored version's
+ *  `phases` — used by every surface that reports them (`workflow_describe`, `/api/workflows/:name/
+ *  describe`, `workflow_source`) so none of them can disagree. A version registered under the v39
+ *  rule always has a valid `meta.phases` and this reads it back verbatim (`'declared'`). An
+ *  EXISTING version registered before v39 (immutable, never re-checked — a stored row is never
+ *  rewritten to add the field after the fact) may have no `meta.phases` at all, or one that no
+ *  longer matches its own `phase()` calls; either way this DERIVES the answer from the script's own
+ *  `phase()` calls instead (`'derived'`), the same static scan the predicted-lane projection
+ *  (`predictedLanes`, dashboard.ts) already performs on the identical script — the two can never
+ *  disagree about which phases a derived row has, only about whether they also carry agents. */
+export function resolvePhases(script: string): ResolvedPhases {
+  const raw = rawMetaPhases(script);
+  if (raw.declared && raw.ok) return { phases: raw.phases, phasesSource: 'declared' };
+  const derived = parseWorkflowSkeleton(script)
+    .filter((n): n is SkeletonNode & { kind: 'phase' } => n.kind === 'phase')
+    .map((n) => ({ title: n.title ?? DYNAMIC_PHASE_TITLE }));
+  return { phases: derived, phasesSource: 'derived' };
+}
+
+/** DES-103 (TASK-099): the pre-eval source-size bound (4 KB) for the `meta` literal — measured on
+ *  the matched literal TEXT, before `runInNewContext`. Separate from contract.ts's post-eval
+ *  structural bounds (DES-101), which only ever see a value that already survived evaluation. */
+export const MAX_META_LITERAL_BYTES = 4096;
+
+/** Extracts + validates `meta.params` at registration time (DES-103, ARCH-067, DES-144). No meta /
+ *  an impure meta (rejected elsewhere via INVALID_META) / no declared `params` field all mean
+ *  "no contract" — `parseParamContract(undefined, scriptLabels, …)` resolves that to the zero-label
+ *  contract when the script has no `agent()` calls, or refuses `AGENT_UNDECLARED` per label
+ *  otherwise (v24; REQ-090's old unconditional canonical-contract compat is retired by DES-144). */
+export function parseMetaParams(
+  script: string,
+  catalog?: ModelCatalogSnapshot,
+): { ok: true; value: ParamContract; warnings?: ModelRefWarning[] } | ParamContractErr {
+  const labels = scanAgentCalls(script).labels;
+  // v40 (DES-271, ARCH-188/189, TASK-268): the script's own decide()/generateImage() labels, same
+  // role for `decisions`/`images` that `labels` (above) plays for `agents`.
+  const primitives = scanPrimitiveCalls(script);
+  const primitiveLabels = { decide: primitives.decide, generateImage: primitives.generateImage };
+  const m = checkMeta(script);
+  if (!m.found || !m.pureLiteral || m.objectText === undefined) {
+    return parseParamContract(undefined, labels, catalog, primitiveLabels);
+  }
+  if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
+    return {
+      ok: false,
+      code: 'PARAM_CONTRACT_INVALID',
+      message: `meta literal exceeds the ${MAX_META_LITERAL_BYTES}-byte source-size bound`,
+      detail: { param: 'meta', reason: 'source too large' },
+    };
+  }
+  let obj: unknown;
+  try {
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+  } catch {
+    return parseParamContract(undefined, labels, catalog, primitiveLabels);
+  }
+  // v24 Gate 7.5 (D-2, REQ-110 / ADR-035): `meta.defaults` is a SIBLING of `params`, so
+  // `parseParamContract` — whose first argument IS `meta.params` — never saw it, and a script
+  // declaring one registered `completed` with the whole object silently dropped. The authoring
+  // guide states in as many words that `meta.params.knobs` and `meta.defaults` are both refused
+  // DEFAULTS_RETIRED; only the first of the two was true. Checked HERE, the one place the whole
+  // evaluated meta object is in hand.
+  if (obj && typeof obj === 'object' && (obj as { defaults?: unknown }).defaults !== undefined) {
+    return retiredDefaults('meta.defaults');
+  }
+  const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
+  return parseParamContract(rawParams, labels, catalog, primitiveLabels);
+}
+
+export type SkeletonKind = 'phase' | 'agent' | 'workflow';
+export interface SkeletonNode {
+  kind: SkeletonKind;
+  /** phase title (kind:'phase'). */
+  title?: string;
+  /** referenced sub-workflow name (kind:'workflow'), when a string literal. */
+  workflow?: string;
+  /** group id shared by nodes inside the same parallel([...]) call. */
+  parallel?: number;
+  /** best-effort: the call is inside a for/while/map/if body, so its count/shape is runtime-dependent. */
+  dynamic?: boolean;
+}
+
+const CALL_RE = /\b(phase|agent|parallel|workflow)\s*\(/g;
+const STRING_ARG_RE = /^\s*(['"])(.*?)\1/;
+// keyword that opens a runtime-dependent (loop/map/conditional) body — nodes within are `dynamic`.
+// v26 integration: `switch` joins the list. ARCH-113's own note groups "a `switch`" with "an
+// `agent()` inside a loop body" as the same narrowed-contract category, and a switch arm is exactly
+// as runtime-dependent as an `if` arm — its omission here was a gap in the list, not a decision.
+// Without it a `switch (mode) { case: agent(...) }` produced two ordinary STATIC slots, i.e. the
+// derivation claimed to know a shape it cannot know.
+const DYNAMIC_OPENERS = /\b(for|while|if|switch)\s*\(|\.(map|forEach|filter|reduce)\s*\(/g;
+
+/** Scans the script for the ranges [start,end) that are inside a loop/map/if body — used to mark
+ *  skeleton nodes `dynamic`. Best-effort + string/paren-aware enough for typical workflow scripts. */
+function dynamicRanges(script: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  DYNAMIC_OPENERS.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DYNAMIC_OPENERS.exec(script)) !== null) {
+    // find the '(' that starts the head, skip to its matching ')', then span the following block.
+    const openParen = script.indexOf('(', m.index);
+    if (openParen === -1) continue;
+    const afterHead = matchDelimiter(script, openParen, '(', ')');
+    if (afterHead === -1) continue;
+    // the body is either a `{…}` block (for/while/if) or, for .map(cb), everything up to the ')' —
+    // in both cases marking from the opener to the end of the head's matching ')' covers the calls
+    // an arrow body `() => agent(...)` inside .map(...) as well.
+    let bodyEnd = afterHead;
+    let i = afterHead;
+    while (i < script.length && /\s/.test(script[i]!)) i++;
+    if (script[i] === '{') { const close = matchDelimiter(script, i, '{', '}'); if (close !== -1) bodyEnd = close; }
+    ranges.push([m.index, Math.max(bodyEnd, afterHead)]);
+  }
+  return ranges;
+}
+
+/** Returns the index just past the delimiter matching the opener at `openIdx` (string-aware), or -1. */
+function matchDelimiter(script: string, openIdx: number, open: string, close: string): number {
+  let depth = 0;
+  let str: string | null = null;
+  for (let i = openIdx; i < script.length; i++) {
+    const c = script[i];
+    if (str !== null) { if (c === '\\') { i++; continue; } if (c === str) str = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === open) depth++;
+    else if (c === close) { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+
+export type AgentCallViolationCode =
+  | 'AGENT_LABEL_REQUIRED'
+  | 'AGENT_LABEL_NOT_LITERAL'
+  | 'AGENT_LABEL_FORMAT'
+  | 'AGENT_OPTS_NOT_LITERAL'
+  | 'PARAM_IN_SCRIPT'
+  /** v25 (#55, adjudication #9 I-1.4): an options key that is neither an `AgentOpts` field nor a
+   *  tunable — same ruling `meta.params` has enforced since v21, now on the side that had it
+   *  ZERO times. A key that reads as accepted and reaches nothing is the defect. */
+  | 'PARAM_UNKNOWN'
+  /** v34 (DES-224, ARCH-138, TASK-229, REQ-203): an options key that USED to be a live `AgentOpts`
+   *  field and no longer is — `RETIRED_AGENT_OPT_KEYS`. Distinct from `PARAM_UNKNOWN` (which never
+   *  worked) so a client can branch on "this used to work" vs "this never did". */
+  | 'AGENT_OPT_RETIRED'
+  /** v35 (DES-236/237, ARCH-149, TASK-233, REQ-208): the `nonCodeSpans` acorn oracle failed to
+   *  parse the script — fail CLOSED (no partial scan) rather than risk a literal-heavy string
+   *  ("...agent (mode A)...") being misread as a real call, or vice versa. */
+  | 'SCRIPT_UNSCANNABLE'
+  /** Issue #78(c): `bash:` is anything but the literal `'readonly'` — a security declaration must be
+   *  statically readable, and an unrecognised mode must never read as the writable default. */
+  | 'BASH_MODE_INVALID'
+  /** Issue #78(c): `bash:'readonly'` whose tool surface is not a read-only shell — a literal
+   *  `allowedTools` that also grants a write tool, names no Bash, or is absent/non-literal (the
+   *  deployment default carries Write/Edit, which this scan cannot see). */
+  | 'BASH_READONLY_CONFLICT'
+  /** Issue #154 B2: a spread element (`...extra`) inside an otherwise-literal `agent()` options
+   *  object. The prior scan only required the WHOLE argument to start with `{` and end with `}`
+   *  (AGENT_OPTS_NOT_LITERAL) then split top-level entries looking for a `:` — a spread entry has
+   *  none and was silently `continue`d past, so every key it carries (confirmed: `allowedTools`)
+   *  was invisible to this scan while still reaching `agent-executor.ts`'s dispatch verbatim. */
+  | 'AGENT_OPTS_SPREAD'
+  /** Issue #154 B2 (shorthand-property gap, advisor-flagged alongside spread): `{ allowedTools }`
+   *  — the key name IS a literal the scan could see, but its value comes from a variable, not from
+   *  the object literal itself, so it carries the same unverifiable-value hazard as a spread. */
+  | 'AGENT_OPTS_SHORTHAND'
+  /** Issue #154 NEW (HIGH, 2026-10-07 reverify): `allowedTools: <expr>` — a literal key WITH a
+   *  top-level `:` (so neither AGENT_OPTS_SPREAD's no-colon branch nor AGENT_OPTS_SHORTHAND's
+   *  applies), but whose value is not a `[...]` literal of quoted strings (an identifier, member
+   *  expression, call, ternary, …). `parseStringArrayLiteral` already returns `null` for this; the
+   *  gap was that the handler silently left `allowedTools` at 'absent' instead of raising a
+   *  violation, so the real value reached `agent-executor.ts`'s dispatch unexamined while every
+   *  advisory surface ('absent' read as "nothing to verify") reported no tools at all. */
+  | 'AGENT_OPTS_VALUE_NOT_LITERAL'
+  /** Issue #162 item C (2026-10-09 reverify): a literal `schema` value that can NEVER be a valid
+   *  JSON Schema — a string/number/array/null/template-literal. The runtime guard
+   *  (agent-executor.ts's `ajv.compile`) already refuses this at DISPATCH time; this catches the
+   *  obvious literal case up front, at registration, before a run can ever reach it. A non-literal
+   *  value (an identifier, a computed expression) is NOT this code — it cannot be checked
+   *  statically and is left to that same runtime guard, unchanged. */
+  | 'AGENT_OPTS_SCHEMA_INVALID';
+
+export interface AgentCallViolation {
+  line: number;
+  code: AgentCallViolationCode;
+  /** The offending option key. Closed to the tunables for `PARAM_IN_SCRIPT`; closed to
+   *  `keyof typeof RETIRED_AGENT_OPT_KEYS` for `AGENT_OPT_RETIRED`; free-form for `PARAM_UNKNOWN`,
+   *  whose whole job is to hand back the name the author actually wrote. */
+  key?: string;
+  hint: string;
+}
+
+export interface AgentCallScan {
+  labels: string[];
+  calls: Array<{
+    line: number;
+    label: string;
+    /** DES-174 (TASK-184): the AGENT_CALL_RE match character offset — the skeleton↔scan join key
+     *  (character offset, not label: two calls may legally share a label, e.g. a retry shape). */
+    index: number;
+    /** DES-174: the literal array when the options object carries `allowedTools` (including `[]`,
+     *  recorded verbatim); `'absent'` when the call has no `allowedTools` key at all. */
+    allowedTools?: string[] | 'absent';
+    /** Issue #78(c): present only when the options literal carries a valid `bash: 'readonly'`. */
+    bash?: 'readonly';
+    /** DES-174: both arms of one ternary or one if/else, or every member of one `parallel([...])`,
+     *  share one `{kind, id}` — detected with the same string-aware `matchDelimiter` below. Absent
+     *  for a plain sequential call. */
+    group?: { kind: 'parallel' | 'alt'; id: number };
+  }>;
+  violations: AgentCallViolation[];
+  /** v35 (DES-237, TASK-233): present (and `true`) only when the `nonCodeSpans` oracle could not
+   *  parse the script — `labels`/`calls` are empty and `violations` carries the one
+   *  `SCRIPT_UNSCANNABLE` entry. A consumer that cannot refuse (a render, not a registration gate)
+   *  reads this instead of mistaking the empty result for "no agent() calls". */
+  unscannable?: true;
+}
+
+const AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g;
+const AGENT_LABEL_FORMAT_RE = /^[A-Za-z_][\w-]*$/;
+// v25 (#55): derived from `TUNABLE_KEYS` rather than transcribed. The literal that stood here knew
+// three of the four tunables, so `appendPrompt` written inside an `agent()` call was accepted and
+// dropped — the same silence #55 is about, in the file that is supposed to catch it.
+const LOCKED_PARAM_KEYS = new Set<string>(TUNABLE_KEYS);
+
+/** v25 (#55, adjudication #9 I-1.4): the CLOSED set of keys an `agent()` options literal may carry
+ *  — every `AgentOpts` field plus `prompt`, which the options object carries but the type does not
+ *  (the sandbox marshals it beside the label, `run-manager.ts:_handleAgentRequest`).
+ *
+ *  Written as a `Record<keyof AgentOpts | 'prompt', true>` on purpose: adding a field to `AgentOpts`
+ *  without adding it here is a COMPILE error, so the accepted set cannot silently fall behind the
+ *  type the way `LOCKED_KEYS`'s `tools` fell behind `allowedTools` for three iterations. Same
+ *  closed-class move as `AUTHZ_ERROR_CODES satisfies readonly ErrorCode[]` (TASK-162), for the same
+ *  reason: this ledger has now recorded one-directional vocabulary drift four times. */
+const AGENT_OPT_KEYS: Record<keyof AgentOpts | 'prompt', true> = {
+  prompt: true, label: true, phase: true, schema: true, model: true, effort: true,
+  timeoutMs: true, isolation: true, mcp: true, allowedTools: true, bash: true,
+};
+
+/** v34 (DES-224, ARCH-138, TASK-229, REQ-203): agent() options keys that USED to work and now
+ *  refuse instead of being silently accepted — `AGENT_OPT_KEYS` above cannot admit them any more
+ *  (the compiler forces this pair to move in the same commit `AgentOpts.agentType` is deleted), so
+ *  without this map the key would fall through to the generic `PARAM_UNKNOWN` unknown-key branch
+ *  with no signal that it once worked. Consulted BEFORE the unknown-key check, never instead of it. */
+export const RETIRED_AGENT_OPT_KEYS: Record<string, string> = {
+  agentType: "not supported — there is no server-side agent definition; put the system prompt in your script's own prompt (workflow_authoring_guide → prompt layering)",
+};
+
+/** The keys an author may actually write, in the refusal message: the closed set MINUS the tunables,
+ *  which have their own more specific `PARAM_IN_SCRIPT` refusal naming the declaration site. */
+export const WRITABLE_AGENT_OPT_KEYS = Object.keys(AGENT_OPT_KEYS).filter((k) => !LOCKED_PARAM_KEYS.has(k));
+
+/** Near-miss pointers: a name an author is likely to reach for, and the one that works. `tools` is
+ *  not hypothetical — it is `LOCKED_KEYS`'s own former spelling and what the v24 cold subject wrote
+ *  before spending fifteen minutes routing around a capability it already had (#55). */
+const AGENT_OPT_NEAR_MISSES: Record<string, string> = {
+  tools: 'allowedTools',
+  allowed_tools: 'allowedTools',
+  tool: 'allowedTools',
+  system: "your script's own prompt — see workflow_authoring_guide → prompt layering",
+  systemPrompt: "your script's own prompt — see workflow_authoring_guide → prompt layering",
+  name: 'label',
+  timeout: 'timeoutMs',
+  // `skills` is advertised in `LOCKED_KEYS` but is not an `agent()` option — it is declared per
+  // label in the contract. Same incident shape as `tools`: a name the surface shows an author, in a
+  // place that never read it.
+  skills: 'meta.params.agents.<label>.skills',
+};
+const WORKFLOW_CALL_RE = /(?<!\.)\bworkflow\s*\(/g;
+
+/** DES-143 boundary: "calls inside a nested `workflow(` argument list are NOT scanned" means a
+ *  call to ANOTHER named sub-workflow (`workflow("name", …)` — first arg a string literal), whose
+ *  whole argument-list span (including any inline callback body) is excluded. It does NOT mean the
+ *  top-level bootstrap wrapper (`workflow(() => { … })`, no string first arg) — that one's `agent()`
+ *  calls ARE scanned (UT-145 case 1). */
+function nestedWorkflowSpans(script: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  WORKFLOW_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = WORKFLOW_CALL_RE.exec(script)) !== null) {
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue;
+    const [firstArg] = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+    if (firstArg !== undefined && literalStringValue(firstArg) !== null) spans.push([openParen, closeParen]);
+  }
+  return spans;
+}
+
+/** Splits `text` on its TOP-LEVEL commas (string/template/paren/brace/bracket-aware — the same
+ *  depth-tracking idiom as `matchDelimiter`, generalized to multiple delimiter kinds at once since
+ *  an argument list or an object literal's entries can nest any of them). Used both to split an
+ *  `agent(...)`'s argument list and an options object literal's `key: value` entries. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let str: string | null = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (str !== null) {
+      if (c === '\\') { i++; continue; }
+      if (c === str) str = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') depth--;
+    else if (c === ',' && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+  }
+  const last = text.slice(start);
+  if (last.trim() !== '') parts.push(last);
+  return parts.map((p) => p.trim());
+}
+
+/** Issue #162 item C: a plain text-start check (no AST — the obvious cases need nothing heavier),
+ *  deliberately narrow and false-positive-free: `true` for a string/number/array/null/undefined/
+ *  template-literal `schema` value, which can NEVER be a valid JSON Schema (ajv itself would refuse
+ *  any of these — "schema must be object or boolean"). `false` for an object literal (`{...}` —
+ *  its INNER shape is still ajv's job at dispatch, not this scan's), the literal booleans `true`/
+ *  `false` (valid per the JSON Schema spec itself), and anything else this text-level check cannot
+ *  rule out (an identifier, a member/call expression, a ternary, …) — those are left to the
+ *  existing runtime `ajv.compile` guard (agent-executor.ts), unchanged. */
+function isObviousNonSchemaLiteral(text: string): boolean {
+  const t = text.trim();
+  if (t === 'true' || t === 'false' || t.startsWith('{')) return false;
+  if (t === 'null' || t === 'undefined') return true;
+  const c = t[0];
+  return c === "'" || c === '"' || c === '`' || c === '[' || (c !== undefined && /[0-9-]/.test(c));
+}
+
+/** `null` unless `text` is, in full, one quoted string literal token (splitTopLevel already
+ *  isolates a single argument, so no further string-awareness is needed here). */
+function literalStringValue(text: string): string | null {
+  if (text.length >= 2 && (text[0] === '"' || text[0] === "'") && text[text.length - 1] === text[0]) {
+    return text.slice(1, -1);
+  }
+  return null;
+}
+
+/** Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): `null` unless `text` is, in full, an
+ *  `ArrayExpression` AST node every one of whose elements is a string `Literal` node — used to read
+ *  `allowedTools: [...]` verbatim (DES-174/TASK-184). `[]` returns `[]`, not `null` —
+ *  `allowedTools: []` must be recorded, not treated as absent. Parses `(${text})`, the same
+ *  parenthesize-to-force-expression-context trick `objectLiteralInnerText` uses (a bare `[` at
+ *  statement start is unambiguous in acorn, unlike `{`, but wrapping is harmless and keeps both
+ *  parse call sites identical). A REAL AST check, not the pre-fix `literalStringValue`'s "check only
+ *  the first/last character" text scan — that scan read `'mcp__x__y' && 'Bash'` (a two-literal
+ *  LogicalExpression, not one string literal) as literal because its first and last characters
+ *  happen to be quotes, truncating the quotes out of the resulting (wrong) string. A `SpreadElement`,
+ *  a hole (`[, 'x']`), a `TemplateLiteral`, or any non-string `Literal` (number/boolean/null/regex)
+ *  all fail closed to `null` here exactly as before. */
+function parseStringArrayLiteral(text: string): string[] | null {
+  const t = text.trim();
+  let ast: unknown;
+  try {
+    ast = parse(`(${t})`, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return null;
+  }
+  const program = ast as { body?: Array<{ type?: unknown; expression?: unknown }> };
+  if (!Array.isArray(program.body) || program.body.length !== 1) return null;
+  const stmt = program.body[0]!;
+  if (stmt.type !== 'ExpressionStatement') return null;
+  const expr = stmt.expression as { type?: unknown; elements?: Array<unknown> } | undefined;
+  if (!expr || expr.type !== 'ArrayExpression' || !Array.isArray(expr.elements)) return null;
+  const out: string[] = [];
+  for (const el of expr.elements) {
+    // `null` is a real hole in the array literal (e.g. `['Bash', , 'Write']`) — acorn's own shape
+    // for it, not this function's `string[] | null` return sentinel.
+    if (el === null || typeof el !== 'object') return null;
+    const node = el as { type?: unknown; value?: unknown };
+    if (node.type !== 'Literal' || typeof node.value !== 'string') return null;
+    out.push(node.value);
+  }
+  return out;
+}
+
+/** Issue #154 NEW HIGH variant (major, 2026-10-07 reverify): the exact source text BETWEEN the
+ *  outer `{`/`}` of `optsText`'s own object literal, or `null` when `optsText` is not — in full —
+ *  one `{...}` object-literal EXPRESSION. The pre-fix gate (`optsText.startsWith('{') &&
+ *  optsText.endsWith('}')`) only checked the first/last character, which `{prompt:'x'} ? o : {}`
+ *  and `{prompt:'x'} && o || {}` both satisfy while actually being a ternary/logical expression
+ *  that EVALUATES to whatever `o` is at runtime — invisible to every downstream reader of
+ *  `allowedTools`.
+ *
+ *  Parses `(${optsText})` — wrapped in parens to FORCE expression context: acorn (like the
+ *  language itself) reads a bare leading `{` at statement position as a BLOCK STATEMENT, not an
+ *  object literal, so `prompt: 'x'` inside it would parse as a labelled statement, not a Property
+ *  — the exact ambiguity this wrapper avoids. Requires the wrapped program to be exactly one
+ *  `ExpressionStatement` whose expression is an `ObjectExpression`; anything else (a ternary, a
+ *  logical chain, a sequence expression, a parse error) returns `null`. Returns the literal's own
+ *  inner text (between its braces), not `optsText.slice(1,-1)` — the object's braces need not be
+ *  `optsText`'s own first/last characters (e.g. surrounding whitespace already trimmed by the
+ *  caller, but kept as its own slice rather than assumed for robustness). */
+function objectLiteralInnerText(optsText: string): string | null {
+  let ast: unknown;
+  try {
+    ast = parse(`(${optsText})`, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return null;
+  }
+  const program = ast as { body?: Array<{ type?: unknown; expression?: unknown }> };
+  if (!Array.isArray(program.body) || program.body.length !== 1) return null;
+  const stmt = program.body[0]!;
+  if (stmt.type !== 'ExpressionStatement') return null;
+  const expr = stmt.expression as { type?: unknown; start?: unknown; end?: unknown } | undefined;
+  if (!expr || expr.type !== 'ObjectExpression' || typeof expr.start !== 'number' || typeof expr.end !== 'number') return null;
+  // `expr.start`/`expr.end` are offsets into the WRAPPED string `(${optsText})`, shifted by 1 (the
+  // prepended '(') relative to `optsText` itself.
+  return optsText.slice(expr.start - 1 + 1, expr.end - 1 - 1);
+}
+
+const GROUP_PARALLEL_CALL_RE = /(?<!\.)\bparallel\s*\(/g;
+
+/** DES-174 (TASK-184): the `[start,end)` argument-list span of every `parallel([...])` call, each
+ *  with its own group id — every `agent()` call whose AGENT_CALL_RE offset falls inside one span
+ *  shares `{kind:'parallel', id}`. Independent of `parseWorkflowSkeleton`'s own parallel-span scan
+ *  (that one groups SkeletonNodes, this one groups scanned agent() calls). */
+function parallelCallSpans(script: string): Array<{ id: number; start: number; end: number }> {
+  const spans: Array<{ id: number; start: number; end: number }> = [];
+  GROUP_PARALLEL_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  let seq = 0;
+  while ((m = GROUP_PARALLEL_CALL_RE.exec(script)) !== null) {
+    const openParen = script.indexOf('(', m.index);
+    if (openParen === -1) continue;
+    const end = matchDelimiter(script, openParen, '(', ')');
+    if (end === -1) continue;
+    spans.push({ id: ++seq, start: openParen, end });
+  }
+  return spans;
+}
+
+interface AltSpan { id: number; armAStart: number; armAEnd: number; armBStart: number; armBEnd: number }
+
+/** From `start` (just after a ternary's '?'), scans forward tracking bracket depth and strings for
+ *  the ':' that closes the "then" arm at relative depth 0 (an object literal's own `key: value`
+ *  colon sits at depth > 0 and is skipped). -1 if the arm exits its enclosing bracket unmatched. */
+function findMatchingColon(script: string, start: number): number {
+  let depth = 0;
+  let str: string | null = null;
+  for (let i = start; i < script.length; i++) {
+    const c = script[i];
+    if (str !== null) { if (c === '\\') { i++; continue; } if (c === str) str = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') { if (depth === 0) return -1; depth--; }
+    else if (c === ':' && depth === 0) return i;
+  }
+  return -1;
+}
+
+/** From `start` (just after the ternary's ':'), scans forward for the end of the "else" arm: the
+ *  first `;`/`,` at relative depth 0, or an enclosing close-bracket the arm does not own. */
+function findArmEnd(script: string, start: number): number {
+  let depth = 0;
+  let str: string | null = null;
+  for (let i = start; i < script.length; i++) {
+    const c = script[i];
+    if (str !== null) { if (c === '\\') { i++; continue; } if (c === str) str = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') { if (depth === 0) return i; depth--; }
+    else if ((c === ';' || c === ',') && depth === 0) return i;
+  }
+  return script.length;
+}
+
+const IF_RE = /\bif\s*\(/g;
+
+/** DES-174/ARCH-113 rule S3 (TASK-184): the two arms of one ternary or one `if (…) {…} else {…}`
+ *  at the same delimiter depth — every `agent()` call whose offset falls inside either arm shares
+ *  `{kind:'alt', id}`. Best-effort, matching this file's existing regex+matchDelimiter scanning
+ *  style: an `else if` chain (no `{…}` immediately after `else`) is not recognized. */
+function altSpans(script: string): AltSpan[] {
+  const spans: AltSpan[] = [];
+  let seq = 0;
+
+  IF_RE.lastIndex = 0;
+  let mi: RegExpExecArray | null;
+  while ((mi = IF_RE.exec(script)) !== null) {
+    const condOpen = script.indexOf('(', mi.index);
+    const condClose = matchDelimiter(script, condOpen, '(', ')');
+    if (condClose === -1) continue;
+    let i = condClose;
+    while (i < script.length && /\s/.test(script[i]!)) i++;
+    if (script[i] !== '{') continue;
+    const ifBodyStart = i;
+    const ifBodyEnd = matchDelimiter(script, i, '{', '}');
+    if (ifBodyEnd === -1) continue;
+    let j = ifBodyEnd;
+    while (j < script.length && /\s/.test(script[j]!)) j++;
+    if (script.slice(j, j + 4) !== 'else') continue;
+    j += 4;
+    while (j < script.length && /\s/.test(script[j]!)) j++;
+    if (script[j] !== '{') continue;
+    const elseBodyStart = j;
+    const elseBodyEnd = matchDelimiter(script, j, '{', '}');
+    if (elseBodyEnd === -1) continue;
+    spans.push({ id: ++seq, armAStart: ifBodyStart, armAEnd: ifBodyEnd, armBStart: elseBodyStart, armBEnd: elseBodyEnd });
+  }
+
+  for (let i = 0; i < script.length; i++) {
+    const c = script[i];
+    if (c === "'" || c === '"' || c === '`') {
+      // skip the whole string literal so a '?' inside it is never mistaken for a ternary.
+      let j = i + 1;
+      while (j < script.length && script[j] !== c) { if (script[j] === '\\') j++; j++; }
+      i = j;
+      continue;
+    }
+    // skip optional chaining (`?.`), and BOTH characters of nullish coalescing (`??`) — without
+    // the `i - 1` check the second `?` of `a ?? b` reads as a ternary start of its own.
+    if (c !== '?' || script[i + 1] === '.' || script[i + 1] === '?' || script[i - 1] === '?') continue;
+    const colonIdx = findMatchingColon(script, i + 1);
+    if (colonIdx === -1) continue;
+    const armEnd = findArmEnd(script, colonIdx + 1);
+    spans.push({ id: ++seq, armAStart: i + 1, armAEnd: colonIdx, armBStart: colonIdx + 1, armBEnd: armEnd });
+  }
+
+  return spans;
+}
+
+/** DES-143/ARCH-096 (TASK-135): what "literal" means for an `agent(label, {options})` call, and the
+ *  1-based line number on every violation. A call is `agent(<expr>, <balanced {…} literal>)`,
+ *  matched with the same string-aware `matchDelimiter` used by `parseWorkflowSkeleton` plus a
+ *  key/value scan — no JS parser dependency (a template/variable label or a non-literal options
+ *  object cannot be checked statically, so both are refused rather than silently accepted).
+ *  `x.agent(`/`agentFoo(` are not calls (the regex requires a preceding non-word/non-dot boundary).
+ *  v35 (DES-236/237): a commented-out `agent(` is now EXCLUDED via the `nonCodeOracle` span check
+ *  below — superseding the pre-v35 "IS matched, accepted, the refusal names the line" decision,
+ *  since REQ-208 requires comment text to never be misread as a real call. Duplicate labels are
+ *  legal: `labels` is de-duplicated, `calls` is not. */
+/** v35 (DES-237, D11 ordering): the non-code-span oracle shared by `scanAgentCalls` AND
+ *  `parseWorkflowSkeleton` — both run their own independent `agent(`-shaped regex over the SAME
+ *  script, and `skeleton-graph.ts`'s `deriveExpectedGraph` joins their outputs POSITIONALLY (DES-174:
+ *  "the only join available is positional"); if only one of the two excluded a literal-heavy
+ *  false-positive match, the two scans would fall out of lockstep and misattribute every call after
+ *  it. A script with a balanced `export const meta = {…}` gets that span blanked
+ *  CHARACTER-PRESERVINGLY (`/[^\n]/g`, not `script-checks.ts`'s line-preserving `blankLines`) before
+ *  the oracle runs — the surviving `export` keyword is invalid in the oracle's `sourceType:'script'`
+ *  classic-script parse, and character-preserving blanking keeps every offset below the meta block
+ *  unshifted. A script with NO meta declaration at all has no `export` keyword to trip the parse, so
+ *  the oracle runs directly on it. Only the narrow in-between case — `checkMeta` found
+ *  `export const meta =` text but could not extract a clean span (not an object literal / unbalanced
+ *  braces) — skips the oracle (`null`): the raw `export` text is still present and unsafe to hand to
+ *  a classic-script parse, and that malformed meta already has its own specific refusal elsewhere,
+ *  which a vaguer SCRIPT_UNSCANNABLE here would only obscure.
+ *  v35 GREEN-phase fix (regression found post-Gate-5): a NO-META script that fails the oracle's
+ *  classic-script parse is NOT the same case as a `export const meta = {…}` script whose CODE after
+ *  a clean meta span fails to parse. The latter has a real, addressable non-code region (the meta
+ *  literal) and legitimately fails closed to `SCRIPT_UNSCANNABLE` (`workflow-meta-scan.test.ts`'s
+ *  "unparseable script" case, `dashboard-metrics.test.ts`, `scan-unscannable-markers.test.ts` — all
+ *  three fixtures carry `export const meta = {}`). The former has NO meta at all, and DES-174/
+ *  ARCH-113's pre-v35 "`scanAgentCalls` is TOTAL by design" guarantee (UT-209: a truncated/malformed
+ *  ternary, the state live-edited or dashboard-read scripts are commonly caught in, must still find
+ *  every real `agent()` call, never blank the whole scan) still governs it — a classic-script parse
+ *  failure on a plain malformed script is not evidence of a hidden string/comment `agent(`
+ *  false-positive, so failing OPEN (skip the oracle, scan unfiltered as before v35) preserves that
+ *  guarantee instead of silently disabling every registration guard that reads `scanAgentCalls`'s
+ *  output (AGENT_UNDECLARED, AGENT_BEFORE_PHASE, the diagram contract, label checks). */
+function nonCodeOracle(script: string): ReturnType<typeof nonCodeSpans> | null {
+  const meta = checkMeta(script);
+  if (meta.span) {
+    const result = nonCodeSpans(script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')));
+    if (!result.ok) return result;
+    // v35 follow-up (issue #140): the blanked copy above only lets the oracle find non-code spans
+    // OUTSIDE the meta block (blanking is what keeps the `export` keyword from tripping the
+    // classic-script parse) — it does not, by itself, mark the meta block's own text as non-code.
+    // `scanAgentCalls`/`parseWorkflowSkeleton` still run AGENT_CALL_RE/CALL_RE against the
+    // ORIGINAL, unblanked script, so a literal "agent (" inside e.g. `meta.description` (whichever
+    // quote style — the blanking is character-preserving, so `script.indexOf(meta.span)` is the
+    // same first occurrence `.replace()` above already matched) was never excluded and read as a
+    // real call. `meta` is a validated object-literal region (checkMeta's own string-aware brace
+    // scan) that can never legitimately contain a top-level `agent(` call, so the whole span is
+    // unconditionally non-code, independent of whether `pureLiteral` holds.
+    // v40 (UT-367): the hand scanners now read `scanText` (this span blanked whole), not the
+    // original; the `spans` entry stays so `inNonCode` and the blanked text agree.
+    const metaStart = script.indexOf(meta.span);
+    const metaSpan: [number, number] = [metaStart, metaStart + meta.span.length];
+    // v40 (UT-367): the oracle parsed a probe with meta blanked, so it reports no comment inside
+    // meta — yet an apostrophe in a `// don't` there still desyncs `altSpans`' from-offset-0 string
+    // skip. The whole span is non-code, so `scanText` blanks it whole (listed with the comments).
+    return { ...result, spans: [...result.spans, metaSpan], comments: [...result.comments, metaSpan] };
+  }
+  if (meta.found) return null;
+  const result = nonCodeSpans(script);
+  return result.ok ? result : null;
+}
+
+/** v40 (UT-367, DES-237 D12): the text every hand scanner below reads — comment text and regex
+ *  bodies blanked by `blankSpans` (offsets and line numbers unchanged), so an apostrophe in a
+ *  `// don't` comment or a quote in `/'/` can no longer open a phantom string in `matchDelimiter`/
+ *  `splitTopLevel`/`altSpans`. `scanAgentCalls`, `parseWorkflowSkeleton` and `scanPrimitiveCalls` all
+ *  call this right after `nonCodeOracle`, so the positionally-joined scans see byte-identical text.
+ *  No oracle (`null`) → the raw script, unchanged from before. */
+function scanText(script: string, oracle: ReturnType<typeof nonCodeOracle>): string {
+  return oracle?.ok ? blankSpans(script, [...oracle.comments, ...oracle.regexBodies]) : script;
+}
+
+export function scanAgentCalls(script: string): AgentCallScan {
+  const oracle = nonCodeOracle(script);
+  if (oracle && !oracle.ok) {
+    return {
+      labels: [],
+      calls: [],
+      violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }],
+      unscannable: true,
+    };
+  }
+  script = scanText(script, oracle);
+  const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
+
+  const labels: string[] = [];
+  const calls: AgentCallScan['calls'] = [];
+  const violations: AgentCallViolation[] = [];
+
+  const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
+  const nestedSpans = nestedWorkflowSpans(script);
+  const inNestedWorkflow = (idx: number): boolean => nestedSpans.some(([s, e]) => idx >= s && idx < e);
+  const parallelSpans = parallelCallSpans(script);
+  const altSpansList = altSpans(script);
+  const groupFor = (idx: number): { kind: 'parallel' | 'alt'; id: number } | undefined => {
+    const par = parallelSpans.find((p) => idx > p.start && idx < p.end);
+    if (par) return { kind: 'parallel', id: par.id };
+    const alt = altSpansList.find((a) => (idx >= a.armAStart && idx < a.armAEnd) || (idx >= a.armBStart && idx < a.armBEnd));
+    if (alt) return { kind: 'alt', id: alt.id };
+    return undefined;
+  };
+
+  AGENT_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = AGENT_CALL_RE.exec(script)) !== null) {
+    if (inNestedWorkflow(m.index)) continue;
+    if (inNonCode(m.index)) continue;
+    const index = m.index;
+    const line = lineAt(index);
+    const group = groupFor(index);
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
+    const args = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+
+    if (args.length < 2) {
+      violations.push({ line, code: 'AGENT_LABEL_REQUIRED', hint: 'agent() needs a literal label and an options object: agent("label", { … })' });
+      calls.push({ line, label: '', index, allowedTools: 'absent', group });
+      continue;
+    }
+
+    const [labelArg, optsArg] = args;
+    const labelVal = literalStringValue(labelArg!);
+    let validLabel: string | null = null;
+    if (labelVal === null) {
+      violations.push({ line, code: 'AGENT_LABEL_NOT_LITERAL', hint: 'the label must be a literal string, not a template or a variable' });
+    } else if (!AGENT_LABEL_FORMAT_RE.test(labelVal)) {
+      violations.push({ line, code: 'AGENT_LABEL_FORMAT', hint: 'a label must match /^[A-Za-z_][\\w-]*$/' });
+    } else {
+      validLabel = labelVal;
+    }
+
+    let allowedTools: string[] | 'absent' = 'absent';
+    let bashRaw: string | undefined;
+    let bash: 'readonly' | undefined;
+    const optsText = optsArg!.trim();
+    const optsInnerText = objectLiteralInnerText(optsText);
+    if (optsInnerText === null) {
+      violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
+    } else {
+      for (const entry of splitTopLevel(optsInnerText)) {
+        const trimmedEntry = entry.trim();
+        if (trimmedEntry === '') continue;
+        const colonIdx = entry.indexOf(':');
+        if (colonIdx === -1) {
+          // Issue #154 B2: a spread (`...extra`) or shorthand (`{ key }`) entry has no top-level
+          // `:` — it used to be silently skipped here, which is exactly how `allowedTools` was
+          // smuggled past this scan and reached `agent-executor.ts`'s dispatch unexamined.
+          if (trimmedEntry.startsWith('...')) {
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_SPREAD',
+              hint: 'a spread (`...x`) inside agent() options hides every key it carries from this scan — write each option as a literal key instead of spreading an object into it',
+            });
+          } else {
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_SHORTHAND',
+              key: trimmedEntry,
+              hint: `'${trimmedEntry}' is a shorthand property — its value comes from a variable, not a literal, so it cannot be checked statically. Write '${trimmedEntry}: <literal>' instead`,
+            });
+          }
+          continue;
+        }
+        let key = entry.slice(0, colonIdx).trim();
+        if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+        if (key === 'allowedTools') {
+          const parsed = parseStringArrayLiteral(entry.slice(colonIdx + 1));
+          if (parsed !== null) {
+            allowedTools = parsed;
+          } else {
+            // Issue #154 NEW HIGH: a non-literal value is exactly as unverifiable as a spread or
+            // shorthand entry — refuse instead of silently defaulting to 'absent' (readonlyBashConflict
+            // and every downstream reader of `allowedTools` below still see 'absent', unchanged).
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_VALUE_NOT_LITERAL',
+              key,
+              hint: "'allowedTools' must be a literal array of string literals, not a variable or expression — it cannot be checked statically. Write 'allowedTools: [\"Tool\", …]' instead",
+            });
+          }
+        }
+        if (key === 'schema') {
+          const schemaText = entry.slice(colonIdx + 1).trim();
+          if (isObviousNonSchemaLiteral(schemaText)) {
+            violations.push({
+              line,
+              code: 'AGENT_OPTS_SCHEMA_INVALID',
+              key,
+              hint: "'schema' must be a JSON Schema object (or the literal boolean true/false) — a string/number/array/null/template-literal can never be a valid JSON Schema. Write 'schema: { type: ..., properties: {...} }' instead",
+            });
+          }
+        }
+        if (key === 'bash') bashRaw = entry.slice(colonIdx + 1).trim();
+        if (LOCKED_PARAM_KEYS.has(key)) {
+          const label = validLabel ?? '<label>';
+          violations.push({
+            line,
+            code: 'PARAM_IN_SCRIPT',
+            key,
+            hint: `move '${key}' to meta.params.agents.${label}.${key}.default`,
+          });
+        } else if (Object.hasOwn(RETIRED_AGENT_OPT_KEYS, key)) {
+          // v34 (DES-224): consulted BEFORE the unknown-key branch, not instead of it — a key that
+          // used to work gets a different code than one that never did.
+          violations.push({ line, key, code: 'AGENT_OPT_RETIRED', hint: `'${key}' was ${RETIRED_AGENT_OPT_KEYS[key]}.` });
+        } else if (!Object.hasOwn(AGENT_OPT_KEYS, key)) {
+          // v25 (#55, adjudication #9 I-1.4). `Object.hasOwn`, not `key in` — `constructor` and
+          // `toString` are `in` every object literal and would be waved through.
+          // 2026-10-08 integration (rv) fix (cosmetic): same `Object.hasOwn` discipline extended to
+          // this lookup itself — a `__proto__`/`constructor`/`toString` KEY (already refused above
+          // via the SAME hasOwn check against `AGENT_OPT_KEYS`) used to resolve
+          // `AGENT_OPT_NEAR_MISSES[key]` onto an inherited `Object.prototype` member, producing the
+          // nonsensical hint "did you mean '[object Object]'?" (or similar) instead of the correct
+          // "not an agent() option" wording every other unknown key gets.
+          const nearMiss = Object.hasOwn(AGENT_OPT_NEAR_MISSES, key) ? AGENT_OPT_NEAR_MISSES[key] : undefined;
+          const lead = nearMiss !== undefined
+            ? `'${key}' is not an agent() option — did you mean '${nearMiss}'?`
+            : `'${key}' is not an agent() option.`;
+          violations.push({
+            line,
+            code: 'PARAM_UNKNOWN',
+            key,
+            hint:
+              `${lead} Accepted: ${WRITABLE_AGENT_OPT_KEYS.join(', ')}` +
+              `. ${[...LOCKED_PARAM_KEYS].join('/')} belong in meta.params.agents.<label>.<key>.default`,
+          });
+        }
+      }
+      if (bashRaw !== undefined) {
+        const conflict = readonlyBashConflict(allowedTools);
+        if (literalStringValue(bashRaw) !== 'readonly') {
+          violations.push({ line, key: 'bash', code: 'BASH_MODE_INVALID', hint: "bash accepts only the literal 'readonly' (omit the key for normal Bash)" });
+        } else if (conflict !== null) {
+          violations.push({ line, key: 'bash', code: 'BASH_READONLY_CONFLICT', hint: conflict });
+        } else {
+          bash = 'readonly';
+        }
+      }
+    }
+
+    calls.push({ line, label: validLabel ?? labelVal ?? '', index, allowedTools, ...(bash !== undefined ? { bash } : {}), group });
+    if (validLabel && !labels.includes(validLabel)) labels.push(validLabel);
+  }
+
+  return { labels, calls, violations };
+}
+
+// v40 (DES-271, ARCH-188/189, TASK-268): the `decide`/`generateImage` label scanner. Mirrors
+// `AGENT_CALL_RE`'s own `(?<!\.)` member-expression defense; a renamed-alias call (`const d =
+// decide; d(...)`) is the SAME untracked gap `agent()` has, by design (the alias is refused
+// separately, at `validateScriptEntry`'s `checkSandboxApiAliasing`, not here).
+const DECIDE_CALL_RE = /(?<!\.)\bdecide\s*\(/g;
+const IMAGE_CALL_RE = /(?<!\.)\bgenerateImage\s*\(/g;
+
+// v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): the tunables a `decide()`/`generateImage()`
+// options literal may NOT carry (they belong in `meta.params.decisions/images.<label>.<key>.default`
+// — DES-271's own closed vocabulary, distinct from `agent()`'s TUNABLE_KEYS: no `effort`/
+// `appendPrompt`, plus `retries`, which agent() does not have). The non-tunable keys each primitive
+// DOES accept at the call site (its own runtime data — DES-266's `validateDecideInput`/
+// `validateImageInput` closed sets).
+const PRIMITIVE_TUNABLE_KEYS = new Set<string>(['model', 'timeoutMs', 'retries']);
+const PRIMITIVE_DATA_KEYS: Record<'decide' | 'generateImage', Record<string, true>> = {
+  decide: { state: true, questions: true },
+  generateImage: { prompt: true, inputImages: true, outDir: true },
+};
+
+/** v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): one `decide`/`generateImage` scan — same
+ *  codes as `scanAgentCalls` (no new vocabulary), with one DES-271-specific exception: a shorthand
+ *  entry (`{ state, questions }`) is FINE here (never `AGENT_OPTS_SHORTHAND`) because a primitive's
+ *  own data keys are legitimately runtime values — only the TUNABLE keys (model/timeoutMs/retries)
+ *  are a script-time refusal. */
+function scanOnePrimitive(
+  script: string,
+  re: RegExp,
+  kind: 'decide' | 'generateImage',
+  inNonCode: (idx: number) => boolean,
+  lineAt: (idx: number) => number,
+  violations: AgentCallViolation[],
+): string[] {
+  const labels: string[] = [];
+  const callName = `${kind}()`;
+  const paramsKind = kind === 'decide' ? 'decisions' : 'images';
+  const dataKeys = PRIMITIVE_DATA_KEYS[kind];
+  re.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(script)) !== null) {
+    if (inNonCode(m.index)) continue;
+    const line = lineAt(m.index);
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
+    const args = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+    if (args.length < 1) {
+      violations.push({ line, code: 'AGENT_LABEL_REQUIRED', hint: `${callName} needs a literal label and an options object: ${kind}("label", { … })` });
+      continue;
+    }
+    const labelVal = literalStringValue(args[0]!.trim());
+    let validLabel: string | null = null;
+    if (labelVal === null) {
+      violations.push({ line, code: 'AGENT_LABEL_NOT_LITERAL', hint: `${callName}'s label must be a literal string, not a template or a variable` });
+    } else if (!AGENT_LABEL_FORMAT_RE.test(labelVal) || labelVal.length > 64) {
+      violations.push({ line, code: 'AGENT_LABEL_FORMAT', hint: `a ${callName} label must match /^[A-Za-z_][\\w-]*$/ and be at most 64 characters` });
+    } else {
+      validLabel = labelVal;
+    }
+    if (args.length >= 2) {
+      const optsInnerText = objectLiteralInnerText(args[1]!.trim());
+      if (optsInnerText === null) {
+        violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: `${callName}'s options argument must be a literal object: { … }` });
+      } else {
+        for (const entry of splitTopLevel(optsInnerText)) {
+          const trimmedEntry = entry.trim();
+          if (trimmedEntry === '') continue;
+          const colonIdx = entry.indexOf(':');
+          if (colonIdx === -1) {
+            // DES-271: a shorthand entry (`{ state, questions }`) is FINE — its value may be
+            // runtime, unlike `agent()`'s options. Only a spread hides a key from this scan.
+            if (trimmedEntry.startsWith('...')) {
+              violations.push({
+                line,
+                code: 'AGENT_OPTS_SPREAD',
+                hint: `a spread (\`...x\`) inside ${callName} options hides every key it carries from this scan — write each option as a literal key instead of spreading an object into it`,
+              });
+            }
+            continue;
+          }
+          let key = entry.slice(0, colonIdx).trim();
+          if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+          if (PRIMITIVE_TUNABLE_KEYS.has(key)) {
+            const label = validLabel ?? '<label>';
+            violations.push({ line, code: 'PARAM_IN_SCRIPT', key, hint: `move '${key}' to meta.params.${paramsKind}.${label}.${key}.default` });
+          } else if (!Object.hasOwn(dataKeys, key)) {
+            violations.push({
+              line,
+              key,
+              code: 'PARAM_UNKNOWN',
+              hint: `'${key}' is not a ${callName} option. Accepted: ${Object.keys(dataKeys).join(', ')}. model/timeoutMs/retries belong in meta.params.${paramsKind}.<label>.<key>.default`,
+            });
+          }
+        }
+      }
+    }
+    // `scanAgentCalls`'s own dedupe precedent (`!labels.includes(validLabel)`) — a label called
+    // twice (e.g. a retry shape) must still appear once in the contract-check array.
+    if (validLabel !== null && !labels.includes(validLabel)) labels.push(validLabel);
+  }
+  return labels;
+}
+
+/** v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): `scanPrimitiveCalls` — the
+ *  registration-time scanner for `decide()`/`generateImage()` call labels, mirroring
+ *  `scanAgentCalls`'s text-level approach (including its `nonCodeSpans` fail-closed oracle) but
+ *  with the simpler DES-271 return shape (no groups/allowedTools/bash — primitives carry none of
+ *  those). `violations` is `AgentCallViolation`-shaped (same codes, no new vocabulary) — renamed
+ *  from the pre-delta `errors` field, which no longer exists. */
+export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; violations: AgentCallViolation[] } {
+  const oracle = nonCodeOracle(script);
+  if (oracle && !oracle.ok) {
+    return { decide: [], generateImage: [], violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }] };
+  }
+  script = scanText(script, oracle);
+  const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
+  const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
+  const violations: AgentCallViolation[] = [];
+  const decide = scanOnePrimitive(script, DECIDE_CALL_RE, 'decide', inNonCode, lineAt, violations);
+  const generateImage = scanOnePrimitive(script, IMAGE_CALL_RE, 'generateImage', inNonCode, lineAt, violations);
+  return { decide, generateImage, violations };
+}
+
+/** Issue #154 NEW HIGH (blocker): the per-label expectation `run-manager.ts`'s dispatch-time
+ *  `_handleAgentRequest` compares a REAL dispatch's `opts.allowedTools`/`opts.bash` against, so a
+ *  script-planted `Array.prototype.toJSON` (or any other post-registration tamper of the opts
+ *  object the IPC hop re-serializes) cannot smuggle a tool surface the registered script never
+ *  literally wrote for that label — `workflow_describe`'s `toolSurface` and the mermaid `tools:`
+ *  check both read the SAME `scanAgentCalls` output but collapse a duplicate label to its LAST
+ *  call (display-only, lossy); this keeps every scanned call's own shape, since duplicate labels
+ *  are legal (`AgentCallScan.calls` is not de-duplicated — e.g. the same label called twice with
+ *  two different literal `allowedTools`). A label absent here (never scanned, or scanned with the
+ *  empty-string placeholder `AGENT_LABEL_NOT_LITERAL`/`AGENT_LABEL_REQUIRED` produces) has no entry
+ *  at all — the caller must fail CLOSED on a missing label, never treat it as "no constraint". */
+export function expectedAgentOptsByLabel(script: string): Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> {
+  // 2026-10-08 integration (rv) fix: a null-prototype object — `call.label` only has to match
+  // `scanAgentCalls`'s label grammar (`/^[A-Za-z_][\w-]*$/`), which admits 'constructor'/
+  // '__proto__'/'toString' as syntactically valid labels (`agent('__proto__', {...})` registers
+  // fine). `out['__proto__'] ??= []` on a PLAIN object never creates an own property at all — the
+  // bracket GET returns the live `Object.prototype` (truthy, so `??=` never assigns), and `.push`
+  // on it then throws. A null-prototype object has no inherited `__proto__`/`constructor`/
+  // `toString` accessor to collide with, so every label — including these three — becomes a real
+  // own property, exactly like any other.
+  const out: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>> = Object.create(null);
+  for (const call of scanAgentCalls(script).calls) {
+    if (call.label === '') continue;
+    const entry: { allowedTools: string[] | 'absent'; bash?: 'readonly' } = {
+      allowedTools: call.allowedTools ?? 'absent',
+      ...(call.bash !== undefined ? { bash: call.bash } : {}),
+    };
+    (out[call.label] ??= []).push(entry);
+  }
+  return out;
+}
+
+/** Issue #78(c): why a `bash:'readonly'` call's literal tool list is not a read-only shell, or null. */
+function readonlyBashConflict(allowedTools: string[] | 'absent'): string | null {
+  if (allowedTools === 'absent') {
+    return "bash:'readonly' needs a literal allowedTools list (e.g. ['Bash', 'Read', 'Grep', 'Glob']) — without one the agent gets the deployment default, which includes Write/Edit";
+  }
+  const writers = allowedTools.filter((t) => (READONLY_BASH_FORBIDDEN_TOOLS as readonly string[]).includes(t));
+  if (writers.length > 0) return `bash:'readonly' contradicts ${writers.join(', ')} in allowedTools — a read-only agent cannot also hold a write tool`;
+  if (!allowedTools.includes('Bash')) return "bash:'readonly' but allowedTools has no Bash — the declaration would restrict nothing";
+  return null;
+}
+
+/** Issue #78(b): the file tools a shell can stand in for. */
+const BASH_SUBSUMED_TOOLS = ['Read', 'Grep', 'Glob', 'Write', 'Edit'];
+
+// issue #103(a): MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED joined this union — a NON-FATAL
+// registration warning naming a label + the missing asset name(s) (`names`), computed one layer up
+// (mcp-facade.ts's `workflowRegister`, against the real asset catalog via
+// `AssetSyncService.resolveDeclaredAssets` — the SAME resolver dispatch uses). Unlike the two
+// Bash-surface warnings, a contract label has no source LINE to report (the declaration lives in
+// `meta.params.agents.<label>`, not a scannable `agent()` call site) — `line` widens to optional
+// rather than forcing a fake value, and `names` carries what `line` cannot.
+export interface RegistrationWarning {
+  code: 'BASH_SUBSUMES_FILE_TOOLS' | 'BASH_READONLY_UNENFORCEABLE' | 'MCP_NOT_PROVISIONED' | 'SKILL_NOT_PROVISIONED';
+  label: string;
+  line?: number;
+  names?: string[];
+  message: string;
+}
+
+/** Issue #147: extra context `toolSurfaceWarnings` needs ONLY to decide whether the
+ *  BASH_SUBSUMES_FILE_TOOLS message should explain the pi + declared-skill exception — never to
+ *  change WHETHER the warning fires. `skillsByLabel` carries each label's OWN declared
+ *  `meta.params.agents.<label>.skills` (resolved one layer up, mcp-facade.ts, which already
+ *  iterates `params.agents` for the provisioning-warning pass); `harness` is this deployment's
+ *  `activeHarness` (server.ts). Both absent (unit construction, or a deployment where neither was
+ *  wired) reproduces today's wording exactly — this is additive, not a behavior change for callers
+ *  that don't pass it. */
+export interface ToolSurfaceWarningContext {
+  skillsByLabel?: Readonly<Record<string, readonly string[]>>;
+  harness?: 'sdk' | 'pi';
+}
+
+/** Issue #78(b): `allowedTools` restricts tool NAMES, not capability — Bash can read, write and
+ *  search whatever Read/Write/Edit/Grep/Glob can, so a literal list naming Bash beside any of them
+ *  looks narrower than it is. Non-fatal: `workflow_register` returns these as `result.warnings` and
+ *  registers anyway (an implementer that needs a shell is legitimate). Only a LITERAL list counts —
+ *  a call with no `allowedTools` gets the deployment default, which the author did not write. */
+export function toolSurfaceWarnings(
+  scan: AgentCallScan,
+  posture?: 'confined' | 'unconfined',
+  context?: ToolSurfaceWarningContext,
+): RegistrationWarning[] {
+  const out: RegistrationWarning[] = [];
+  for (const call of scan.calls) {
+    // Issue #78(c): a readonly shell beside Read/Grep/Glob IS the narrow shape — the kernel keeps it
+    // from writing (registration already refused it beside a write tool). What an author must learn
+    // at registration instead is whether THIS engine can enforce it: posture is a boot-time host
+    // fact that can change without re-registering, so this warns; dispatch is what refuses.
+    if (call.bash === 'readonly') {
+      if (posture !== 'confined') {
+        out.push({
+          code: 'BASH_READONLY_UNENFORCEABLE',
+          label: call.label,
+          line: call.line,
+          message:
+            `agent('${call.label}') (line ${call.line}) declares bash:'readonly', and this engine has no working Bash sandbox (boot probe: unconfined). ` +
+            'Every dispatch of this agent here will fail closed (BASH_READONLY_UNENFORCEABLE) rather than run a writable shell; ' +
+            "it only runs on an engine whose probe measured 'confined'. For a read-only agent on this host, drop Bash: ['Read', 'Grep', 'Glob'].",
+        });
+      }
+      continue;
+    }
+    const tools = call.allowedTools;
+    if (!Array.isArray(tools) || !tools.includes('Bash')) continue;
+    const subsumed = tools.filter((t) => BASH_SUBSUMED_TOOLS.includes(t));
+    if (subsumed.length === 0) continue;
+    // Issue #147: this warning's own "no narrower than Bash alone" framing reads, to an author, as
+    // "drop Read" — which on `gateway:"pi"` collides with the authoring guide's OWN rule that a
+    // declared skill needs `Read` or `Bash` present to appear in the model's system prompt
+    // (SKILL_REQUIRES_READ_TOOL with neither, pi-gateway-client.ts). Dropping `Read` here is in
+    // fact still safe: `Bash` itself satisfies that requirement, so the skill stays visible. State
+    // that explicitly whenever this label declares a skill AND the deployment's active harness is
+    // pi, rather than leaving the author to guess (or re-add `Read` "just in case").
+    const declaredSkills = context?.skillsByLabel?.[call.label] ?? [];
+    const piSkillException =
+      context?.harness === 'pi' && declaredSkills.length > 0 && subsumed.includes('Read')
+        ? `This agent declares skill(s) (${declaredSkills.join(', ')}); on this engine's pi harness a declared ` +
+          "skill needs 'Read' or 'Bash' present in allowedTools to appear in the model's system prompt " +
+          "(SKILL_REQUIRES_READ_TOOL otherwise) — 'Bash' alone already satisfies that, so dropping 'Read' here " +
+          'does not hide the skill. '
+        : '';
+    out.push({
+      code: 'BASH_SUBSUMES_FILE_TOOLS',
+      label: call.label,
+      line: call.line,
+      message:
+        `agent('${call.label}') (line ${call.line}) lists Bash together with ${subsumed.join(', ')}. ` +
+        'allowedTools restricts tool names only: Bash can already read, write and search anything those tools can, so this list is no narrower than Bash alone. ' +
+        piSkillException +
+        "Keep it if the agent needs a shell; for a read-only agent use ['Read', 'Grep', 'Glob'] with no Bash.",
+    });
+  }
+  return out;
+}
+
+/** issue #103(a): pure formatter — turns one label's resolved `{missingSkills, missingMcp}` (the
+ *  RESOLUTION itself is `AssetSyncService.resolveDeclaredAssets`'s job, the same asset-catalog I/O
+ *  admission uses) into zero, one, or two `RegistrationWarning` entries. The one place this warning
+ *  text is authored, so `workflow_register`'s `result.warnings` and `workflow_authoring_guide`'s
+ *  prose can never say something different about the fix. mcp names are listed before skill names
+ *  (matches ERROR_CATALOG's own MCP_NOT_PROVISIONED-before-SKILL_NOT_PROVISIONED ordering). */
+export function provisioningWarningsFor(
+  workflow: string,
+  label: string,
+  missing: { missingSkills: string[]; missingMcp: string[] },
+): RegistrationWarning[] {
+  const out: RegistrationWarning[] = [];
+  if (missing.missingMcp.length > 0) {
+    out.push({
+      code: 'MCP_NOT_PROVISIONED',
+      label,
+      names: missing.missingMcp,
+      message: `agent('${label}') declares mcp name(s) with no provisioned asset: ${missing.missingMcp.join(', ')}. ` +
+        `The version registers anyway — fix before running it: workspace_push({workflow: '${workflow}', kind: 'mcp', name, config}) for each name, then run_start (a run admits only once every declared mcp/skill name resolves).`,
+    });
+  }
+  if (missing.missingSkills.length > 0) {
+    out.push({
+      code: 'SKILL_NOT_PROVISIONED',
+      label,
+      names: missing.missingSkills,
+      message: `agent('${label}') declares skill name(s) with no provisioned asset: ${missing.missingSkills.join(', ')}. ` +
+        `The version registers anyway — fix before running it: workspace_push({workflow: '${workflow}', kind: 'skill', name, files}) for each name, then run_start (a run admits only once every declared mcp/skill name resolves).`,
+    });
+  }
+  return out;
+}
+
+/** Predicted DAG skeleton — a pure static scan of phase()/agent()/parallel()/workflow() calls in
+ *  source order. Nodes inside a parallel([...]) share a `parallel` group id; nodes inside a
+ *  loop/map/if body are `dynamic:true` (best-effort — real shape resolves only at run time). Never
+ *  executes the script and never throws. */
+export function parseWorkflowSkeleton(script: string): SkeletonNode[] {
+  const nodes: SkeletonNode[] = [];
+  // v35 (DES-237): same oracle as `scanAgentCalls` — see `nonCodeOracle`'s own comment for why a
+  // string/comment/regex-literal false positive must be excluded here too, not only there. `null`
+  // (oracle not invoked) or `{ok:false}` (fails open here — refusal is `scanAgentCalls`'s job, this
+  // function never throws) both leave `inNonCode` always false, i.e. today's unfiltered behaviour.
+  const oracle = nonCodeOracle(script);
+  script = scanText(script, oracle);
+  const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
+  const dyn = dynamicRanges(script);
+  const inDynamic = (idx: number): boolean => dyn.some(([s, e]) => idx >= s && idx < e);
+  // parallel spans: [start,end) of each parallel(...) call, with a group id.
+  const parallelSpans: Array<{ id: number; start: number; end: number }> = [];
+  let groupSeq = 0;
+
+  CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CALL_RE.exec(script)) !== null) {
+    if (inNonCode(m.index)) continue;
+    const kind = m[1] as 'phase' | 'agent' | 'parallel' | 'workflow';
+    const callAt = m.index;
+    const openParen = script.indexOf('(', callAt);
+    if (kind === 'parallel') {
+      const end = openParen === -1 ? callAt : matchDelimiter(script, openParen, '(', ')');
+      if (end !== -1) parallelSpans.push({ id: ++groupSeq, start: openParen, end });
+      continue; // the parallel wrapper itself is not a node — its inner agent/workflow calls are
+    }
+    const node: SkeletonNode = { kind };
+    if (kind === 'phase' || kind === 'workflow') {
+      // v26 integration (ARCH-113 L1, ARCH-114): a title/name is recorded ONLY when the first
+      // argument is, in full, a string literal. `phase('fork:' + tier)` used to record the
+      // TRUNCATED fragment `fork:`, which is worse than recording nothing: ARCH-114 names this case
+      // explicitly ("dynamic titles are truncated to `fork:` … so string equality cannot place
+      // them"), and under REQ-128 the v2 checker would have demanded the author write `fork:` in
+      // their diagram. An absent title is the honest "computed at runtime", and DES-174's rule L1
+      // then matches that lane BY POSITION.
+      const rest = script.slice(openParen + 1);
+      const arg = STRING_ARG_RE.exec(rest);
+      if (arg) {
+        const after = rest.slice(arg[0].length).trimStart();
+        const wholeArgument = after.startsWith(')') || after.startsWith(',');
+        if (wholeArgument) { if (kind === 'phase') node.title = arg[2]; else node.workflow = arg[2]; }
+      }
+    }
+    const group = parallelSpans.find((p) => callAt > p.start && callAt < p.end);
+    if (group) node.parallel = group.id;
+    if (inDynamic(callAt)) node.dynamic = true;
+    nodes.push(node);
+  }
+  return nodes;
+}

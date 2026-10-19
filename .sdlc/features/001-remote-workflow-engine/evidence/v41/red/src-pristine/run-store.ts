@@ -1,0 +1,705 @@
+// RunStore port + InMemoryRunStore (DES-010).
+import { randomUUID } from 'node:crypto';
+import type { Clock } from './clock.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage, HarnessWarning, RefusalAuditEvent, RefusalAuditFilter, PrimitiveKind } from './types.js';
+// v26 (DES-183, TASK-183): the "at rest" RunUsage fold — shared by InMemoryRunStore and
+// SqliteRunStore's getRun, mirroring deriveAgentRecords above (both live in run-guard.js/here
+// respectively; no runtime cycle — run-guard.ts imports only errors.js and types.js).
+import { foldUsage } from './run-guard.js';
+// v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission snapshot type — a type-only import,
+// so this does not create a real runtime cycle with params/resolve.ts's own type-only agent-executor.js import.
+import type { RunParams } from './params/resolve.js';
+import type { ErrorCode } from './errors.js';
+// v36 (REQ-217, DES-250): InMemoryRunStore.workflowMetrics() below IS the existing pure fold — no
+// runtime cycle (dashboard.ts's own imports never lead back to this file; verified by reading them).
+import { computeWorkflowMetrics, type WorkflowMetrics } from './dashboard.js';
+
+/** v26 (DES-180, DES-188): the four-column zero — a call that never dispatched (harness-only /
+ *  refused) owes the run's arithmetic a KNOWN zero, never an absence. */
+const ZERO_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+/** Reconstructs the AgentRecord[] a run's getRun() should report (D-F9b) from its persisted
+ *  agent-<id>.jsonl transcripts — the single source of truth `getRun` reads from directly,
+ *  rather than relying on an in-process AgentExecutor's transient Map (D-V6/AgentTranscriptSink),
+ *  so `workflow_status.agents`/`workflow_agent_log` survive a real server restart.
+ *
+ *  v26 (DES-188, TASK-188): FOUR branches, precedence usage > refused > harness-only:
+ *  (1) usage/done — four-column tokens (a legacy two-column event zero-fills the cache columns),
+ *      costUSD/unpriced read from the event when present (a legacy event has neither → `{0, true}`),
+ *      startedAt from the FIRST harness event's ts, endedAt from the usage event's ts.
+ *  (2) usage/failed — ZERO_TOKENS, costUSD:0, unpriced:false (a failed call moves no counter), model
+ *      from the harness descriptor (never `''`) since a failed usage event carries no model of its
+ *      own.
+ *  (3) refused — a `kind:'refused'` event (DES-188/TASK-188's own journal row); a refused call never
+ *      has a harness event, so label/frame/phase/phaseIndex come from the event's OWN data.
+ *  (4) harness-only — 'running' on an in-process parent, 'queued' on interrupted/suspended; NO
+ *      `tokens` (v31/REQ-186: not measured yet, so not reported as zero) plus the costUSD:0/
+ *      unpriced:false pair `AgentTranscriptSink.markQueued` initialises live, so a harness-only
+ *      record is byte-identical on both producers.
+ *  Neither usage, refused, nor harness → never dispatched, omit.
+ *  Latest-wins dedupe: multiple harness events for the same agentId → the last one wins.
+ *
+ *  @param parentStatus The current status of the owning run; default 'running' (backward-compatible
+ *    for callers that have not yet been updated to pass the status). Pass the real status at all
+ *    call sites so interrupted runs show 'queued' agents, not 'running'.
+ */
+export function deriveAgentRecords(
+  transcripts: Map<string, TranscriptEvent[]>,
+  parentStatus: RunStatus = 'running',
+): AgentRecord[] {
+  const records: AgentRecord[] = [];
+  for (const [agentId, events] of transcripts) {
+    const reversed = [...events].reverse();
+    const usage = reversed.find((e) => e.kind === 'usage');
+    const refused = reversed.find((e) => e.kind === 'refused');
+    // v24 (DES-161, TASK-145): the LATEST harness event of this agent is the label/model/provider
+    // source on every branch that reads it — a finished/failed/queued agent must not lose the name
+    // (or, for a failed call, the model) its harness event carried.
+    const harnessAny = reversed.find((e) => e.kind === 'harness');
+    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string; agentKey?: string; phase?: string; phaseIndex?: number; warnings?: HarnessWarning[] } } | undefined)?.descriptor;
+    // v26 integration (DES-176 cohort (i)): the lane is read from the harness event on EVERY branch
+    // that reads that event at all — DES-176's own "exact from the live stamp OR the harness event".
+    const harnessCommon = {
+      label: harnessDescriptor?.label,
+      // issue #165: mirrors `label` immediately above — the SAME restart-reconstruction source.
+      agentKey: harnessDescriptor?.agentKey,
+      phase: harnessDescriptor?.phase,
+      phaseIndex: harnessDescriptor?.phaseIndex,
+      // Issue #106: the latest harness event's warnings — what `markHarness` stamps live.
+      warnings: harnessDescriptor?.warnings,
+    };
+    // v26 (DES-188): startedAt is the FIRST harness event's ts (dispatch time), not the latest.
+    const firstHarnessTs = events.find((e) => e.kind === 'harness')?.ts;
+
+    // v26 (DES-188): ONE local helper — every branch's shared, optional fields (label/phase/
+    // phaseIndex/frame) go through here, never defaulted, so no branch can forget one and no branch
+    // can silently invent one (UT-162's "absent, never defaulted" contract extends to the new
+    // fields). issue #165: `agentKey` joins the same set, for the same reason.
+    const withCommon = (rec: AgentRecord, common: { label?: string; agentKey?: string; phase?: string; phaseIndex?: number; frame?: string; warnings?: HarnessWarning[] }): AgentRecord => ({
+      ...rec,
+      ...(common.warnings !== undefined && common.warnings.length > 0 ? { warnings: common.warnings } : {}),
+      ...(common.label !== undefined ? { label: common.label } : {}),
+      ...(common.agentKey !== undefined ? { agentKey: common.agentKey } : {}),
+      ...(common.phase !== undefined ? { phase: common.phase } : {}),
+      ...(common.phaseIndex !== undefined ? { phaseIndex: common.phaseIndex } : {}),
+      ...(common.frame !== undefined ? { frame: common.frame } : {}),
+    });
+
+    if (usage) {
+      // Terminal: usage event wins regardless of refused/harness.
+      const data = usage.data as {
+        tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+        provider?: string; model?: string; costUSD?: number; unpriced?: boolean; unmapped?: string[];
+        transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi'; proxyModel?: string;
+        // v26 (H-3/M-2 send-back repair, DES-188 lock): the failed-branch usage event carries both
+        // — read here so a restart-reconstructed record stays byte-identical to the live one
+        // `capture()` built (ARCH-115: "answerable from the record alone" must survive a restart).
+        detail?: string;
+        // dash-auth-spec.md section C (2026-09-30): the failed branch's own `GatewayResult.reason`,
+        // mirrored verbatim — see `AgentRecord.failReason`'s own doc.
+        reason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+        // issue #127: a lower-bound figure, mirrored verbatim onto the reconstructed record — set
+        // on the FAILED branch's usage event when the gateway reported a usage estimate, or on the
+        // DONE branch's when `invoke()`'s retry loop summed a prior failed attempt's own lower-bound
+        // tokens into the final successful total (ClaudeAgentSdkGatewayClient.invoke).
+        partial?: true;
+        // issue #160 BUG-4 (owner decision): mirrored verbatim onto the reconstructed record, FAILED
+        // branch only (capture()'s done branch never sets this on a usage event) — see
+        // `AgentRecord.estimated`'s own doc.
+        estimated?: true;
+        // issue #162 (owner-approved): mirrors `AgentRecord.schemaExhausted`/`reaskCount` — set only
+        // on the done-branch usage event `capture()`'s schema-retry loop emits when its last attempt
+        // never conformed (agent-executor.ts `_callAgent`).
+        schemaExhausted?: true;
+        reaskCount?: number;
+        // v40 (DES-273, ARCH-191/192, TASK-270): a decide()/generateImage() usage event carries its
+        // OWN label/agentKey/phase/phaseIndex/frame/startedAt/model/provider — it never has a
+        // preceding harness event (DES-272/DES-274: primitives emit no 'harness'/'message' event at
+        // all), so `harnessCommon`/`firstHarnessTs` below are always empty for one of these and the
+        // record would otherwise come back with no name/model at all.
+        primitive?: PrimitiveKind;
+        label?: string;
+        agentKey?: string;
+        phase?: string;
+        phaseIndex?: number;
+        frame?: string;
+        startedAt?: string;
+      };
+      // v40 (DES-273): present only on a decide()/generateImage() usage event — `undefined` for
+      // every pre-existing agent() usage event, so nothing below changes for those.
+      const primitiveKind = data.primitive;
+      const startedAt = primitiveKind !== undefined ? data.startedAt : firstHarnessTs;
+      // v40 (DES-273): a primitive record's label/agentKey/phase/phaseIndex/frame come from the
+      // usage event itself (no harness event exists to read `harnessCommon` from).
+      const effectiveCommon = primitiveKind !== undefined
+        ? { label: data.label, agentKey: data.agentKey, phase: data.phase, phaseIndex: data.phaseIndex, frame: data.frame }
+        : harnessCommon;
+      const endedAt = usage.ts;
+      // issue #127: the discriminator CANNOT be `data.tokens` presence any more — a failed call can
+      // now carry real tokens too (the gateway-side fix that reports what was spent before an abort/
+      // timeout/terminal failure). `reason` is the one field exactly ONE of `capture()`'s two
+      // branches ever writes onto a usage event (the done branch never sets it; the failed branch
+      // always does, even when it has no `detail`/`tokens` of its own — see its own `data:{reason:
+      // result.reason, ...}` literal) — so its presence is what `state` actually keys on, both live
+      // and at rest.
+      if (data.reason === undefined) {
+        const normalizedTokens = data.tokens
+          ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 }
+          : undefined;
+        records.push(withCommon({
+          agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '',
+          // v40 (DES-273): omitted (never defaulted to ZERO_TOKENS) for a decide()/generateImage()
+          // record whose usage event reports no tokens (a tokenless reported-cost call) — the v31
+          // "unmeasured usage is absence" rule, which a TERMINAL agent() record is normally exempt
+          // from (DES-188: a done/failed agent() call always zero-fills, since nobody is still
+          // waiting on its figure) but a primitive explicitly is NOT (DES-273's own text: "tokens =
+          // data.tokens, absent stays absent"). The non-primitive path keeps its unconditional
+          // zero-fill, unchanged.
+          ...(primitiveKind !== undefined
+            ? (normalizedTokens !== undefined ? { tokens: normalizedTokens } : {})
+            : { tokens: normalizedTokens ?? ZERO_TOKENS }),
+          // A legacy (pre-v26) usage event carries neither field — the honest reading is "never
+          // priced", not "free" (ADR-046).
+          costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? true,
+          // v26 integration (DES-183/DES-177, DES-188 lock): each derived exactly as `capture()`
+          // sets it live — present only when the event carries it — so the reconstructed record
+          // stays byte-identical to the live one it is standing in for.
+          ...(data.partial === true ? { partial: true as const } : {}),
+          ...(data.transport !== undefined ? { transport: data.transport } : {}),
+          ...(data.proxyModel !== undefined ? { proxyModel: data.proxyModel } : {}),
+          ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
+          // issue #162: mirrors `capture()`'s own done-branch record fields — present only when
+          // the usage event carries them.
+          ...(data.schemaExhausted === true ? { schemaExhausted: true as const } : {}),
+          ...(data.reaskCount !== undefined ? { reaskCount: data.reaskCount } : {}),
+          ...(startedAt !== undefined ? { startedAt } : {}),
+          ...(endedAt !== undefined ? { endedAt } : {}),
+          // v40 (DES-273): absent on every pre-v40 record — present only when this usage event is
+          // a decide()/generateImage() call's.
+          ...(primitiveKind !== undefined ? { kind: primitiveKind } : {}),
+        }, effectiveCommon));
+      } else {
+        records.push(withCommon({
+          agentId, state: 'failed', provider: data.provider ?? 'unknown',
+          // v40 (DES-273): a primitive failure carries its own `model` on the usage event (no
+          // harness event exists to read it from) — `data.model` is always absent on a pre-v40
+          // agent() failed usage event, so this falls through to `harnessDescriptor?.model` exactly
+          // as before for every existing case.
+          model: data.model ?? harnessDescriptor?.model ?? '',
+          // issue #127: a failed call MAY carry real tokens/costUSD/unpriced too (agent-executor.ts's
+          // `capture()` failed branch, `failUsage`) — present only when the event carries them,
+          // keeping a pre-#127 event's ZERO_TOKENS/costUSD:0/unpriced:false shape byte-identical.
+          // v40 (DES-273): a failed PRIMITIVE's tokens stay absent too (same rule as the done
+          // branch above) rather than zero-filling, unlike an ordinary failed agent() call.
+          ...(primitiveKind !== undefined
+            ? (data.tokens !== undefined ? { tokens: { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 } } : {})
+            : { tokens: data.tokens ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 } : ZERO_TOKENS }),
+          costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? false,
+          ...(data.partial === true ? { partial: true as const } : {}),
+          ...(data.estimated === true ? { estimated: true as const } : {}),
+          ...(data.transport !== undefined ? { transport: data.transport } : {}),
+          // v26 (H-3/M-2 send-back repair, DES-188 lock): same fields `capture()`'s failed branch
+          // sets live — present only when the event carries them, matching the ok-branch's own
+          // `unmapped` convention two lines below in that branch.
+          ...(data.detail !== undefined ? { detail: data.detail } : {}),
+          ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
+          // dash-auth-spec.md section C: mirrors `capture()`'s failed branch (DES-188 lock) —
+          // absent on a pre-this-slice event, never a guessed value.
+          ...(data.reason !== undefined ? { failReason: data.reason } : {}),
+          ...(startedAt !== undefined ? { startedAt } : {}),
+          ...(endedAt !== undefined ? { endedAt } : {}),
+          ...(primitiveKind !== undefined ? { kind: primitiveKind } : {}),
+        }, effectiveCommon));
+      }
+      continue;
+    }
+
+    if (refused) {
+      // v26 (DES-188): a refused call never reaches a gateway and never has a harness event of its
+      // own — label/frame/phase/phaseIndex come from the refused event's OWN data (markRefused
+      // journals them from the live record markQueued created). issue #165: `agentKey` too, same
+      // source.
+      const data = refused.data as { reasonCode?: ErrorCode; label?: string; agentKey?: string; frame?: string; phase?: string; phaseIndex?: number };
+      records.push(withCommon({
+        agentId, state: 'refused', provider: '', model: '',
+        tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+        ...(data.reasonCode !== undefined ? { reasonCode: data.reasonCode } : {}),
+        ...(refused.ts !== undefined ? { endedAt: refused.ts } : {}),
+      }, { label: data.label, agentKey: data.agentKey, phase: data.phase, phaseIndex: data.phaseIndex, frame: data.frame }));
+      continue;
+    }
+
+    // No usage/refused yet — check for a harness event (latest-wins).
+    if (harnessAny) {
+      const nonTerminalState: AgentRecord['state'] = parentStatus === 'running' ? 'running' : 'queued';
+      records.push(withCommon({
+        agentId,
+        state: nonTerminalState,
+        // #20: the harness descriptor now carries provider — surface it (like model) so a restart-
+        // reconstructed running/queued agent shows its backend, not a blank 'unknown'. Pre-#20
+        // transcripts (no descriptor.provider) still fall back to 'unknown'.
+        provider: harnessDescriptor?.provider ?? 'unknown',
+        model: harnessDescriptor?.model ?? '',
+        // v26 (DES-188): the SAME initialisation `markQueued` uses live, so a restart-reconstructed
+        // harness-only record is byte-identical to its live counterpart — BOTH producers changed
+        // together in v31, or they would disagree on this column.
+        // [v31, REQ-186, R30-A1] `tokens` is OMITTED: this branch is `running`/`queued`, i.e. the
+        // call has not reported usage yet. Zero-filling it asserted a measurement that had not
+        // happened.
+        // [v32, REQ-189, F3] `costUSD`/`unpriced` are omitted for the SAME reason, and v31's
+        // argument for keeping them ("their zeros are read through `fmtCost`, which has its own
+        // absent branch") was wrong in the way that matters: a present `0` never reaches that
+        // branch, so the panel read `TOKENS —` beside `費用 $0.00`. `unpriced: false` is the same
+        // unmeasured claim in another field — "this call was priced" is not yet known either.
+        // Terminal states keep their zeros (DES-188): there, the zero IS the measurement.
+        ...(firstHarnessTs !== undefined ? { startedAt: firstHarnessTs } : {}),
+      }, harnessCommon));
+    }
+    // Neither usage, refused, nor harness → never dispatched, omit.
+  }
+  return records;
+}
+
+// v26 (DES-181, TASK-181, integrator): the v13 two-column resume fold that used to live here is
+// DELETED, not merely unused. It summed input+output only and carried no USD, so once the live
+// accumulator moved to four columns plus a USD counter it was a SECOND, disagreeing arithmetic for
+// the same question — and a run that resumed enforced a different total than the same run without a
+// restart. `foldUsage` (run-guard.ts) is the one read path; `RunManager._requireLive` hydrates the
+// guard from it. Its own unit test (UT-071, tests/unit/budget-fold.test.ts) moved with it and pins
+// the same properties over the same fixtures. Also one of the ten identifiers the v26 retirement
+// grep guard (no-retired-surface.test.ts) requires absent from src/.
+
+/** v36 (DES-246, TASK-244): the terminal-status set, exported so a NEW caller (the facade's
+ *  pinned-run probe, `mcp-facade.ts`) imports it rather than declaring a sixth private copy — the
+ *  five pre-existing ones (this file's own three, `SqliteRunStore`'s one, `RunManager`'s
+ *  array-shaped one) are untouched by this export; consolidating them is not this card's job. */
+export const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+
+/** v36 (REQ-217 follow-up, DES-251, TASK-249): the non-terminal complement of `TERMINAL` — the
+ *  full `RunStatus` union has exactly seven members, so this is the OTHER four, not an
+ *  independently-chosen list. Exported so `SqliteRunStore.activeRuns()`'s SQL `WHERE ... IN (...)`
+ *  and `InMemoryRunStore.activeRuns()`'s filter read the SAME set — the two stores must never
+ *  silently diverge on what "currently active" means. */
+export const ACTIVE: ReadonlySet<RunStatus> = new Set<RunStatus>(['queued', 'running', 'suspended', 'interrupted']);
+
+export interface RunStore {
+  /** `scriptVersion` (D-V7) is the resolved catalog version ("v2", ...) actually executed for this
+   *  run; defaults to 'v1' when omitted (inline/adhoc scripts, or callers not yet passing it).
+   *  `effectiveParams` (v21, DES-104): the run-immutable admission-time snapshot RunManager computed
+   *  from the registered defaults + validated overrides — persisted once, never re-resolved. */
+  createRun(spec: RunSpec, scriptVersion?: string, effectiveParams?: RunParams, priceBook?: PriceBook): Promise<string>;
+  /** v21 (DES-104): reads back the pinned admission snapshot for resume — `null` for a pre-v21 run
+   *  row (never persisted one) or an unknown runId; the caller (RunManager) applies the legacy
+   *  `defaultRunParams(registered.defaults)` fallback, never a crash. */
+  getEffectiveParams(runId: string): Promise<RunParams | null>;
+  /** v26 (DES-178, ARCH-116, TASK-178): reads back the price/capability pin taken at admission —
+   *  `null` for a pre-v26 run row (never persisted one) or an unknown runId. Same row `getEffectiveParams`
+   *  reads. */
+  getPriceBook(runId: string): Promise<PriceBook | null>;
+  /** Rewrites the run's pin. Only ever called to ADD entries — a nested `workflow()` frame is a
+   *  second admission point whose child's models the pin taken at `start()` could not know; an
+   *  existing entry is never re-resolved (RunManager `_pinChildModels`). */
+  updatePriceBook(runId: string, priceBook: PriceBook): Promise<void>;
+  appendJournal(runId: string, entry: JournalEntry): Promise<void>;
+  appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void>;
+  recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void>;
+  /** O-2: the ordered state-transition audit trail for a run (from/to/ts), oldest first — the
+   *  read side of recordTransition's "one writer of every transition" promise (ARCH-006). Empty
+   *  for an unknown run. */
+  getTransitions(runId: string): Promise<StateTransition[]>;
+  getRun(runId: string): Promise<RunStatusView | null>;
+  /** v36 (DES-247, ARCH-162, TASK-245, ADR-079): a deliberately UNBOUNDED sweep API — every caller
+   *  needs every row (boot recovery `server.ts:815`, `hydrateAll`'s stale-`running` reclassification,
+   *  the workspace-reclaim sweep, TASK-244's pinned-version probe). No LIMIT, no signature change —
+   *  a caller wanting a page uses the already-paginated `list()` instead. */
+  listRuns(): Promise<RunSummary[]>;
+  /** v36 (DES-247, ARCH-162/163, TASK-245): the most recent run's `createdAt` per workflow name,
+   *  DERIVED (grouped MAX), never denormalized onto the catalog. A name with no runs is ABSENT
+   *  from the map — never present with a `null`/undefined value — so the caller's `?? null`
+   *  alone produces the "never run" sentinel. */
+  lastRunAtByName(): Promise<Map<string, string>>;
+  /** v24 (DES-152): filtered/paginated read `run_list` is built on — `workflow`/`status`/`principal`
+   *  narrow with SQL WHERE (SqliteRunStore) or an equivalent in-memory filter (InMemoryRunStore,
+   *  parity required); a row with no `principal` is excluded whenever the filter supplies one (the
+   *  cross-seam agreement with authz's null=ownerless rule). `limit` defaults to 50, capped at 500. */
+  list(filter?: RunListFilter): Promise<RunSummary[]>;
+  /** v36 (REQ-217, ARCH-172/ADR-080, DES-250): per-workflow-name terminal aggregates — computed
+   *  BY THE STORE (a real `AVG()`/`COUNT()` for SqliteRunStore, an in-process fold for the
+   *  in-memory fake) so `/api/home`'s `avgCostUSD`/`successRate` keep FULL-HISTORY semantics even
+   *  after `listSummaries()` (built on the already-paginated `list()`, limit 50/cap 500) stops
+   *  materializing the whole `runs` table. A name with ZERO terminal runs is ABSENT from the map —
+   *  never a zero-valued entry — same "unmeasured is absent" convention REQ-186 established;
+   *  `avgCostUSD` is `null` (never `0`) for a name whose terminal runs are all zero-agent/unpriced
+   *  (an `AVG()` over zero priced rows is NULL, not 0). Grouped exactly like `computeWorkflowMetrics`
+   *  (a `null`/`undefined` name is ONE group, keyed `undefined`). */
+  /** Dashboard auth spec §A: `principal` (optional) scopes the aggregate to that principal's runs. */
+  workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>>;
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): every run CURRENTLY non-terminal
+   *  (`ACTIVE` — queued/running/suspended/interrupted) — no LIMIT, unlike `list()`. **Corrected
+   *  bound (Gate 8 send-back, ARCH-174/ADR-081)**: this set is active ∪ never-resumed — it grows
+   *  with restarts × concurrency, not with total history (nothing sweeps a suspended/interrupted
+   *  row except an operator's `workflow_resume`/`workflow_stop`); scan cost is bounded separately,
+   *  by the `runs_status` index (ARCH-174/ADR-081) — the result set is not bounded by concurrency
+   *  alone. `buildHomeView`'s RUNNING group and `activeRunId` resolve from THIS query, not from
+   *  `list()`'s paginated page — a suspended/interrupted run older than the page must still count
+   *  (the regression this closes: deriving a global "is this workflow active" fact from a
+   *  paginated page silently dropped a workflow's `activeRunId` the moment its only active run
+   *  aged out of the page). */
+  activeRuns(): Promise<RunSummary[]>;
+  hydrateAll(): Promise<RunSummary[]>;
+  /** Persists the script's return value for a completed run (DES-001/REQ-005: workflow_result
+   *  returns the script return value, not the RunStatusView). */
+  recordResult(runId: string, result: unknown): Promise<void>;
+  getResult(runId: string): Promise<{ value: unknown } | null>;
+  /** v35 (DES-231, TASK-235, REQ-205): ONE method, two surfaces — writes the `runs.error` column
+   *  THEN appends a `{type:'error',...err}` journal line (same order/D-I2 wording as
+   *  recordResult), so the column and the journal line can never drift. */
+  recordError(runId: string, err: { code: string; message: string }): Promise<void>;
+  /** v35 (DES-231): the raw column read-back — ungated (the crash-window gate on `status ===
+   *  'failed'` is applied by the higher-level read surfaces: `getRun`/`listRuns`/`list`, and by
+   *  `RunManager.result()`, DES-232). `null` for an unknown runId or a run with no recorded error. */
+  getError(runId: string): Promise<{ code: string; message: string } | null>;
+  /** The original submission (name/script/args/budget) — lets RunManager rebuild a live RunEntry
+   *  for a suspended/stopped run after a process restart (REQ-006 resume survives restart). */
+  getSpec(runId: string): Promise<RunSpec | null>;
+  /** Reads back the persisted transcript events for one agent (D-V6) — the real read-back path
+   *  McpFacade.workflow_agent_log delegates to, never a hard-coded []. */
+  getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]>;
+  /** v8 Defer A (REQ-059): reads back the settled-call journal entries for a run (excluding the
+   *  terminal result marker) — lets a run resumed in a fresh process (after a crash/restart) build a
+   *  non-empty ResumeCache and replay its journaled agent()/workflow() calls instead of re-running
+   *  them live. Empty for an unknown run. */
+  getJournal(runId: string): Promise<JournalEntry[]>;
+  /** v8 Slice 2c (REQ-055): persist a one-shot snapshot of the run's DAG detail (phases, full agent
+   *  records incl. frame/label/timing, workflowNodes) at the terminal transition, so a completed
+   *  composite run's nested tree survives a restart (getRun overlays it). Written once from the
+   *  authoritative terminal `_transition` (covers failed/stopped, not only completed). */
+  saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void>;
+  /** v22 (DES-113, TASK-108): durably records the legacy-cohort fallback outcome (never rewrites
+   *  the pin itself) so it survives a restart and workflow_status/getRun can surface it. No-op for
+   *  an unknown runId. */
+  recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void>;
+  /** v24 (DES-151): synchronous append (better-sqlite3 is sync) — a throw at the call site must
+   *  propagate BEFORE any bytes are read (fail-closed by construction, never caught here). */
+  appendAudit(ev: AuditEvent): void;
+  /** v24 (DES-151): newest-first, capped at `limit` (default 200). */
+  auditFor(runId: string, limit?: number): AuditEvent[];
+  /** Issue #116 (OWNER DECISION b): synchronous append, same fail-closed convention as
+   *  `appendAudit` (a throw here must propagate to the caller — call-tool.ts/server.ts catch it
+   *  and refuse WITHOUT rethrowing to the original caller, never silently swallow it here). */
+  appendRefusal(ev: RefusalAuditEvent): void;
+  /** Issue #116: admin-only query (`audit_refusals_list`) — newest-first, capped at `limit`
+   *  (default 200, same convention as `auditFor`). */
+  queryRefusals(filter?: RefusalAuditFilter): RefusalAuditEvent[];
+  /** v27 (DES-193, ARCH-128, TASK-198, REQ-141): merges a `{usage}`-only row into a run's
+   *  persisted snapshot when it has none — a no-op unless the run is TERMINAL AND the existing
+   *  snapshot (if any) carries no `usage` key already (idempotent: a second call never
+   *  overwrites). Re-checked INSIDE the store, not only by the caller. */
+  backfillUsage(runId: string, usage: RunUsage): Promise<void>;
+}
+
+/** v8 Slice 2c: the persisted DAG detail a getRun overlays after a restart. */
+export interface RunDagSnapshot {
+  phases: RunStatusView['phases'];
+  agents: AgentRecord[];
+  workflowNodes: RunStatusView['workflowNodes'];
+  /** v26 (DES-183, TASK-183): the run's usage total at its terminal transition — OPTIONAL so a
+   *  pre-v26 snapshot (never wrote this key) parses as `undefined` and falls through to
+   *  `foldUsage` below, never to a fabricated zero. */
+  usage?: RunUsage;
+  /** issue #159 (reverify-3): the seed-time `.claude` config paths stripped before this run's
+   *  terminal transition (mirrors `RunEntry.seedConfigStripped`, run-manager.ts) — OPTIONAL so a
+   *  pre-this-fix snapshot (never wrote this key) parses as `undefined`, same convention as
+   *  `usage` above. Present only when something was actually stripped (never `[]`). */
+  seedConfigStripped?: string[];
+}
+
+interface StoredRun {
+  runId: string;
+  spec: RunSpec;
+  status: RunStatus;
+  scriptVersion: string;
+  createdAt: string;
+  journal: JournalEntry[];
+  transcripts: Map<string, TranscriptEvent[]>;
+  transitions: StateTransition[];
+  result?: unknown;
+  hasResult: boolean;
+  error?: { code: string; message: string }; // v35 (DES-231): raw column equivalent
+  snapshot?: RunDagSnapshot; // v8 Slice 2c: DAG detail captured at terminal
+  effectiveParams?: RunParams; // v21 (DES-104): run-immutable admission snapshot
+  legacySubstitution?: { pinned: string; resolved: string }; // v22 (DES-113)
+  priceBook?: PriceBook; // v26 (DES-178): admission-time price/capability pin
+}
+
+/** In-memory fake for unit tests — injected where RunStore is needed. */
+export class InMemoryRunStore implements RunStore {
+  private readonly _runs = new Map<string, StoredRun>();
+  private readonly _audit: AuditEvent[] = [];
+  private readonly _refusals: RefusalAuditEvent[] = [];
+
+  constructor(private readonly _clock: Clock) {}
+
+  async createRun(spec: RunSpec, scriptVersion = 'v1', effectiveParams?: RunParams, priceBook?: PriceBook): Promise<string> {
+    const runId = randomUUID();
+    this._runs.set(runId, {
+      runId,
+      spec,
+      status: 'queued',
+      scriptVersion,
+      createdAt: this._clock.isoNow(),
+      journal: [],
+      transcripts: new Map(),
+      transitions: [],
+      hasResult: false,
+      effectiveParams,
+      priceBook,
+    });
+    return runId;
+  }
+
+  async getEffectiveParams(runId: string): Promise<RunParams | null> {
+    return this._runs.get(runId)?.effectiveParams ?? null;
+  }
+
+  async getPriceBook(runId: string): Promise<PriceBook | null> {
+    return this._runs.get(runId)?.priceBook ?? null;
+  }
+
+  async updatePriceBook(runId: string, priceBook: PriceBook): Promise<void> {
+    const run = this._runs.get(runId);
+    if (run) run.priceBook = priceBook;
+  }
+
+  async getSpec(runId: string): Promise<RunSpec | null> {
+    const run = this._runs.get(runId);
+    return run ? run.spec : null;
+  }
+
+  async recordResult(runId: string, result: unknown): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.result = result;
+    run.hasResult = true;
+  }
+
+  async getResult(runId: string): Promise<{ value: unknown } | null> {
+    const run = this._runs.get(runId);
+    if (!run || !run.hasResult) return null;
+    return { value: run.result };
+  }
+
+  /** v35 (DES-231): mirrors recordResult's shape (sets the field; no on-disk journal.jsonl exists
+   *  for this in-memory fake, so there is no second surface to write here). */
+  async recordError(runId: string, err: { code: string; message: string }): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.error = err;
+  }
+
+  async getError(runId: string): Promise<{ code: string; message: string } | null> {
+    return this._runs.get(runId)?.error ?? null;
+  }
+
+  async appendJournal(runId: string, entry: JournalEntry): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.journal.push(entry);
+  }
+
+  async appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    const list = run.transcripts.get(agentId) ?? [];
+    list.push(ev);
+    run.transcripts.set(agentId, list);
+  }
+
+  async recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.transitions.push({ from, to, ts });
+    run.status = to;
+  }
+
+  async getTransitions(runId: string): Promise<StateTransition[]> {
+    const run = this._runs.get(runId);
+    return run ? [...run.transitions] : [];
+  }
+
+  async getRun(runId: string): Promise<RunStatusView | null> {
+    const run = this._runs.get(runId);
+    if (!run) return null;
+    // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing);
+    // otherwise fall back to deriving bare agent records from transcripts (backward-compatible).
+    const s = run.snapshot;
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    const terminalTransition = run.transitions.find((t) => TERMINAL.has(t.to));
+    return {
+      runId: run.runId, status: run.status, scriptVersion: run.scriptVersion,
+      phases: s?.phases ?? [],
+      agents: s?.agents ?? deriveAgentRecords(run.transcripts, run.status),
+      workflowNodes: s?.workflowNodes ?? [],
+      // v26 (DES-183, TASK-183): same fallback shape as `agents` above — a snapshot-less run (still
+      // live, or interrupted-then-restarted with no snapshot) still answers.
+      usage: s?.usage ?? foldUsage([...run.transcripts.values()].flat()),
+      startedBy: run.spec.startedBy ?? { type: 'unknown' },
+      terminalAt: terminalTransition?.ts,
+      // v15 (DES-096): omit when absent (conditional spread mirrors terminalAt pattern).
+      ...(run.spec.principal ? { principal: run.spec.principal } : {}),
+      // v22 (DES-113): omit when absent, same conditional-spread convention.
+      ...(run.legacySubstitution ? { legacySubstitution: run.legacySubstitution } : {}),
+      // v35 (DES-231): gated on status === 'failed' — a stale column (crash-window row later
+      // reclassified interrupted/completed) is never served.
+      ...(run.status === 'failed' && run.error ? { error: run.error } : {}),
+      // issue #159 (reverify-3): mirrors SqliteRunStore's own getRun() overlay — present only
+      // when something was actually stripped.
+      ...(s?.seedConfigStripped !== undefined ? { seedConfigStripped: s.seedConfigStripped } : {}),
+    };
+  }
+
+  async saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void> {
+    const run = this._runs.get(runId);
+    if (run) run.snapshot = snapshot;
+  }
+
+  /** v27 (DES-193, ARCH-128, TASK-198): no-op unless TERMINAL and no `usage` persisted yet;
+   *  merges into an existing snapshot, or writes a `{usage}`-only one — mirroring
+   *  SqliteRunStore's JSON row, which literally omits the `agents` key in that case. */
+  async backfillUsage(runId: string, usage: RunUsage): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    if (!TERMINAL.has(run.status)) return;
+    if (run.snapshot?.usage !== undefined) return;
+    run.snapshot = run.snapshot ? { ...run.snapshot, usage } : ({ usage } as RunDagSnapshot);
+  }
+
+  async recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void> {
+    const run = this._runs.get(runId);
+    if (run) run.legacySubstitution = sub;
+  }
+
+  async listRuns(): Promise<RunSummary[]> {
+    return [...this._runs.values()].map((r) => this._toSummary(r));
+  }
+
+  async lastRunAtByName(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const r of this._runs.values()) {
+      if (!r.spec.name) continue;
+      const existing = out.get(r.spec.name);
+      if (existing === undefined || r.createdAt > existing) out.set(r.spec.name, r.createdAt);
+    }
+    return out;
+  }
+
+  async hydrateAll(): Promise<RunSummary[]> {
+    return this.listRuns();
+  }
+
+  /** v24 (DES-152): parity with SqliteRunStore.list — same filter semantics, in-memory. */
+  async list(filter: RunListFilter = {}): Promise<RunSummary[]> {
+    const limit = Math.min(filter.limit ?? 50, 500);
+    return [...this._runs.values()]
+      .filter((r) => filter.workflow === undefined || r.spec.name === filter.workflow)
+      .filter((r) => filter.status === undefined || r.status === filter.status)
+      .filter((r) => filter.principal === undefined || r.spec.principal === filter.principal)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, limit)
+      .map((r) => this._toSummary(r));
+  }
+
+  /** v36 (REQ-217, DES-250): the in-memory fake reuses the EXISTING pure fold over every row —
+   *  this store is a test double, never the thing REQ-217's cliff is about, so materializing is
+   *  fine here and makes `computeWorkflowMetrics` the oracle `SqliteRunStore`'s SQL is checked
+   *  against. Zero-terminal-run entries are dropped (never a zero-valued row) to match the SQL
+   *  side, which structurally never emits a GROUP BY row for a name with no terminal status rows. */
+  async workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>> {
+    const all = computeWorkflowMetrics(principal === undefined
+      ? await this.listRuns()
+      : [...this._runs.values()].filter((r) => r.spec.principal === principal).map((r) => this._toSummary(r)));
+    const out = new Map<string | undefined, WorkflowMetrics>();
+    for (const [name, m] of all) if (m.terminalCount > 0) out.set(name, m);
+    return out;
+  }
+
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): filters the SAME `ACTIVE` set `SqliteRunStore`'s
+   *  SQL `WHERE` uses — the both-stores agreement test is the guard that would catch a drift. */
+  async activeRuns(): Promise<RunSummary[]> {
+    return [...this._runs.values()].filter((r) => ACTIVE.has(r.status)).map((r) => this._toSummary(r));
+  }
+
+  private _toSummary(r: StoredRun): RunSummary {
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    const terminalTransition = r.transitions.find((t) => TERMINAL.has(t.to));
+    const summary: RunSummary = {
+      runId: r.runId,
+      name: r.spec.name,
+      status: r.status,
+      scriptVersion: r.scriptVersion,
+      createdAt: r.createdAt,
+      startedBy: r.spec.startedBy ?? { type: 'unknown' },
+      ...(terminalTransition ? { terminalAt: terminalTransition.ts } : {}),
+      // v35 (DES-231): same status==='failed' gate as getRun.
+      ...(r.status === 'failed' && r.error ? { error: r.error } : {}),
+    };
+    // v27 (DES-193, ARCH-128, TASK-198): the SAME projection/presence rule as SqliteRunStore's
+    // `_rowToSummary` — keyed on usage-present AND non-empty agents, never on the arithmetic (a
+    // run with zero agent() calls must not surface costUSD:0).
+    const usage = r.snapshot?.usage;
+    const agents = r.snapshot?.agents;
+    if (usage !== undefined && (agents?.length ?? 1) > 0) {
+      summary.costUSD = usage.costUSD;
+      summary.unpricedCalls = usage.unpricedCalls;
+      summary.tokensTotal = usage.tokens.input + usage.tokens.output + usage.tokens.cacheRead + usage.tokens.cacheWrite;
+      if (agents !== undefined) summary.agentCount = agents.length;
+    }
+    // v35 (DES-231 boundary (b), item 1 of the Gate 8 return): the SAME `agentCount != null &&
+    // agentCount > 0` guard as SqliteRunStore's `_rowToSummary` — gated on agent presence alone,
+    // NOT on `usage` — so the two stores can never disagree on this field for the same run.
+    if (agents !== undefined && agents.length > 0) {
+      // issue #162 (owner-approved): a schema-exhausted agent is `state:'done'`, not `'failed'`/
+      // `'refused'` — counted here too so this row never disagrees with `run_status`'s own
+      // `summarizeAgentFailures` (run-manager.ts) for the SAME terminal run.
+      summary.failedAgentCount = agents.filter((a) => a.state === 'failed' || a.state === 'refused' || a.schemaExhausted === true).length;
+    }
+    return summary;
+  }
+
+  async getJournal(runId: string): Promise<JournalEntry[]> {
+    const run = this._runs.get(runId);
+    return run ? [...run.journal] : [];
+  }
+
+  async getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]> {
+    const run = this._runs.get(runId);
+    if (!run) return [];
+    return run.transcripts.get(agentId) ?? [];
+  }
+
+  /** v24 (DES-151): synchronous, in-memory. */
+  appendAudit(ev: AuditEvent): void {
+    this._audit.push(ev);
+  }
+
+  /** v24 (DES-151): newest-first (insertion order reversed — appendAudit is the only writer). */
+  auditFor(runId: string, limit = 200): AuditEvent[] {
+    return this._audit.filter((e) => e.runId === runId).slice(-limit).reverse();
+  }
+
+  /** Issue #116: synchronous, in-memory — same convention as appendAudit above. */
+  appendRefusal(ev: RefusalAuditEvent): void {
+    this._refusals.push(ev);
+  }
+
+  /** Issue #116: newest-first, filtered then capped (so `limit` bounds the RESULT, not the scan). */
+  queryRefusals(filter: RefusalAuditFilter = {}): RefusalAuditEvent[] {
+    const { actor, tool, since, limit = 200 } = filter;
+    return this._refusals
+      .filter((e) => (actor === undefined || e.actor === actor) && (tool === undefined || e.tool === tool) && (since === undefined || e.ts >= since))
+      .slice()
+      .reverse()
+      .slice(0, limit);
+  }
+}

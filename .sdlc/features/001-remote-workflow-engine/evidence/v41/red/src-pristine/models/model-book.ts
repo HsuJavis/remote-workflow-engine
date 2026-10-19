@@ -1,0 +1,280 @@
+// ModelBook (DES-178 / ARCH-116 / ADR-038 / TASK-178, v26): a TTL'd, single-flight catalog snapshot
+// answering price (four rates) and declared capability per (provider, model) — the run-admission pin
+// (`runs.price_book`) is built from a `BookSnapshot` this class produces. One fetch per TTL, never
+// one per run and certainly not one per agent() call.
+//
+// Refresh degrades in three steps, cheapest-first: a fresh `source()` call ('live') -> the last
+// successful load, kept in memory, when `source()` throws ('last-good') -> the built-in static
+// fallback when nothing has ever succeeded ('static'). `lookup()` is TOTAL: an unlisted
+// (provider,model) answers `{price:null, caps:{...:'unknown'}}` rather than `undefined` — "we
+// looked and found nothing" must stay distinct from "we never looked" (the caller's PRESENCE of the
+// key in its own pin is what carries that distinction; lookup() itself never omits an answer).
+import type { Clock } from '../clock.js';
+import type { RunParams } from '../params/resolve.js';
+import type { FourRates, Caps, BookEntry } from '../types.js';
+import { ZERO_RATES, STATIC_ANTHROPIC_RATES, ratesFromOpenRouterPricing } from './model-catalog.js';
+import type { ModelType, ModelTypeSource } from './model-catalog.js';
+import type { Provider } from '../providers.js';
+
+/** The shape `ModelBook`'s injected `source()` returns one row per (provider,model) as. A
+ *  production source (`config.modelCatalog`, i.e. `model-catalog.ts`'s `ModelEntry[]`) already
+ *  carries `ratesPerM` — preferred when present (even when explicitly `null`). A raw feed (or a
+ *  unit test) may instead carry OpenRouter's own `pricing`/`supported_parameters` shape, parsed via
+ *  the SAME `ratesFromOpenRouterPricing` the live catalog fetch uses, so the two can never price one
+ *  model two different ways. */
+export interface CatalogSourceRow {
+  provider: string;
+  model: string;
+  ratesPerM?: FourRates | null;
+  pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown; input_cache_write?: unknown };
+  supported_parameters?: string[];
+  /** issue #139(b): structurally the SAME shape `model-catalog.ts`'s `ModelEntry.capabilities` already
+   *  carries (this type is a subset a production row — a real `ModelEntry[]` — always satisfies, so
+   *  no production call site changes); only the one sub-field `capsFromRow` actually reads is named
+   *  here. Absent (every hand-built test row from before this issue) -> `capsFromRow` leaves
+   *  `reasoningMandatory`/`reasoningEfforts` unset, byte-identical to its pre-#139(b) behavior. */
+  capabilities?: { reasoning?: { mandatory?: boolean | null; efforts?: readonly string[] | null } };
+  /** v40 (DES-270, ARCH-189, TASK-267): carried through unchanged to `toModelCatalogSnapshot`'s own
+   *  `entries` so `checkPrimitiveModelType` (providers.ts) can read it off the SAME admission pin —
+   *  a production row (`model-catalog.ts`'s `ModelEntry`) always has these; absent on a hand-built
+   *  test row, which is read the same as "unknown" by that gate's own unknown/id-heuristic warn arm. */
+  modelType?: ModelType;
+  modelTypeSource?: ModelTypeSource;
+  /** v40 Gate 6 delta (OD-1, DES-270, TASK-267): the catalog's own output modalities — a production
+   *  row (`ModelEntry.modalities`) always has this; absent on a hand-built test row, read by
+   *  `checkPrimitiveModelType`'s `images` rule the same as "no modalities info" (falls back to the
+   *  pre-delta `modelType === 'image-gen'` rule). */
+  modalities?: { out: readonly string[] };
+  /** v40 Gate 6 delta (DES-279, R-4, TASK-275): the catalog's own top-level per-image-output rate
+   *  (USD per 1M image-output tokens) — a production row (`ModelEntry.imageOutPerM`) carries this
+   *  SIBLING of `price`/`ratesPerM`, never inside either; `priceFromRow` below folds it onto the
+   *  pin's `FourRates` so `primitivePriceKnowable`/`pricePrimitiveCall` (run-guard.ts) see it. */
+  imageOutPerM?: number;
+}
+
+export interface BookSnapshot {
+  /** When the underlying data behind this snapshot was fetched (or last attempted) — the run's own
+   *  admission time is recorded separately by the caller; this is the CATALOG's "as of". */
+  fetchedAt: string;
+  /** 'live' — this refresh's `source()` call just succeeded. 'last-good' — it threw, serving the
+   *  previous successful load. 'static' — nothing has ever succeeded; only the built-in fallback
+   *  (anthropic's static table + ollama's fixed zero rate) is priced. */
+  source: 'live' | 'last-good' | 'static';
+  lookup(provider: string, model: string): BookEntry;
+  /** v26 (H-4 send-back repair, ARCH-116): the SAME rows `source()` returned this refresh (or the
+   *  last-good/static fallback), for a caller that needs the full catalog — not just a price/caps
+   *  lookup — without a second, un-TTL'd fetch of its own (`models_list`, `GET /api/models`).
+   *  Typed `CatalogSourceRow[]` (this class's own generic row shape); the one production `source()`
+   *  (`server.ts`'s `buildModelCatalog`) really returns `ModelEntry[]`, a superset, so that caller
+   *  narrows it back. */
+  entries: CatalogSourceRow[];
+}
+
+const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
+
+/** Declared capability from a raw source row — 'upstream' when the row itself said something
+ *  (`supported_parameters` present, however that later maps its named dials); a bare anthropic row
+ *  (no `supported_parameters` — the static table never sets it) reports 'static'; anything else with
+ *  no declaration at all is 'unknown', never guessed. */
+/** issue #139(b): `reasoningMandatory`/`reasoningEfforts` are read from `row.capabilities.reasoning`
+ *  independently of which branch below fires — a row can declare `supported_parameters` (so
+ *  `reasoning`/`tools` come from it) while ALSO carrying a catalog-sourced `capabilities.reasoning`
+ *  block (OpenRouter's own `reasoning.mandatory`); the two are orthogonal signals, not alternatives. */
+function capsFromRow(row: CatalogSourceRow): Caps {
+  const mandatory = row.capabilities?.reasoning?.mandatory;
+  const efforts = row.capabilities?.reasoning?.efforts;
+  const mandatoryFields = {
+    ...(mandatory === true ? { reasoningMandatory: true as const } : {}),
+    ...(efforts && efforts.length > 0 ? { reasoningEfforts: efforts } : {}),
+  };
+  if (row.supported_parameters) {
+    return {
+      reasoning: row.supported_parameters.includes('reasoning'),
+      tools: row.supported_parameters.includes('tools'),
+      source: 'upstream',
+      ...mandatoryFields,
+    };
+  }
+  return { reasoning: 'unknown', tools: 'unknown', source: row.provider === 'anthropic' ? 'static' : 'unknown', ...mandatoryFields };
+}
+
+/** `ratesPerM` (even explicitly `null`) always wins over parsing raw `pricing` — a production row
+ *  already did that parsing once (`model-catalog.ts`'s `buildCatalog`); re-parsing here would be a
+ *  second writer of the same fact. */
+function priceFromRow(row: CatalogSourceRow): FourRates | null {
+  const base = row.ratesPerM !== undefined ? row.ratesPerM : ratesFromOpenRouterPricing(row.pricing);
+  // v40 Gate 6 delta (DES-279, R-4): `row.imageOutPerM` rides in TOP-LEVEL (never inside
+  // `ratesPerM`/`pricing`) — fold it onto the pin's `FourRates` here, the one place every source
+  // row (production `ModelEntry[]` or a raw feed) converges before `BookEntry.price`.
+  return base !== null && row.imageOutPerM !== undefined ? { ...base, imageOutPerM: row.imageOutPerM } : base;
+}
+
+interface BookCache {
+  index: Map<string, BookEntry>;
+  fetchedAt: string;
+  source: BookSnapshot['source'];
+  entries: CatalogSourceRow[];
+}
+
+export class ModelBook {
+  private readonly _source: () => Promise<CatalogSourceRow[]>;
+  private readonly _ttlMs: number;
+  private readonly _clock: Clock;
+  private _cache: BookCache | null = null;
+  private _lastFetchMs: number | null = null;
+  private _lastGoodEntries: CatalogSourceRow[] | null = null;
+  private _inFlight: Promise<BookSnapshot> | null = null;
+
+  constructor(source: () => Promise<CatalogSourceRow[]>, opts: { ttlMs?: number; clock: Clock }) {
+    this._source = source;
+    this._ttlMs = opts.ttlMs ?? 3_600_000;
+    this._clock = opts.clock;
+  }
+
+  async snapshot(): Promise<BookSnapshot> {
+    const now = this._clock.now();
+    if (this._cache && this._lastFetchMs !== null && now - this._lastFetchMs < this._ttlMs) {
+      return this._toSnapshot(this._cache);
+    }
+    if (this._inFlight) return this._inFlight;
+    // Single-flight: assign BEFORE awaiting anything, so every concurrent caller this tick sees the
+    // same in-flight promise and `_source()` is invoked exactly once for the whole burst.
+    this._inFlight = this._refresh().finally(() => { this._inFlight = null; });
+    return this._inFlight;
+  }
+
+  private async _refresh(): Promise<BookSnapshot> {
+    const fetchedAt = this._clock.isoNow();
+    let entries: CatalogSourceRow[];
+    let source: BookSnapshot['source'];
+    try {
+      entries = await this._source();
+      this._lastGoodEntries = entries;
+      source = 'live';
+    } catch {
+      if (this._lastGoodEntries !== null) {
+        entries = this._lastGoodEntries;
+        source = 'last-good';
+      } else {
+        entries = [];
+        source = 'static';
+      }
+    }
+    const index = new Map<string, BookEntry>();
+    // v26 Gate 7.5 round 3 (defect D9, REQ-127): several rows can carry the SAME provider/model key.
+    // A curated alias table with TWO aliases on one model — the shape every Anthropic model has on
+    // the real deployment (`haiku` and `claude-haiku-4-5` both -> claude-haiku-4-5-20251001) — makes
+    // `overlayAliases` append a second, `ratesPerM:null` row for it. A bare `index.set` let that
+    // later unpriced row OVERWRITE the priced static one, and `lookup()` then answered `price:null`
+    // (the anthropic static fallback below is unreachable — the key WAS found), so every real
+    // Anthropic call recorded `costUSD 0 / unpriced:true` and a USD budget could never bind.
+    // RESOLUTION ORDER, stated: a PRICED row wins over an unpriced one; otherwise the FIRST row in
+    // source order wins. "We have no price for this" must never displace a price already known.
+    for (const row of entries) {
+      const key = `${row.provider}/${row.model}`;
+      const entry = { price: priceFromRow(row), caps: capsFromRow(row) };
+      const incumbent = index.get(key);
+      if (incumbent === undefined || (incumbent.price === null && entry.price !== null)) index.set(key, entry);
+    }
+    this._cache = { index, fetchedAt, source, entries };
+    this._lastFetchMs = this._clock.now();
+    return this._toSnapshot(this._cache);
+  }
+
+  private _toSnapshot(cache: BookCache): BookSnapshot {
+    const { index, fetchedAt, source, entries } = cache;
+    return {
+      fetchedAt,
+      source,
+      entries,
+      lookup(provider: string, model: string): BookEntry {
+        // ADR-038 / DES-178 boundary: ollama is priced all-zero UNCONDITIONALLY (a KNOWN fact, not
+        // an absence of one) — never dependent on whatever the source did or didn't return.
+        if (provider === 'ollama') {
+          return { price: ZERO_RATES, caps: { reasoning: 'unknown', tools: 'unknown', source: 'static' } };
+        }
+        const found = index.get(`${provider}/${model}`);
+        if (found) return found;
+        // Anthropic is never live-fetched (no such endpoint exists) — the static table is the last-
+        // resort fallback even outside strict 'static' snapshot mode (e.g. a raw feed that omits it).
+        if (provider === 'anthropic') {
+          const rates = STATIC_ANTHROPIC_RATES[model];
+          if (rates) return { price: rates, caps: { reasoning: 'unknown', tools: 'unknown', source: 'static' } };
+        }
+        return { price: null, caps: UNKNOWN_CAPS };
+      },
+    };
+  }
+}
+
+/** v26 (DES-178, ARCH-116, TASK-178): the `modelsToCheck` expression `run-manager.ts` used to build
+ *  inline, extracted so the admission UNKNOWN_MODEL check and the price-book pin derive the SAME
+ *  reachable set from ONE place (INV-V26-4 is only as strong as the set it pins over). Deduplicated
+ *  — a run-wide default plus per-agent overrides frequently repeat the same alias. */
+export function reachableModels(params: RunParams): string[] {
+  // v40 (DES-270, ARCH-189, TASK-267): `decisions[*]`/`images[*]` are not yet on `RunParams` (that
+  // lands with TASK-268's src/params/resolve.ts) — widened locally so this reads the declared
+  // default AND any run override for each, same as `agents` below, without depending on that file.
+  const wide = params as RunParams & {
+    decisions?: Record<string, { model?: string }>;
+    images?: Record<string, { model?: string }>;
+  };
+  const raw = [
+    params.model,
+    ...Object.values(params.agents ?? {}).map((a) => a.model),
+    ...Object.values(wide.decisions ?? {}).map((d) => d.model),
+    ...Object.values(wide.images ?? {}).map((i) => i.model),
+  ];
+  return [...new Set(raw.filter((m): m is string => m !== undefined))];
+}
+
+/** 2026-09-26 (alias mechanism removed, owner decision 6): adapts a `BookSnapshot` (this class's
+ *  own TTL'd catalog fetch) into a `providers.ts` `ModelCatalogSnapshot` — the pure data
+ *  `checkModelRef`'s openrouter/ollama existence arm consults. One adapter, not a second fetch: the
+ *  admission pin (`RunManager.start()`) and the model-ref existence check now read the SAME
+ *  snapshot for the SAME admission, so they can never disagree about what the catalog said. */
+// pi harness v1 (owner decision 2): `harnessProviders` rides along as a THIRD, optional argument
+// (never folded into `BookSnapshot` itself, which is purely "what the catalog fetch returned" and
+// has nothing to do with which providers a harness choice supports) — stamped onto the
+// `ModelCatalogSnapshot` this adapter already produces for `checkModelRef`'s one gate. Every real
+// call site threads the SAME `ServerConfig.harnessProviders` value (set only under `gateway:"pi"`);
+// omitted (the "sdk" gateway, every existing call site/test) -> unchanged pre-pi behavior.
+export function toModelCatalogSnapshot(
+  snapshot: BookSnapshot,
+  harnessProviders?: readonly Provider[],
+): {
+  entries: Array<{
+    provider: string;
+    model: string;
+    sameModelAs?: readonly string[];
+    modelType?: ModelType;
+    modelTypeSource?: ModelTypeSource;
+    modalities?: { out: readonly string[] };
+  }>;
+  source: BookSnapshot['source'];
+  harnessProviders?: readonly Provider[];
+} {
+  return {
+    // issue #136: `sameModelAs` is carried through when present — the SAME "really a superset"
+    // relationship this file's own `entries` doc-comment already notes for `CatalogSourceRow[]` vs.
+    // the production `ModelEntry[]` it really holds — so `checkModelRef`'s PROVIDER_UNSUPPORTED_BY_
+    // HARNESS hint can name a real, catalog-linked OpenRouter ref (providers.ts's
+    // `harnessUnsupportedSuggestion`) rather than a hard-coded example.
+    // v40 (DES-270, TASK-267): `modelType`/`modelTypeSource` ride the same way, for
+    // `checkPrimitiveModelType`'s registration-time gate. v40 Gate 6 delta (OD-1): `modalities`
+    // rides the same way, for the images rule's "any output modality including image" check.
+    entries: snapshot.entries.map((e) => {
+      const sameModelAs = (e as { sameModelAs?: readonly string[] }).sameModelAs;
+      return {
+        provider: e.provider,
+        model: e.model,
+        ...(sameModelAs !== undefined ? { sameModelAs } : {}),
+        ...(e.modelType !== undefined ? { modelType: e.modelType } : {}),
+        ...(e.modelTypeSource !== undefined ? { modelTypeSource: e.modelTypeSource } : {}),
+        ...(e.modalities !== undefined ? { modalities: e.modalities } : {}),
+      };
+    }),
+    source: snapshot.source,
+    ...(harnessProviders !== undefined ? { harnessProviders } : {}),
+  };
+}

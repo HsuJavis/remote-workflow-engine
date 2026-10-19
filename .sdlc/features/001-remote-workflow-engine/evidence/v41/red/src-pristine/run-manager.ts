@@ -1,0 +1,3489 @@
+// RunManager (DES-003 / ARCH-002 / TASK-004). Run lifecycle state machine: legal transitions
+// only (queued->running; running->{suspended,stopped,completed,failed}; suspended->{running,stopped};
+// stopped->running), every transition persisted via RunStore.recordTransition BEFORE it is
+// observable elsewhere (DES-003 signature). Owns one RunGuard + one SandboxHost per run so caps
+// and in-flight processes never leak across runs; suspend/stop actually abort in-flight agent()
+// calls (AbortSignal) and kill the sandbox child, not just flip the status flag.
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdirSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { materializeSeed, materializeManifest, validateSeedSpec } from './workspace-seed.js';
+import type { CasStore } from './cas-store.js';
+import { casNamespaceFor } from './cas-store.js';
+import { initGitBaseline } from './workspace-git.js';
+import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
+import { IllegalTransitionError, codedError, toErrorCode, toErr, captureFailure } from './errors.js';
+import type { ErrorCode } from './errors.js';
+// issue #93 item 1: appended to every CONFINEMENT_UNAVAILABLE message this file throws — the SAME
+// text the ERROR_CATALOG hint and the boot banner carry (errors.ts, main.ts), so an operator/caller
+// reading a run's own error message is told the remediation too, not just the catalog's generic
+// hint. No cycle: confinement-probe.ts imports only node:child_process.
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
+import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
+import type { SeedRefFetcher } from './seedref-fetcher.js';
+import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
+
+// v13 REQ-080 (DES-082/083): seedRef fetch bounds. Named constants (the DES-listed config knobs default
+// here; overridable later without an API break like maxConcurrentRuns). Match UT-084's BASE_REQ values.
+const SEEDREF_TIMEOUT_MS = 30_000;
+const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, AgentWarningSummary, RunListFilter, DecideAnswer, ImageFile, PrimitiveKind } from './types.js';
+import type { RunStore } from './run-store.js';
+import { InMemoryRunStore } from './run-store.js';
+// v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
+import type { WorkflowMetrics } from './dashboard.js';
+import type { Clock } from './clock.js';
+import { SystemClock } from './clock.js';
+import { RunGuard, parseBudget, foldUsage, sumTokens, primitivePriceKnowable, pricePrimitiveCall, ZERO_TOKENS } from './run-guard.js';
+import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
+import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
+// v40 (DES-274, ARCH-187, TASK-271): decide()/generateImage() handler collaborators.
+import { validateDecideInput, validateImageInput, primitiveCallKey } from './direct-models/inputs.js';
+import { readContainedInput, resolveOutDir, writeImages, verifyFiles } from './direct-models/image-files.js';
+import { runDecide, runImage, toPiAiModel, defaultDirectDeps, primitiveFailedError, type DirectDeps, type FailedSpend, type PiClassifierModel, type PiImageModel } from './direct-models/call.js';
+import { loadSecretSourceFromEnv } from './secret-source.js';
+import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
+import type { AgentSpawner } from './agent-executor.js';
+import { AgentExecutor } from './agent-executor.js';
+import { redact, hasSecretMarker } from './secret-resolver.js';
+import type { SecretValueProvider } from './secret-resolver.js';
+import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
+import { WorkflowCatalog, actorFromPrincipal, type Actor } from './workflow-catalog.js';
+import { assetRootsFor, defaultAssetRoot, globalAssetRoot, type AssetSyncService } from './asset-sync.js';
+import type { GatewayClient, GatewayConfig } from './gateway/client.js';
+import { LiteLLMGatewayClient } from './gateway/client.js';
+import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
+import { defaultRunParams, mergeRunParams, resolvePrimitiveParams, type RunParams } from './params/resolve.js';
+import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
+import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
+import { createEventSink, type EventSink, type AttemptReason } from './event-log.js';
+import { scanAgentCalls, expectedAgentOptsByLabel } from './workflow-meta.js';
+import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
+import { assertPositiveInteger } from './config-numeric.js';
+
+// Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
+// injected. 2026-09-26 (alias mechanism removed): no alias table to route through any more — the
+// gateway resolves each call's full ref directly (`providers.ts`'s `parseModelRef`).
+const DEFAULT_GATEWAY_CONFIG: GatewayConfig = { timeoutMs: 15000, retries: 1 };
+
+export interface RunManagerDeps {
+  store?: RunStore;
+  clock?: Clock;
+  /** Overrides the AgentSpawner for EVERY run (test seam) — bypasses the per-run
+   *  RunGuard/RunStore wiring below entirely (fakes don't need it). */
+  spawner?: AgentSpawner;
+  gateway?: GatewayClient;
+  catalog?: WorkflowCatalog;
+  /** v25 (DES-168, REQ-120, owner ruling 2026-09-07): max agent() calls this run may have IN FLIGHT
+   *  at once. `acquireSlot()` QUEUES at the cap — a wider fan-out is slower, never truncated.
+   *  Default DEFAULT_RUN_CONCURRENCY (24), an explicit number rather than the pre-v25
+   *  `min(16, cores-2)`: how wide a workflow may fan out has nothing to do with how many cores the
+   *  box has, and deriving it from the CPU count made the real ceiling invisible to the author.
+   *  Operators set it via `runConcurrency` in rwe.config.json. Invalid (≤0/non-integer) is rejected
+   *  at construction. The HOST-wide `agentSlots` semaphore (default 32) is a different layer: it
+   *  rations spawns across ALL runs and is unchanged. */
+  concurrency?: number;
+  workRoot?: string;
+  /** v24 (integrator; REQ-113, DES-154/ARCH-103): the resolved asset roots this run's dispatches
+   *  materialize from. Omitted -> derived from `workRoot` with the SAME two functions
+   *  `AssetSyncService` and the GC sweep use (`asset-sync.ts`), never re-spelt here. */
+  assetRoot?: string;
+  globalAssetRoot?: string;
+  /** D-V3M-2 (REQ-020 / D-DOS, TASK-035/DES-027/ARCH-002): the ONE process-global agent-slot
+   *  semaphore rationing SDK-CLI subprocess spawns across ALL runs — built at the composition root
+   *  (createServer) and observed via `GET /api/status`. Omitted (bare/test callers) -> an
+   *  effectively-unbounded local semaphore so direct RunManager construction keeps its exact prior
+   *  concurrency behavior; only the real cap is imposed at the composition root. */
+  semaphore?: Semaphore;
+  /** v8 Slice 1 (REQ-041): max `workflow()` nesting depth — a registered composite may be a node
+   *  inside another composite up to this many levels (top run = depth 0; first workflow() = depth 1).
+   *  Default 4. Invalid (≤0 / non-integer) is rejected at construction. */
+  maxWorkflowDepth?: number;
+  /** v8 Slice 1 (REQ-043): max total nested workflow() invocations across a run's whole tree
+   *  (bounds fan-out × depth independently of maxWorkflowDepth). Default 256. */
+  maxWorkflowDescendants?: number;
+  /** v8 Slice 4 (REQ-052): fired once from the authoritative terminal `_transition` for each
+   *  top-level run reaching completed/failed/stopped. Fire-and-forget (a throwing listener never
+   *  wedges the run's terminal write). The continuation store subscribes here (REQ-053). */
+  onTerminal?: (runId: string, status: RunStatus) => void;
+  /** v25 (issue #53, adjudication #9 I-2): sink for structured observations about the terminal path
+   *  — a run going terminal with live agents, or a terminal status with no matching transition row.
+   *  Defaults to `console.warn` of the JSON record, which is what puts it in the engine log with no
+   *  operator wiring: a sink that only exists when a composition root remembers to pass it is the
+   *  bug class this codebase has already hit twice (v11 updateFlagPath, v15 auth). Fire-and-forget,
+   *  like `onTerminal` — a throwing listener never wedges a run. */
+  onWarning?: (warning: EngineWarning) => void;
+  /** issue #127 (#53/adjudication #9 I-2 follow-up): bounded wait `stop()`/`suspend()` give every
+   *  in-flight agent() call's own abort-triggered `capture()` to land BEFORE the terminal/suspend
+   *  snapshot — see `AgentExecutor.settleInflight`'s own doc. Default 2000ms. Something that still
+   *  has not settled by this bound is left exactly as before this fix: the snapshot/live-view may
+   *  miss it, and the `agent_live_at_terminal` warning (`onWarning` above) still names it. */
+  agentSettleTimeoutMs?: number;
+  /** v8 Slice 4 (REQ-054): max live (non-terminal) top-level runs; an over-limit start() is rejected
+   *  with RUN_ADMISSION_LIMIT before any durable work. Default 64. Invalid (≤0/non-integer) rejected. */
+  maxConcurrentRuns?: number;
+  /** v10 Slice 2 (REQ-065): the content-addressed store used to assemble a run's workspace from a
+   *  `seedManifest`. Omitted → a seedManifest spec is rejected (no store to read blobs from). */
+  cas?: CasStore;
+  /** v13 (REQ-080 / DES-080, TASK-077): https-only prefix allowlist for engine-pull seedRef.
+   *  Absent/empty → SEEDREF_DISABLED (fail-closed). Normalized at construction via normalizeSeedRefAllowlist. */
+  seedRefAllowlist?: string[];
+  /** v13 (REQ-080 / DES-083, TASK-078): injectable SeedRefFetcher for the hardened-git impl.
+   *  Omitted in TASK-077 (no-op); wired in TASK-078. */
+  seedFetcher?: SeedRefFetcher;
+  /** v14 (REQ-083, DES-088, TASK-082): inject to enable redact-at-capture on all transcript/
+   *  snapshot/journal persist sinks. Omitted → no redaction (legacy/test callers unchanged). */
+  secretValueProvider?: SecretValueProvider;
+  /** v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the USER-override rung
+   *  (ADR-005) — refuse, never clamp. Per-key fail-closed defaults when a key is absent from config
+   *  (composeConfig() forwards these three from rwe.config.json; see src/main.ts). */
+  ceilings?: Partial<Ceilings>;
+  /** v26 (DES-178, ARCH-116, ADR-038, TASK-178): the TTL'd, single-flight catalog snapshot this
+   *  manager pins onto every run at admission (`start()`) — never re-resolved on resume. Omitted ->
+   *  an always-empty source (still prices anthropic-static/ollama-zero; everything else `null`).
+   *  2026-09-26 (alias mechanism removed, owner decision 6): ALSO the source `_refuseUnadmittableParams`
+   *  builds its `ModelCatalogSnapshot` from (`toModelCatalogSnapshot`, model-book.ts) for the
+   *  admission-time openrouter/ollama existence check — one live catalog fetch per admission,
+   *  reused for both the UNKNOWN_MODEL check and the price pin (they used to be two different
+   *  tables — `aliasNames`/`aliasMap` — that could disagree; now there is exactly one). */
+  modelBook?: ModelBook;
+  /** pi harness v1 (owner decision 2): forwarded from `ServerConfig.harnessProviders` (set only
+   *  under `gateway:"pi"`) — stamped onto every `ModelCatalogSnapshot` this manager builds via
+   *  `toModelCatalogSnapshot` (admission at `start()` AND nested-workflow admission), so
+   *  `checkModelRef`'s provider gate sees it at both admission doors. Omitted (the "sdk" gateway,
+   *  every existing test/call site) -> unchanged pre-pi behavior (no provider gate). */
+  harnessProviders?: readonly Provider[];
+  /** v36 (DES-243, ARCH-159, TASK-241, REQ-213): sink for the `run.terminal` audit line (TASK-243
+   *  adds the actual emit call, at `_transition`). Omitted -> a bare console sink. */
+  eventSink?: EventSink;
+  /** v37 (ARCH-182, DES-263, TASK-258, REQ-218): this engine's MEASURED confinement posture
+   *  (forwarded from `ServerConfig.confinementPosture`, itself set once at boot by the nested-bwrap
+   *  probe — ARCH-181). Omitted (every pre-existing RunManager test call site) -> `admissionRefusal`
+   *  never gates, matching the field's own fail-open-for-the-existing-suite convention. */
+  confinementPosture?: 'confined' | 'unconfined';
+  /** Issue #73 (d): the latest model-probe result for a resolved (provider, model). Omitted -> no
+   *  probe-based admission warnings. */
+  probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
+  /** Owner decision 2026-10-02: the disk floor — `assert()` throws DISK_LOW while the engine's disk
+   *  is below it. Checked at every NEW admission (start, resume, nested workflow()); runs in flight
+   *  are never touched. Omitted -> never refuses. */
+  diskFloor?: { assert(): void };
+  /** Service accounts spec (owner decision 2026-10-03), §Authorization + send-back D1: resolves a
+   *  `sa:<name>` principal's CURRENT live/allowlist status — the SAME status `PrincipalAdmin`
+   *  already computes for `authorize()`'s bearer-layer check, reused here because `authorize()`
+   *  itself is never consulted for a trigger firing (no bearer) or a nested `workflow()` call (see
+   *  `_handleWorkflowRequest`'s own doc) — `RunManager.start()`/`resume()`/the nested-frame admission
+   *  are the ONLY chokepoints those two paths share. `undefined` = not an `sa:` principal (never
+   *  gates — includes every human caller and every pre-existing RunManager test that omits this
+   *  dependency entirely). `{live:false}` = disabled/expired/deleted (refused everywhere,
+   *  unconditionally). `{live:true, workflows}` = live; `workflows` present+non-empty is the
+   *  allowlist a requested name must be in. */
+  serviceAccountStatus?: (principal: string) => { live: boolean; workflows?: string[] } | undefined;
+  /** F-1 (sandbox robustness sweep): forwarded verbatim onto every `SandboxHost` this manager
+   *  constructs (top-level — `_newSandbox` — and every nested `workflow()` frame's own host) as
+   *  `SandboxHostConfig.maxRunDurationMs`. Deliberately NOT part of `ceilings`/`Ceilings` above:
+   *  those bound the USER-override rung (a caller/author-settable per-call value); this is a
+   *  host-side ENGINE limit no script or caller can see or raise. Validated a positive integer at
+   *  construction (same convention as `maxWorkflowDepth` etc. via `_positiveInt`); absent ->
+   *  `DEFAULT_MAX_RUN_DURATION_MS` (host.ts's own default). */
+  maxRunDurationMs?: number;
+  /** v40 (DES-274/DES-275, ARCH-187/193, TASK-271/272): per-run concurrency caps for decide()/
+   *  generateImage() dispatch — independent of `semaphore` (agent() dispatch) and of `guard`'s own
+   *  `AGENT_CAP` (shared lifetime issuance counter, unaffected). Composition root forwards
+   *  `cfg.decideSlots`/`cfg.imageSlots` (TASK-272); omitted (every pre-v40 test/caller) ->
+   *  `createSemaphore(16)`/`createSemaphore(2)`. */
+  decideSemaphore?: Semaphore;
+  imageSemaphore?: Semaphore;
+  /** v40 (DES-275, TASK-272): byte cap for one `generateImage({inputImages})` entry read off the
+   *  run/asset workspace. Omitted -> 4_718_592 (4.5 MiB). */
+  imageInputMaxBytes?: number;
+  /** v40 (DES-274, ARCH-183, TASK-271): the decide()/generateImage() fetch/retry/backoff seam
+   *  (`direct-models/call.ts`'s `DirectDeps`) — a test overrides `fetch` alone; every other field
+   *  defaults from `defaultDirectDeps(loadSecretSourceFromEnv())`. Omitted entirely (every pre-v40
+   *  caller) -> the full production default. */
+  directDeps?: Partial<DirectDeps>;
+}
+
+/** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
+ *  host-independent — it replaces `Math.max(1, Math.min(16, cpus().length - 2))`, which made the
+ *  real fan-out ceiling a function of the machine (14 on the owner's host, and cut to 2 by the
+ *  reservation arithmetic issue #61 removed). Overridable per deployment via `runConcurrency`. */
+export const DEFAULT_RUN_CONCURRENCY = 24;
+
+const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
+
+/** Issue #82: did the run bring a seed of its own (any of the four kinds)? Same "present" test as
+ *  start()'s 4-way SEED_SOURCE_CONFLICT check — an empty array is no seed. */
+function hasExplicitSeed(spec: RunSpec): boolean {
+  return (Array.isArray(spec.seed) && spec.seed.length > 0)
+    || (Array.isArray(spec.seedManifest) && spec.seedManifest.length > 0)
+    || spec.seedRef !== undefined
+    || spec.seedManifestRef !== undefined;
+}
+
+/** v21 (DES-101): wraps a params/contract.ts rejection into the codebase's one Error factory,
+ *  carrying the machine-shaped `detail` object as an extra (non-ErrEnvelope) property — read by
+ *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
+function paramCodedError(err: ParamErr): Error {
+  return Object.assign(codedError(err.code, err.message), { detail: err.detail });
+}
+
+/** v35 continued (issue #107): materializes declared-but-absent `args` keys from `contract.args`'
+ *  own `.default` — the SAME `isRecordArgs` normalization `start()` already applied to its own
+ *  submission before `validateDeclaredArgs` — shared with a nested `workflow()` frame's own
+ *  admission (`_handleWorkflowRequest`) so neither call site re-derives the ternary. Returns the
+ *  value to dispatch/validate (`args`, unchanged for a non-record value — materializing over a
+ *  string/array would spread it into index keys) and, for a plain-record args value only, the
+ *  materialized RECORD (`resolvedArgs`) — `start()` alone folds that into its admission snapshot
+ *  (`effectiveParams.args`, `INV-V35-2`); a nested frame builds no such snapshot and uses only
+ *  `args`. Pure — throws nothing; the caller validates with `validateDeclaredArgs` at its own pinned
+ *  point (overrides-then-args precedence in `start()`; no overrides exist on the nested path). */
+function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: unknown; resolvedArgs: Record<string, unknown> | undefined } {
+  const isRecordArgs = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
+  const resolvedArgs = (rawArgs === undefined || rawArgs === null || isRecordArgs)
+    ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
+    : undefined;
+  return { args: resolvedArgs ?? rawArgs, resolvedArgs };
+}
+
+/** v40 (DES-274, ARCH-187, TASK-271): maps `direct-models/call.ts`'s `AttemptReason` (the thrown
+ *  `PRIMITIVE_FAILED` error's `detail.reason`) onto `AgentRecord.failReason`'s own closed vocabulary
+ *  — timeout stays timeout, network becomes unreachable, aborted stays aborted (whether named
+ *  directly or inferred from the run's own abort signal, for a throw with no `.detail` at all), and
+ *  every other reason (http/no_output/malformed/response_too_large/write) is a definite terminal failure. */
+function primitiveFailReasonFrom(reason: AttemptReason | undefined, runAborted: boolean): 'timeout' | 'unreachable' | 'terminal' | 'aborted' {
+  if (reason === 'timeout') return 'timeout';
+  if (reason === 'network') return 'unreachable';
+  if (reason === 'aborted' || runAborted) return 'aborted';
+  return 'terminal';
+}
+
+/** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate — pure (no fs, no
+ *  db, no clock). `undefined` posture means 「never measured」 ⇒ do not gate, the same
+ *  fail-open-for-the-existing-suite convention `ToolDeps` already uses for this field.
+ *  `input.origin` is never a live delivery peer — it is one of TWO write-once, never-updated
+ *  provenance facts, and `start()` calls this SAME function twice (P1, ADR-086's third owner
+ *  ruling 2026-09-25, DES-263's 第三次修訂): once keyed on the TRIGGER's own stored `RunSpec.origin`
+ *  (unchanged since v37's first cut), and again — after `catalog.resolve()`, before any durable
+ *  work — keyed on the RESOLVED VERSION's `registeredRemote` (`'remote'` iff that version was
+ *  registered remotely). `runNested()` is a THIRD call site, same predicate, same pure function,
+ *  keyed on the NESTED resolve's `registeredRemote`. Refuse ⟺ posture==='unconfined' AND
+ *  EITHER call reports `'remote'` — the two facts are OR'd by calling this twice/three times and
+ *  short-circuiting on the first non-null result, never by pre-combining them into one `origin`.
+ *  v37 Gate-8 round-2 (finding B2/INV-V37-5(c)): this predicate covers `start()`/`runNested()`
+ *  only — **[更正 2026-09-25, R5-F1: `resume()` DOES call it now, in exactly one place.]** ~~`resume()` never calls it, so
+ *  `call-tool.ts`'s door is the SOLE cover for `run_resume`~~ — `resume()` calls this predicate for the
+ *  LEGACY-SUBSTITUTION case only (a run whose pinned version is gone, so the CURRENT `release` is
+ *  substituted: a version the run never carried and no admission check ever saw). The PINNED path
+ *  is still ungated, and `call-tool.ts`'s door is still the cover for an ordinary `run_resume`, so
+ *  the two are complementary, not redundant. The refusal lives in `resume()` and NOT in the shared
+ *  `_requireLive()` helper, because `suspend()` and `stop()` call that too — refusing in there left
+ *  the run unable to reach a terminal state at all (R5-F1).
+ *  not a redundant twin of this function. */
+export function admissionRefusal(input: {
+  posture: 'confined' | 'unconfined' | undefined;
+  origin: 'local' | 'remote';
+}): 'CONFINEMENT_UNAVAILABLE' | null {
+  return input.posture === 'unconfined' && input.origin === 'remote' ? 'CONFINEMENT_UNAVAILABLE' : null;
+}
+
+// webhook B2 (dash-auth-spec.md §B2, 2026-09-30): the FULL classification of every ERROR_CATALOG
+// code `RunManager.start()` can throw (the same set `run_start`'s own advertised `errors[]` in
+// tool-specs.ts documents, minus `INVALID_ARGUMENT` — that one is ajv schema validation at the
+// MCP wire layer, never thrown BY `start()` itself, so a caller that bypasses the schema — a
+// webhook delivery, a schedule firing — can never see it). One shared table, so the webhook route,
+// `Scheduler.trigger()` and the ticker driver can never classify the SAME code three different
+// ways.
+//
+// Bucketing rule: 409 PERMANENT for a caller/authoring/config problem that will not resolve on its
+// own — the same bad request retried unchanged fails the same way forever, so a replay of the SAME
+// delivery id must answer the SAME 409, never silently upgrade to 2xx once the sender's original
+// (still-bad) request is retried. 403 PERMANENT for confinement (its own long-standing code, kept).
+// 503 RETRYABLE for `RUN_ADMISSION_LIMIT` (a capacity read, not a policy verdict — the exact same
+// request can succeed on the very next tick) and `DISK_LOW` (owner decision 2026-10-02: the disk
+// floor — same shape, the request succeeds once space is freed). Every other catalogued code — `CAS_UNAVAILABLE`,
+// `DANGLING_CHANNEL`, or anything not in this table at all — falls through to 500 RETRYABLE: an
+// operator-side/engine fault, not a caller mistake, so the safer failure mode is "release the id,
+// let a retry reprocess" (worst case: a few pointless retries) rather than "record a permanent
+// refusal" (worst case: a transient outage permanently poisons a delivery id).
+const ADMISSION_STATUS: Partial<Record<ErrorCode, 403 | 409 | 503>> = {
+  CONFINEMENT_UNAVAILABLE: 403,
+  RUN_ADMISSION_LIMIT: 503,
+  DISK_LOW: 503,
+  // Service accounts spec (owner decision 2026-10-03) send-back D1: a trigger (schedule/webhook)
+  // firing carries no bearer, so the ONLY enforcement point for a disabled/expired/deleted sa:
+  // creator or a narrowed allowlist is HERE, inside start()'s own admission — same bucket as every
+  // other permanent admission refusal (bad params/model, unprovisioned asset, …), so a webhook
+  // delivery records+replays it exactly like those, and a schedule firing's markFailed/lastError
+  // path picks it up for free (see webhook-registry.ts's deliver() / server.ts's ticker dispatch,
+  // both already generic over every ADMISSION_STATUS member).
+  SERVICE_ACCOUNT_DISABLED: 409,
+  WORKFLOW_NOT_ALLOWED: 409,
+  WORKFLOW_NOT_FOUND: 409,
+  VERSION_NOT_FOUND: 409,
+  CHANNEL_UNPUBLISHED: 409,
+  NOT_RUNNABLE: 409,
+  INLINE_SCRIPT_CLOSED: 409,
+  LEGACY_REREGISTER: 409,
+  UNKNOWN_MODEL: 409,
+  MCP_NOT_PROVISIONED: 409,
+  SKILL_NOT_PROVISIONED: 409,
+  PARAM_LOCKED: 409,
+  PARAM_UNKNOWN: 409,
+  PARAM_OUT_OF_RANGE: 409,
+  UNKNOWN_AGENT_LABEL: 409,
+  AGENT_UNDECLARED: 409,
+  INVALID_SEED_SPEC: 409,
+  SEED_SOURCE_CONFLICT: 409,
+  SEEDREF_DISABLED: 409,
+  EGRESS_DENIED: 409,
+  MISSING_BLOBS: 409,
+};
+// Exported for the ONE other place this classification must be documented, never hand-copied:
+// webhook_create's tool description (tool-specs.ts) states the rule and is pinned against the
+// real member count here (webhook-create-description-pins-contract.test.ts) — a code added to or
+// removed from this table without touching the description now fails that test instead of
+// shipping a wrong contract. Deliberately EXCLUDES `CONFINEMENT_UNAVAILABLE` (also permanent, but
+// answers its own 403, not 409 — it already has dedicated long-standing tests/description text)
+// and `RUN_ADMISSION_LIMIT` (RETRYABLE, 503, not permanent at all) — this is specifically "every
+// code that answers a recorded+replayed 409", the NEW family this slice adds.
+export const ADMISSION_PERMANENT_CODES: readonly ErrorCode[] =
+  (Object.keys(ADMISSION_STATUS) as ErrorCode[]).filter((c) => ADMISSION_STATUS[c] === 409);
+
+/** v37 Gate-8 round-2 (finding B4, ARCH-182 (3)); widened by webhook B2 (dash-auth-spec.md §B2, 2026-09-30): classifies a
+ *  `start()` throw into the outcome its callers (facade, webhook route, `Scheduler.trigger()`, the
+ *  ticker driver) already need to map identically, so none of them re-derives it separately. Pure
+ *  — no fs, no db, no clock. `permanent === httpStatus < 500` is the ONE predicate a caller
+ *  branches the #88 replay-store semantics on (record + replay vs release-the-id-and-retry) —
+ *  never a bare `=== 403` any more, now that 409 joins 403 in the permanent set. Only `err`'s CODE
+ *  crosses this boundary — the caller decides what (if any) STATIC catalog text a wire response
+ *  gets, never `err.message`, which can carry host-measured detail (e.g. `maxConcurrentRuns=N`)
+ *  nobody decided to disclose to an HMAC-authenticated peer. */
+export function admissionErrorToOutcome(err: unknown): { code: ErrorCode; httpStatus: 403 | 409 | 500 | 503; permanent: boolean } {
+  const e = err as { code?: unknown } | null | undefined;
+  // `toErrorCode` folds any string outside the closed ErrorCode union (including "no code at all")
+  // to 'INTERNAL_ERROR' — an uncatalogued or missing code and a genuinely-thrown INTERNAL_ERROR are
+  // indistinguishable at the wire either way, so both fall through to the same 500 default below.
+  const code = toErrorCode(typeof e?.code === 'string' ? e.code : '');
+  const httpStatus = ADMISSION_STATUS[code] ?? 500;
+  return { code, httpStatus, permanent: httpStatus < 500 };
+}
+
+
+interface RunEntry {
+  /** v37 P1 (Gate 8 round-5 finding R5-F1): set by `_requireLive()` when the run's pinned version
+   *  was gone and the CURRENT `release` had to be substituted for it — the pin, what replaced it,
+   *  and whether that replacement was registered remotely. `_requireLive()` records these FACTS and
+   *  refuses nothing: it is shared by `suspend()`, `resume()` AND `stop()`, so a refusal placed
+   *  inside it also blocks `stop()`, leaving the run permanently non-terminal and taking
+   *  `workspace_delete`/`workspace_purge` and the `interruptedRuns` badge with it. Only `resume()`
+   *  reads this and decides. `undefined` whenever no substitution happened. */
+  legacySubstitution?: { pinned: string; resolved: string; remote: boolean };
+  script: string;
+  args: unknown;
+  /** Top-level workflow name (undefined for an ad-hoc script run) — seeds the nesting ancestor set
+   *  so a top→…→top cycle is caught (v8 REQ-042). */
+  name?: string;
+  status: RunStatus;
+  guard: RunGuard;
+  /** issue #163 B1: a SECOND, independent concurrency gate (same `runConcurrency` width as `guard`,
+   *  no budget — it only ever calls `acquireSlot()`/`release()`, never `assertBudget()`) for nested
+   *  `workflow()` dispatch (`_handleWorkflowRequest`). `_handleWorkflowRequest` used to build a new
+   *  `SandboxHost` and fork a child for EVERY nested `workflow()` call with no throttling at all —
+   *  unlike `_handleAgentRequest`, which has always queued at `guard`'s cap. A wide `parallel()` of
+   *  nested `workflow()` calls therefore forked all N children ~simultaneously, which at high N
+   *  (confirmed ~250+) floods Node's child_process IPC and loses a `process.send()` done/error
+   *  message even though the child itself ran to completion — surfacing as the reported
+   *  `INTERNAL_ERROR "sandbox child process terminated before completion"`. A SEPARATE RunGuard
+   *  instance (not `guard` itself) is required: a nested workflow() frame holds its slot for the
+   *  ENTIRE duration of its own `nested.run()`, which in turn dispatches its own agent() calls
+   *  through `_handleAgentRequest` — if that reused `guard`, an N-wide fan-out of nested workflow()
+   *  calls at N >= runConcurrency would hold every slot on `guard` before any of them reached their
+   *  own agent() calls, which then could never acquire a slot: deadlock. Two independent pools of
+   *  the SAME width give nested workflow() the same throttling contract agent() already has,
+   *  without nested workflow() and agent() dispatch competing for the same slots. */
+  workflowGuard: RunGuard;
+  /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the SAME `{usd, tokens}` limits `guard` was built
+   *  from (`parseBudget(spec.budget, {source:'store'})`), kept alongside it — `RunGuard` exposes no
+   *  public accessor for its own two totals (`budgetView()` stays the pre-v26, token-only view),
+   *  so this is where `_newSandbox`/the nested `SandboxHost` constructor read the two independent
+   *  limits to hand the sandbox's `SandboxHostConfig.budget`. */
+  budgetLimits: { usd: number | null; tokens: number | null };
+  abortController: AbortController;
+  sandbox: SandboxHost;
+  spawner: AgentSpawner;
+  workspace: string;
+  journal: JournalEntry[];
+  /** Execution GENERATION, not a workflow version: bumped by every resume() and stamped on journal
+   *  entries. The registered version the run pinned is `pinnedVersion` below. */
+  scriptVersion: number;
+  /** The registered workflow version this run pinned at admission (`runs.scriptVersion`, e.g. 'v1')
+   *  — what `run.terminal` reports, unchanged by suspend/resume. */
+  pinnedVersion: string;
+  cachePlan: ResumePlan | null;
+  phases: PhaseView[];
+  /** v8 REQ-043: running count of nested workflow() invocations across this run's whole tree. */
+  descendants: number;
+  /** v8 REQ-044: deterministic frame-path → journal callSeq base allocation for nested runs, keeping
+   *  nested callSeq keys unique AND within MAX_SAFE_INTEGER at any depth (replaces the old
+   *  (parentCallSeq+1)*1e6+n multiply scheme, which overflowed past ~depth 2). */
+  nestedFrames: Map<string, number>;
+  nestedFrameSeq: number;
+  /** v8 REQ-046: nested workflow() boundary nodes recorded as the run composes — surfaced by
+   *  workflow_status (via _mergeLive) so the dashboard can render composites as sub-cards. */
+  workflowNodes: WorkflowNodeView[];
+  result?: unknown;
+  resultError?: { code: string; message: string };
+  /** v13 (REQ-080, DES-083): observable seedRef outcome overlaid onto RunStatusView by _mergeLive. */
+  seedRef?: RunStatusView['seedRef'];
+  /** v14 (REQ-082, DES-087): the seedManifestRef sha used, overlaid onto RunStatusView by _mergeLive. */
+  seedManifestRef?: string;
+  /** Issue #159: workspace-relative paths `materializeSeed`/`materializeManifest` stripped (former
+   *  Claude config, never written) — overlaid onto RunStatusView by _mergeLive. */
+  seedConfigStripped?: RunStatusView['seedConfigStripped'];
+  /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
+   *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
+  effectiveParams: RunParams;
+  /** v26 (DES-178): the run's price/capability pin — the SAME object the run's AgentExecutor prices
+   *  against (shared by reference), so a nested `workflow()` frame extending it (`_pinChildModels`)
+   *  is priced live. `null` for a pre-v26 row ("we never looked" — never extended). */
+  priceBook: PriceBook | null;
+  /** v24 (integrator; REQ-113, DES-154): the author-DECLARED asset names per agent label, taken
+   *  from the registered `ParamContract`'s `agents.<label>.skills/.mcp` at admission. `RunParams`
+   *  deliberately does not carry `skills`/`mcp` (they are author-only, not tunable), so the
+   *  declared set has to travel beside the resolved one — and without it `AgentReq.assets` was
+   *  never populated at all, which is why DES-154's selective materialization had never fired on a
+   *  real dispatch (adjudication #4 C-2). Empty for an unregistered/legacy contract. */
+  declaredAssets: Record<string, { skills: string[]; mcp: string[] }>;
+  /** Issue #154 NEW HIGH (blocker): this run's TOP-LEVEL script's own `expectedAgentOptsByLabel`
+   *  (workflow-meta.ts) — computed ONCE at admission (`start()`/`resume()`), from the SAME `script`
+   *  the run actually executes, never re-derived per call. `_handleAgentRequest` compares every
+   *  TOP-LEVEL dispatch's real `opts.allowedTools`/`opts.bash` against this (a nested `workflow()`
+   *  frame instead threads its OWN child script's version via `frameToolSurface` — see
+   *  `_handleWorkflowRequest`) and refuses `AGENT_OPTS_TAMPERED` on a mismatch, closing the gap a
+   *  planted `Array.prototype.toJSON` (or any other post-registration opts tamper the child->host
+   *  IPC hop's JSON re-serialization would otherwise honour) used to walk straight through. */
+  toolSurface: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>>;
+  /** v36 (DES-245, TASK-243): from `spec.principal` at admission, and rehydrated from
+   *  `getSpec()` on resume (`_requireLive`) — carried by the `run.terminal` event. */
+  principal?: string | null;
+  /** v36 (DES-248, ARCH-165/168, TASK-246): the per-run refusal ledger — `captureFailure`'s
+   *  redacted, bounded envelope, keyed by the top-level `callSeq` the refusal happened at.
+   *  Recorded ONLY at `framePath === ''` (_handleAgentRequest); bounded at 8, a 9th evicts nothing
+   *  and increments `refusalsDropped` instead. Never persisted — dies with the entry. */
+  refusals: Map<number, { code: string; message: string }>;
+  refusalsDropped: number;
+  /** v40 Gate 6 delta (DES-274, R-14, TASK-271): a decide()/generateImage() refusal/failure's OWN
+   *  ledger, capped separately from `refusals` above — otherwise a run with enough primitive
+   *  failures could evict an `agent()` refusal from the shared 8 slots, losing its provenance
+   *  (the script's own rethrow can tamper `e.message`; only a ledger HIT survives that). callSeqs
+   *  are unique across both maps (one shared counter), so a lookup tries both. */
+  primitiveRefusals: Map<number, { code: string; message: string }>;
+  primitiveRefusalsDropped: number;
+}
+
+/** v40 Gate 6 delta (DES-274, R-14, TASK-271): `_recordPrimitiveRefusal`'s own cap — separate from
+ *  `_handleAgentRequest`'s 8-slot `entry.refusals`. */
+const PRIMITIVE_REFUSAL_CAP = 8;
+
+/** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
+ *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
+ *  child cannot value-import this `.ts` file), pinned equal by the drift test. */
+export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN', 'AGENT_OPTS_TAMPERED', 'INVALID_SCHEMA', 'PRICE_UNKNOWN']);
+
+/** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
+ *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
+ *  gateway the set THIS label declared — the input DES-154's selective materialization takes and
+ *  which nothing ever produced. Pure; an absent contract yields `{}` (no label declares anything,
+ *  so every dispatch materializes nothing, which is the honest v24 default). */
+function declaredAssetsOf(contract: ParamContract | undefined): Record<string, { skills: string[]; mcp: string[] }> {
+  const out: Record<string, { skills: string[]; mcp: string[] }> = {};
+  for (const [label, spec] of Object.entries(contract?.agents ?? {})) {
+    out[label] = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
+  }
+  return out;
+}
+
+/** Issue #154 NEW HIGH (blocker): `true` when `dispatchedAllowedTools`/`dispatchedBash` — the REAL
+ *  opts an agent() call is about to dispatch with — matches ANY of `scanned`'s literal shapes
+ *  recorded for that call's label (`expectedAgentOptsByLabel`, workflow-meta.ts; DES-174 "duplicate
+ *  labels are legal" means a label can have more than one scanned call site, each with its own
+ *  literal options — matching any one of them is correct). `undefined`/`[]` (no scanned call at all
+ *  for this label) always returns `false` — `_handleAgentRequest`'s own call site relies on this
+ *  failing CLOSED rather than treating an unscanned label as "nothing to check". Pure; no I/O. */
+function matchesScannedOpts(
+  scanned: Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }> | undefined,
+  dispatchedAllowedTools: unknown,
+  dispatchedBash: unknown,
+): boolean {
+  if (!scanned || scanned.length === 0) return false;
+  return scanned.some((s) => {
+    const expectedTools = s.allowedTools;
+    const toolsMatch = expectedTools === 'absent'
+      ? dispatchedAllowedTools === undefined
+      : Array.isArray(dispatchedAllowedTools)
+        && dispatchedAllowedTools.length === expectedTools.length
+        && dispatchedAllowedTools.every((t, i) => t === expectedTools[i]);
+    if (!toolsMatch) return false;
+    return (s.bash ?? undefined) === (dispatchedBash ?? undefined);
+  });
+}
+
+/** v26 (DES-183, ARCH-118, ADR-046, TASK-183, REQ-127): pure — the LIVE `RunUsage` producer,
+ *  folded from `AgentRecord.tokens`/`.costUSD`/`.unpriced` (populated by
+ *  `AgentTranscriptSink.capture()` independently of `RunGuard`, which has no production caller of
+ *  `addUsage` yet). Read by `_mergeLive` (in-process status), the terminal snapshot writer
+ *  (`_transition`) and `_budgetSnapshotFor` (its own USD/tokens projection) — one fold, not three.
+ *  v26 integration (clarifications 38/39): `unmappedMessages` is no longer hard-coded `{}`. The
+ *  capture site stamps `AgentRecord.unmapped` from the same `GatewayResult.unmapped` it writes onto
+ *  the persisted usage event, and `deriveAgentRecords` derives it back the same way.
+ *  **The per-column rule this fold applies — and the one `foldUsage` (run-guard.ts) must keep
+ *  applying for "one arithmetic, two entry points" to be true:** `tokens`/`costUSD` accumulate off
+ *  every record (a record with no measured usage carries the known zero `ZERO_TOKENS`/`costUSD: 0`,
+ *  so it adds nothing), `unpricedCalls` counts `unpriced === true` — at rest that same rule is
+ *  spelled "the usage event's own `unpriced` field is truthy" (`foldUsage`'s `data.unpriced ?? true`,
+ *  gated on the event carrying `tokens` at all). v26 R-1: for one iteration the at-rest fold ran its
+ *  `!data.tokens` guard BEFORE the `unmapped` accumulation, so the two folds silently disagreed on
+ *  that whole column for a terminally-failed call (which carries `unmapped` and no `tokens`). Fixed
+ *  in run-guard.ts; IT-156's deep-equal-both-folds case is the lock that keeps it fixed.
+ *  issue #127 (repair): this column USED to be gated on `state === 'done'` too, which silently
+ *  disagreed with `foldUsage` the instant a FAILED record could also carry `tokens`/`unpriced` (the
+ *  gateway-side fix that reports usage spent before an abort/timeout/terminal failure) — a failed-
+ *  but-unpriced call counted at rest and not live. `unpriced === true` alone is the same discriminator
+ *  `foldUsage` already uses and needs no `state` check: `queued`/`running`/`refused` records (and a
+ *  token-less `failed` one) all carry `unpriced: false` or `undefined`, never `true`, so nothing else
+ *  starts counting here that didn't already. */
+function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
+  const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let costUSD = 0;
+  let unpricedCalls = 0;
+  const unmappedMessages: Record<string, number> = {};
+  for (const r of records) {
+    // [v31, REQ-186] a not-yet-measured call has no `tokens` and adds nothing — the RUN total is
+    // still a real sum of what HAS been measured, which is what a live total means.
+    tokens.input += r.tokens?.input ?? 0;
+    tokens.output += r.tokens?.output ?? 0;
+    tokens.cacheRead += r.tokens?.cacheRead ?? 0;
+    tokens.cacheWrite += r.tokens?.cacheWrite ?? 0;
+    costUSD += r.costUSD ?? 0;
+    if (r.unpriced === true) unpricedCalls += 1;
+    for (const name of r.unmapped ?? []) {
+      unmappedMessages[name] = (unmappedMessages[name] ?? 0) + 1;
+    }
+  }
+  return { tokens, costUSD, unpricedCalls, unmappedMessages };
+}
+
+/** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the one projection both `listSummaries()`
+ *  branches (live overlay, at-rest backfill) spread onto a `RunSummary` — "omitted together" is
+ *  structural (one return value), not four fields remembered separately. **Absence is keyed on
+ *  `agentCount` (records.length), decided BEFORE the fold, never on `costUSD === 0`** —
+ *  `foldUsageFromRecords([])` is a fully-populated zero, and a run that made zero `agent()` calls
+ *  must omit the column entirely (REQ-141). `agentCount` is itself omitted from the return when the
+ *  caller has none to report (the legacy-cohort backfill path, DES-194's own "second transcript walk
+ *  for a column that renders `—` honestly"). */
+function summarizeUsage(
+  u: RunUsage | undefined,
+  agentCount: number | undefined,
+): { costUSD: number; unpricedCalls: number; tokensTotal: number; agentCount?: number } | undefined {
+  if (u === undefined || (agentCount ?? 1) === 0) return undefined;
+  return {
+    costUSD: u.costUSD,
+    unpricedCalls: u.unpricedCalls,
+    tokensTotal: u.tokens.input + u.tokens.output + u.tokens.cacheRead + u.tokens.cacheWrite,
+    ...(agentCount !== undefined ? { agentCount } : {}),
+  };
+}
+
+/** dash-auth-spec.md section C (2026-09-30): the ONE predicate every run view's `failedAgentCount`/
+ *  `agentFailures` now goes through — extracted from `status()`'s own v35/DES-234 inline version so
+ *  `listSummaries()`'s live-entry overlay (which used to call only `summarizeUsage`, never this) can
+ *  share it instead of silently disagreeing (the "known run_list vs run_status mismatch" this slice
+ *  fixes — see `listSummaries()`'s own comment for exactly which branch that was and why the fix is
+ *  gated on the row's status, not unconditional).
+ *
+ *  Presence: OMITTED (never `0`) when `agents` is empty (DES-234's own rule, unchanged) — a script
+ *  with no `agent()` calls never reads as unhealthy. Otherwise `failedAgentCount` is always present
+ *  (0 included), and `agentFailures` is present (never `[]`) only when it is > 0.
+ *
+ *  `reason` mapping (the ONE place `AgentRecord.failReason`'s raw gateway vocabulary collapses to
+ *  the caller-facing one): `refused` state -> `'refused'`; `failReason:'timeout'` -> `'timeout'`;
+ *  `failReason:'aborted'` -> `'aborted'`; `'unreachable'`/`'terminal'`/absent -> `'error'` (a real
+ *  gateway/HTTP failure the caller cannot usefully distinguish further).
+ *
+ *  `message`: `AgentRecord.detail` is already redacted-then-capped at 1024 bytes at capture
+ *  (ARCH-115/R-G9) — re-running `redact()`/`capDetail()` here would be the double-processing those
+ *  functions' own docs warn against, so this only bounds it FURTHER (to `MESSAGE_MAX_CHARS`, a
+ *  plain char slice — safe on already-redacted text, since a `‹secret:NAME›` marker is short and
+ *  the boundary risk `capDetail`'s byte-vs-secret ordering exists to avoid was at the ORIGINAL
+ *  redact site, not a second slice of already-clean text) for the summary's own fallback: a
+ *  `refused` record's `reasonCode` (there is no `detail` on that state), or a fixed string when a
+ *  `failed` record genuinely has neither (a legacy pre-ARCH-115 event). */
+const MESSAGE_MAX_CHARS = 200;
+function boundedMessage(s: string): string {
+  return s.length <= MESSAGE_MAX_CHARS ? s : s.slice(0, MESSAGE_MAX_CHARS) + '…';
+}
+function failureReason(a: AgentRecord): AgentFailureSummary['reason'] {
+  // issue #162 (owner-approved): checked FIRST — a schema-exhausted record is `state:'done'`, never
+  // `'failed'`/`'refused'`, so it would otherwise never reach this function at all (see the
+  // `isAgentFailure` predicate below, the actual filter that lets a `done` record through).
+  if (a.schemaExhausted === true) return 'schema-exhausted';
+  if (a.state === 'refused') return 'refused';
+  if (a.failReason === 'timeout') return 'timeout';
+  if (a.failReason === 'aborted') return 'aborted';
+  return 'error';
+}
+/** verify-i LOW-5: the summary is not the diagnostic dump. The gateway folds a short CLI stderr
+ *  tail into `detail` after the marker below (`claude-agent-sdk-client.ts` `withStderrDiagnostics`)
+ *  — it can name the auth env var in use — and an SDK error result can carry its result subtype as
+ *  a `success: ` prefix. Both are cut HERE only; the agent record (run_agent_log) keeps the full
+ *  detail for whoever debugs it. */
+const STDERR_MARKER = 'CLI stderr tail:';
+function summaryOfDetail(detail: string): string {
+  const i = detail.indexOf(STDERR_MARKER);
+  const head = (i === -1 ? detail : detail.slice(0, i)).replace(/\s*—\s*$/, '').replace(/^success:\s*/, '').trim();
+  return head.length > 0 ? head : 'agent failed; see run_agent_log for the CLI diagnostics';
+}
+function failureMessage(a: AgentRecord): string {
+  // issue #162: a schema-exhausted record is `state:'done'` with no `detail` (the gateway call
+  // succeeded; `detail` is only ever set on the `failed` branch of `capture()`) — its own fixed
+  // message, never `summaryOfDetail`/the generic "no failure detail recorded" fallback below (both
+  // of which imply a gateway error that never happened here).
+  if (a.schemaExhausted === true) {
+    return a.reaskCount !== undefined
+      ? `structured-output schema never conformed after ${a.reaskCount} re-ask(s); the script received null`
+      : 'structured-output schema never conformed; the script received null';
+  }
+  if (a.state === 'refused') return a.reasonCode ?? 'refused (no reason recorded)';
+  if (a.detail !== undefined) return boundedMessage(summaryOfDetail(a.detail));
+  return 'no failure detail recorded';
+}
+// issue #162 (owner-approved): the ONE place `state:'done'` is let through — a schema-exhausted
+// call is the single `done` outcome that still counts as a caller-visible failure (the usual
+// `failed`/`refused` filter does not catch it, since the gateway call itself genuinely succeeded).
+function isAgentFailure(a: AgentRecord): boolean {
+  return a.state === 'failed' || a.state === 'refused' || a.schemaExhausted === true;
+}
+export function summarizeAgentFailures(agents: AgentRecord[]): { failedAgentCount?: number; agentFailures?: AgentFailureSummary[] } {
+  if (agents.length === 0) return {};
+  const failed = agents.filter(isAgentFailure);
+  if (failed.length === 0) return { failedAgentCount: 0 };
+  return {
+    failedAgentCount: failed.length,
+    agentFailures: failed.map((a) => ({
+      ...(a.label !== undefined ? { label: a.label } : {}),
+      agentId: a.agentId,
+      reason: failureReason(a),
+      message: failureMessage(a),
+      ...(a.schemaExhausted === true && a.reaskCount !== undefined ? { reaskCount: a.reaskCount } : {}),
+    })),
+  };
+}
+
+/** Issue #106: rolls every agent's non-fatal harness warnings (`AgentRecord.warnings`, e.g.
+ *  `MCP_SERVER_NOT_CONNECTED`) up onto `run_status.warnings`, each naming its agent. Absent (never
+ *  `[]`) when no agent has one. */
+export function summarizeAgentWarnings(agents: AgentRecord[]): { warnings?: AgentWarningSummary[] } {
+  const warnings = agents.flatMap((a) => (a.warnings ?? []).map((w) => ({ ...(a.label !== undefined ? { label: a.label } : {}), agentId: a.agentId, ...w })));
+  return warnings.length > 0 ? { warnings } : {};
+}
+
+/** v27 (DES-194): max legacy (never-snapshotted) rows healed by ONE `listSummaries()` call — bounds
+ *  the store-read fan-out (one `getRun` plus one `backfillUsage` write per row healed) when a large
+ *  unhealed cohort exists; rows past the budget are simply retried on the next call. */
+const BACKFILL_PER_TICK = 25;
+
+export class RunManager {
+  private readonly _store: RunStore;
+  private readonly _clock: Clock;
+  private readonly _spawnerOverride: AgentSpawner | undefined;
+  private readonly _gateway: GatewayClient;
+  private readonly _catalog: WorkflowCatalog;
+  private readonly _concurrency: number;
+  private readonly _workRoot: string;
+  private readonly _assetRoot: string;
+  private readonly _globalAssetRoot: string;
+  // issue #103(a): bound post-construction (composition root, `server.ts`), same pattern as
+  // `McpFacade.bindAssetSync` — `AssetSyncService` needs the server's own bound port, built AFTER
+  // RunManager. Not `readonly`: `bindAssetSync` is the one post-construction writer. Absent only in
+  // a test harness that never wired one, which then honestly admits every run with no provisioning
+  // check (fail-open — matches this class's every other optional-collaborator default) rather than
+  // refusing MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED against a resolver that was never given a
+  // chance to say otherwise.
+  private _assetSync: AssetSyncService | undefined;
+  private readonly _semaphore: Semaphore;
+  private readonly _maxWorkflowDepth: number;
+  private readonly _maxWorkflowDescendants: number;
+  private readonly _onTerminal: ((runId: string, status: RunStatus) => void) | undefined;
+  private readonly _onWarning: (warning: EngineWarning) => void;
+  /** issue #127: see `RunManagerDeps.agentSettleTimeoutMs`'s own doc. */
+  private readonly _agentSettleTimeoutMs: number;
+  private readonly _maxConcurrentRuns: number;
+  private readonly _cas: CasStore | undefined;
+  /** v13 (REQ-080, TASK-077): normalized allowlist for seedRef egress gate; [] = disabled. */
+  private readonly _seedRefAllowlist: string[];
+  /** v13 (REQ-080, TASK-078): injected SeedRefFetcher; undefined until TASK-078 wires it. */
+  private readonly _seedFetcher: SeedRefFetcher;
+  /** v14 (REQ-083, DES-088, TASK-082): redact-at-capture for snapshot/journal sinks. */
+  private readonly _secretValueProvider: SecretValueProvider | undefined;
+  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding the USER-override rung. */
+  private readonly _ceilings: Ceilings;
+  /** v26 (DES-178, TASK-178): catalog snapshot pinned onto every run's price_book at admission —
+   *  ALSO (2026-09-26) the source of the admission-time openrouter/ollama existence check. */
+  private readonly _modelBook: ModelBook;
+  /** pi harness v1 (owner decision 2): forwarded `ServerConfig.harnessProviders`, stamped onto
+   *  every `ModelCatalogSnapshot` this manager builds — see `RunManagerDeps.harnessProviders`. */
+  private readonly _harnessProviders: readonly Provider[] | undefined;
+  /** v36 (DES-243, TASK-241): `run.terminal` audit sink; TASK-243 calls it from `_transition`. */
+  private readonly _eventSink: EventSink;
+  /** v37 (ARCH-182, DES-263, TASK-258): this engine's MEASURED confinement posture — read by
+   *  `admissionRefusal()` at the top of `start()`. */
+  private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
+  private readonly _diskFloor: { assert(): void } | undefined;
+  private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
+  private readonly _serviceAccountStatus: ((principal: string) => { live: boolean; workflows?: string[] } | undefined) | undefined;
+  /** F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc. `undefined` (not defaulted here) ->
+   *  every `SandboxHost` constructed below applies ITS OWN default — one definition of the default
+   *  (host.ts's `DEFAULT_MAX_RUN_DURATION_MS`), never two that could drift. */
+  private readonly _maxRunDurationMs: number | undefined;
+  /** v40 (DES-274/275, TASK-271/272): decide()/generateImage() concurrency caps + fetch seam. */
+  private readonly _decideSemaphore: Semaphore;
+  private readonly _imageSemaphore: Semaphore;
+  private readonly _imageInputMaxBytes: number;
+  private readonly _directDeps: DirectDeps;
+  /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
+  private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
+  private readonly _runs = new Map<string, RunEntry>();
+  /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
+   *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
+  private readonly _warnedMissingTransition = new Set<string>();
+  /** v27 (DES-194, TASK-199): runIds `listSummaries()` has already resolved (healed OR confirmed
+   *  permanently absent — zero `agent()` calls ever made) — without this, a legacy row with no
+   *  usage events would be re-walked via `store.getRun` on every single call forever, since the
+   *  store itself must never persist a `{usage}`-only snapshot for a zero-record run (that would
+   *  make `agentCount` look NULL, not 0, and resurrect it as present — DES-194's own boundary). */
+  private readonly _usageBackfillChecked = new Set<string>();
+
+  /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
+   *  (the composition root builds RunManager from rwe.config.json, so this IS the config-load check).
+   *  Issue audit A9 (owner decision 2026-10-06): the rule itself now lives in `assertPositiveInteger`
+   *  (config-numeric.ts) — the SAME function `composeConfig()` calls at `--check-config` time, so
+   *  the two call sites can never state the rule differently (one shared validator, no duplication). */
+  private static _positiveInt(value: number | undefined, fallback: number, name: string): number {
+    assertPositiveInteger(value, name);
+    return value ?? fallback;
+  }
+
+  constructor(deps: RunManagerDeps = {}) {
+    this._clock = deps.clock ?? new SystemClock();
+    this._store = deps.store ?? new InMemoryRunStore(this._clock);
+    this._spawnerOverride = deps.spawner;
+    this._gateway = deps.gateway ?? new LiteLLMGatewayClient(DEFAULT_GATEWAY_CONFIG);
+    this._concurrency = RunManager._positiveInt(deps.concurrency, DEFAULT_RUN_CONCURRENCY, 'runConcurrency');
+    this._workRoot = deps.workRoot ?? join(tmpdir(), 'remote-workflow-runs');
+    this._assetRoot = deps.assetRoot ?? defaultAssetRoot(this._workRoot);
+    this._globalAssetRoot = deps.globalAssetRoot ?? globalAssetRoot(this._workRoot);
+    this._catalog = deps.catalog ?? new WorkflowCatalog(this._workRoot, this._clock);
+    // D-V3M-2: unbounded local default (1024 ≫ the 1000-agent lifetime cap) preserves the exact
+    // prior behavior for every direct RunManager caller; the real DOS cap is injected by createServer.
+    this._semaphore = deps.semaphore ?? createSemaphore(1024);
+    this._maxWorkflowDepth = RunManager._positiveInt(deps.maxWorkflowDepth, 4, 'maxWorkflowDepth');
+    this._maxWorkflowDescendants = RunManager._positiveInt(deps.maxWorkflowDescendants, 256, 'maxWorkflowDescendants');
+    this._onTerminal = deps.onTerminal;
+    this._onWarning = deps.onWarning ?? ((w) => { console.warn(`[remote-workflow-engine] ${JSON.stringify(w)}`); });
+    this._agentSettleTimeoutMs = deps.agentSettleTimeoutMs ?? 2000;
+    this._maxConcurrentRuns = RunManager._positiveInt(deps.maxConcurrentRuns, 64, 'maxConcurrentRuns');
+    this._cas = deps.cas;
+    // v13 (REQ-080, TASK-077): normalize allowlist at construction (config-load check); default [] = disabled.
+    this._seedRefAllowlist = deps.seedRefAllowlist ? normalizeSeedRefAllowlist(deps.seedRefAllowlist) : [];
+    this._seedFetcher = deps.seedFetcher ?? new HardenedSeedRefFetcher();
+    this._secretValueProvider = deps.secretValueProvider;
+    // v21 (ARCH-066 inv-6): per-key fail-closed default, not "whole block present or defaults".
+    this._ceilings = {
+      maxTimeoutMs: deps.ceilings?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
+      maxAppendPromptBytes: deps.ceilings?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
+      maxEffort: deps.ceilings?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
+    };
+    // v26 (DES-178, TASK-178): an always-empty default source still prices anthropic-static/
+    // ollama-zero via ModelBook's own built-in fallback — never a crash for a caller that doesn't
+    // inject a real catalog (e.g. a direct RunManager unit test).
+    this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
+    this._harnessProviders = deps.harnessProviders;
+    this._eventSink = deps.eventSink ?? createEventSink({});
+    this._confinementPosture = deps.confinementPosture;
+    this._diskFloor = deps.diskFloor;
+    this._probeLookup = deps.probeLookup;
+    this._serviceAccountStatus = deps.serviceAccountStatus;
+    // F-1: validated here (construction-time, config-load check — same convention as every
+    // `_positiveInt` field above) but NOT defaulted here — `undefined` is forwarded as-is to every
+    // `SandboxHost` constructed below, which applies ITS OWN default (host.ts's own single
+    // `DEFAULT_MAX_RUN_DURATION_MS`, never a second copy of the same default value in this file).
+    if (deps.maxRunDurationMs !== undefined && (!Number.isInteger(deps.maxRunDurationMs) || deps.maxRunDurationMs < 1)) {
+      throw new Error(`maxRunDurationMs must be a positive integer, got ${deps.maxRunDurationMs}`);
+    }
+    this._maxRunDurationMs = deps.maxRunDurationMs;
+    // v40 (DES-274/275, TASK-271/272): default width (16 decide / 2 image) — composition root
+    // (TASK-272) overrides from `rwe.config.json`'s `decideSlots`/`imageSlots`.
+    this._decideSemaphore = deps.decideSemaphore ?? createSemaphore(16);
+    this._imageSemaphore = deps.imageSemaphore ?? createSemaphore(2);
+    this._imageInputMaxBytes = deps.imageInputMaxBytes ?? 4_718_592;
+    // v40 (DES-274, TASK-271): a caller overriding only `fetch` (every integration test here) still
+    // gets the real timer-based sleep/attemptSignal/random/resolveKey — merged, never replaced
+    // wholesale, so a partial override compiles against the full `DirectDeps` shape `call.ts` needs.
+    this._directDeps = { ...defaultDirectDeps(loadSecretSourceFromEnv()), ...(deps.directDeps ?? {}) };
+  }
+
+  /** Service accounts spec send-back D1: the ONE admission check shared by start(), resume(), and
+   *  the nested workflow() frame (_handleWorkflowRequest) — every place a run (or a nested
+   *  composition of one) can begin executing for a given principal + workflow name, including the
+   *  two paths that carry no bearer and so never reach authorize() at all (a schedule/webhook
+   *  trigger firing). `principal` absent, or not an `sa:` id, or `_serviceAccountStatus` unwired
+   *  (every pre-existing caller) -> no-op. A disabled/expired/deleted account refuses
+   *  unconditionally, BEFORE the allowlist is even consulted (spec: "refused everywhere", no
+   *  narrower case to disclose). `workflowName` absent (an ad-hoc/nested call with nothing to name
+   *  yet) skips the allowlist half only — liveness is still checked.
+   *
+   *  Issue #116 (decision b, reverify-r6-b finding 4): this is the ONE admission chokepoint a
+   *  bearer-less trigger firing ever reaches, and ALSO the one real MCP-reachable chokepoint for
+   *  `run_resume` (whose `ownership:'run'` authz row never re-checks the allowlist) — neither
+   *  `authorize()` nor `call-tool.ts`'s own refusal-audit wrapper ever runs for either path, so a
+   *  refusal here used to leave NO row in `audit_refusals_list`, unlike the SAME account's refused
+   *  `POST /mcp` bearer check. Audited the SAME way `authz-refusal.ts`'s `recordRefusal` is: one
+   *  row via `this._store.appendRefusal` (never turning an audit-write failure into a success — the
+   *  refusal already happened; the catch here only logs), a requestId minted once and ALSO stamped
+   *  onto the thrown error's `detail` so the caller (an MCP `run_resume`'s `error.detail.requestId`,
+   *  same convention `withRequestIdOnError`/`stampRequestId` use on the authorize()-refusal path)
+   *  can be traced back to it. `workflowName` is the target this engine's own
+   *  `authzTarget`/`workflowNameSubject` would resolve for a workflow-scoped tool — recorded as
+   *  `targetKind:'workflow'` even when absent (`targetId: null`), never `'none'`, since the caller
+   *  always named (or was already running as) a workflow by the time this gate can fire.
+   *
+   *  `tool` (advisor review, same call): `audit_refusals_list`'s own description promises the
+   *  `tool` column is "the BACKING MCP tool name" for a tool-dispatched refusal — a generic
+   *  `'run-manager'` label would contradict that for `run_resume`, which genuinely IS tool-
+   *  dispatched (just not through `authorize()`), so an admin filtering `tool:'run_resume'` would
+   *  find nothing. Each call site below passes its own real tool name: `start()` -> `'run_start'`
+   *  (true for the MCP-dispatched case; for a bearer-less trigger firing there is no MCP tool at
+   *  all, but `'run_start'` still names the OPERATION being attempted, consistent with how a
+   *  bearer-layer refusal with no tool behind it at all instead uses the HTTP route — this path
+   *  has neither, so the closest-OPERATION name is used), `resume()` -> `'run_resume'`, and the
+   *  nested `workflow()` frame -> `'run_start'` too (it is, mechanically, admission for a NEW run
+   *  composed inside the parent's sandbox). */
+  private _assertServiceAccountAdmission(principal: string | null | undefined, workflowName: string | undefined, tool: 'run_start' | 'run_resume'): void {
+    if (!principal) return;
+    const status = this._serviceAccountStatus?.(principal);
+    if (!status) return;
+    const refuse = (code: 'SERVICE_ACCOUNT_DISABLED' | 'WORKFLOW_NOT_ALLOWED', message: string): never => {
+      const requestId = randomUUID();
+      try {
+        this._store.appendRefusal({
+          ts: this._clock.isoNow(), requestId, actor: principal, authMethod: 'service-account',
+          tool, targetKind: 'workflow', targetId: workflowName ?? null,
+          realReason: code, returnedCode: code,
+        });
+      } catch (err) {
+        console.error(JSON.stringify({ event: 'refusal_audit_write_failed', requestId, tool, error: err instanceof Error ? err.message : String(err) }));
+      }
+      throw codedError(code, message, { requestId });
+    };
+    if (!status.live) {
+      return refuse('SERVICE_ACCOUNT_DISABLED', 'SERVICE_ACCOUNT_DISABLED: this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one');
+    }
+    if (status.workflows && status.workflows.length > 0 && workflowName !== undefined && !status.workflows.includes(workflowName)) {
+      return refuse('WORKFLOW_NOT_ALLOWED', `WORKFLOW_NOT_ALLOWED: this caller is restricted to workflows [${status.workflows.join(', ')}]`);
+    }
+  }
+
+  /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
+   *  admission-gate live count (synchronous, drift-free: a resumed run is naturally re-counted by its
+   *  status, no increment/decrement to get wrong). Nested runs are not in _runs, so never counted. */
+  private _liveRunCount(): number {
+    let n = 0;
+    for (const e of this._runs.values()) if (!TERMINAL.includes(e.status)) n++;
+    return n;
+  }
+
+  /** D-V3M-2 (REQ-020 D-DOS gauge): a snapshot of the process-global agent-slot semaphore, surfaced
+   *  by `GET /api/status` — total capacity, in-use slots, and the FIFO wait-queue depth. */
+  semaphoreGauge(): SemaphoreGauge {
+    return this._semaphore.gauge();
+  }
+
+  /** The catalog this manager resolves named workflows against (shared with SubmissionValidator). */
+  get catalog(): WorkflowCatalog {
+    return this._catalog;
+  }
+
+  /** issue #103(a): called once by the composition root after `AssetSyncService` is constructed
+   *  (same reason/pattern as `McpFacade.bindAssetSync` — it needs the server's own bound port,
+   *  built after this class). */
+  bindAssetSync(assetSync: AssetSyncService): void {
+    this._assetSync = assetSync;
+  }
+
+  /** Resolves the on-disk workspace path for a run (D-V7/REQ-013 artifact listing): live state
+   *  first, falling back to recomputing from the persisted spec (a deterministic function of
+   *  name+runId) so this also works for a run this process hasn't touched since a restart. */
+  async workspacePath(runId: string): Promise<string | null> {
+    const entry = this._runs.get(runId);
+    if (entry) return entry.workspace;
+    const spec = await this._store.getSpec(runId);
+    if (!spec) return null;
+    return this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
+  }
+
+  /** R-3 (review finding): the run-workspace artifact listing (REQ-023), owned by the workspace
+   *  owner (RunManager) so the MCP facade reads through this domain layer instead of reaching into
+   *  the filesystem itself. `null` when the run has no on-disk workspace (unknown run); `[]` when the
+   *  workspace dir was never materialized (a run that wrote nothing) — the latter is not an error. */
+  async listArtifacts(runId: string): Promise<ArtifactEntry[] | null> {
+    const workspace = await this.workspacePath(runId);
+    if (!workspace) return null;
+    try {
+      return listArtifacts(workspace);
+    } catch {
+      return [];
+    }
+  }
+
+  /** v14 REQ-082 (DES-087) ladder, extracted for issue #82 so `workflow_register({seedManifestRef})`
+   *  validates a version's default seed with the SAME check `run_start({seedManifestRef})` uses:
+   *  CAS_UNAVAILABLE → MISSING_BLOBS → INVALID_SEED_SPEC. `ns` is the security boundary — the
+   *  manifest and every blob it names must be in THAT namespace's refset (a blob another principal
+   *  uploaded reads as missing), so this is also the ownership check. Returns the parsed entries. */
+  async loadSeedManifestRef(ns: string, ref: string): Promise<ManifestEntry[]> {
+    if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifestRef requires a configured content store');
+    // Check the manifest blob is present in the namespace (security boundary: namespace-scoped check).
+    const manifestMissing = await this._cas.missing(ns, [ref]);
+    if (manifestMissing.length > 0) {
+      throw codedError('MISSING_BLOBS', `manifest blob ${ref} not found in namespace ${ns}; register via POST /assets/manifest`);
+    }
+    // Read from the namespace-agnostic blob pool (presence already confirmed above).
+    const manifestBuf = await this._cas.readBlob(ref);
+    if (!manifestBuf) throw codedError('MISSING_BLOBS', `manifest blob ${ref} missing from blob pool`);
+    let parsedManifest: unknown;
+    try { parsedManifest = JSON.parse(manifestBuf.toString('utf8')); } catch {
+      throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob is not valid JSON; register via POST /assets/manifest`);
+    }
+    if (!Array.isArray(parsedManifest)) {
+      throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob must be a JSON array of {path, sha256, exec?}`);
+    }
+    // issue #103(c): the SAME door `run_start({seedManifest})` uses for an INLINE manifest —
+    // structural shape (already re-checked above) PLUS the escaping/absolute-path check
+    // (`validateSeedSpec`'s `lexicalVerdict` gate) — run here too, since a seedManifestRef-loaded
+    // manifest bypasses run_start's own pre-load `validateSeedSpec(spec.seedManifest)` call
+    // entirely (that runs before this function is ever called). Shared by every caller of this
+    // loader: run_start's explicit `seedManifestRef`, a version's default seed (also loaded through
+    // this function), and `workflow_register({seedManifestRef})` (mcp-facade.ts), which validates a
+    // version's default seed the same way at registration time.
+    const specCheck = validateSeedSpec('seedManifest', parsedManifest);
+    if (!specCheck.ok) throw codedError('INVALID_SEED_SPEC', specCheck.message, { index: specCheck.index, path: specCheck.path });
+    // Re-validate all referenced blobs are present in the namespace (security boundary per DES-087).
+    const referencedShas = (parsedManifest as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
+    const missing = await this._cas.missing(ns, referencedShas);
+    if (missing.length > 0) throw codedError('MISSING_BLOBS', `${missing.length} blob(s) missing for seedManifestRef: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
+    return parsedManifest as ManifestEntry[];
+  }
+
+  /** `overrides` (v21, ARCH-066, DES-104) is an ARGUMENT, never a RunSpec field — persisting it on
+   *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
+   *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
+   *  the single durable representation.
+   *
+   *  `actor` (v38, issue #100 owner-approved policy): the caller's OWN bypass/identity, minted by
+   *  `McpFacade.runStart` via the SAME `actorFor(principal, a, 'bypass')` register/publish/
+   *  deregister already use (workflow-catalog.ts's `canMutate` notion, applied here unchanged) —
+   *  threaded as a THIRD argument, never a `RunSpec` field, so it is never persisted/read back on
+   *  resume (Q3 of issue #100 is the resume agent's own concern, not this admission gate's).
+   *  Omitted by every non-facade start() site (scheduler.ts/webhook-registry.ts/server.ts's ticker,
+   *  the nested `workflow()` frame, and every pre-#100 test) — those default to
+   *  `actorFromPrincipal(spec.principal ?? null)`, the SAME reproduction `workflow-catalog.ts` already
+   *  established for a legacy `principal`-only caller. All of those sites resolve the DEFAULT
+   *  (release) selector unconditionally already (no `version`/`channel` ever reaches them), so the
+   *  new gate below is a no-op for them regardless of which Actor shape they fall back to. */
+  async start(spec: RunSpec, overrides?: unknown, actor?: Actor): Promise<string> {
+    // Service accounts spec send-back D1: checked FIRST, before confinement/seed/anything else —
+    // this is the ONLY admission chokepoint a bearer-less trigger firing (schedule/webhook) ever
+    // reaches; a bearer-carrying run_start is ALSO checked here (redundant with authorize()'s own
+    // pre-check, but cheap and keeps this one rule in one place for every caller).
+    this._assertServiceAccountAdmission(spec.principal, spec.name, 'run_start');
+    const resolvedActor = actor ?? actorFromPrincipal(spec.principal ?? null);
+    // issue #93 item 2 (2026-09-26, amends ADR-086's third owner ruling 2026-09-25): the
+    // confinement door is now a DEFERRED refusal, not an immediate one. It used to throw here, as
+    // the FIRST statement in the function, ahead of every other check — that made call-tool.ts's
+    // own early door (removed by this same change) redundant for `run_start`, but it also meant a
+    // remote+unconfined caller with a MALFORMED submission (a nonexistent workflow, a bad
+    // `version`, a locked/unknown override) was told CONFINEMENT_UNAVAILABLE instead of the actual
+    // problem — a real defect a remote caller cannot act on ("why would re-registering locally fix
+    // a typo in my workflow name?"). The TWO admission checks below still run at (nearly) the same
+    // two POSITIONS as before — same pure `admissionRefusal()`, same two keys (`spec.origin`, the
+    // TRIGGER's own stored provenance; then `registered.registeredRemote`, the SCRIPT's own,
+    // known only after `catalog.resolve()`) — but each one now RECORDS its refusal into
+    // `confinementRefusal` instead of throwing immediately. The recorded refusal is thrown once,
+    // at the bottom of the existence/argument/authorization-shaped checks and immediately before
+    // the first durable write (`createRun`, below) — so `WORKFLOW_NOT_FOUND`/`VERSION_NOT_FOUND`/
+    // `CHANNEL_UNPUBLISHED` (thrown by `catalog.resolve()` itself), `LEGACY_REREGISTER`, and every
+    // `PARAM_*`/`UNKNOWN_MODEL`/seed check still win over a permanent confinement refusal, exactly
+    // as call-tool.ts's own ajv/authorize ordering already does for schema/role refusals. Nothing
+    // is created on a refusal either way: this is still strictly before every durable write.
+    // Trade-off accepted by this move (flagged for whoever next touches RUN_ADMISSION_LIMIT
+    // ordering): the OLD property "a submission that can never be admitted under this posture
+    // must not consume an admission slot / must not be answered with a RETRYABLE code" no longer
+    // holds when the run-count cap is already saturated — `RUN_ADMISSION_LIMIT` (a pure capacity
+    // read, not a write) is still checked before this deferred throw fires, so a confinement-doomed
+    // submission arriving while the engine is at `maxConcurrentRuns` now gets the RETRYABLE 503
+    // instead of the PERMANENT 403. Existence/argument-precedence was judged the more important
+    // property for issue #93's remote-caller experience; RUN_ADMISSION_LIMIT's own ordering is
+    // unchanged by this commit.
+    let confinementRefusalMessage: string | null = null;
+    {
+      const refusal = admissionRefusal({ posture: this._confinementPosture, origin: spec.origin });
+      if (refusal !== null) {
+        confinementRefusalMessage =
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused. Remediation: ${CONFINEMENT_REMEDIATION}`;
+      }
+    }
+    // v22 (REQ-098, ADR-013, DES-113, DES-117, TASK-108/TASK-109): the inline ban is on INGRESS
+    // ONLY — start() refuses ANY inline script, even off the wire (a caller that bypasses the MCP
+    // schema entirely and calls RunManager directly). resume() never applies this check: a run
+    // suspended before the ban shipped has a persisted spec.script and must still resume.
+    if (spec.script !== undefined) {
+      throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({name, script, mermaid}) then run_start({name})');
+    }
+    // v22 (DES-114, TASK-109): `scriptSha256` was REQ-085's integrity guard for INLINE scripts
+    // only — with inline scripts closed above and REQ-085 `[SUPERSEDED v22]`, it has nothing left
+    // to guard. `scriptSha256` was already removed from `RunSpec` (types.ts); the guard function
+    // (`assertScriptIntegrity`) and its now-orphaned unit test were removed in the same pass
+    // (v22 gate-closeout, adjudication (v22) #2 L-1 / REQ-085's own retirement instruction).
+    // v8 REQ-054: admission chokepoint — reject BEFORE any durable/expensive work (createRun,
+    // workspace mkdir, seed, sandbox spawn) when the cap is already reached. The global agent
+    // semaphore caps only agent() dispatch, not run count / sandbox forks / workspace materialization.
+    // Owner decision 2026-10-02: the disk floor — a capacity read like the cap below (503, transient).
+    this._diskFloor?.assert();
+    if (this._liveRunCount() >= this._maxConcurrentRuns) {
+      throw codedError('RUN_ADMISSION_LIMIT', `maxConcurrentRuns=${this._maxConcurrentRuns} reached; run rejected`);
+    }
+    // v26 (DES-170, TASK-175, issue #64): validateSeedSpec is the ONE door for INVALID_SEED_SPEC —
+    // it replaces the old array-shape-only checks (which let a well-formed array of {path, sha256}
+    // elements through `seed` and materializeSeed wrote 0-byte files via `contentB64 ?? ''`).
+    // Validate-all-then-write: nothing is materialized until every element passes, so this must run
+    // BEFORE any durable work — same position as the checks it replaces.
+    if (spec.seed !== undefined) {
+      const v = validateSeedSpec('seed', spec.seed);
+      if (!v.ok) throw codedError('INVALID_SEED_SPEC', v.message, { index: v.index, path: v.path });
+    }
+    if (spec.seedManifest !== undefined) {
+      const v = validateSeedSpec('seedManifest', spec.seedManifest);
+      if (!v.ok) throw codedError('INVALID_SEED_SPEC', v.message, { index: v.index, path: v.path });
+    }
+    // v14 REQ-082 (DES-087): 4-way mutual-exclusion — {seed, seedManifest, seedRef, seedManifestRef}:
+    //   >1 of these present → SEED_SOURCE_CONFLICT (highest precedence; fires before any CAS lookup).
+    {
+      const hasSeed = Array.isArray(spec.seed) && spec.seed.length > 0;
+      const hasManifest = Array.isArray(spec.seedManifest) && spec.seedManifest.length > 0;
+      const hasSeedRef = spec.seedRef !== undefined;
+      const hasSeedManifestRef = spec.seedManifestRef !== undefined;
+      const count = [hasSeed, hasManifest, hasSeedRef, hasSeedManifestRef].filter(Boolean).length;
+      if (count > 1) {
+        throw codedError('SEED_SOURCE_CONFLICT', 'seed, seedManifest, seedRef, and seedManifestRef are mutually exclusive; specify exactly one');
+      }
+    }
+    // v13 REQ-080 (DES-080, TASK-077): seedRef pre-createRun validation — pinned precedence:
+    //   SEEDREF_DISABLED → INVALID_SEED_SPEC → EGRESS_DENIED → CAS_UNAVAILABLE
+    // (SEED_SOURCE_CONFLICT is now the 4-way check above.)
+    if (spec.seedRef !== undefined) {
+      if (this._seedRefAllowlist.length === 0) {
+        throw codedError('SEEDREF_DISABLED', 'seedRef requires seedRefAllowlist in engine config (add seedRefAllowlist:[…] to rwe.config.json)');
+      }
+      const { repoUrl, sha } = spec.seedRef;
+      if (!repoUrl || typeof repoUrl !== 'string') {
+        throw codedError('INVALID_SEED_SPEC', 'seedRef.repoUrl must be a non-empty string');
+      }
+      if (!/^[0-9a-f]{40}$/.test(sha) && !/^[0-9a-f]{64}$/.test(sha)) {
+        throw codedError('INVALID_SEED_SPEC', 'seedRef.sha must be a full 40-hex or 64-hex commit sha (branch refs and short shas are rejected)');
+      }
+      const verdict = isEgressAllowed(repoUrl, this._seedRefAllowlist);
+      if (!verdict.ok) {
+        throw codedError(verdict.code, verdict.reason);
+      }
+      if (!this._cas) {
+        throw codedError('CAS_UNAVAILABLE', 'seedRef requires a configured content store (cas); like seedManifest, it assembles via materializeManifest');
+      }
+    }
+    // v14 REQ-082 (DES-087): seedManifestRef pre-createRun validation — pinned precedence after
+    //   SEED_SOURCE_CONFLICT (handled above): CAS_UNAVAILABLE → MISSING_BLOBS → INVALID_SEED_SPEC.
+    //   Loads the manifest blob from CAS, parses it, re-validates referenced blobs, then assigns
+    //   spec.seedManifest so the EXISTING materializeManifest branch runs unchanged (inline+ref parity).
+    if (spec.seedManifestRef !== undefined) {
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
+      // Fall into the existing materializeManifest branch.
+      spec.seedManifest = await this.loadSeedManifestRef(ns, spec.seedManifestRef);
+      spec.seedNamespace = ns;
+    }
+    // v10 REQ-065: fail fast (before any durable work) if a seedManifest references blobs the client
+    // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
+    if (spec.seedManifest && spec.seedManifest.length > 0) {
+      if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifest requires a configured content store');
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
+      const missing = await this._cas.missing(ns, spec.seedManifest.map((e) => e.sha256));
+      if (missing.length > 0) throw codedError('MISSING_BLOBS', `upload ${missing.length} blob(s) first: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
+    }
+    let script = spec.script ?? '';
+    let scriptVersion = 1;
+    let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
+    let registeredContract: ParamContract | undefined;
+    if (spec.name && !spec.script) {
+      // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
+      // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
+      // v38 (issue #100): `resolveDetail`, not `resolve` — the ONLY change from the pre-#100 shape
+      // is that this now ALSO reads `owner`/`channels`, which `resolve()` deliberately omits ("an
+      // authorization input stays off the execution read" — still true for `resolve()` itself;
+      // `_handleWorkflowRequest`'s nested-frame admission, below, still calls the owner-blind
+      // `resolve()` because a nested call always resolves release regardless of owner, so it has no
+      // use for either field). `resolveDetail` internally calls `resolve()` once and keeps what it
+      // already fetched — same SQL, not a second query.
+      // v38 (issue #100, owner-approved policy) / issue #108 (2026-10-02, oracle fix): the
+      // NON-OWNER version-pin gate — an owner, a bypass actor (admin/auth-disabled/
+      // loopback-exempt, matching `workflow_publish`/`workflow_deregister`'s existing bypass), or an
+      // ownerless legacy row may reach ANY version; everyone else only the CURRENT RELEASE, masked
+      // as the SAME `VERSION_NOT_FOUND` code+message `resolveVersionRequest` itself uses for a
+      // genuinely unknown version (Q5: existence-masking). This used to be a POST-hoc `canRunResolved`
+      // check run AFTER `resolveDetail` — which meant `resolveDetail` itself (via
+      // `resolveVersionRequest`) could already throw the REAL `CHANNEL_UNPUBLISHED`/
+      // `VERSION_NOT_FOUND` for a non-owner's `beta`/explicit-version ask before the masking gate
+      // ever ran, leaking exactly the "is this non-release thing published" fact Q5 forbids (issue
+      // #108). `resolveForActor` (workflow-catalog.ts) folds the SAME predicate to BEFORE resolution
+      // — the masking decision is made first, using only the owner row + channel pointers, so a
+      // masked request's real code never escapes this call at all.
+      const registered = await this._catalog.resolveForActor(spec.name, { version: spec.version, channel: spec.channel }, resolvedActor); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
+      // issue #93 item 2: the SECOND admission check — the resolved VERSION's own
+      // `registeredRemote`, known only now (after `catalog.resolve()`, so WORKFLOW_NOT_FOUND/
+      // VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED above already had priority). RECORDS into
+      // `confinementRefusalMessage` (never overwriting the first stage's own message, so the
+      // TRIGGER-side reason wins when both are true — same "first non-null result" precedence the
+      // pre-move comment described) rather than throwing here directly — the actual throw is
+      // deferred to just before `createRun` below, past LEGACY_REREGISTER and every `PARAM_*`/
+      // `UNKNOWN_MODEL` contract check.
+      if (confinementRefusalMessage === null) {
+        const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
+        if (refusal !== null) {
+          confinementRefusalMessage =
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow '${spec.name}' version ${registered.version} was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover. Remediation: ${CONFINEMENT_REMEDIATION}`;
+        }
+      }
+      script = registered.script;
+      resolvedVersion = registered.version;
+      scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
+      registeredContract = registered.params as ParamContract | undefined;
+      // v24 (integrator; DES-144/DES-156, flagged by the Batch-A executor as unowned): a version
+      // row whose `params` column is NULL predates the per-agent contract. Every v24 registration
+      // writes one unconditionally (`insertVersion` JSON-stringifies the parsed contract, `{}`
+      // included), so `undefined` here means exactly "registered before v24". `workflow_describe`
+      // and `workflow_list` ALREADY report such a version as `runnableReason:'LEGACY_REREGISTER'`;
+      // `run_start` accepted it anyway and ran it with no per-agent slice at all — the read
+      // surfaces and the run path disagreed about the same row. Same code, same reason, same
+      // remedy as the resume readback gate below.
+      if (registeredContract === undefined) {
+        throw codedError(
+          'LEGACY_REREGISTER',
+          `LEGACY_REREGISTER: workflow '${spec.name}' version ${resolvedVersion} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
+          { workflow: spec.name, version: resolvedVersion },
+        );
+      }
+      // issue #154 B1-B4 (2026-10-07 reverify): a static registration rule added AFTER this
+      // version was registered (e.g. the #154 NEW-HIGH `allowedTools`-via-variable scan violation)
+      // never retroactively re-checked an already-stored row — only a FRESH registration was
+      // refused, so an old version kept `runnable:true` and kept reproducing the original bug at
+      // dispatch. Checked AFTER LEGACY_REREGISTER (a pre-v24 row has no `params` at all and would
+      // fail this for the unrelated reason of predating the contract entirely — LEGACY_REREGISTER
+      // is the right code for that, not NOT_RUNNABLE).
+      // #157 (2026-10-07 re-verification of #154) independently hit the same gap from the OTHER
+      // side: `workflow_describe` already surfaced a stale script as `validation.ok:false`
+      // (`catalog.validateCurrent()`, parse/shape only) while nothing in THIS admission sequence
+      // ever checked it, so `run_start` accepted and dispatched the same row — observed ending
+      // ABORTED with no error code. `validateStoredVersion()` below is a strict superset of that
+      // `validateCurrent()` re-check (same `validateScriptEntry` call, plus name-validity/
+      // `scanAgentCalls`/`parseMetaParams`), so the one call closes both.
+      {
+        const staleness = await this._catalog.validateStoredVersion(spec.name, resolvedVersion);
+        if (!staleness.ok) {
+          throw codedError(staleness.code, staleness.message, staleness.detail);
+        }
+      }
+      // issue #103(a): the admission-time provisioning refusal — BEFORE any durable work (seed
+      // materialization, createRun, workspace mkdir), same as every other admission check above.
+      // Covers run_start, every schedule/webhook firing (both dispatch through this SAME door), and
+      // a resident trigger — the only paths that ever set `spec.name && !spec.script`.
+      await this._refuseUnprovisionedAssets(spec.name, registeredContract);
+      // Issue #82 (option B): the resolved VERSION's default seed, bound at workflow_register. Here,
+      // in the one door every start path shares (run_start, schedule ticker, resident trigger,
+      // webhook), so no start path needs its own seed code. Applied only when the run brought NO
+      // seed of its own — an explicit seed of any of the four kinds REPLACES the default, never
+      // merges with it (same rule as the 4-way mutual exclusion above). Read from the REGISTRANT's
+      // namespace stored on the row, not the run's: a fired run carries no principal, and the
+      // registrant is who proved possession at register time. Still before any durable work.
+      if (registered.seedManifestRef !== undefined && !hasExplicitSeed(spec)) {
+        const ns = registered.seedNamespace ?? casNamespaceFor(null);
+        spec.seedManifest = await this.loadSeedManifestRef(ns, registered.seedManifestRef);
+        spec.seedNamespace = ns;
+        spec.seedManifestRef = registered.seedManifestRef;
+      }
+    }
+
+    // v21 (ARCH-066 inv-6, DES-104, TASK-100): admission rung — ONE task by decree (validate +
+    // snapshot + config wiring together, so this bug class doesn't ship a fifth time). Validates
+    // `overrides`/declared `args` against the workflow's tunable-parameter contract BEFORE any
+    // durable work (createRun/runWorkspace/sandbox spawn) — an ad-hoc inline script (no registered
+    // contract) is bound by the canonical 4-knob contract, same as a registered script with no
+    // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
+    // v24 (DES-144): the "canonical 4-knob contract" fallback is RETIRED (params/contract.ts no
+    // longer exports it) — an unregistered/legacy contract reads back as the zero-label shape.
+    // v24 (TASK-136/137/158): `validateUserOverrides`/`validateDeclaredArgs` already validate the
+    // real per-agent `{agents:{...}}}` shape (DES-145) — the merge below (TASK-158) is what folds
+    // that validated per-label result into the admission snapshot's `.agents` slice.
+    const contract = registeredContract ?? ({ agents: {}, args: {} } as ParamContract);
+    // v35 (DES-233, ARCH-144, ADR-071, TASK-236, REQ-206): fill declared-but-absent `args` keys
+    // from their `.default` ONCE at admission, before `validateDeclaredArgs` — so a declared
+    // default is validated by the EXISTING checker (which skips absent keys) and `runs.args`
+    // persists the RESOLVED record, never the caller's bare `null`/omission. A non-record `args`
+    // (a caller CAN send `args: "hello"` today — `run_start`'s schema declares no type on it) is
+    // passed through untouched: materializing over it would spread a string into index keys.
+    // issue #107: materialize-defaults is now the SAME shared helper a nested `workflow()` frame's
+    // own admission calls — see `materializeRunArgs`'s own doc for why only `resolvedArgs` (the
+    // record case) reassigns `spec.args` here.
+    const { args: materializedArgs, resolvedArgs } = materializeRunArgs(contract, spec.args);
+    if (resolvedArgs) spec = { ...spec, args: materializedArgs };
+    // v26 (DES-178, ARCH-116, ADR-038, TASK-178) — 2026-09-26 (alias mechanism removed, owner
+    // decision 6): fetched ONCE per admission and reused for BOTH the UNKNOWN_MODEL existence check
+    // (override rung here, effective-value rung in `_refuseUnadmittableParams` below) AND the
+    // price-book pin further down — one live catalog fetch, one snapshot, so the two can never
+    // disagree about what the catalog said for this admission.
+    const bookSnapshot = await this._modelBook.snapshot();
+    const catalog = toModelCatalogSnapshot(bookSnapshot, this._harnessProviders);
+    const overridesResult = validateUserOverrides(contract, overrides, catalog, this._ceilings);
+    if (!overridesResult.ok) throw paramCodedError(overridesResult);
+    const admissionWarnings: Array<ModelToolWarning | ModelRefWarning> = [...(overridesResult.warnings ?? [])];
+    const argsResult = validateDeclaredArgs(contract, spec.args);
+    if (!argsResult.ok) throw paramCodedError(argsResult);
+    // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
+    // `overrides` (schedule/webhook/chain triggers) must not each reach for `overrides ?? {}`.
+    const effectiveParams: RunParams = overrides === undefined
+      // v24 Gate 7.5 (ADR-035): the workflow-wide `defaults` object is retired and no longer read
+      // from the catalog, so the first argument — the registered HarnessDefaults snapshot — is
+      // always absent. Every value now comes from the per-agent contract (`contract.agents`).
+      ? defaultRunParams(undefined, contract.agents)
+      : mergeRunParams(undefined, overridesResult.value, contract.agents);
+    // v40 (DES-271/274, TASK-271) + v40 Gate 6 delta (DES-277, R-13, TASK-274): the `decisions`/
+    // `images` slice now folds any caller-supplied `overridesResult.value.decisions`/`.images` over
+    // the declared defaults (`resolvePrimitiveParams`, override › default per key) — folded in
+    // BEFORE `_refuseUnadmittableParams`/the price pin below, so `reachableModels` (which already
+    // reads these two keys, TASK-267) sees the OVERRIDDEN model, same as every agent() label's.
+    if (contract.decisions) effectiveParams.decisions = resolvePrimitiveParams(contract.decisions, overridesResult.value.decisions);
+    if (contract.images) effectiveParams.images = resolvePrimitiveParams(contract.images, overridesResult.value.images);
+    // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
+    // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
+    // but has since fallen out of the configured alias table (a config change between restarts)
+    // was never re-examined — every un-overridden submission using it was silently admitted. Same
+    // UNKNOWN_MODEL code, same "before any durable work" placement as the override-rung check.
+    // v24 (TASK-158): re-checked over EVERY label's resolved model too, not just the (now largely
+    // vestigial, HarnessDefaults-only) top-level field — a per-agent override/default is just as
+    // reachable here as the old flat one was.
+    // v26 (DES-178, ARCH-116, TASK-178): extracted to `reachableModels` so this admission check and
+    // the price-book pin below derive the SAME reachable set from ONE place (INV-V26-4).
+    // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
+    // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
+    // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
+    // unchecked on every no-overrides submission, so the EFFECTIVE post-merge value is re-checked
+    // too (DES-101 row 6: reported by size only). v24 (TASK-158): both checks cover every label's
+    // resolved value. Both live in `_refuseUnadmittableParams`, shared with a nested `workflow()`
+    // frame's own admission.
+    const refuseResult = this._refuseUnadmittableParams(effectiveParams, catalog);
+    const modelsToCheck = refuseResult.models;
+    admissionWarnings.push(...refuseResult.warnings);
+    // v35 (DES-233): the materialized args RECORD, folded into the admission snapshot BEFORE the
+    // redact fork below — `effective_params.args` records it (readable, e.g. by `workflow_describe`
+    // fixtures), but stays the redacted ADMISSION record; it is never promoted to a dispatch source
+    // (INV-V35-2 — `runs.args`/`entry.args`, set on `spec` above, is the only dispatch source).
+    if (resolvedArgs) effectiveParams.args = resolvedArgs;
+    // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
+    // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
+    // RunEntry (below) keeps the unredacted value (dispatch never sees a redaction marker).
+    const persistedParams = this._secretValueProvider
+      ? (redact(effectiveParams, this._secretValueProvider.entries()) as RunParams)
+      : effectiveParams;
+
+    // v26 (DES-178, ARCH-116, ADR-038, TASK-178, REQ-127/126): pin price/capability at admission —
+    // "however started" (ADR-047(b)): every start() call reaches here, including trigger-started
+    // runs (schedule/webhook/chain), so a run's spend is trackable even though it carries no cap.
+    // Pinned here, never re-resolved on resume — a mid-run price change or listing outage cannot
+    // move a pinned run's arithmetic. One entry per reachable model, present even when every entry
+    // prices `null` ("we looked and found nothing" vs "we never looked" stay distinguishable only
+    // because the key is THERE).
+    // 2026-09-26 (alias mechanism removed, rule 3): the `'default'` superset member is GONE — every
+    // label's model is REQUIRED with a full-ref `.default` (owner decision 2), so admission already
+    // guarantees a resolved model per label; `modelsToCheck` (== `reachableModels`) is now the exact
+    // pin set, no superset needed (INV-V26-4 holds by construction, not by padding). `m` is already
+    // ref-validated above (`_refuseUnadmittableParams`), so `parseModelRef` failing here would mean
+    // the admission check and the pin disagreed — never expected in practice.
+    const pinned: PriceBook['pinned'] = {};
+    for (const m of modelsToCheck) {
+      const resolved = parseModelRef(m);
+      if (!resolved) continue;
+      pinned[`${resolved.provider}/${resolved.model}`] = bookSnapshot.lookup(resolved.provider, resolved.model);
+    }
+    const priceBook: PriceBook = { fetchedAt: bookSnapshot.fetchedAt, source: bookSnapshot.source, pinned };
+
+    // issue #93 item 2: the deferred confinement throw — the LAST pure check, immediately before
+    // the first durable write below (`createRun`). Everything above this line that can answer a
+    // more specific typed refusal (WORKFLOW_NOT_FOUND/VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED via
+    // `catalog.resolve()`, INLINE_SCRIPT_CLOSED, RUN_ADMISSION_LIMIT, every seed-shape/seedRef/
+    // seedManifestRef check, LEGACY_REREGISTER, PARAM_LOCKED/PARAM_UNKNOWN/UNKNOWN_AGENT_LABEL/
+    // UNKNOWN_MODEL/AGENT_UNDECLARED) has already had the chance to fire; a remote+unconfined
+    // caller only ever sees CONFINEMENT_UNAVAILABLE for a submission that was otherwise ADMISSIBLE.
+    if (confinementRefusalMessage !== null) {
+      throw codedError('CONFINEMENT_UNAVAILABLE', confinementRefusalMessage);
+    }
+
+    const runId = await this._store.createRun(spec, resolvedVersion, persistedParams, priceBook);
+    const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
+    // v13 REQ-080 (DES-083, TASK-078): engine-pull seedRef — fetch the tree AFTER createRun, feed the
+    // fetched entries into the EXISTING seedManifest materialize branch below (guard-parity is structural:
+    // regular files only, .git never materialized). Timing/dropped/failure surface on RunStatusView.seedRef;
+    // a fetch failure fails the run via the same resultError channel as any other run failure.
+    let seedRefView: RunEntry['seedRef'];
+    let seedRefFail: { code: string; message: string } | undefined;
+    if (spec.seedRef !== undefined) {
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
+      const t0 = this._clock.now();
+      try {
+        const r = await this._seedFetcher.fetch(
+          { repoUrl: spec.seedRef.repoUrl, sha: spec.seedRef.sha, timeoutMs: SEEDREF_TIMEOUT_MS, maxTotalBytes: SEEDREF_MAX_TOTAL_BYTES, maxFileBytes: SEEDREF_MAX_FILE_BYTES },
+          async (sha, bytes) => { await this._cas!.putBlob(ns, sha, bytes); },
+        );
+        spec.seedManifest = r.entries; // fall into the existing materializeManifest branch below
+        spec.seedNamespace = ns;
+        seedRefView = { resolvedSha: r.resolvedSha, bytes: r.bytesTransferred, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: r.dropped };
+      } catch (err) {
+        const code = (err as { code?: string }).code ?? 'SEEDREF_FETCH_FAILED';
+        // v35 send-back (C-1): the UNSLICED message feeds `seedRefFail` — `captureFailure` (below,
+        // at the `seedRefFail` handling site) bounds it AFTER `redact()` runs, matching R-G9/
+        // INV-V26-5 (a substring cut applied BEFORE redact() can split a secret so redact()'s
+        // value-exact match finds neither half).
+        const rawMessage = String((err as { message?: string }).message ?? err);
+        seedRefFail = { code, message: rawMessage };
+        // issue #125: QUOTA_EXCEEDED/DISK_LOW come from CasStore.putBlob (called mid-fetch, above)
+        // and are real, actionable codes in their own right — folding them into the generic
+        // SEEDREF_FETCH_FAILED hid a quota/disk refusal from anyone polling run_status instead of
+        // run_result (whose resultError.code already carried the real code untouched).
+        const failCode = (code === 'SEEDREF_SHA_MISMATCH' || code === 'SEEDREF_TOO_LARGE' || code === 'QUOTA_EXCEEDED' || code === 'DISK_LOW') ? code : 'SEEDREF_FETCH_FAILED';
+        // v36 (DES-241, TASK-239, K2): the unredacted twin dies — `failDetail` now goes through the
+        // SAME redact-then-bound path as `resultError` below, at its own 200-byte bound (the two
+        // sites never shared one; see DES-241's boundary note).
+        const failDetail = captureFailure(err, this._secretValueProvider?.entries() ?? [], 200).message;
+        seedRefView = { resolvedSha: spec.seedRef.sha, bytes: 0, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: [], failCode, failDetail };
+      }
+    }
+    // REQ-025 (v2) / REQ-065 (v10): materialize a seed into the workspace BEFORE any agent starts
+    // (engine-side, so replay/determinism holds) — from an inline tree (`seed`) or a CAS manifest
+    // (`seedManifest`, blobs verified present above). Both go through the SAME guardrails and the SAME
+    // pre/post steps (mkdir + git baseline), differing only in the materializer — pick it once.
+    const cas = this._cas;
+    // Issue #159: the return value used to be discarded entirely (`materialize(workspace);` with
+    // nothing captured) — `materializeSeed`/`materializeManifest` strip former Claude config
+    // (`.claude/settings*.json`, `.claude/hooks/**`) at this point, before it ever touches disk, so
+    // the dispatch-time sweep (`sweepPlantedConfig`) later finds nothing there and correctly reports
+    // nothing; nowhere else ever surfaced that a seeded path was dropped. `seedConfigStripped` below
+    // closes that gap, mirroring `seedRefView`'s own `dropped` just above.
+    let seedConfigStripped: string[] = [];
+    const materialize =
+      spec.seed && spec.seed.length > 0 ? (ws: string) => { seedConfigStripped = materializeSeed(ws, spec.seed!).stripped; } :
+      spec.seedManifest && spec.seedManifest.length > 0 && cas ? (ws: string) => { seedConfigStripped = materializeManifest(ws, spec.seedManifest!, (sha) => cas.readBlobSync(sha)).stripped; } :
+      null;
+    if (materialize) {
+      mkdirSync(workspace, { recursive: true });
+      materialize(workspace);
+      // REQ-027 (v2.5): the client cannot seed `.git/`, so the engine gives the seeded tree a
+      // brownfield git baseline here — the SDLC precheck needs a work tree + a commit to diff against.
+      // Best-effort: a null baseSha never fails the run.
+      initGitBaseline(workspace);
+    }
+    // v26 (DES-181, ARCH-118, TASK-181): 'store' — by the time a WIRE admission reaches here it has
+    // already passed call-tool.ts's ahead-of-ajv bare-number refusal and the schema's object/null
+    // shape, so a bare number here is either a legacy persisted row (the resume path below) or a
+    // direct-construction test caller; both mean the v25 token-only shape.
+    const budgetLimits = parseBudget(spec.budget, { source: 'store' });
+    const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
+    // issue #163 B1: see RunEntry.workflowGuard's own doc for why this must be a SEPARATE RunGuard
+    // instance from `guard`, not a shared one.
+    const workflowGuard = new RunGuard({ concurrency: this._concurrency, budget: null });
+    // v26 integration (DES-178, TASK-178, REQ-127, clarification 27): the pin computed just above
+    // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
+    // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
+    // bug class). This is the `start()` half; `_requireLive` reads the same pin back from the row.
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook, onAgentSettled: (settledRunId) => this._maybeRefoldLateUsage(settledRunId) });
+    const entry: RunEntry = {
+      script,
+      // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
+      // (this line, and its resume-rehydrate twin below) is the ONLY dispatch source; promoting
+      // the redacted `effective_params.args` admission record here is exactly what INV-V35-2
+      // forbids (a hard-crash resume would otherwise hand the script a redaction marker as data).
+      args: spec.args ?? {},
+      name: spec.name,
+      status: 'queued',
+      guard,
+      workflowGuard,
+      budgetLimits,
+      abortController: new AbortController(),
+      sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
+      spawner,
+      workspace,
+      journal: [],
+      scriptVersion,
+      pinnedVersion: resolvedVersion,
+      cachePlan: null,
+      phases: [],
+      descendants: 0,
+      nestedFrames: new Map(),
+      nestedFrameSeq: 0,
+      workflowNodes: [],
+      effectiveParams,
+      priceBook,
+      declaredAssets: declaredAssetsOf(contract),
+      toolSurface: expectedAgentOptsByLabel(script),
+      principal: spec.principal,
+      refusals: new Map(),
+      refusalsDropped: 0,
+      primitiveRefusals: new Map(),
+      primitiveRefusalsDropped: 0,
+    };
+    this._runs.set(runId, entry);
+    // Issue #73 (d): every admission route (run_start, schedule, webhook, chain) reaches here —
+    // WARN, never refuse, when an agent holding tools resolves to a model whose latest probe saw no
+    // tool use. Logged for the trigger routes (no caller to answer); run_start returns them.
+    if (this._probeLookup) {
+      const lookup = this._probeLookup;
+      const toolWarnings = toolProbeWarnings({
+        calls: scanAgentCalls(script).calls,
+        // 2026-09-26 (alias mechanism removed, rule 3): no `?? 'default'` fallback — every label's
+        // model is REQUIRED with a full-ref default (owner decision 2), so `effectiveParams.agents[label].model`
+        // is always defined for a label that scanned an agent() call at all.
+        modelFor: (label) => effectiveParams.agents?.[label]?.model as string,
+        resolve: (ref) => parseModelRef(ref),
+        lookup,
+      });
+      admissionWarnings.push(...toolWarnings);
+    }
+    // 2026-09-26 (owner decision 6, per-coordinator MCP-only surface): MODEL_CATALOG_UNVERIFIED
+    // (registration-time-shaped, but a run_start override can also produce one) travels the SAME
+    // `_admissionWarnings` channel as MODEL_TOOL_USE_UNVERIFIED — one bounded map, one `run_start`
+    // read-back (`takeAdmissionWarnings`), regardless of which check produced the warning.
+    if (admissionWarnings.length > 0) {
+      // Trigger-started runs never take theirs — bound the map (oldest first) so they can't pile up.
+      if (this._admissionWarnings.size >= 256) this._admissionWarnings.delete(this._admissionWarnings.keys().next().value!);
+      this._admissionWarnings.set(runId, admissionWarnings);
+      for (const w of admissionWarnings) console.warn(`[model-catalog] run ${runId}: ${w.message}`);
+    }
+    entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
+    if (spec.seedManifestRef !== undefined) entry.seedManifestRef = spec.seedManifestRef; // v14: DES-087
+    if (seedConfigStripped.length > 0) entry.seedConfigStripped = seedConfigStripped; // issue #159
+    if (seedRefFail) {
+      // v13 REQ-080: a seedRef fetch failure fails the run typed (never starts the script against an
+      // empty/partial tree) via the same resultError channel every other run failure uses.
+      // v35 send-back (C-1): route through the SAME capture->redact->bound->persist sequence as the
+      // dispatch-continuation failure path (_runLive, below) — `seedRefFail.message` is the raw
+      // caught error text and can carry a secret value (e.g. a credential embedded in a seedRef
+      // URL), so it must not reach `runs.error`/journal.jsonl un-redacted, and it must be recorded
+      // via `recordError` (STRICTLY BEFORE the 'failed' transition, INV-V35-1) like every other
+      // failure.
+      entry.resultError = captureFailure(seedRefFail, this._secretValueProvider?.entries() ?? []);
+      try { await this._store.recordError(runId, entry.resultError); }
+      finally { await this._transition(runId, entry, 'failed'); }
+      return runId;
+    }
+    await this._transition(runId, entry, 'running');
+    this._runLive(runId, entry, entry.script, null);
+    return runId;
+  }
+
+  /** Issue #162 (orphan sandbox children): called from the engine's own shutdown path
+   *  (`server.ts`'s `close()`, in turn from `main.ts`'s SIGINT/SIGTERM handler) — SIGKILLs every
+   *  still-`running` entry's forked sandbox child, the SAME mechanism `suspend()`/`stop()` already
+   *  use below, so a script's OS process never outlives this engine process just because nothing
+   *  on the shutdown path ever reached into `RunManager`'s own state before. Also aborts each
+   *  entry's execution generation, which cascades into any CURRENTLY in-flight nested `workflow()`
+   *  frame via the same `killNested` listener issue #53 already wires there (`_handleWorkflowRequest`,
+   *  below) — a nested child is killed too, not just the top-level one. Deliberately writes no store
+   *  transition and awaits no in-flight capture (`settleInflight`): the process is exiting regardless,
+   *  a half-written transition against a store that may itself be mid-close is worse than leaving
+   *  the row at `running` (the next boot's `hydrateAll` already reclassifies a stale `running` row as
+   *  `interrupted`/resumable), and this must never hang shutdown waiting on anything. Best-effort,
+   *  per entry — one entry's kill failing (already exited, ESRCH) never stops the rest from being
+   *  tried. Never throws. */
+  async shutdown(): Promise<void> {
+    await Promise.all(
+      [...this._runs.entries()].map(async ([runId, entry]) => {
+        if (entry.status !== 'running') return;
+        try { entry.abortController.abort(); } catch { /* best-effort */ }
+        try { await entry.sandbox.abort(runId, 'stop'); } catch { /* best-effort */ }
+      }),
+    );
+  }
+
+  async suspend(runId: string): Promise<void> {
+    const entry = await this._requireLive(runId, 'suspended');
+    if (entry.status !== 'running') throw new IllegalTransitionError(entry.status, 'suspended');
+    entry.abortController.abort();
+    await entry.sandbox.abort(runId, 'suspend');
+    // issue #127 (#53/adjudication #9 I-2 follow-up): bounded wait for every in-flight agent() call's
+    // OWN `_finalizeAborted`/`capture()` to land — see `AgentExecutor.settleInflight`'s own doc for
+    // why this matters even though 'suspended' writes no terminal snapshot: an immediate
+    // `resume()`/`status()` right after this call otherwise reads a transiently stale 'running'
+    // record (and `resume()`'s own `ResumeCache.build` reads `entry.journal`, which the SAME
+    // in-flight capture may still be about to touch).
+    if (entry.spawner instanceof AgentExecutor) await entry.spawner.settleInflight(this._agentSettleTimeoutMs);
+    await this._transition(runId, entry, 'suspended');
+  }
+
+  async resume(runId: string): Promise<void> {
+    // Owner decision 2026-10-02: the disk floor — before `_requireLive` caches anything.
+    this._diskFloor?.assert();
+    const entry = await this._requireLive(runId, 'running');
+    // issue #94 (owner decision): `stopped` is a TRUE terminal state — refused UNCONDITIONALLY,
+    // before the legacySubstitution/confinement check below. A non-cached stopped run never reaches
+    // this line at all any more (`_requireLive` above now refuses it directly, caching nothing); this
+    // covers the in-process case where `stop()` left the entry cached with status `'stopped'`. Placed
+    // ahead of the confinement check on purpose: a run that was once resumed via a legacy
+    // substitution (so it still carries `entry.legacySubstitution.remote === true`) and was later
+    // stopped must still answer ILLEGAL_TRANSITION here, never CONFINEMENT_UNAVAILABLE — the
+    // CONFINEMENT_UNAVAILABLE message below already draws exactly this line ("one that is already
+    // stopped answers ILLEGAL_TRANSITION, which is a different matter and already terminal").
+    if (entry.status === 'stopped') {
+      throw new IllegalTransitionError(entry.status, 'running');
+    }
+    // Service accounts spec send-back D1 (owner decision, reversing the original "forward-only"
+    // call): a disabled/expired/deleted sa: principal, or one whose allowlist has since narrowed to
+    // exclude this run's own workflow, cannot resume it — re-checked on every resume, not only at
+    // the admission that started it. A stopped run above already took priority (ILLEGAL_TRANSITION
+    // is a run-state fact, not an authz one, and must not be masked by this).
+    this._assertServiceAccountAdmission(entry.principal, entry.name, 'run_resume');
+    // v37 P1 (Gate 8 round-5 finding R5-F1; ADR-086's third owner ruling, DES-263 第四次修訂):
+    // `resume()`'s ONE admission stage. `_requireLive()` only RECORDS that it had to substitute the
+    // current `release` for a pin that no longer exists, and whether that substituted version was
+    // registered remotely; the refusal belongs here because `_requireLive()` is shared with
+    // `suspend()` and `stop()`, and refusing in there leaves the run unable to reach a terminal
+    // state at all. The owner-accepted resume exclusion (INV-V37-5(c)) covers CONTINUING THE CODE
+    // THE RUN STARTED WITH — the pinned path, which stays ungated. A substitution is not that.
+    const sub = entry.legacySubstitution;
+    if (sub?.remote === true) {
+      const refusal = admissionRefusal({ posture: this._confinementPosture, origin: 'remote' });
+      if (refusal !== null) {
+        // v37 P1 (Gate 8 round-6 finding R6-F1; wording corrected round 7, R7-F3): **a refused
+        // rehydration must leave no CACHED trace.** It does leave durable ones on purpose — the
+        // `recordLegacySubstitution` row and the `run.legacySubstitution:` log line are written
+        // before this point, and both should survive a refusal as the audit record of what was
+        // attempted. What must not survive is the in-memory entry.
+        // `_requireLive()` has already cached this entry (it caches unconditionally, as it must for
+        // the paths that succeed), and that entry holds BOTH the refused version's `script` and this
+        // `legacySubstitution`. Without this eviction the refusal is memoised: the operator does
+        // exactly what the message below prescribes — re-register locally, re-publish — and `resume()`
+        // still refuses, forever, until the process restarts, because the cached entry is consulted
+        // before the catalog is ever re-read. Round 4's (wrongly placed) refusal happened to avoid
+        // this by throwing before the `_runs.set`; keeping the decision in `resume()` means paying
+        // for it explicitly here. Evicting is safe and cheap: this entry came from rehydration, so
+        // its `SandboxHost` was constructed but never started (`resume()` replaces it below anyway),
+        // and `stop()` simply rehydrates again — which is why `stop()` keeps working.
+        this._runs.delete(runId);
+        throw codedError(
+          refusal,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${sub.pinned} no longer exists, and the '${entry.name ?? '?'}' version that would be substituted for it (${sub.resolved}) was registered remotely, so RESUMING it is refused (stopping it is NOT refused ON THIS GROUND — a run that is still suspended/interrupted can be stopped and its workspace purged; one that is already stopped answers ILLEGAL_TRANSITION, which is a different matter and already terminal); re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) and resume again to recover. Remediation: ${CONFINEMENT_REMEDIATION}`,
+        );
+      }
+    }
+    // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended.
+    // `stopped` is excluded (issue #94) and already refused above — never reachable here.
+    if (entry.status !== 'suspended' && entry.status !== 'interrupted') {
+      throw new IllegalTransitionError(entry.status, 'running');
+    }
+    // issue #154 B1-B4 (2026-10-07 reverify): same re-validation `start()` applies, against
+    // whichever version will ACTUALLY run this resume — the legacy-substitution replacement when
+    // one occurred, else the pin. Placed in `resume()` itself (never `_requireLive`, which
+    // `suspend()`/`stop()` also call) for the same R5-F1 reason the confinement/legacy-substitution
+    // refusal above is: a run that newly fails a static rule must still be stoppable.
+    if (entry.name !== undefined) {
+      const versionToRun = entry.legacySubstitution?.resolved ?? entry.pinnedVersion;
+      const staleness = await this._catalog.validateStoredVersion(entry.name, versionToRun);
+      if (!staleness.ok) {
+        throw codedError(staleness.code, staleness.message, staleness.detail);
+      }
+    }
+    // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH): `_requireLive` never restores a redaction
+    // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
+    // never dispatched, so a resumed run is always either byte-identical to admission or a typed
+    // refusal, never a silent secret-marker substitution.
+    // v35 (DES-233(b)): the scan is scoped to the DISPATCHED fields — `args` is excluded. `args` is
+    // dispatched from `runs.args` (never from this redacted `effectiveParams.args` admission
+    // record, INV-V35-2), so a marker surviving only in `effectiveParams.args` is inert; without
+    // this exclusion a run whose arg carried a provisioned secret value would become PERMANENTLY
+    // unresumable (the snapshot is run-immutable).
+    const { args: _recordedArgs, ...dispatchedParams } = entry.effectiveParams;
+    if (hasSecretMarker(dispatchedParams)) {
+      throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters carry a redaction marker that resume never restores (ARCH-066 inv-5 forbids dispatching it)`);
+    }
+    // v21 Gate 8 RE-REVIEW #5 (review §S7 F2, durable half): `validateUserOverrides` (contract.ts)
+    // refuses this shape AT ADMISSION, but a row admitted before that guard existed could already
+    // carry it in the persisted snapshot — resume must not silently re-dispatch a forged frame-close
+    // delimiter any more than it silently re-dispatches an unrestorable secret marker (same "refuse,
+    // never dispatch" discipline as the check above). Shares contract.ts's exported FRAME_CLOSE_FORGERY
+    // pattern so the two refusal sites can never drift onto different shapes.
+    // v24 (TASK-158): same per-label widen as the admission-time check above — a forged
+    // appendPrompt could equally have been persisted under a per-agent-label slice.
+    const resumeAppendPrompts = [entry.effectiveParams.appendPrompt, ...Object.values(entry.effectiveParams.agents ?? {}).map((a) => a.appendPrompt)];
+    if (resumeAppendPrompts.some((ap) => typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap))) {
+      throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
+    }
+    // v22 (DES-113/DES-114, TASK-109): the replacement-script parameter is CLOSED with inline
+    // scripts (REQ-098) — a resume always continues `entry.script` unchanged, never a caller-supplied
+    // substitute. A hand-rolled `workflow_resume({runId, script})` is refused INLINE_SCRIPT_CLOSED at
+    // the facade before this method is ever called.
+    const cachePlan = ResumeCache.build(entry.journal, entry.script);
+    entry.scriptVersion += 1;
+    entry.abortController = new AbortController();
+    entry.sandbox = this._newSandbox(runId, entry.workspace, entry.name, entry.budgetLimits);
+    // v8 REQ-044: reset the deterministic nested-frame allocator + descendant counter so a resumed
+    // re-execution re-allocates the SAME frame bases in the same order (replay-stable callSeqs).
+    entry.descendants = 0;
+    entry.nestedFrames = new Map();
+    entry.nestedFrameSeq = 0;
+    entry.workflowNodes = [];
+    // issue #53: `phases` is the lane list the dashboard lays agents out by ordinal (`phaseIndex`),
+    // not an append-only history — the re-executed script re-pushes every `phase()` it reaches (the
+    // replayed prefix included), so without this reset a suspend→resume doubled it
+    // (`['greet','greet']`) and the resumed agent landed in lane 1 of a one-lane workflow. Reset
+    // for the same replay-stable-ordinals reason as the frame allocator above; a rehydrated
+    // (post-restart) entry already starts from `[]`, so both resume paths now agree.
+    entry.phases = [];
+    await this._transition(runId, entry, 'running');
+    this._runLive(runId, entry, entry.script, cachePlan);
+  }
+
+  async stop(runId: string): Promise<void> {
+    const entry = await this._requireLive(runId, 'stopped');
+    if (TERMINAL.includes(entry.status)) throw new IllegalTransitionError(entry.status, 'stopped');
+    entry.abortController.abort();
+    await entry.sandbox.abort(runId, 'stop');
+    // issue #127 (#53/adjudication #9 I-2 follow-up, dash-auth-spec section C): the terminal snapshot
+    // below (`_transition`) reads `entry.spawner.getAllRecords()` — a bounded wait HERE for every
+    // in-flight agent() call's own abort-triggered `_finalizeAborted`/`capture()` to land closes the
+    // `run_list` (snapshot-sourced) vs `run_status` (live-sourced) `failedAgentCount` mismatch
+    // `tests/integration/terminal-state-warnings.test.ts` (IT-133) used to document as accepted/
+    // unfixed — the abort already fired (above), so every in-flight call is already racing its own
+    // abort listener (`_invokeOnce`'s race); this just gives that race a BOUNDED head start before
+    // the snapshot reads whatever state it left behind. See `AgentExecutor.settleInflight`'s own doc
+    // for the bound and the (observable, via `agent_live_at_terminal`) fallback when something still
+    // doesn't settle.
+    if (entry.spawner instanceof AgentExecutor) await entry.spawner.settleInflight(this._agentSettleTimeoutMs);
+    await this._transition(runId, entry, 'stopped');
+  }
+
+  /** issue #162(1) reverify-2 (independent-verifier finding, 2026-10-10): the number of this run's
+   *  agent() calls genuinely still in flight IN THIS PROCESS right now — i.e. this process still
+   *  holds a live `RunEntry` for `runId` whose spawner is a real `AgentExecutor`, and that
+   *  executor's own live records (the SAME source `_mergeLive` reads) show `queued`/`running`.
+   *
+   *  Deliberately NOT a read of `view.agents`/`merged.agents` (the run's PERSISTED snapshot) —
+   *  `McpFacade`'s `agentStillRunningWarning` used to count straight off that array, which can
+   *  legitimately show a fire-and-forget call `queued`/`running` the instant the run went terminal
+   *  (the documented #162 D gap, closed once that call settles IN-PROCESS via
+   *  `onAgentSettled`/`_maybeRefoldLateUsage`). After an ENGINE RESTART that snapshot is all that
+   *  is left — the process that owned the in-flight call is gone, its sandbox child was SIGKILLed
+   *  with it (`sweepOrphanSandboxChildren`, main.ts), and nothing will EVER settle it again; a
+   *  fresh process's RunManager has no `_runs` entry for that already-terminal run (entries are
+   *  rehydrated only on an explicit suspend/resume call, never speculatively on every runId), so
+   *  this returns `0` for it — correctly, since there is genuinely nothing left for THIS process
+   *  to observe settling. A snapshot-only read could not tell that case apart from the ordinary,
+   *  will-settle-soon one; this accessor can. */
+  inflightAgentCount(runId: string): number {
+    const entry = this._runs.get(runId);
+    if (!entry || !(entry.spawner instanceof AgentExecutor)) return 0;
+    return entry.spawner.getAllRecords().filter((a) => a.state === 'queued' || a.state === 'running').length;
+  }
+
+  async status(runId: string): Promise<RunStatusView> {
+    const view = await this._store.getRun(runId);
+    // issue #92 item 2: 'not found' replaces the hardcoded 'unknown' — there genuinely is no
+    // recorded status for this id, so the message says that instead of a placeholder. (The MCP
+    // facade's own `run_status`/`run_result` handlers already check `store.getRun` themselves and
+    // answer `RUN_NOT_FOUND` before ever reaching this method for the no-such-run case — this throw
+    // is reached only by a caller of `RunManager.status()` that skips that pre-check.)
+    if (!view) throw new IllegalTransitionError('not found', 'status');
+    await this._checkTerminalHasTransition(runId, view);
+    const merged = this._mergeLive(runId, view);
+    // v35 (DES-234, ARCH-146, ADR-067, TASK-236, REQ-207): one predicate (now `summarizeAgentFailures`,
+    // shared with `listSummaries()`'s live branch — dash-auth-spec.md section C), over the SAME
+    // agents array `_mergeLive` just resolved (the live overlay OR the restored/store view) — so a
+    // RUNNING run with one already-failed agent reports it immediately, before any snapshot row
+    // exists (the designed asymmetry vs `run_list`, DES-234's case iii, preserved — see
+    // `listSummaries()`). Omitted (never `0`) for a run with no agent records at all, so a script
+    // with no agent() calls never reads as unhealthy.
+    return { ...merged, ...summarizeAgentFailures(merged.agents), ...summarizeAgentWarnings(merged.agents) };
+  }
+
+  /** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the ONE accessor `/api/runs` and
+   *  `/api/home` both read for the usage-projected `RunSummary[]` — one precedence chain, not two
+   *  routes each guessing at it separately: **(1) live entry → (2) snapshot `usage` (already
+   *  projected by `store.list()`, DES-193) → (3) a one-time backfilled fold → (4) absent.**
+   *  Boot recovery and the GC sweep stay on `store.listRuns()` directly — they need every row, not
+   *  the usage projection.
+   *
+   *  v36 (REQ-217, ARCH-172/ADR-080, DES-250): built on the already-paginated `store.list()`
+   *  (limit 50, hard cap 500 — DES-152's existing port contract, reused rather than reinvented) so
+   *  this stops materializing the whole `runs` table per request (the K5 cliff). `/api/home`'s
+   *  `avgCostUSD`/`successRate` no longer come from folding THIS array — they read
+   *  `RunManager.workflowMetrics()` below, which keeps full-history semantics via a store-side SQL
+   *  aggregate. This list itself (and the "recent" run rows/cards it feeds) legitimately becomes
+   *  "the most recent 50" — that narrowing is the accepted, owner-ruled trade for removing the
+   *  cliff on the list path specifically. */
+  async listSummaries(filter: RunListFilter = {}): Promise<RunSummary[]> {
+    const rows = await this._store.list(filter);
+    let backfillBudget = BACKFILL_PER_TICK;
+    let healed = 0;
+    const out: RunSummary[] = [];
+    for (const row of rows) {
+      const entry = this._runs.get(row.runId);
+      if (entry && entry.spawner instanceof AgentExecutor) {
+        // (1) live entry — the SAME fold `_mergeLive` overlays onto `/api/runs/:id`.
+        const agents = entry.spawner.getAllRecords();
+        const usage = summarizeUsage(foldUsageFromRecords(agents), agents.length);
+        // dash-auth-spec.md section C (2026-09-30): this branch is NOT only "genuinely running" —
+        // an entry stays cached here for a while after going terminal too (nothing evicts it on
+        // transition), so a run that just completed/failed/stopped can still take this branch on
+        // `run_list`. Before this fix `failedAgentCount` was never computed here at all (only
+        // `summarizeUsage`'s four usage columns), so that SAME run's `run_list` row silently omitted
+        // it even though `run_status` (which always calls `summarizeAgentFailures`, live or
+        // terminal) already reported it — the "known run_list vs run_status mismatch".
+        // Gated on TERMINAL status, not unconditional: a genuinely RUNNING run must still omit it
+        // here, preserving DES-234's documented asymmetry (`run_status` alone reports a live count;
+        // `run_list`'s own tool-specs.ts contract is "terminal-only") — see
+        // tests/integration/agent-failures-visible.test.ts's second case.
+        const failedAgentCount = TERMINAL.includes(row.status) ? summarizeAgentFailures(agents).failedAgentCount : undefined;
+        const overlay = { ...(usage ?? {}), ...(failedAgentCount !== undefined ? { failedAgentCount } : {}) };
+        out.push(Object.keys(overlay).length > 0 ? { ...row, ...overlay } : row);
+        continue;
+      }
+      if (
+        row.costUSD !== undefined || // (2) store already projected a present usage — pass through.
+        !TERMINAL.includes(row.status) ||
+        this._usageBackfillChecked.has(row.runId) ||
+        backfillBudget <= 0
+      ) {
+        out.push(row);
+        continue;
+      }
+      // (3) one-time backfill: NOT memoized here. Memoizing is only safe once we know WHY (see
+      // below) — a transient store failure must be retried on the next call, not forgotten.
+      backfillBudget--;
+      try {
+        const view = await this._store.getRun(row.runId);
+        const agents = view?.agents ?? [];
+        const rawUsage = view?.usage;
+        // Third conjunct (DES-194 boundary): only a run whose transcript carries ≥ 1 real `usage`
+        // event (a 'done' or 'failed' agent record) may be memoized as a `{usage}`-only snapshot —
+        // otherwise a genuinely zero-record run's missing `agents` key reads back as `agentCount
+        // ?? 1 > 0` (DES-193's COALESCE) and would wrongly resurrect as present.
+        const hasUsageEvent = agents.some((a) => a.state === 'done' || a.state === 'failed');
+        if (!hasUsageEvent) {
+          // Permanently absent (zero `agent()` calls ever made) — safe to memoize forever, since
+          // DES-194 forbids ever writing a `{usage}`-only snapshot for this row.
+          this._usageBackfillChecked.add(row.runId);
+          out.push(row);
+          continue;
+        }
+        // `agentCount` omitted here (DES-194: "absent for the legacy cohort") — the write below is
+        // a `{usage}`-only snapshot (no `agents` key), so a LATER read of this same row would see
+        // `agentCount` as absent too; reporting a real count now and absent forever after would be
+        // exactly the flip-flop this omission avoids.
+        const usage = summarizeUsage(rawUsage, undefined);
+        if (usage && rawUsage !== undefined) {
+          await this._store.backfillUsage(row.runId, rawUsage);
+          this._usageBackfillChecked.add(row.runId); // now present via store.listRuns() henceforth.
+          healed++;
+          out.push({ ...row, ...usage });
+          continue;
+        }
+      } catch (err) {
+        // A write-path (or read-path) failure on this cache-warming path never fails the list — the
+        // row renders absent for one more tick and is retried (never memoized) on the next call.
+        console.log(JSON.stringify({ event: 'usage_backfill_failed', runId: row.runId, error: (err as Error).message }));
+      }
+      out.push(row);
+    }
+    if (healed > 0) console.log(JSON.stringify({ event: 'usage_backfill', healed }));
+    return out;
+  }
+
+  /** v36 (REQ-217, ARCH-172/ADR-080, DES-250): the full-history counterpart to `listSummaries()` —
+   *  `/api/home`'s `avgCostUSD`/`successRate` accessor. A thin delegate, unlike `listSummaries()`:
+   *  there is no in-process `RunEntry` to overlay here. (`_transition` records the terminal status
+   *  BEFORE `saveSnapshot` writes the usage row — the same brief snapshot-less window `list()`'s
+   *  own `usagePresentRaw` gate already tolerates — so a run counted here as terminal can, for one
+   *  instant, still read as unpriced; it self-heals on the very next call, same as today.) */
+  async workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>> {
+    return this._store.workflowMetrics(principal);
+  }
+
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): a thin delegate, like `workflowMetrics()` above —
+   *  no live-entry overlay needed. A non-terminal run's usage-projection fields are irrelevant to
+   *  `buildHomeView`'s RUNNING/`activeRunId` decision, the only consumer, so unlike
+   *  `listSummaries()` there is nothing here for an in-process `RunEntry` to overlay. */
+  async activeRuns(): Promise<RunSummary[]> {
+    return this._store.activeRuns();
+  }
+
+  /** v25 (issue #53, adjudication #9 I-2, warning 2): the invariant ARCH-006 promises — a terminal
+   *  status has a matching row in `transitions`, because `recordTransition` is the single writer of
+   *  both and writes them together. Run 3977b82d violated it: `run_status` said `failed`, the trail
+   *  had no `failed` row, and there was no error anywhere to explain either.
+   *
+   *  Checked HERE, on the READ, rather than after the write. A check straight after
+   *  `recordTransition` would be near-vacuous for the store production runs on — SqliteRunStore
+   *  INSERTs the row and only then UPDATEs the status, so a status it wrote always has its row —
+   *  whereas the read side is where the broken state was actually OBSERVED, and it fires whatever
+   *  produced it. The trigger is `terminalAt` being absent (both stores derive it from the
+   *  transitions themselves, so it is a genuine cross-check against `status`, not a re-read of the
+   *  same field) and costs nothing on the healthy path: the transitions are fetched only once the
+   *  invariant is already broken.
+   *
+   *  Once per runId — a terminal run gets polled, and one record is evidence while one per poll is
+   *  noise that buries it. Observability only: the view returned is byte-identical either way. */
+  private async _checkTerminalHasTransition(runId: string, view: RunStatusView): Promise<void> {
+    if (!TERMINAL.includes(view.status) || view.terminalAt !== undefined) return;
+    if (this._warnedMissingTransition.has(runId)) return;
+    this._warnedMissingTransition.add(runId);
+    // The WHOLE body is guarded, not just the sink: `getTransitions` is an extra store read that
+    // `status()` did not make before, and "observability only" has to mean that a store failing on
+    // THIS read cannot turn a status call that used to succeed into a throw. An observation that
+    // can break the thing it observes is not an observation.
+    try {
+      const transitions = await this._store.getTransitions(runId);
+      const entry = this._runs.get(runId);
+      this._warn({
+        kind: 'terminal_without_transition',
+        ts: this._clock.isoNow(),
+        runId,
+        terminalState: view.status,
+        reason: entry?.resultError ? `${entry.resultError.code}: ${entry.resultError.message}` : null,
+        transitions: transitions.map((t) => `${t.from ?? 'null'}->${t.to}`),
+      });
+    } catch { /* an observer's failure is never the caller's */ }
+  }
+
+  /** Issue #73 (d) / 2026-09-26 (owner decision 6): the admission warnings `start()` recorded for
+   *  `runId` (tool-use AND model-catalog-existence alike), handed over ONCE. */
+  takeAdmissionWarnings(runId: string): Array<ModelToolWarning | ModelRefWarning> {
+    const w = this._admissionWarnings.get(runId) ?? [];
+    this._admissionWarnings.delete(runId);
+    return w;
+  }
+
+  /** Fire-and-forget, like `onTerminal`: a throwing sink never wedges the path it observes. */
+  private _warn(warning: EngineWarning): void {
+    try { this._onWarning(warning); } catch { /* an observer's failure is never the run's */ }
+  }
+
+  /** Overlays this-process live data (phases observed, agent records captured) onto the
+   *  store's persisted view — both are ephemeral per-process state, not replayed after restart. */
+  private _mergeLive(runId: string, view: RunStatusView): RunStatusView {
+    const entry = this._runs.get(runId);
+    if (!entry) return view;
+    const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : view.agents;
+    // v26 (DES-183, ARCH-118, TASK-183): the live RunUsage overlay — folded from the SAME agent
+    // records just overlaid above (never from `entry.guard`, which has no production caller of
+    // `addUsage` yet — see `foldUsageFromRecords`'s own doc).
+    const usage = entry.spawner instanceof AgentExecutor ? foldUsageFromRecords(agents) : view.usage;
+    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(usage !== undefined ? { usage } : {}), ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}), ...(entry.seedManifestRef !== undefined ? { seedManifestRef: entry.seedManifestRef } : {}), ...(entry.seedConfigStripped !== undefined ? { seedConfigStripped: entry.seedConfigStripped } : {}) };
+  }
+
+  /** The script return value for a completed run, or the failure error (DES-001 workflow_result). */
+  async result(runId: string): Promise<{ ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }> {
+    const entry = this._runs.get(runId);
+    if (entry) {
+      if (entry.status === 'completed') return { ok: true, value: entry.result };
+      if (entry.status === 'failed' && entry.resultError) return { ok: false, error: entry.resultError };
+      // issue #160 BUG-1: `stopped` is a TERMINAL status (line 184's `TERMINAL` array, and
+      // `withTerminalRun` below both already treat it as such) but a stopped run never has an
+      // `entry.result`/`entry.resultError` — `stop()` records no script outcome. Without this
+      // branch a stopped run fell through to the generic RUN_NOT_TERMINAL return below, even
+      // though run_status/run_list both already report it as terminal (`terminalAt` set).
+      if (entry.status === 'stopped') {
+        return { ok: false, error: { code: 'RUN_STOPPED', message: `Run ${runId} was stopped before it completed; it has no script return value` } };
+      }
+    }
+    const stored = await this._store.getResult(runId);
+    if (stored) return { ok: true, value: stored.value };
+    const view = await this._store.getRun(runId);
+    // issue #160 BUG-1 (persisted-store path, mirrors the in-memory branch above): a restart
+    // loses the in-process `_runs` entry, so a stopped run must be recognised here too, before
+    // the generic RUN_NOT_TERMINAL fallback.
+    if (view?.status === 'stopped') {
+      return { ok: false, error: { code: 'RUN_STOPPED', message: `Run ${runId} was stopped before it completed; it has no script return value` } };
+    }
+    // v35 (DES-232, ARCH-142, TASK-236, REQ-205): GATED — `getError` is read only when the STORED
+    // status is `failed`. Ungated, this would answer `{ok:false, error}` for a run `run_status`
+    // reports `interrupted` (a crash between the column write and the transition, then REQ-060's
+    // boot reclassification) — two surfaces contradicting on one run, the defect this slice removes.
+    if (view?.status === 'failed') {
+      const storedError = await this._store.getError(runId);
+      if (storedError) return { ok: false, error: storedError };
+      return { ok: false, error: { code: 'RUN_FAILED', message: `Run ${runId} failed; no reason was recorded (admitted before v35)` } };
+    }
+    return { ok: false, error: { code: 'RUN_NOT_TERMINAL', message: `Run ${runId} has not completed (status: ${view?.status ?? 'unknown'})` } };
+  }
+
+  /** v24 (DES-155, ARCH-091 note 1, TASK-148): the TOCTOU guard `workspace_delete`/`workspace_purge`
+   *  need — "refused while the run is live" is checked HERE, against the store (not a facade-side
+   *  status read that a concurrent start()/resume() could race), single process (a check inside the
+   *  owner, not a lock protocol — ADR-026's same assumption as the trigger stores). A run known to
+   *  the store but not to this process's `_runs` map (a restart) is resolved through `store.getRun`
+   *  and `queued`/`running`/`suspended` all count as LIVE — "not in memory" is never treated as
+   *  terminal. */
+  async withTerminalRun<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
+    const view = await this._store.getRun(runId);
+    if (!view) throw codedError('RUN_NOT_FOUND', `Run not found: ${runId}`);
+    if (!TERMINAL.includes(view.status)) {
+      throw codedError('RUN_NOT_TERMINAL', `run ${runId} is ${view.status}, not terminal`);
+    }
+    return fn();
+  }
+
+  /** Looks up a live RunEntry, rehydrating one from persisted state (REQ-006 restart survival)
+   *  when this run isn't in this process's memory — e.g. after a server restart, a suspend/resume
+   *  call for a run that was suspended/interrupted before the restart. Live per-process state
+   *  (in-flight journal replay cache, phases observed) does not survive restart; the rehydrated
+   *  entry resumes cleanly but replays nothing from before the restart (no test currently requires
+   *  exact cross-restart cache replay — a documented simplification, not silent data loss).
+   *  issue #94 (owner decision): `stopped` is NOT in the eligible-to-rehydrate set below — it is a
+   *  TRUE terminal state, so nothing ever needs a live RunEntry rebuilt for it again. A non-cached
+   *  `stop()`/`suspend()`/`resume()` call against a stopped run refuses right here, typed, before any
+   *  catalog resolution / sandbox construction / caching happens — cheaper than the pre-#94 behaviour
+   *  (full rehydrate, THEN refuse in the caller) and it satisfies "a refused rehydration leaves no
+   *  cached trace" by construction (nothing is ever `_runs.set()` for it). This is safe for `stop()`
+   *  too, despite the R5-F1 comment below warning that a refusal placed in here can leave a run unable
+   *  to ever reach a terminal state: that hazard is about a run that ISN'T terminal yet (suspended/
+   *  interrupted) being blocked from becoming so. A run that is ALREADY `stopped` has nothing left to
+   *  reach — `stop()` on it was always refused anyway (TERMINAL.includes('stopped')), just one call
+   *  frame further out before this change. */
+  // issue #92 item 2: `target` is the transition the CALLER (`suspend`/`resume`/`stop`) is actually
+  // attempting — threaded through so a refusal here names it instead of the hardcoded
+  // ('unknown', 'transition') every caller used to share, which rendered as the meaningless
+  // "Illegal state transition: unknown → transition" no matter what was asked for or why. The `from`
+  // side is the real recorded status when one exists (`view.status`), never a literal "unknown" —
+  // 'not found' only when there truly is no run under this id at all.
+  private async _requireLive(runId: string, target: RunStatus): Promise<RunEntry> {
+    const cached = this._runs.get(runId);
+    if (cached) return cached;
+
+    const view = await this._store.getRun(runId);
+    if (!view || (view.status !== 'suspended' && view.status !== 'interrupted')) {
+      throw new IllegalTransitionError(view?.status ?? 'not found', target);
+    }
+    const spec = await this._store.getSpec(runId);
+    // `view.status` here IS one of the resumable statuses checked above — a missing spec is a data-
+    // integrity gap, not an illegal FROM status, so the message says exactly that rather than
+    // implying the run's own recorded state was the problem.
+    if (!spec) throw new IllegalTransitionError(`${view.status} (spec missing)`, target);
+    // v8 Defer A (fix): a NAMED-workflow run stores no inline script on its spec (start() resolves it
+    // from the catalog at launch), so `spec.script` is empty — resume/rehydrate must re-resolve the
+    // script from the catalog the SAME way start() does, or the resumed run executes an empty script
+    // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
+    let script = spec.script ?? '';
+    let registeredContract: ParamContract | undefined;
+    // v37 P1 (R5-F1): facts about a legacy substitution, carried to `resume()` which owns the
+    // decision. `undefined` on every path that did not substitute.
+    let legacySubstitution: { pinned: string; resolved: string; remote: boolean } | undefined;
+    if (spec.name && !spec.script) {
+      // v22 (DES-113, ADR-010, TASK-108): resolve the PIN (view.scriptVersion), never the current
+      // `release` — a suspended run continues the version it started with. Legacy-cohort fallback
+      // (the name row exists, but the pin isn't in workflow_versions — e.g. after a
+      // deregister/re-register restarted the lineage): resolve through `release` instead, and
+      // record the substitution durably (the pin itself is NEVER rewritten).
+      try {
+        const registered = await this._catalog.resolve(spec.name, { version: view.scriptVersion });
+        script = registered.script;
+        registeredContract = registered.params as ParamContract | undefined;
+      } catch (err) {
+        if ((err as { code?: string } | undefined)?.code !== 'VERSION_NOT_FOUND') throw err;
+        const registered = await this._catalog.resolve(spec.name, {});
+        // v37 P1 (Gate 8 round-5 finding R5-F1, correcting round 4's F5 repair): record the FACT,
+        // decide nothing. Round 4 put the admission refusal right here, believing this `catch` was
+        // a branch of `resume()`. It is not — it sits in `_requireLive()`, which `suspend()`,
+        // `resume()` AND `stop()` all call, so the refusal also blocked `stop()`: the run could
+        // never reach a terminal state, taking `workspace_delete`/`workspace_purge` and the
+        // `interruptedRuns` badge with it, and answering an operation the caller never asked for
+        // with 「so resuming it is refused」. The slicing criterion was right (the pinned path
+        // continues the code the run started with; this substitution resolves the CURRENT `release`,
+        // a version the run never carried and no admission check ever saw); the FUNCTION was wrong.
+        // The refusal now lives in `resume()` alone, keyed on this flag.
+        legacySubstitution = { pinned: view.scriptVersion, resolved: registered.version, remote: registered.registeredRemote };
+        script = registered.script;
+        registeredContract = registered.params as ParamContract | undefined;
+        const sub = { pinned: view.scriptVersion, resolved: registered.version };
+        await this._store.recordLegacySubstitution(runId, sub);
+        console.log(`run.legacySubstitution: ${JSON.stringify({ runId, name: spec.name, ...sub })}`);
+      }
+    }
+    // v8 Defer A (REQ-059): read the persisted journal back so a run resumed in a fresh process
+    // replays its settled agent()/workflow() calls from cache instead of re-running them live.
+    const persistedJournal = await this._store.getJournal(runId);
+    // v21 (ARCH-066, DES-104): resume reads the PINNED admission snapshot, never re-resolving from
+    // the current catalog row — a legacy pre-v21 run (effective_params NULL) falls back to
+    // defaultRunParams(registered.defaults), today's behaviour, never a crash.
+    // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH — supersedes the deleted `unredactBestEffort`):
+    // the persisted copy is redact-at-capture (persist-only, see start()) and is NEVER restored —
+    // blindly expanding any `‹secret:NAME›`-shaped substring back to the live secret value made the
+    // marker grammar itself a secret-dereference primitive (an attacker who only guessed the public
+    // marker spelling, never possessed the secret, got it substituted into a dispatched prompt on
+    // resume). If a marker survives in the snapshot, `resume()` below refuses typed instead —
+    // "byte-identical to admission, or a typed refusal" never "silently dispatch the marker".
+    const storedParams = await this._store.getEffectiveParams(runId);
+    // v24 (integrator; DES-146/DES-156 boundary, adjudication #4 C-7 [28]): a snapshot persisted
+    // BEFORE the per-agent contract has no `.agents` key at all — every v24 admission writes one
+    // (`{}` at minimum, since `contract.agents` is always passed). Reading that legacy flat shape
+    // back and resuming on it SILENTLY dropped every per-label model/effort/timeout: the run
+    // continued with the run-wide fields and nobody was told. `LEGACY_REREGISTER` is the code the
+    // design assigns ("this version predates the v24 contract and cannot run; re-register it") and
+    // it is already what `workflow_describe`/`workflow_list` report as `runnableReason`, so the
+    // refusal a caller meets here matches what the read surfaces already told it.
+    // v34 (DES-228, ARCH-140, ADR-064 baseline (A), TASK-229, REQ-204): a snapshot carrying a
+    // `tools` key (the retired `RunParams.tools` rung) is refused the SAME way as one missing
+    // `.agents` — the two halves fail differently (missing `.agents` loses content visibly;
+    // resuming with a legacy `tools` key would silently WIDEN this run's tool surface, a
+    // security-relevant capability expansion) but share one guard and one code.
+    if (storedParams !== null && (storedParams.agents === undefined || Object.hasOwn(storedParams, 'prompt') || Object.hasOwn(storedParams, 'tools'))) {
+      throw codedError(
+        'LEGACY_REREGISTER',
+        `LEGACY_REREGISTER: run ${runId} was admitted before the v24 per-agent parameter contract and cannot be resumed; re-register the workflow and start a new run`,
+        { runId, ...(spec.name !== undefined ? { workflow: spec.name } : {}) },
+      );
+    }
+    const effectiveParams = storedParams ?? defaultRunParams(undefined, registeredContract?.agents);
+    // 2026-09-26 (alias mechanism removed, owner decision 12): a run admitted BEFORE this change can
+    // have persisted a bare alias string (e.g. `'haiku'`) as `effective_params.agents.<label>.model`
+    // — `_refuseUnadmittableParams` only runs at `start()`/a nested frame, never on resume, so
+    // without this check a legacy snapshot would dispatch an alias no gateway can resolve any more.
+    // Syntax-only (`parseModelRef`), not a live catalog existence re-check: this is a REPLAY of an
+    // admission that already happened once (rule 12 says "refuse rather than dispatch an
+    // unresolvable name", not "re-verify existence on every resume").
+    // review L2: a SECOND, independent check over the same loop — not an existence re-check (that is
+    // still deliberately excluded by rule 12's own comment above), but a DEPLOYMENT-CAPABILITY one:
+    // can the harness THIS process is running even dispatch the pinned provider at all. A run
+    // admitted while this deployment ran gateway:"sdk" (harnessProviders unset, so checkModelRef's
+    // anthropic arm admits unconditionally) can be suspended, the deployment restarted under
+    // gateway:"pi", and resumed — without this, it would reach pi-gateway-client.ts's own
+    // dispatch-time defense-in-depth refusal (a confusing internal error, by its own comment "should
+    // have been refused at admission") instead of this typed admission refusal.
+    // issue #136 review L-136-1: the catalog passed here is now the REAL live snapshot (the SAME
+    // `this._modelBook.snapshot()` `start()`'s own admission already fetches), not an empty one —
+    // purely so a PROVIDER_UNSUPPORTED_BY_HARNESS refusal here can name a real, catalog-linked
+    // OpenRouter ref (providers.ts's `harnessUnsupportedSuggestion`) instead of generic guidance.
+    // This does NOT reintroduce the existence re-check rule 12 bans: this loop only ever throws for
+    // the PROVIDER_UNSUPPORTED_BY_HARNESS code below — an openrouter/ollama ref's own UNKNOWN_MODEL
+    // verdict (now reachable again since `entries` is non-empty) is still silently ignored here,
+    // exactly as the empty-catalog version was built to guarantee.
+    const resumeCatalog = toModelCatalogSnapshot(await this._modelBook.snapshot(), this._harnessProviders);
+    for (const m of reachableModels(effectiveParams)) {
+      if (parseModelRef(m) === undefined) {
+        throw codedError(
+          'UNKNOWN_MODEL',
+          `UNKNOWN_MODEL: run ${runId}'s admission-time parameters carry "${m}", which is not a valid <provider>/<model-id> ref (it predates the alias-removal change) and cannot be resumed; re-register the workflow with a full ref and start a new run`,
+          { runId, supplied: m },
+        );
+      }
+      const harnessVerdict = checkModelRef(m, resumeCatalog);
+      if (!harnessVerdict.ok && harnessVerdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
+        throw codedError('PROVIDER_UNSUPPORTED_BY_HARNESS', harnessVerdict.message, { runId, supplied: m });
+      }
+    }
+
+    const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
+    // v26 (DES-181, ARCH-118, TASK-181): 'store' — by the time a WIRE admission reaches here it has
+    // already passed call-tool.ts's ahead-of-ajv bare-number refusal and the schema's object/null
+    // shape, so a bare number here is either a legacy persisted row (the resume path below) or a
+    // direct-construction test caller; both mean the v25 token-only shape.
+    const budgetLimits = parseBudget(spec.budget, { source: 'store' });
+    const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
+    // issue #163 B1: see RunEntry.workflowGuard's own doc — same separate-pool reasoning on resume.
+    const workflowGuard = new RunGuard({ concurrency: this._concurrency, budget: null });
+    // DES-068 (TASK-071): hydrate the guard's spent count from the persisted journal transcripts so
+    // the budget cap is correctly enforced on resume. Fold-only (pure); never adds snapshot totals.
+    // v26 (DES-183, TASK-183, ADR-047(b)): UNCONDITIONAL — the old `if (spec.budget !== null...)`
+    // gate was written to hydrate the CAP, but it also meant an unbudgeted (trigger-started) run
+    // never hydrated a spent count on resume at all; tracking-without-a-cap (the v25/ADR-047(b)
+    // principle) applies here too.
+    // v26 integration (DES-181/DES-183, clarification 37): folded with `foldUsage`, not the v13
+    // `sumUsageTokens`. Two reasons, both correctness: (a) `sumUsageTokens` sums only input+output,
+    // while the live accumulator (`addUsage` → `sumTokens`) sums all FOUR columns, so a resumed run
+    // used to enforce a different token total than the same run would have hit without a restart;
+    // (b) it carries no USD at all, so the USD arm of `assertBudget` re-armed at 0 on resume. One
+    // read path, one arithmetic, both limits.
+    const allEvents = (await Promise.all(
+      view.agents.map((a) => this._store.getTranscript(runId, a.agentId)),
+    )).flat();
+    const resumedUsage = foldUsage(allEvents);
+    guard.setSpent({ usd: resumedUsage.costUSD, tokens: sumTokens(resumedUsage.tokens) });
+    // v26 integration (DES-178, clarification 27): the resume half of the price-book wiring — read
+    // the pin back from the persisted `runs.price_book` row (the same row `getEffectiveParams`
+    // reads just above), never re-resolved from today's catalog. `null` for a pre-v26 row leaves
+    // the sink unpriced, which is its documented "we never looked" state.
+    const persistedPriceBook = await this._store.getPriceBook(runId);
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}), onAgentSettled: (settledRunId) => this._maybeRefoldLateUsage(settledRunId) });
+    const entry: RunEntry = {
+      script,
+      // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
+      // (this line, and its resume-rehydrate twin below) is the ONLY dispatch source; promoting
+      // the redacted `effective_params.args` admission record here is exactly what INV-V35-2
+      // forbids (a hard-crash resume would otherwise hand the script a redaction marker as data).
+      args: spec.args ?? {},
+      name: spec.name,
+      status: view.status,
+      legacySubstitution,
+      guard,
+      workflowGuard,
+      budgetLimits,
+      abortController: new AbortController(),
+      sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
+      spawner,
+      workspace,
+      journal: persistedJournal,
+      scriptVersion: Number(view.scriptVersion.replace(/^v/, '')) || 1,
+      pinnedVersion: view.scriptVersion,
+      cachePlan: null,
+      phases: [],
+      descendants: 0,
+      nestedFrames: new Map(),
+      nestedFrameSeq: 0,
+      workflowNodes: [],
+      effectiveParams,
+      priceBook: persistedPriceBook,
+      declaredAssets: declaredAssetsOf(registeredContract),
+      toolSurface: expectedAgentOptsByLabel(script),
+      principal: spec.principal,
+      refusals: new Map(),
+      refusalsDropped: 0,
+      primitiveRefusals: new Map(),
+      primitiveRefusalsDropped: 0,
+    };
+    this._runs.set(runId, entry);
+    return entry;
+  }
+
+  private async _transition(runId: string, entry: RunEntry, to: RunStatus): Promise<void> {
+    const from = entry.status;
+    entry.status = to;
+    await this._store.recordTransition(runId, from, to, this._clock.isoNow());
+    // v8 REQ-055: persist a one-shot DAG snapshot at the terminal transition (covers failed/stopped,
+    // not only completed) so a composite run's nested tree/phases/agent-frames survive a restart.
+    if (TERMINAL.includes(to)) {
+      // v36 (DES-245, TASK-243, REQ-213): `run.terminal` fires at the ONE authoritative terminal
+      // writer, for EVERY terminal outcome including `completed` — not only inside a
+      // failure-capture path, which a `completed` run never touches.
+      this._eventSink({
+        kind: 'run.terminal',
+        runId,
+        name: entry.name ?? null,
+        version: entry.pinnedVersion,
+        outcome: to,
+        principal: entry.principal ?? null,
+        ...(entry.resultError ? { code: entry.resultError.code } : {}),
+      });
+      let agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+      // DES-088 (TASK-082) sink (2): redact agents array BEFORE saveSnapshot (persist write only).
+      if (this._secretValueProvider) {
+        const secrets = this._secretValueProvider.entries();
+        agents = redact(agents, secrets) as typeof agents;
+      }
+      // v26 (DES-183, TASK-183): the run's usage total, folded from the SAME (possibly redacted)
+      // agents array persisted beside it — one fold, not a second derivation that could disagree.
+      // issue #162 D (correctness, review finding): THIS write and `_maybeRefoldLateUsage`'s late-
+      // settle write are now both routed through `_enqueueSnapshotWrite`'s per-run chain, which
+      // re-reads `getAllRecords()` fresh at EACH write's own turn (not the `agents`/`usage` computed
+      // just above, which stays as-is ONLY for the `agent_live_at_terminal` loop below — that warning
+      // is deliberately "what was still live at the moment of transition", a different question from
+      // "what the persisted row should end up containing"). Without this, a late settle landing
+      // between this `entry.status = to` and this write's own store round trip could race it —
+      // whichever write physically lands last in the store wins even if it read an OLDER view.
+      await this._enqueueSnapshotWrite(runId, async () => {
+        let freshAgents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+        if (this._secretValueProvider) {
+          const secrets = this._secretValueProvider.entries();
+          freshAgents = redact(freshAgents, secrets) as typeof freshAgents;
+        }
+        // issue #159 (reverify-3): carry seedConfigStripped into the persisted snapshot too — the
+        // SAME terminal write `entry.seedConfigStripped` (set at materialize time, above) is read
+        // from everywhere else, so a restart does not lose it (mirrors usage's own convention here).
+        await this._store.saveSnapshot(runId, { phases: entry.phases, agents: freshAgents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(freshAgents), ...(entry.seedConfigStripped !== undefined ? { seedConfigStripped: entry.seedConfigStripped } : {}) });
+      });
+      // v25 (issue #53, adjudication #9 I-2, warning 1): the run is terminal — is anything it owns
+      // still running? Run 3977b82d was in EXACTLY this state (its agent ran on for ~36 seconds
+      // after the terminal write and produced real output) and nothing was recorded. Emitted from
+      // the REDACTED array on purpose: a label or state that carried a secret value must not reach
+      // the log by this new route (DES-088's redact-at-capture sink, same array, same reason).
+      //
+      // This does NOT abort the agent. Making a terminal state stop the work it owns is a separate
+      // decision with its own tests (adjudication #9 I-2: "不改變任何現有行為"); the point here is
+      // that when it happens again there is a record naming what was left running.
+      for (const a of agents) {
+        if (a.state !== 'queued' && a.state !== 'running') continue;
+        this._warn({
+          kind: 'agent_live_at_terminal',
+          ts: this._clock.isoNow(),
+          runId,
+          terminalState: to,
+          reason: entry.resultError ? `${entry.resultError.code}: ${entry.resultError.message}` : null,
+          agent: { agentId: a.agentId, ...(a.label !== undefined ? { label: a.label } : {}), state: a.state },
+        });
+      }
+    }
+    // v8 REQ-052: fire onTerminal from the ONE authoritative choke (covers stopped, which the
+    // un-.catch'd .then in _runLive never sees) — AFTER the transition is persisted, and NOT awaited,
+    // so a slow/throwing listener (e.g. a continuation starting run B) can never wedge A's terminal write.
+    if (TERMINAL.includes(to) && this._onTerminal) {
+      const fire = this._onTerminal;
+      queueMicrotask(() => { try { fire(runId, to); } catch { /* listener errors never wedge the run */ } });
+    }
+  }
+
+  /** issue #162 D: a fire-and-forget (un-awaited) `agent()` call keeps running after its workflow
+   *  script returns and the run goes terminal (adjudication #9 I-2: this is deliberate, unchanged —
+   *  the engine never aborts in-flight work just because the run around it finished). Before this
+   *  fix, that call's eventual usage reached `run_status` (which reads the LIVE records) but never
+   *  `run_result.meta.usage`/`run_list` (both read the ONE terminal snapshot `_transition` wrote,
+   *  which — by definition — predates this late settle) — a permanent gap, not a race that
+   *  eventually resolves. `AgentExecutor.onAgentSettled` (wired at both construction sites above)
+   *  fires this after EVERY agent() call settles, not only late ones; this is a cheap no-op for the
+   *  overwhelmingly common case (the run is not yet terminal — `_transition`'s own snapshot, taken
+   *  moments later, is the one that counts) and only does real work for the rare late case, which is
+   *  exactly where it is needed. Idempotent (just another `saveSnapshot` of the same shape
+   *  `_transition` already writes) and safe to call any number of times — a second late settle for a
+   *  different agentId on the same already-terminal run re-folds again, correctly, from the full
+   *  current `getAllRecords()` each time (not an incremental patch). Never throws into its caller
+   *  (`run()`'s own `.finally()`, which must never itself reject). */
+  private _maybeRefoldLateUsage(runId: string): void {
+    const entry = this._runs.get(runId);
+    if (!entry || !TERMINAL.includes(entry.status)) return;
+    if (!(entry.spawner instanceof AgentExecutor)) return;
+    void this._enqueueSnapshotWrite(runId, async () => {
+      let agents = (entry.spawner as AgentExecutor).getAllRecords();
+      // issue #162 D (correctness, review finding): if a DIFFERENT fire-and-forget call on this SAME
+      // run is still mid-flight, skip this write entirely rather than persist a snapshot that shows a
+      // 'queued'/'running' agent on an already-terminal run — the invariant `derived-equals-
+      // snapshot.test.ts`/`terminal-state-warnings.test.ts` pin ("the terminal snapshot's `agents` is
+      // the settled, final list") must hold for every write, not just `_transition`'s own. That OTHER
+      // call's own eventual settle fires this same hook again, and by then every record will be
+      // settled — nothing is lost, only deferred to the write that actually captures the full
+      // picture.
+      if (agents.some((a) => a.state === 'queued' || a.state === 'running')) return;
+      if (this._secretValueProvider) {
+        const secrets = this._secretValueProvider.entries();
+        agents = redact(agents, secrets) as typeof agents;
+      }
+      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents), ...(entry.seedConfigStripped !== undefined ? { seedConfigStripped: entry.seedConfigStripped } : {}) });
+    });
+  }
+
+  /** issue #162 D (correctness, review finding): serializes every snapshot write for the SAME
+   *  runId — `_transition`'s own terminal write and `_maybeRefoldLateUsage`'s late-settle write(s)
+   *  are two independent async writers to the same persisted row with no serialization otherwise;
+   *  whichever happens to land in the store LAST wins even if it read an OLDER `getAllRecords()`
+   *  view. `build` is called lazily, at THIS write's own turn in the chain — never precomputed
+   *  before enqueueing — so the chain's actual LAST write always reads live records fresh at that
+   *  point, and the persisted row converges to the most complete state regardless of which caller's
+   *  `_enqueueSnapshotWrite` call happened to run first. A failed `build` never wedges a later
+   *  write for the same run (caught, not rethrown into the chain) — the run already has SOME
+   *  terminal snapshot either way; this is best-effort enrichment, not the only writer. Entries for
+   *  runs that have already finished every write are pruned opportunistically (the Map would
+   *  otherwise grow by one settled key per terminal run for the life of the process). */
+  private readonly _snapshotWriteChains = new Map<string, Promise<void>>();
+  private _enqueueSnapshotWrite(runId: string, build: () => Promise<void>): Promise<void> {
+    const prev = this._snapshotWriteChains.get(runId) ?? Promise.resolve();
+    const next = prev.then(build, build).catch(() => { /* best-effort; never wedge the chain */ });
+    this._snapshotWriteChains.set(runId, next);
+    void next.finally(() => { if (this._snapshotWriteChains.get(runId) === next) this._snapshotWriteChains.delete(runId); });
+    return next;
+  }
+
+  /** v26 (DES-175, ARCH-114, TASK-186): the run's CURRENT phase lane (title+ordinal), read fresh
+   *  each call — the last entry of `entry.phases` (pushed by `onPhase` below). Shared, byRunId,
+   *  by BOTH the top-level host and every nested host: a nested frame with no `phase()` of its own
+   *  inherits the parent's lane exactly because it reads this SAME function. */
+  private _currentPhaseFor(runId: string): { title: string; index: number } | undefined {
+    const phases = this._runs.get(runId)?.phases;
+    if (!phases || phases.length === 0) return undefined;
+    return { title: phases[phases.length - 1]!.title, index: phases.length - 1 };
+  }
+
+  /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the run's live `{usd, tokens}` spend — a
+   *  projection of `foldUsageFromRecords` (DES-183/TASK-183's own fold, called through per the
+   *  note this replaces). Shared, byRunId, by BOTH the top-level host and every nested host, exactly
+   *  like `_currentPhaseFor` above — a nested frame reads the SAME parent-run total. */
+  private _budgetSnapshotFor(runId: string): { usd: number; tokens: Tokens } {
+    const entry = this._runs.get(runId);
+    const records = entry?.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+    const { costUSD, tokens } = foldUsageFromRecords(records);
+    return { usd: costUSD, tokens };
+  }
+
+  private _newSandbox(runId: string, workspace: string, topName: string | undefined, budgetLimits: { usd: number | null; tokens: number | null }): SandboxHost {
+    // v8 REQ-042: seed the top-level nesting chain with the run's own workflow name (if any), so a
+    // composite that eventually calls back into itself is caught as a cycle.
+    const topAncestors = new Set<string>(topName ? [topName] : []);
+    return new SandboxHost({
+      workspaceRoot: workspace,
+      budget: budgetLimits,
+      onAgentRequest: (prompt, opts, callSeq, phase) => this._handleAgentRequest(runId, prompt, opts, callSeq, '', phase),
+      onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, '', callSeq, 1, topAncestors),
+      // v40 (DES-272/274, ARCH-186/187, TASK-269/271): mirrors `onAgentRequest` — top-level frame,
+      // no callSeq offset, no `frameParams` (reads the run's own `entry.effectiveParams`).
+      onDecideRequest: (msg, phase) => this._handleDecideRequest(runId, msg, msg.callSeq, '', phase),
+      onImageRequest: (msg, phase) => this._handleImageRequest(runId, msg, msg.callSeq, '', phase),
+      onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
+      onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
+      currentPhase: () => this._currentPhaseFor(runId),
+      // F-1: see `RunManagerDeps.maxRunDurationMs`'s own doc — `undefined` forwards to host.ts's own
+      // default, never a second copy of that default value here.
+      maxRunDurationMs: this._maxRunDurationMs,
+      // Issue #162 (boot-time sweep): anchored to the WHOLE engine's own workRoot (never the
+      // per-run `workspace`) — one shared registry directory for every run's top-level host, so a
+      // single boot sweep (main.ts) covers all of them. Absent when this RunManager was built with
+      // no workRoot at all (a direct-`createServer()`-less test construction) — those callers get
+      // no bookkeeping, same as today.
+      childRegistryDir: sandboxChildRegistryDir(this._workRoot),
+    });
+  }
+
+  // v8 REQ-044 (supersedes D-G8-1): a nested workflow()'s own child process has its OWN callSeq
+  // counter starting at 0, but its agent() calls are journaled into the SAME parent run's shared
+  // journal/ResumeCache — so nested callSeq values must be namespaced to never collide. The prior
+  // (parentCallSeq+1)*1e6+n multiply scheme composed MULTIPLICATIVELY per level and overflowed
+  // MAX_SAFE_INTEGER past ~depth 2 (now that N-level nesting is allowed). Instead, each distinct
+  // nested FRAME (a workflow() call site, identified by its deterministic ancestor callSeq path) is
+  // allocated one base = frameSeq * STRIDE, additively; a frame's agent() callSeq = base + local.
+  // frameSeq is allocated on first touch in execution order, which is deterministic (parallel()
+  // invokes thunks in array order) and identical on resume, so the same call gets the same key.
+  // STRIDE bounds calls-per-frame (< STRIDE, enforced by the agent/descendant caps); frameSeq stays
+  // far within MAX_SAFE_INTEGER (9e15/1e6 ≈ 9e9 frames >> the descendant cap).
+  private static readonly NESTED_FRAME_STRIDE = 1_000_000;
+
+  /** Admission checks over a resolved parameter snapshot, shared by `start()` and a nested
+   *  `workflow()` frame (whose child version is its own admission — see `_handleWorkflowRequest`):
+   *  every reachable model must still be a valid, catalog-checked full ref (UNKNOWN_MODEL —
+   *  2026-09-26, owner decisions 1/6: syntax via `parseModelRef`, openrouter/ollama existence
+   *  against `catalog` when available) and no resolved appendPrompt may carry the user-instructions
+   *  frame close delimiter (PARAM_OUT_OF_RANGE, reported by size only). Returns the reachable model
+   *  set (the price pin is taken over it, INV-V26-4) plus any non-fatal MODEL_CATALOG_UNVERIFIED
+   *  warnings `checkModelRef` produced. */
+  private _refuseUnadmittableParams(params: RunParams, catalog: ModelCatalogSnapshot): { models: string[]; warnings: ModelRefWarning[] } {
+    const models = reachableModels(params);
+    const warnings: ModelRefWarning[] = [];
+    // Reverse-lookup the label a resolved model came from, purely for a readable warning — a
+    // run-wide `params.model` (legacy top-level rung, never author-set post-v24) has no label.
+    const labelOf = (m: string): string =>
+      Object.entries(params.agents ?? {}).find(([, a]) => a.model === m)?.[0] ?? '(run)';
+    for (const m of models) {
+      const verdict = checkModelRef(m, catalog);
+      if (!verdict.ok) {
+        throw paramCodedError({
+          ok: false,
+          code: verdict.code ?? 'UNKNOWN_MODEL',
+          message: verdict.message,
+          detail: { param: 'model', supplied: m },
+        });
+      }
+      if (verdict.warning) warnings.push({ code: 'MODEL_CATALOG_UNVERIFIED', label: labelOf(m), model: m, message: verdict.warning });
+    }
+    const appendPrompts = [params.appendPrompt, ...Object.values(params.agents ?? {}).map((a) => a.appendPrompt)];
+    for (const ap of appendPrompts) {
+      if (typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+          detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(ap, 'utf8') },
+        });
+      }
+    }
+    return { models, warnings };
+  }
+
+  /** issue #103(a): the admission-time door — run_start, a schedule/webhook firing (both dispatch
+   *  through `start()`, the "one door every start path shares" the seed-default comment above also
+   *  names), and a nested `workflow()` call (its own second admission point, same as
+   *  `_refuseUnadmittableParams`/`_pinChildModels` above) all reach this BEFORE any side effect.
+   *  Resolves EVERY label's declared skills/mcp against the SAME resolver registration's warning
+   *  uses (`AssetSyncService.resolveDeclaredAssets`) so the two can never disagree; refuses
+   *  MCP_NOT_PROVISIONED first if any label has a missing mcp name (checked first everywhere else
+   *  this pair appears — ERROR_CATALOG's own ordering), else SKILL_NOT_PROVISIONED, naming every
+   *  offending label + its missing names + the fix. No `_assetSync` bound (a test harness that never
+   *  wired one) -> fail OPEN, no check at all — matches every other optional-collaborator default in
+   *  this class. */
+  private async _refuseUnprovisionedAssets(workflow: string, contract: ParamContract): Promise<void> {
+    if (this._assetSync === undefined) return;
+    const declared = declaredAssetsOf(contract);
+    const missingMcp: Array<{ label: string; names: string[] }> = [];
+    const missingSkills: Array<{ label: string; names: string[] }> = [];
+    for (const [label, d] of Object.entries(declared)) {
+      if (d.skills.length === 0 && d.mcp.length === 0) continue;
+      const resolved = await this._assetSync.resolveDeclaredAssets(workflow, d);
+      if (resolved.missingMcp.length > 0) missingMcp.push({ label, names: resolved.missingMcp });
+      if (resolved.missingSkills.length > 0) missingSkills.push({ label, names: resolved.missingSkills });
+    }
+    const fix = (kind: 'mcp' | 'skill'): string =>
+      `push it first: workspace_push({workflow: '${workflow}', kind: '${kind}', name, ${kind === 'mcp' ? 'config' : 'files'}}), then re-run`;
+    if (missingMcp.length > 0) {
+      const named = missingMcp.map((m) => `${m.label}: ${m.names.join(', ')}`).join('; ');
+      throw codedError(
+        'MCP_NOT_PROVISIONED',
+        `MCP_NOT_PROVISIONED: workflow '${workflow}' declares mcp name(s) with no provisioned asset — ${named} — ${fix('mcp')}`,
+        { workflow, missing: missingMcp },
+      );
+    }
+    if (missingSkills.length > 0) {
+      const named = missingSkills.map((m) => `${m.label}: ${m.names.join(', ')}`).join('; ');
+      throw codedError(
+        'SKILL_NOT_PROVISIONED',
+        `SKILL_NOT_PROVISIONED: workflow '${workflow}' declares skill name(s) with no provisioned asset — ${named} — ${fix('skill')}`,
+        { workflow, missing: missingSkills },
+      );
+    }
+  }
+
+  /** INV-V26-4 for a nested frame: the pin taken in `start()` covers only the models the TOP-level
+   *  workflow names — a child's are unknowable then (its name is a runtime value, at any depth). A
+   *  nested `workflow()` is therefore a second admission point, and the child's reachable models are
+   *  ADDED to the run's pin here, so its agents are priced and USD-budget-bound. Only ABSENT keys are
+   *  looked up; an entry already pinned is never re-resolved (a resumed frame re-executes and skips
+   *  them). Mutates the pin in place — the run's AgentExecutor holds the same object — and persists
+   *  it so a restart-resume and `run_result.meta.budgetEnforceable` read the extended pin. */
+  private async _pinChildModels(runId: string, entry: RunEntry, models: string[]): Promise<void> {
+    const book = entry.priceBook;
+    if (book === null) return; // pre-v26 row: "we never looked" stays that way
+    const missing = models
+      .map((m) => parseModelRef(m))
+      .filter((r): r is NonNullable<typeof r> => r !== undefined && !Object.hasOwn(book.pinned, `${r.provider}/${r.model}`));
+    if (missing.length === 0) return;
+    const snapshot = await this._modelBook.snapshot();
+    for (const r of missing) book.pinned[`${r.provider}/${r.model}`] = snapshot.lookup(r.provider, r.model);
+    await this._store.updatePriceBook(runId, book);
+  }
+
+  private _frameBaseFor(entry: RunEntry, pathKey: string): number {
+    let base = entry.nestedFrames.get(pathKey);
+    if (base === undefined) {
+      base = (entry.nestedFrameSeq += 1) * RunManager.NESTED_FRAME_STRIDE;
+      entry.nestedFrames.set(pathKey, base);
+    }
+    return base;
+  }
+
+  /** Runs one live (or replay-then-live) execution of `script` against the sandbox; settles the
+   *  run's terminal status (completed/failed) unless suspend/stop already moved it on (DES-003). */
+  private _runLive(runId: string, entry: RunEntry, script: string, cachePlan: ResumePlan | null): void {
+    entry.cachePlan = cachePlan;
+    // v26 (DES-182, ARCH-118, TASK-182): the legacy positional is `null` here on purpose — the two
+    // limits already travelled onto `entry.sandbox`'s own `SandboxHostConfig.budget` at construction
+    // (`_newSandbox`, above), which now wins; `entry.guard.budgetView().total` is TOKENS (the pre-
+    // v26 view) and would be a wrong-unit value on this parameter today.
+    // issue #53: `suspend()` SIGKILLs this child without awaiting its exit, and `resume()` installs a
+    // NEW `entry.sandbox` and sets `running` again — so this child's late `exit` (ABORTED/SIGKILL, or
+    // an EPIPE `error`) can arrive while the run is `running` under its successor. Identity, not
+    // timing: only the sandbox this execution was started on may settle the run.
+    const sandbox = entry.sandbox;
+    sandbox
+      .run(runId, script, entry.args, null)
+      .then(async (outcome) => {
+        if (entry.sandbox !== sandbox) return; // superseded by resume(): a newer execution owns the run
+        if (entry.status !== 'running') return; // suspend/stop already recorded the terminal transition
+        if ('result' in outcome) {
+          entry.result = outcome.result;
+          await this._store.recordResult(runId, outcome.result);
+          await this._transition(runId, entry, 'completed');
+        } else {
+          // v35 (DES-232, ARCH-142, TASK-236, REQ-205): redact BEFORE bounding (R-G9, INV-V26-5 —
+          // a substring cut applied first can split a secret so redact()'s value-exact match finds
+          // neither half), and persist the reason (`recordError`) STRICTLY BEFORE flipping the
+          // status to `failed` (INV-V35-1) — `try/finally` so a throwing `recordError` (disk full,
+          // EACCES) still lets the run reach `failed` rather than hang `running` forever.
+          // v36 (DES-248, ARCH-165/168, TASK-246): a `refusalRef` this run's ledger actually
+          // contains replaces the flattened envelope with the ledger's own (unflattened, captured
+          // at the real throw site) entry. An UNKNOWN ref — reachable only via a forged/stale
+          // child IPC message, never a real script — falls back to today's path unchanged.
+          // v40 Gate 6 delta (DES-274, R-14): callSeqs are unique across both ledgers (one shared
+          // counter), so a hit tries the agent ledger first, then the primitive one.
+          const refusalHit = outcome.refusalRef !== undefined
+            ? (entry.refusals.get(outcome.refusalRef) ?? entry.primitiveRefusals.get(outcome.refusalRef))
+            : undefined;
+          entry.resultError = refusalHit ?? captureFailure(outcome.error, this._secretValueProvider?.entries() ?? []);
+          try { await this._store.recordError(runId, entry.resultError); }
+          finally { await this._transition(runId, entry, 'failed'); }
+        }
+      })
+      // v35 (DES-232): a backstop covering EITHER branch above (recordResult/recordTransition can
+      // also throw, same as recordError) — same precedent as `usage_backfill_failed` (run-manager.ts
+      // engine-log convention), not an EngineWarning (`EngineWarning.kind`'s required
+      // `terminalState` does not exist for a settle failure).
+      .catch((e) => { console.log(JSON.stringify({ event: 'run_settle_failed', runId, error: String(e) })); });
+  }
+
+  /** Handles one child workflow(name|{scriptPath}) call: resolves the named script from the catalog
+   *  and runs it inline as a NESTED run (v8 Slice 1 — N levels deep up to maxWorkflowDepth). Shares
+   *  the parent run's RunGuard (one budget for the whole graph) and workspace. The nested sandbox is
+   *  wired with its own onWorkflowRequest so a deeper workflow() recurses here with depth+1 and the
+   *  extended ancestor set — bounded by three fail-closed guards:
+   *    REQ-041 depth   > maxWorkflowDepth        → NESTING_DEPTH_EXCEEDED
+   *    REQ-042 cycle    (target ∈ ancestors)      → NESTING_CYCLE
+   *    REQ-043 descendants > maxWorkflowDescendants → DESCENDANT_CAP_EXCEEDED
+   *  `depth` is the depth of THIS call (top run = 0; first workflow() = 1). `ancestors` is the set of
+   *  workflow names already on the chain (incl. the top run's own name). */
+  private async _handleWorkflowRequest(
+    runId: string,
+    ref: unknown,
+    rawArgs: unknown,
+    parentPathKey: string,
+    parentCallSeq: number,
+    depth: number,
+    ancestors: Set<string>,
+  ): Promise<unknown> {
+    // Issue #161 B2: `rawArgs` has already crossed the sandbox child's IPC 'json' serialization —
+    // an own key the script set to explicit `undefined` arrives here as the ipc-sentinel.ts
+    // marker, not as a true `undefined` (JSON drops the key outright otherwise). Decode BEFORE
+    // `materializeRunArgs` ever sees it, so `Object.hasOwn`-based default-fill (contract.ts) can
+    // tell "explicit undefined" apart from "key never mentioned" for THIS args object exactly as
+    // it already does for a top-level run_start submission (which crosses no such hop).
+    const args = decodeExplicitUndefined(rawArgs);
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    // issue #53: the execution generation this frame belongs to. suspend()/stop() abort it and
+    // resume() replaces it; either way this frame's nested child is then superseded (see below).
+    const generation = entry.abortController.signal;
+    if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
+    const name = typeof ref === 'string' ? ref : (ref as { scriptPath?: string } | undefined)?.scriptPath;
+    if (!name) throw new Error('workflow() requires a registered name or {scriptPath}');
+
+    if (depth > this._maxWorkflowDepth) {
+      throw codedError('NESTING_DEPTH_EXCEEDED', `workflow() nesting depth ${depth} exceeds maxWorkflowDepth=${this._maxWorkflowDepth}`);
+    }
+    if (ancestors.has(name)) {
+      throw codedError('NESTING_CYCLE', `workflow() cycle: '${name}' is already an ancestor in this nesting chain`);
+    }
+    // Service accounts spec (owner decision 2026-10-03), §Authorization + send-back D1: this nested
+    // dispatch never goes through authorize() (see this method's own doc — "a nested call always
+    // resolves release regardless of owner"), so an sa:-owned run's liveness/allowlist would
+    // otherwise be silently bypassed by its own workflow() calls. Checked before any resolve/side
+    // effect, same as the depth/cycle doors above. Shared with start()/resume() — see that helper's
+    // own doc for the full liveness+allowlist contract.
+    this._assertServiceAccountAdmission(entry.principal, name, 'run_start');
+    // LOW-3 (owner decision 2026-10-02, verify-k): the disk-floor check runs BEFORE the descendant
+    // slot is counted — a nested frame is a NEW admission, refused DISK_LOW below the disk floor
+    // (the script sees the throw; the parent run itself is not stopped), and a refusal that never
+    // dispatched anything must not burn a maxWorkflowDescendants slot a parent that loops/retries
+    // workflow() during a low-disk window could otherwise exhaust for nothing. The other refusal
+    // ordering (depth, then cycle, then this) is unchanged.
+    this._diskFloor?.assert();
+    if ((entry.descendants += 1) > this._maxWorkflowDescendants) {
+      throw codedError('DESCENDANT_CAP_EXCEEDED', `workflow() exceeds maxWorkflowDescendants=${this._maxWorkflowDescendants} for this run`);
+    }
+
+    const registered = await this._catalog.resolve(name, {}); // throws CatalogNotFoundError/typed resolve error — message names the missing workflow
+    // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the THIRD
+    // admission call site — same predicate, same pure function as `start()`'s two stages. A
+    // running script's own `workflow()` call dispatches a nested run WITHOUT ever passing through
+    // `start()`, so a locally-started parent could otherwise compose a remotely-registered child
+    // unchecked — the same class of bypass ARCH-182 closed for the scheduler/webhook routes. A
+    // refusal here throws and fails the run (via the caller's own error path below) — permanent,
+    // matching every other admission refusal in this file.
+    {
+      const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
+      if (refusal !== null) {
+        throw codedError(
+          refusal,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() '${name}' version ${registered.version} was registered remotely, so running it is refused. Remediation: ${CONFINEMENT_REMEDIATION}`,
+        );
+      }
+    }
+    // A nested frame's agents take their harness params from the CHILD version's own
+    // `meta.params.agents.<label>` defaults — never from the parent run's admission snapshot, whose
+    // labels belong to another workflow (a same-named parent label used to leak its override in).
+    // The parent's `overrides.agents` do NOT reach here: they are validated against, and scoped to,
+    // the parent's own contract (REQ-110), and the child is a black box (AUTHORING.md). Same merge
+    // (`defaultRunParams`, the no-overrides producer), same admission checks, same LEGACY_REREGISTER
+    // refusal as `start()` for a version predating the per-agent contract.
+    const childContract = registered.params as ParamContract | undefined;
+    if (childContract === undefined) {
+      throw codedError(
+        'LEGACY_REREGISTER',
+        `LEGACY_REREGISTER: nested workflow '${name}' version ${registered.version} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
+        { workflow: name, version: registered.version },
+      );
+    }
+    // issue #154 B1-B4 (2026-10-07 reverify): same re-validation start()/resume() apply, against
+    // the CHILD's own resolved version — a nested workflow() dispatches WITHOUT ever passing
+    // through start(), so without this a parent could compose an old, now-rule-violating child
+    // version this same engine would refuse to run directly.
+    {
+      const staleness = await this._catalog.validateStoredVersion(name, registered.version);
+      if (!staleness.ok) {
+        throw codedError(staleness.code, staleness.message, staleness.detail);
+      }
+    }
+    // issue #103(a): the nested frame's OWN admission-time provisioning refusal — same door, same
+    // resolver as `start()`'s (`_refuseUnprovisionedAssets`), checked against the CHILD's own
+    // contract/name (never the parent's — a nested workflow's declared assets are scoped to it).
+    await this._refuseUnprovisionedAssets(name, childContract);
+    // issue #107: the nested frame's OWN materialize-defaults + declared-args validation — the SAME
+    // door `start()` applies to a top-level submission (`materializeRunArgs` + `validateDeclaredArgs`,
+    // shared, not re-derived), run against the CHILD's own contract (never the parent's — another
+    // workflow's declared args are its own, AUTHORING.md's "nested workflow() black box") and BEFORE
+    // any child run/record exists (the `WorkflowNodeView` push and `nested.run()` below). A caller
+    // script's `workflow(name, args)` is itself untrusted input reaching the CHILD's own prompt —
+    // without this, any bound the child declared (type/enum/min/max) was reachable only via
+    // run_start, never via a sibling workflow composing it (cross-principal prompt injection).
+    const { args: childArgs } = materializeRunArgs(childContract, args);
+    const childArgsResult = validateDeclaredArgs(childContract, childArgs);
+    // Review send-back LOW-2: an args refusal never creates a child run/record — same "a refusal
+    // that never dispatched anything must not burn a slot" rule LOW-3 already applies to the
+    // disk-floor check above the counter. The counter is incremented earlier (before `resolve()`,
+    // pinned by run-manager-disk-floor.test.ts's DISK_LOW-before-resolve ordering) so it cannot
+    // simply move below this check; released here instead.
+    if (!childArgsResult.ok) {
+      entry.descendants -= 1;
+      throw paramCodedError(childArgsResult);
+    }
+    const childParams = defaultRunParams(undefined, childContract.agents);
+    // v40 (DES-271/274, TASK-271): same contract-default-only fold as `start()`'s no-overrides
+    // case — the CHILD's own declared `decisions`/`images`, never the parent's overrides (same
+    // "nested workflow() is a black box" rule the agents/assets/tool-surface slices above already
+    // follow; DES-277's delta keeps this call with no `overrides` argument).
+    if (childContract.decisions) childParams.decisions = resolvePrimitiveParams(childContract.decisions);
+    if (childContract.images) childParams.images = resolvePrimitiveParams(childContract.images);
+    // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
+    // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
+    // already is (`frameParams`), below. Before this, a nested dispatch built `AgentReq.assets`
+    // from `entry.declaredAssets`/`entry.name` — the PARENT run's own admission snapshot — so a
+    // same-named label on the parent leaked its skills/mcp into the child (or, when the parent had
+    // no matching label at all, the child got nothing). A nested workflow() is another workflow's
+    // black box (AUTHORING.md) — its declared assets are its own, never the parent's.
+    const frameAssets = { workflow: name, declared: declaredAssetsOf(childContract) };
+    // Issue #154 NEW HIGH (blocker): this frame's OWN per-label tool-surface expectation — the
+    // CHILD workflow's own registered script (`registered.script`, already fetched above), never
+    // the parent run's `entry.toolSurface` — a nested workflow() frame dispatches the CHILD
+    // script's agent() calls, and comparing them against the PARENT's scan would either wrongly
+    // refuse every legitimate child call (no matching label) or, worse, accept a child label that
+    // happens to collide with a same-named parent label's wider tool surface.
+    const frameToolSurface = expectedAgentOptsByLabel(registered.script);
+    // 2026-09-26 (owner decision 6): the nested frame is its own admission point, so it fetches its
+    // own catalog snapshot rather than inheriting the parent run's (which may be stale by the time a
+    // deep/late nested workflow() fires) — `ModelBook`'s own TTL cache means this is a real fetch
+    // only once per TTL window, not once per nested call.
+    const childCatalog = toModelCatalogSnapshot(await this._modelBook.snapshot(), this._harnessProviders);
+    const childRefuse = this._refuseUnadmittableParams(childParams, childCatalog);
+    await this._pinChildModels(runId, entry, childRefuse.models);
+    for (const w of childRefuse.warnings) console.warn(`[model-catalog] run ${runId} (nested '${name}'): ${w.message}`);
+    // Issue #73 (d) for the child's agents: WARN, never refuse — logged only, the run_start caller
+    // has already been answered by the time a nested frame is admitted.
+    if (this._probeLookup) {
+      const warnings = toolProbeWarnings({
+        calls: scanAgentCalls(registered.script).calls,
+        // 2026-09-26 (rule 3): no `?? 'default'` fallback — see the top-level admission's own note.
+        modelFor: (label) => childParams.agents?.[label]?.model as string,
+        resolve: (ref) => parseModelRef(ref),
+        lookup: this._probeLookup,
+      });
+      for (const w of warnings) console.warn(`[model-probe] run ${runId} (nested '${name}'): ${w.message}`);
+    }
+    // issue #53: re-check after the awaits above — an abort that landed meanwhile would never fire
+    // the kill listener registered below (an already-aborted signal dispatches no later 'abort').
+    if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
+    const framePathKey = `${parentPathKey}.${parentCallSeq}`;
+    const frameBase = this._frameBaseFor(entry, framePathKey);
+    const childAncestors = new Set(ancestors).add(name);
+    // v8 REQ-046: record this nested workflow() call as a composite-boundary node (dashboard sub-card).
+    // v26 (DES-175, ARCH-114, TASK-186, REQ-124): `node` is captured by reference so the nested
+    // host's own `onPhase` below can push onto THIS SAME sub-card's `phases[]` — never onto the
+    // parent run's `entry.phases` timeline (a nested frame's own phase() belongs on its card, not
+    // the parent's lanes).
+    const node: WorkflowNodeView = { frame: framePathKey, name, parentFrame: parentPathKey, depth, phases: [] };
+    entry.workflowNodes.push(node);
+
+    const nested = new SandboxHost({
+      workspaceRoot: entry.workspace,
+      // v26 (DES-182, ARCH-118, TASK-182): the SAME `{usd, tokens}` limits the top-level host got
+      // (`_newSandbox`) — one budget for the whole graph, unchanged; a nested frame's `budget.limits`
+      // reads the parent run's own two limits, never a nested-only allowance.
+      budget: entry.budgetLimits,
+      // v8 REQ-044: nested agent() callSeqs are namespaced into this frame's base (see _frameBaseFor)
+      // so they never collide with the parent's own or a sibling frame's entries in the shared journal.
+      // v8 REQ-045: the nested agents are tagged with THIS frame's path so the dashboard nests them.
+      // issue #53: a superseded frame's calls are refused, never dispatched into the run's CURRENT
+      // generation (after an immediate resume they otherwise ran live under the new controller).
+      onAgentRequest: (prompt, opts, callSeq, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: agent() from a suspended/stopped nested workflow() frame`);
+        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase, childParams, frameAssets, frameToolSurface);
+      },
+      // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
+      // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
+      onWorkflowRequest: (ref2, args2, callSeq2) =>
+        this._handleWorkflowRequest(runId, ref2, args2, framePathKey, callSeq2, depth + 1, childAncestors),
+      // v40 (DES-272/274, ARCH-186/187, TASK-269/271): mirrors `onAgentRequest` above — THIS
+      // frame's own `childParams.decisions`/`.images` (the child workflow's own declared contract),
+      // never the parent's.
+      onDecideRequest: (msg, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: decide() from a suspended/stopped nested workflow() frame`);
+        return this._handleDecideRequest(runId, msg, frameBase + msg.callSeq, framePathKey, phase, childParams);
+      },
+      onImageRequest: (msg, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: generateImage() from a suspended/stopped nested workflow() frame`);
+        return this._handleImageRequest(runId, msg, frameBase + msg.callSeq, framePathKey, phase, childParams);
+      },
+      // v26 (DES-175): a nested frame with no phase() of its own inherits the PARENT's lane — same
+      // closure, same runId, as the top-level host (`_newSandbox`) gets.
+      currentPhase: () => this._currentPhaseFor(runId),
+      // v26 (DES-182, DES-175): the SAME fold `_newSandbox` gives the top-level host — reads the
+      // parent run's real spend (`entry.spawner.getAllRecords()`), not a nested-only accumulator.
+      onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
+      // v26 (DES-175, REQ-124): this frame's OWN phase() call lands on its sub-card, not the parent
+      // timeline — zero warnings on a legal parent script, per DES-176's own boundary.
+      onPhase: (title) => { node.phases!.push(title); },
+      // F-1: the SAME deadline the top-level host got (`_newSandbox`) — a decision, not an
+      // oversight: a nested workflow() that times out surfaces to the PARENT script as a catchable
+      // `SCRIPT_TIMEOUT` (same path as any other delegate failure, `makeWorkflow` in guards.ts),
+      // which is consistent with every other nested-frame limit in this file being inherited from
+      // the parent run rather than reset per frame (the shared budget above, the shared
+      // maxWorkflowDescendants cap). A parent could still exceed ITS OWN deadline waiting on a
+      // nested frame that is individually within bounds — no narrower, per-frame deadline exists.
+      maxRunDurationMs: this._maxRunDurationMs,
+      // Issue #162 (boot-time sweep): same shared, whole-engine registry dir as the top-level
+      // host's own (`_newSandbox`) — a nested frame's child must be swept on a non-graceful
+      // restart exactly like a top-level one.
+      childRegistryDir: sandboxChildRegistryDir(this._workRoot),
+    });
+    // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
+    // above, which wins (see `SandboxHost.run`'s own doc).
+    // issue #53: suspend()/stop() only SIGKILL the top-level child (`entry.sandbox`); this nested
+    // child lives in its own host, so without this it kept running its script after the run was
+    // suspended or stopped. Kill it when its generation is aborted.
+    const killNested = () => { void nested.abort(`${runId}-nested`, 'stop'); };
+    generation.addEventListener('abort', killNested, { once: true });
+    // issue #163 B1: throttle nested workflow() dispatch exactly like _handleAgentRequest already
+    // throttles agent() dispatch — queue at `workflowGuard`'s cap (same `runConcurrency` width as
+    // `guard`, a SEPARATE pool: see RunEntry.workflowGuard's own doc for why it must not be `guard`
+    // itself). Before this, a wide parallel() of nested workflow() calls forked every child OS
+    // process essentially simultaneously with no limit at all.
+    const releaseWorkflowSlot = await entry.workflowGuard.acquireSlot();
+    let outcome: Awaited<ReturnType<SandboxHost['run']>>;
+    try {
+      // Re-check here, AFTER the (possibly long) queue wait above: the once-listener registered
+      // before that wait (`killNested`) may already have fired and been consumed — against a
+      // SandboxHost that had forked no child yet, a no-op (see `SandboxHost.abort()`) — while this
+      // frame sat queued. With no recheck, acquiring the slot post-abort would still fork a real
+      // child and run it to completion with no listener left to kill it, reintroducing issue #53's
+      // "stop() doesn't kill nested children" bug for exactly this queued-at-abort-time case.
+      if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
+      outcome = await nested.run(`${runId}-nested`, registered.script, childArgs, null);
+    } finally {
+      generation.removeEventListener('abort', killNested);
+      releaseWorkflowSlot();
+    }
+    if ('result' in outcome) return outcome.result;
+    const err = toErr(outcome.error);
+    // v24 (DES-137): the one genuinely-`string` site — `toErr()` can return a raw `Error.name`
+    // (e.g. `SCRIPT_ERROR` from an uncaught throw). An unrecognized code becomes INTERNAL_ERROR
+    // with `detail.rawCode` set, a greppable production signal rather than a silent passthrough.
+    const mapped = toErrorCode(err.code);
+    throw codedError(mapped, err.message, mapped === 'INTERNAL_ERROR' && err.code !== 'INTERNAL_ERROR' ? { rawCode: err.code } : undefined);
+  }
+
+  /** Handles one child agent() call: replay from the resume cache when available, otherwise
+   *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }, frameParams?: RunParams, frameAssets?: { workflow: string; declared: Record<string, { skills: string[]; mcp: string[] }> }, frameToolSurface?: Record<string, Array<{ allowedTools: string[] | 'absent'; bash?: 'readonly' }>>): Promise<unknown> {
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
+    // `agent(LABEL, {prompt, …})` — `scanAgentCalls` REFUSES registration unless the first
+    // positional is a literal label matching `/^[A-Za-z_][\w-]*$/` and a declared
+    // `meta.params.agents.<label>`. The sandbox API (`guards.ts`) still marshals that positional
+    // through as `prompt` and nothing ever set `opts.label`, so on a REAL dispatch: the per-label
+    // parameter slice below (`entry.effectiveParams.agents[label]`) never resolved, `markQueued`
+    // recorded every agent as anonymous, `run_agent_log({label})` could not find its agent, and
+    // DES-154's selective materialization had no declared set to materialize. The whole v24
+    // per-agent chain hung off one translation nobody wrote. It is written here, at the single
+    // point the positional crosses the sandbox boundary, so every caller (agent(), parallel(),
+    // pipeline(), a nested workflow() frame) gets it once.
+    const rawOpts = (opts ?? {}) as AgentOpts & { prompt?: unknown };
+    const label = typeof rawOpts.label === 'string' && rawOpts.label !== '' ? rawOpts.label : positional;
+    const prompt = typeof rawOpts.prompt === 'string' ? rawOpts.prompt : positional;
+    // issue #165: `key` is the RESUME/REPLAY key (`ResumeCache.replay`'s `sameKey`) — it deliberately
+    // carries `label` (cosmetic) but NEVER `positional`/`agentKey`. Adding the positional here would
+    // change which calls a resumed run treats as a cache hit vs. a miss, breaking resume of any run
+    // already in flight the moment this field shipped. `agentKey` is recorded separately, below, on
+    // `markQueued`/`spawner.run` — entirely outside this key.
+    const key: CallKey = { prompt, opts: { ...rawOpts, label } };
+    if (entry.cachePlan) {
+      const cached = entry.cachePlan.replay(callSeq, key);
+      if (cached !== MISS) return cached;
+    }
+
+    // D-F12: allocate the agentId and mark it "queued" BEFORE acquiring a concurrency slot — so a
+    // call genuinely blocked behind the concurrency cap is observable via workflow_status right
+    // away, not only once it resolves (round-5 VAL-002/VAL-007's `agents:[]`-while-running gap).
+    // v25 (REQ-120): it is also what gives a call the engine later REFUSES a record to carry the
+    // reason on — before v25 a refused call had no record at all.
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      // v26 (DES-175, ARCH-114, TASK-186, INV-V26-1): `phase` is the receipt-time snapshot threaded
+      // in above — NEVER `key.opts.phase` (the script's own unrelated, unused per-call opt; reading
+      // it into the replay key's neighbourhood is exactly the mistake INV-V26-1 forbids).
+      // issue #165: `agentKey: positional` — the literal first `agent()` argument, NEVER
+      // `key.opts.label` (that's the cosmetic display name, already passed as `label` above — see
+      // this function's own header comment on the label/positional decoupling, and
+      // `AgentRecord.agentKey`'s doc for why both are recorded).
+      entry.spawner.markQueued(agentId, { label: key.opts.label, agentKey: positional, phase, frame: framePath });
+    }
+    const release = await entry.guard.acquireSlot();
+    try {
+      // v25 (DES-167, REQ-120, issue #61, owner ruling): ONE budget door — "has this run already
+      // spent its whole allowance?" — evaluated HERE, holding the concurrency slot, immediately
+      // before dispatch. The position is load-bearing: checked before acquireSlot() (where the v2
+      // code checked it), every call of a wide parallel() passes while spend is still 0 and then
+      // queues, so the budget stops nothing at all. Checked after the slot, only the calls actually
+      // IN FLIGHT can overshoot — which is precisely the bound the guide now states (budget is a
+      // stop-dispatching signal; overshoot ≤ concurrency × one call's cost).
+      //
+      // What this replaces: the v2 `assertBudget()` + `reserve()` pair, where each call reserved
+      // half the TOTAL budget, so two concurrent calls reserved 100% and a third branch of any
+      // budgeted parallel() threw however little had been spent (issue #61). The reservation is
+      // gone entirely — see run-guard.ts's header for why no formula replaces it.
+      try {
+        entry.guard.assertBudget();
+      } catch (err) {
+        // A real refusal — record it as a terminal `refused` agent carrying its named code, then
+        // let it propagate. `parallel()` (sandbox/guards.ts) re-throws refusal codes rather than
+        // swallowing them to null, so the caller learns why instead of silently losing a branch.
+        // v26 (DES-188, TASK-188): AWAITED — markRefused now journals a `kind:'refused'` transcript
+        // event (the only durable trace across a restart with no snapshot), so it must land before
+        // the throw propagates, not race it.
+        if (entry.spawner instanceof AgentExecutor) {
+          await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+        }
+        throw err;
+      }
+      // Issue #154 NEW HIGH (blocker, 2026-10-07 reverify): the dispatch-time backstop — the REAL
+      // `opts.allowedTools`/`opts.bash` this call is about to dispatch with must match ONE of the
+      // literal shapes this label's registered script scanned at registration (a label can
+      // legitimately be called from more than one call site with different literal options, DES-174
+      // "duplicate labels are legal" — any one of them is accepted). `toolSurface` is a nested
+      // frame's OWN child-script scan when this call came through `_handleWorkflowRequest`
+      // (`frameToolSurface`), else this run's top-level `entry.toolSurface` — never the other way
+      // around (see `frameToolSurface`'s own doc at its call site). A label with NO scanned entry at
+      // all (should be unreachable for an admitted run — `validateStoredVersion`/`scanAgentCalls`
+      // already refuse registration of an unlabeled/unscannable call) fails CLOSED, never treated as
+      // "nothing to check". Before this, the opts object crossed the child->host IPC through JSON
+      // serialization, which honours a script-planted `Array.prototype.toJSON` — nothing compared
+      // what actually got dispatched against what registration saw.
+      //
+      // 2026-10-08 integration (rv) fix: indexed by `positional`, NEVER the `label` computed a few
+      // lines above (`rawOpts.label ?? positional`) — `expectedAgentOptsByLabel`/`scanAgentCalls`
+      // key their map by the agent() call's literal FIRST positional string (the contract key
+      // matching `meta.params.agents.<key>`; `scanAgentCalls`'s own `labelVal`, workflow-meta.ts),
+      // never by `opts.label`, which is deliberately a SEPARATE, purely cosmetic run-tracking name
+      // (the comment a few lines above this block explains exactly why the two are decoupled). The
+      // original code here read `toolSurface[label]`, so any call passing a `label` different from
+      // its positional — the single most common agent() shape in this codebase's own test fixtures,
+      // `agent('do-T', { label: 'T' })` — found no scanned entry and failed CLOSED with
+      // AGENT_OPTS_TAMPERED on every dispatch, tampered or not.
+      {
+        // `Object.hasOwn`, not a bare `?.[...]` index — `positional` matches
+        // `/^[A-Za-z_][\w-]*$/` (scanAgentCalls's own label grammar), which admits
+        // 'constructor'/'__proto__'/'toString' as syntactically valid labels; a bracket lookup for
+        // one of those on a plain `toolSurface` object would resolve to a real `Function`/
+        // `Object.prototype` value instead of `undefined`, which `matchesScannedOpts` (expecting an
+        // array or `undefined`) would then throw on (`scanned.length`/`scanned.some` on a function)
+        // — an uncaught crash BEFORE `markRunning`, below. `Object.hasOwn` means "no scanned entry",
+        // the same fail-closed outcome `matchesScannedOpts(undefined, …)` already returns for any
+        // other never-scanned label.
+        const toolSurface = frameToolSurface ?? entry.toolSurface;
+        const scanned = Object.hasOwn(toolSurface, positional) ? toolSurface[positional] : undefined;
+        if (!matchesScannedOpts(scanned, rawOpts.allowedTools, rawOpts.bash)) {
+          const detail =
+            `AGENT_OPTS_TAMPERED: the dispatched allowedTools/bash for agent() call '${label}' ` +
+            "does not match any options literal this script's registered scan recorded for that " +
+            'label — the options object may have been altered after registration (e.g. a planted ' +
+            `Array.prototype.toJSON), or '${label}' has no scanned agent() call at all`;
+          if (entry.spawner instanceof AgentExecutor) {
+            await entry.spawner.markRefused(runId, agentId, 'AGENT_OPTS_TAMPERED', this._clock.isoNow());
+          }
+          throw codedError('AGENT_OPTS_TAMPERED', detail, { label });
+        }
+      }
+      if (entry.spawner instanceof AgentExecutor) {
+        entry.spawner.markRunning(agentId, this._clock.isoNow());
+      }
+      // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
+      // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real
+      // concurrent spawns across all runs and returns to baseline once each settles.
+      // v24 (DES-146, TASK-158): when this call's script label has its OWN per-agent slice in
+      // the admission snapshot (`entry.effectiveParams.agents[label]`), its resolved
+      // model/effort/timeoutMs/appendPrompt + provenance override the run-wide flat fields for
+      // THIS call only — a sibling label's call reads its own slice, never this one's (REQ-110
+      // close). `prompt`/`tools` stay the run-wide (workflow-level, not per-agent) fields. No
+      // label, or no contract at admission (ad-hoc/legacy script) → the flat snapshot unchanged,
+      // same as before this task.
+      // A nested workflow() frame passes its CHILD version's snapshot as `frameParams` (see
+      // `_handleWorkflowRequest`); a top-level call passes none and reads the run's own.
+      // MAJOR (security, 2026-10-07 reverify of #154): keyed by `positional`, NEVER
+      // `key.opts.label` — the exact same `label`-vs-`positional` decoupling 20cff09 already
+      // explains a few lines above (`opts.label` is a purely cosmetic run-tracking name;
+      // `positional` is the literal first argument the admission snapshot's per-label slices are
+      // actually keyed by, `meta.params.agents.<positional>`). Before this fix, `agent('a', {
+      // label: 'b', ... })` — the single most common agent() shape in this codebase's own fixtures
+      // — resolved 'b's model/effort/timeoutMs/appendPrompt onto an 'a' call that had already been
+      // tamper-checked (above) against 'a's OWN tool surface: a caller-controlled `label` string
+      // picked ANOTHER agent's dispatch config while the host believed it was still enforcing 'a's.
+      // `Object.hasOwn`, not a bare `?.[...]` index — a plain object's bracket lookup consults the
+      // prototype chain, so `positional` (or, pre-fix, `label`) of 'constructor'/'__proto__'/
+      // 'toString' resolved to a real `Function`/`Object.prototype` value (truthy, not undefined),
+      // which this block then destructured (`labelParams.model` etc.) — harmless by itself, but
+      // `labelParams.provenance` came back `undefined`, and `composeEffectivePrompt` (agent-
+      // executor.ts) immediately reads `runParams.provenance.appendPrompt` with no guard, throwing
+      // a TypeError AFTER `markRunning` (below) had already recorded this agent as 'running' — the
+      // exact "stuck running" LOW finding. `Object.hasOwn` means "no entry" for every one of those
+      // three names (none is ever a REAL own key `defaultRunParams` writes), so this now falls
+      // through to `baseParams` exactly like any other label with no per-agent slice at all.
+      const baseParams = frameParams ?? entry.effectiveParams;
+      const labelParams = baseParams.agents !== undefined && Object.hasOwn(baseParams.agents, positional)
+        ? baseParams.agents[positional]
+        : undefined;
+      const runParams: RunParams = labelParams
+        ? { ...baseParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
+        : baseParams;
+      // v24 (integrator; REQ-113, ARCH-103/DES-154, adjudication #4 C-2): `AgentReq.assets` —
+      // THE missing wire. `agent-executor.ts` forwards it, `claude-agent-sdk-client.ts` acts on
+      // it and `materialize-assets.test.ts` proved the algorithm, but NOBODY produced the value,
+      // so on every real dispatch `req.assets` was `undefined` and the gateway took its
+      // "no workspace / no assets -> materialize nothing" branch. REQ-113 ("each agent declares
+      // the skills IT needs, not one set for the whole workflow") therefore had no runtime
+      // behaviour at all. Built here from the three things only this scope has together: the run's
+      // workflow name, THIS label's declared `skills`/`mcp`, and the resolved asset roots.
+      // Absent for an ad-hoc/unnamed run or an unlabelled call — nothing to scope assets BY.
+      // A nested workflow() frame passes its OWN `frameAssets` (this label's declared set + the
+      // CHILD workflow's name, built in `_handleWorkflowRequest` from the child's own contract) —
+      // never the parent run's `entry.declaredAssets`/`entry.name`, which belong to another
+      // workflow entirely. A top-level call passes none and reads the run's own registration.
+      const assetScope = frameAssets ?? (entry.name !== undefined ? { workflow: entry.name, declared: entry.declaredAssets } : undefined);
+      // MAJOR (security, 2026-10-07 reverify of #154): same `positional`-not-`label` fix as
+      // `labelParams` above — this is the OTHER half of the same bug (REQ-113's declared
+      // skills/mcp scope), closed the same way, for the same reason.
+      const declared = assetScope !== undefined && Object.hasOwn(assetScope.declared, positional) ? assetScope.declared[positional] : undefined;
+      const assets = assetScope !== undefined && declared !== undefined
+        ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, assetScope.workflow), declared, workflow: assetScope.workflow }
+        : undefined;
+      const outcome = await this._semaphore.withSlot(() =>
+        entry.spawner.run({
+          runId,
+          agentId,
+          // issue #165: the positional, threaded through to AgentExecutor so `capture()`/`onHarness`
+          // can stamp it onto the terminal record/durable descriptor — same label-vs-positional
+          // decoupling as the `markQueued` call above.
+          agentKey: positional,
+          prompt,
+          opts: key.opts,
+          workspace: entry.workspace,
+          signal: entry.abortController.signal,
+          ...(assets !== undefined ? { assets } : {}),
+          // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
+          // per run (incl. nested workflow() frames, which share the parent's entry), never
+          // re-resolved per call. v24 (TASK-158): narrowed to this call's label above when the
+          // admission snapshot has a per-label slice for it.
+          runParams,
+        }),
+      );
+      const value = outcome.kind === 'null' ? null : outcome.value;
+      const journalEntry: JournalEntry = {
+        callSeq,
+        key,
+        value,
+        ts: this._clock.isoNow(),
+        scriptVersion: `v${entry.scriptVersion}`,
+        // D-F13: a null caused by suspend/stop aborting this call mid-flight must MISS on resume
+        // (re-run live), never replay as if it were a genuinely-completed terminal null.
+        aborted: outcome.kind === 'null' && outcome.aborted === true,
+      };
+      entry.journal.push(journalEntry);
+      // DES-088 (TASK-082) sink (4): redact the ENTIRE JournalEntry (key.prompt + key.opts + value)
+      // at the persist-write site only. The live in-memory journal (entry.journal, the replay cache)
+      // keeps the raw key+value so same-process suspend/resume matches exactly; only the durable
+      // journal.jsonl is redacted. Accepted caveat — invariant (c) EXTENDED to call params: if a
+      // provisioned secret rides a prompt/opts (e.g. a prior agent's MCP result echoed into a later
+      // prompt), a HARD-CRASH resume reads the redacted key from disk, MISSes that call's key
+      // (sameKey compares prompt+opts, resume-cache.ts:14) and re-runs it + the tail LIVE — correct
+      // values, just recomputed. Strictly more graceful than a redacted VALUE (which feeds a marker
+      // back as data). (Future option, not built: persist a keyHash of the raw key so replay matches
+      // without the raw prompt — see DES-088 Decision rationale.)
+      const journalToStore = this._secretValueProvider
+        ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry)
+        : journalEntry;
+      await this._store.appendJournal(runId, journalToStore);
+      return value;
+    } catch (err) {
+      // v36 (DES-248, ARCH-165/168, TASK-246): the run-level refusal ledger — captured HERE, on the
+      // parent, BEFORE the error is flattened to `{code,message}` for the IPC `agentThrow` message
+      // (host.ts sends that to the child). Recorded ONLY at the top-level frame (`framePath ===
+      // ''`) — a nested `workflow()` boundary re-mints the error (`_handleWorkflowRequest`), so a
+      // nested entry would be keyed against a callSeq the parent ledger is never asked for. Covers
+      // both this function's own BUDGET_EXCEEDED throw (above) and a PARAM_UNKNOWN thrown deeper
+      // inside `entry.spawner.run()` (agent-executor.ts's retirement check).
+      const e = err as { code?: unknown; name?: unknown } | null | undefined;
+      const code = (typeof e?.code === 'string' && e.code) || (typeof e?.name === 'string' && e.name) || '';
+      if (framePath === '' && RECORDED_REFUSAL_CODES.has(code)) {
+        if (entry.refusals.size < 8) {
+          entry.refusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
+        } else {
+          entry.refusalsDropped++;
+        }
+      }
+      // 2026-10-08 integration (rv) fix: the general "never stuck running" guarantee — every OTHER
+      // refusal in this method (BUDGET_EXCEEDED, AGENT_OPTS_TAMPERED above) explicitly calls
+      // `markRefused` itself before throwing, but an exception thrown from DEEPER inside
+      // `entry.spawner.run()` — after `markRunning` above already flipped this agentId's live
+      // record to 'running' — reaches only this generic catch, which until now never touched the
+      // record at all. Confirmed live: a synchronous gateway failure recorded `run_status.agents`
+      // with `state:'running'` on an already-`failed` run (the `agent_live_at_terminal` EngineWarning
+      // fires on exactly this gap — see `_transition`'s own doc — but nothing upstream of it ever
+      // corrected the record a client reads before that snapshot is even taken). Finalizes the SAME
+      // way `markRefused` already does for the named-refusal cases above, using the error's own code
+      // when it's a recognized `ErrorCode`, else `INTERNAL_ERROR` (`toErrorCode`'s own fallback) — a
+      // record already terminal (done/failed/refused) is never touched twice.
+      if (entry.spawner instanceof AgentExecutor) {
+        const record = entry.spawner.getRecord(agentId);
+        if (record !== undefined && (record.state === 'queued' || record.state === 'running')) {
+          await entry.spawner.markRefused(runId, agentId, toErrorCode(code), this._clock.isoNow());
+        }
+      }
+      throw err;
+    } finally {
+      release();
+    }
+  }
+
+  /** v40 (DES-274, ARCH-187, TASK-271, ADR-072): the SAME run-level refusal ledger
+   *  `_handleAgentRequest`'s own catch already writes to (`entry.refusals`, keyed by callSeq,
+   *  8-slot-capped) — populated here too, unconditionally over every decide()/generateImage()
+   *  refusal/failure code (never gated on `RECORDED_REFUSAL_CODES`, which is `_handleAgentRequest`'s
+   *  OWN allowlist for agent()'s five budget/schema-shaped codes, not a bound on this mechanism
+   *  itself). The ledger is what lets an UNCAUGHT decide()/generateImage() throw surface its real
+   *  code at `run_result.error.code` — `child-entry.ts`'s `markEngineRefusal` tags the IPC
+   *  rejection's `refusalRef` with this SAME `callSeq` for every `agentThrow`, regardless of code,
+   *  and `evaluateScript` carries that ref through even on its generic `SCRIPT_ERROR` fallback (its
+   *  own classification only restricts WHICH flattened code reaches the vm script's own `catch`, not
+   *  whether the ref itself survives) — so `_runLive`'s `entry.refusals.get(outcome.refusalRef)`
+   *  recovers the ORIGINAL, unflattened error this method captured, never the generic fallback.
+   *  Recorded ONLY at the top-level frame (`framePath === ''`), same reason `_handleAgentRequest`'s
+   *  own comment gives: a nested `workflow()` boundary re-mints the error under its own callSeq. */
+  private _recordPrimitiveRefusal(entry: RunEntry, framePath: string, callSeq: number, err: unknown): void {
+    if (framePath !== '') return;
+    // v40 Gate 6 delta (DES-274, R-14): a SEPARATE map/cap from `entry.refusals` (that one is
+    // `_handleAgentRequest`'s alone) — a primitive refusal/failure can never evict an agent()
+    // refusal from the shared ledger.
+    if (entry.primitiveRefusals.size < PRIMITIVE_REFUSAL_CAP) {
+      entry.primitiveRefusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
+    } else {
+      entry.primitiveRefusalsDropped++;
+    }
+  }
+
+  /** ARCH-187 v40b (Gate 8 r1 V40-C2): a FAILED primitive call is still charged — whatever the last
+   *  attempt was billed (`PRIMITIVE_FAILED.detail`'s `FailedSpend`) is priced by the same
+   *  precedence as a success (ARCH-191: reported, else estimated, else absent → unpriced) and added
+   *  to the live guard BEFORE the failed state is recorded, so `assertBudget` sees it. */
+  private _chargeFailedPrimitive(entry: RunEntry, err: unknown, pinEntry: Parameters<typeof pricePrimitiveCall>[0]['entry'], kind: 'decide' | 'image'): { tokens?: Tokens; costUSD: number; unpriced: boolean; costSource: 'reported' | 'estimated' | 'absent' } {
+    const spend = (err as { detail?: Partial<FailedSpend> }).detail;
+    const tokens = spend?.tokens;
+    const priced = pricePrimitiveCall({ wireCostUSD: spend?.wireCostUSD ?? null, tokens, entry: pinEntry, kind });
+    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
+    const unpriced = 'absent' in priced;
+    entry.guard.addUsage(tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    return { ...(tokens !== undefined ? { tokens } : {}), costUSD, unpriced, costSource: 'absent' in priced ? 'absent' : priced.source };
+  }
+
+  /** v40 (DES-264, TASK-260/271): one `kind:'primitive.call'` operational-event line per
+   *  decide()/generateImage() attempt/outcome — OUR engine data only (label/model/timings/cost),
+   *  never the provider body/prompt/questions/state (INV-V40-3). */
+  private _emitPrimitiveCall(fields: {
+    runId: string; agentId?: string; callSeq: number; primitive: PrimitiveKind; label: string; model: string; attempt: number;
+    outcome: 'ok' | 'retry' | 'failed' | 'refused'; reason?: AttemptReason; status?: number; errorCode?: string;
+    providerMs?: number; backoffMs?: number; engineMs?: number; costUSD?: number | null; costSource?: 'reported' | 'estimated' | 'absent';
+    tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number;
+  }): void {
+    this._eventSink({ kind: 'primitive.call', ...fields });
+  }
+
+  /** v40 (DES-274, ARCH-187, ADR-090/092/093/094, TASK-271): `decide()`'s handler — DES-274's own
+   *  numbered order. Wired as `SandboxHostConfig.onDecideRequest` by `_newSandbox` (top level) and
+   *  by the nested host in `_handleWorkflowRequest` (`frameParams` = that frame's own child
+   *  contract's `decisions` slice, never the parent's). */
+  private async _handleDecideRequest(
+    runId: string,
+    msg: { callSeq: number; label: string; state: unknown; questions: unknown },
+    callSeq: number,
+    framePath = '',
+    phase?: { title: string; index: number },
+    frameParams?: RunParams,
+  ): Promise<{ answers: Record<string, DecideAnswer> }> {
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    const label = msg.label;
+    // Defensive only — `scanPrimitiveCalls` (TASK-268) refuses registration of a decide() call
+    // whose label has no `params.decisions.<label>` declaration, so every REGISTERED script
+    // reaches here with a spec; unreachable on a real admitted run.
+    const baseParams = frameParams ?? entry.effectiveParams;
+    const spec = baseParams.decisions?.[label];
+    if (!spec) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: decide('${label}') has no params.decisions.${label} declaration at admission`, { label });
+    const { model, timeoutMs, retries } = spec;
+    const resolvedModel = parseModelRef(model);
+    if (!resolvedModel) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: decide('${label}') model '${model}' is not a valid <provider>/<model-id> ref`, { label, model });
+    // DES-274 step (1): pure validation BEFORE any spend — no record, no journal row on refusal.
+    let validated: ReturnType<typeof validateDecideInput>;
+    try {
+      validated = validateDecideInput(label, { state: msg.state, questions: msg.questions });
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'PRIMITIVE_INPUT_INVALID' });
+      throw err;
+    }
+    const { state, questions } = validated;
+    // step (3): resume replay — never re-dispatch a cached call.
+    const key = primitiveCallKey('decide', label, model, { state, questions });
+    if (entry.cachePlan) {
+      const cached = entry.cachePlan.replay(callSeq, key);
+      if (cached !== MISS) return cached as { answers: Record<string, DecideAnswer> };
+    }
+    // step (4): no key, no spend.
+    if (this._directDeps.resolveKey() === undefined) {
+      const err = codedError('OPENROUTER_AUTH_MISSING', 'OPENROUTER_AUTH_MISSING: no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or OPENROUTER_API_KEY before dispatching decide()/generateImage()', { label });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'OPENROUTER_AUTH_MISSING' });
+      throw err;
+    }
+    // step (5): allocate the agentId (shares AGENT_CAP with agent()) and mark queued — visible
+    // via workflow_status before dispatch, same as agent()'s own D-F12 contract.
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      entry.spawner.markQueued(agentId, { label, agentKey: label, phase, frame: framePath });
+    }
+    const pinEntry = entry.priceBook?.pinned[`${resolvedModel.provider}/${resolvedModel.model}`];
+    // step (6): a USD budget armed over an unpriceable model is refused before any spend.
+    if (entry.budgetLimits.usd !== null && !primitivePriceKnowable(pinEntry, 'decide')) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'PRICE_UNKNOWN', this._clock.isoNow());
+      const err = codedError('PRICE_UNKNOWN', `PRICE_UNKNOWN: decide('${label}') model '${model}' has no catalogued price; refusing rather than dispatch at an unknown cost`, { label, model });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'PRICE_UNKNOWN' });
+      throw err;
+    }
+    // step (7): the fast pre-slot budget door (v25 position).
+    try {
+      entry.guard.assertBudget();
+    } catch (err) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+      throw err;
+    }
+    const startedAt = this._clock.isoNow();
+    const t0 = this._directDeps.now();
+    let attempt = 0;
+    let providerMsTotal = 0;
+    let backoffMsTotal = 0;
+    let outcome: { answers: Record<string, DecideAnswer>; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number };
+    try {
+      // step (8): the slot is held across every retry; `assertBudget` repeats here (the v25
+      // load-bearing position), `markRunning` flips once the slot is actually acquired.
+      outcome = await this._decideSemaphore.withSlot(async () => {
+        entry.guard.assertBudget();
+        if (entry.spawner instanceof AgentExecutor) entry.spawner.markRunning(agentId, startedAt);
+        const piModel = toPiAiModel({ id: resolvedModel.model, modelType: 'decision' }) as PiClassifierModel;
+        return runDecide(
+          { model: piModel, state, questions, timeoutMs, retries, runSignal: entry.abortController.signal, label },
+          {
+            ...this._directDeps,
+            onAttempt: (o) => {
+              attempt = o.attempt;
+              providerMsTotal += o.providerMs;
+              backoffMsTotal += o.backoffMs ?? 0;
+              this._emitPrimitiveCall({
+                runId, agentId, callSeq, primitive: 'decide', label, model, attempt: o.attempt, outcome: o.outcome,
+                ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
+                providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+              });
+            },
+          },
+        );
+      });
+    } catch (err) {
+      // the v25 load-bearing in-slot `assertBudget()` re-check (step 8) can ALSO throw
+      // BUDGET_EXCEEDED here — a refusal, never a PRIMITIVE_FAILED: same treatment as the
+      // pre-slot budget door above (markRefused + refused event + ledger), no recordPrimitive.
+      if ((err as { code?: string }).code === 'BUDGET_EXCEEDED') {
+        if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+        this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+        this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+        throw err;
+      }
+      // failure path: price what the wire reported (nothing, on a throw) and record 'failed' —
+      // no journal row, so a resumed run re-runs this call (and every later one) live.
+      const endedAt = this._clock.isoNow();
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
+      const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'decide');
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason, startedAt, endedAt });
+      }
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'decide', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: charged.costUSD, costSource: charged.costSource,
+      });
+      throw err;
+    }
+    // step (10): price + charge + record 'done'. `outcome.providerMsTotal`/`.backoffMsTotal` are
+    // `runWithRetry`'s own complete sums (including the successful final attempt, which never fires
+    // `onAttempt` — this handler's local accumulator above only covers retry/failed attempts).
+    const endedAt = this._clock.isoNow();
+    const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
+    const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'decide' });
+    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
+    const unpriced = 'absent' in priced;
+    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    if (entry.spawner instanceof AgentExecutor) {
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+    }
+    // step (11): journal push, exactly as agent()'s own success path.
+    const value = { answers: outcome.answers };
+    const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };
+    entry.journal.push(journalEntry);
+    const journalToStore = this._secretValueProvider ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry) : journalEntry;
+    await this._store.appendJournal(runId, journalToStore);
+    // step (12): the terminal 'ok' event.
+    this._emitPrimitiveCall({
+      runId, agentId, callSeq, primitive: 'decide', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs, costUSD,
+      costSource: 'absent' in priced ? 'absent' : priced.source, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      answers: outcome.answers,
+    });
+    return value;
+  }
+
+  /** v40 (DES-274, ARCH-187, ADR-090/092/093/094, TASK-271): `generateImage()`'s handler — same
+   *  order as `_handleDecideRequest`, plus DES-274 step (9)'s file write and the image-only replay
+   *  re-verify (step 3: a cached file that no longer verifies re-runs live, and poisons every later
+   *  callSeq via `plan.invalidate()`). */
+  private async _handleImageRequest(
+    runId: string,
+    msg: { callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown },
+    callSeq: number,
+    framePath = '',
+    phase?: { title: string; index: number },
+    frameParams?: RunParams,
+  ): Promise<{ files: ImageFile[] }> {
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    const label = msg.label;
+    const baseParams = frameParams ?? entry.effectiveParams;
+    const spec = baseParams.images?.[label];
+    if (!spec) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: generateImage('${label}') has no params.images.${label} declaration at admission`, { label });
+    const { model, timeoutMs, retries } = spec;
+    const resolvedModel = parseModelRef(model);
+    if (!resolvedModel) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: generateImage('${label}') model '${model}' is not a valid <provider>/<model-id> ref`, { label, model });
+    let prompt: string;
+    let inputImagePaths: string[];
+    let outDirRaw: string | undefined;
+    try {
+      const validated = validateImageInput(label, { prompt: msg.prompt, inputImages: msg.inputImages, outDir: msg.outDir });
+      prompt = validated.prompt;
+      inputImagePaths = validated.inputImages;
+      outDirRaw = validated.outDir;
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'PRIMITIVE_INPUT_INVALID' });
+      throw err;
+    }
+    const root = entry.workspace;
+    let inputImages: { data: Buffer; mimeType: string }[];
+    // DES-274 step (1): "its sha256 feeds the key" — the CONTENTS, not the path string, so a
+    // resumed run whose input file changed on disk (same path, different bytes) misses rather than
+    // replaying a stale result keyed on a path that still matches.
+    const inputImageShas: string[] = [];
+    let absDir: string;
+    let absDirReal: string;
+    try {
+      inputImages = [];
+      for (const p of inputImagePaths) {
+        const read = await readContainedInput(root, p, this._imageInputMaxBytes);
+        inputImages.push({ data: read.data, mimeType: read.mimeType });
+        inputImageShas.push(read.sha256);
+      }
+      absDir = await resolveOutDir(root, outDirRaw);
+      absDirReal = realpathSync(absDir);
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'IMAGE_PATH_REFUSED' });
+      throw err;
+    }
+    // step (3): resume replay — an image hit whose file no longer verifies re-runs live and
+    // poisons every LATER callSeq too (ResumePlan.invalidate(), DES-274's own documented reason).
+    const key = primitiveCallKey('image', label, model, { prompt, inputImages: inputImageShas, outDir: outDirRaw });
+    if (entry.cachePlan) {
+      const cached = entry.cachePlan.replay(callSeq, key);
+      if (cached !== MISS) {
+        const v = cached as { files: ImageFile[] };
+        if (await verifyFiles(root, v.files)) return v;
+        entry.cachePlan.invalidate();
+      }
+    }
+    if (this._directDeps.resolveKey() === undefined) {
+      const err = codedError('OPENROUTER_AUTH_MISSING', 'OPENROUTER_AUTH_MISSING: no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or OPENROUTER_API_KEY before dispatching decide()/generateImage()', { label });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'OPENROUTER_AUTH_MISSING' });
+      throw err;
+    }
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      entry.spawner.markQueued(agentId, { label, agentKey: label, phase, frame: framePath });
+    }
+    const pinEntry = entry.priceBook?.pinned[`${resolvedModel.provider}/${resolvedModel.model}`];
+    if (entry.budgetLimits.usd !== null && !primitivePriceKnowable(pinEntry, 'image')) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'PRICE_UNKNOWN', this._clock.isoNow());
+      const err = codedError('PRICE_UNKNOWN', `PRICE_UNKNOWN: generateImage('${label}') model '${model}' has no catalogued price; refusing rather than dispatch at an unknown cost`, { label, model });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'PRICE_UNKNOWN' });
+      throw err;
+    }
+    try {
+      entry.guard.assertBudget();
+    } catch (err) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+      throw err;
+    }
+    const startedAt = this._clock.isoNow();
+    const t0 = this._directDeps.now();
+    let attempt = 0;
+    let providerMsTotal = 0;
+    let backoffMsTotal = 0;
+    let outcome: { images: { data: Buffer; mimeType: string }[]; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number };
+    try {
+      outcome = await this._imageSemaphore.withSlot(async () => {
+        entry.guard.assertBudget();
+        if (entry.spawner instanceof AgentExecutor) entry.spawner.markRunning(agentId, startedAt);
+        const piModel = toPiAiModel({ id: resolvedModel.model, modelType: 'image-gen' }) as PiImageModel;
+        return runImage(
+          { model: piModel, prompt, inputImages, timeoutMs, retries, runSignal: entry.abortController.signal, label },
+          {
+            ...this._directDeps,
+            onAttempt: (o) => {
+              attempt = o.attempt;
+              providerMsTotal += o.providerMs;
+              backoffMsTotal += o.backoffMs ?? 0;
+              this._emitPrimitiveCall({
+                runId, agentId, callSeq, primitive: 'image', label, model, attempt: o.attempt, outcome: o.outcome,
+                ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
+                providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+              });
+            },
+          },
+        );
+      });
+    } catch (err) {
+      // the v25 load-bearing in-slot `assertBudget()` re-check can ALSO throw BUDGET_EXCEEDED here
+      // — a refusal, never a PRIMITIVE_FAILED: same treatment as the pre-slot budget door above.
+      if ((err as { code?: string }).code === 'BUDGET_EXCEEDED') {
+        if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+        this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+        this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'image', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+        throw err;
+      }
+      const endedAt = this._clock.isoNow();
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
+      const failReason = primitiveFailReasonFrom(detail?.reason, entry.abortController.signal.aborted);
+      const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'image');
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason, startedAt, endedAt });
+      }
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'image', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: charged.costUSD, costSource: charged.costSource,
+      });
+      throw err;
+    }
+    // ARCH-187 v40b (Gate 8 r1 V40-C2): the provider has billed — price and charge FIRST, before
+    // any fallible local step, so nothing below can lose the spend.
+    const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'image' });
+    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
+    const unpriced = 'absent' in priced;
+    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    // step (9): write images under the resolved outDir — zero written is still priced, still a
+    // failure. `outcome.providerMsTotal`/`.backoffMsTotal`/`.attempts` are `runWithRetry`'s own
+    // complete sums (including the successful final attempt, which never fires `onAttempt`).
+    // ARCH-185 v40b: the dir must still realpath to what was checked before the provider call; a
+    // swapped dir, or any fs failure (ENOSPC/EACCES/EISDIR), finalizes the record `failed` with the
+    // spend kept and surfaces a CONSTRUCTED PRIMITIVE_FAILED{write} — never the fs error's text/path.
+    let written: Awaited<ReturnType<typeof writeImages>>;
+    try {
+      if (realpathSync(absDir) !== absDirReal) throw new Error('outDir moved since it was checked');
+      written = await writeImages(root, absDir, label, callSeq, outcome.images);
+    } catch {
+      const endedAt = this._clock.isoNow();
+      const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal);
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
+      }
+      const writeErr = primitiveFailedError('generateImage', label, 'write', outcome.attempts, undefined, false, { wireCostUSD: outcome.wireCostUSD, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}) });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, writeErr);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'write', errorCode: 'PRIMITIVE_FAILED',
+        engineMs, costUSD, costSource: 'absent' in priced ? 'absent' : priced.source,
+      });
+      throw writeErr;
+    }
+    const endedAt = this._clock.isoNow();
+    const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
+    if (written.files.length === 0) {
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'terminal', startedAt, endedAt });
+      }
+      const noOutputErr = codedError('PRIMITIVE_FAILED', `PRIMITIVE_FAILED: generateImage('${label}') produced no usable image output after ${written.dropped} dropped`, { reason: 'no_output', attempts: outcome.attempts });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, noOutputErr);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'no_output', errorCode: 'PRIMITIVE_FAILED',
+        engineMs, costUSD, costSource: 'absent' in priced ? 'absent' : priced.source,
+      });
+      throw noOutputErr;
+    }
+    if (entry.spawner instanceof AgentExecutor) {
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+    }
+    const value = { files: written.files };
+    const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };
+    entry.journal.push(journalEntry);
+    const journalToStore = this._secretValueProvider ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry) : journalEntry;
+    await this._store.appendJournal(runId, journalToStore);
+    this._emitPrimitiveCall({
+      runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs, costUSD,
+      costSource: 'absent' in priced ? 'absent' : priced.source, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      files: written.files, ...(written.dropped > 0 ? { droppedImages: written.dropped } : {}),
+    });
+    return value;
+  }
+}

@@ -1,0 +1,536 @@
+/* v27c (DES-209, ARCH-122/123/125, ADR-053, TASK-214, REQ-131/132/133/134/135/067/076/077/078):
+   dashboard.css has ONE owner and ONE delivery path — served at /static/dashboard/dashboard.css
+   (DES-199) and linked once from the shell's <head> (DES-200); no inline <style> copy exists
+   anywhere (dashboard-page.ts deletes that copy in the same v27c batch). Sectioned by the
+   requirement each block implements (DES-209's contract), against the declared class vocabulary in
+   tests/fixtures/dashboard-classes.ts (STYLE_HOOKS/TEST_ANCHORS) and the spec table in
+   tests/fixtures/dashboard-spec.ts (SPEC_ROWS). --rwe-hue is the ONLY value theme-init.js (a classic
+   script) ever writes; every accent token is a CSS formula over it (DES-201 — no accentVars() JS
+   mirror). The dead ported rules whose emitters retired with dashboard-page.ts's inline script
+   (.pill .st-* .grp .node .phase .ph-lbl #tree) are DELETED here, not grandfathered (DES-209's own
+   authorisation). DES-209 also names `.usage-*` on that deletion list, but `ui/run.js:247/255`
+   measurably still sets `.usage-cols`/`.usage-lowerbound` for the REQ-127 usage line — the
+   "emitters retired" premise is false for these two, so they are KEPT and added to STYLE_HOOKS
+   instead (reported to the orchestrator, not silently deleted against a live emitter). */
+
+/* == tokens (REQ-131) == */
+:root {
+  --rwe-hue: 236;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  /* REQ-133 「選中列為 7% accent 底」 (history-table selected row). Hoisted into its own token
+     (rather than left as an inline color-mix() on the rule below) so the DES-209 spec-row oracle
+     (tests/fixtures/dashboard-spec.ts) can probe it as a `token` row like every other themed value
+     — a probe element can set `background-color: var(--row-selected-bg)` and compare, the same
+     mechanism as `--color-panel`/`--shadow-md`; it could not do that against a raw color-mix()
+     literal, since the literal itself IS the thing being probed FOR. */
+  --row-selected-bg: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+
+/* Dark is the no-preference default (REQ-131). The ramp is indexed by SUBTLETY against the theme's
+   own --color-bg, not by absolute lightness (DES-201) — --accent-100 is the subtlest step,
+   --accent-900 the strongest, so the L sequence ASCENDS 100->900 under dark and DESCENDS under
+   light.
+
+   [v29, REQ-144] The L/C values are now the delivery README's own sequence
+   (.sdlc/design-handoff/README.md:83-84). DES-201 decided only the DIRECTION and left the sequence
+   to "REQ-131's deferral to the README, carried as DES-209's owner_decision" — that decision was
+   ANSWERED at 7039586 (the README is the fidelity oracle for REQ-131..139), so the interim fallback
+   it authorised (the light curve reversed, position for position) has served its purpose and is
+   replaced here.
+
+   [v29, REQ-145] bg / panel / panel2 / line are formulas over --rwe-hue rather than fixed hexes.
+   The hexes they replace were NOT design values: measured, #18191b is L .213 / C .004 and #eef2f1
+   is L .958 / C .004 — the README's own oklch(.21 .006 h) and oklch(.955 .008 h) frozen at ONE hue,
+   which is precisely what DES-201 says the .dc.html static block is ("a snapshot of ONE hue and is
+   never copied anywhere"). This OVERTURNS DES-209 boundary (7), which struck the hue-driven ground
+   on the grounds that the tested literals won; that clause was written while
+   design_handoff_workflow_dashboard/ was not in the checkout (its own boundary (4) records the
+   `find`), so its premise — that a hue-driven ground would not sit with the fixed neutral ramp —
+   could not be checked. It has since been checked against the running reference and does not hold.
+   Owner ruling V29-Q1, 2026-09-18.
+
+   --color-panel2 has no 1:1 README token (the README names one `surface` level). It is carried into
+   the hue system at its OWN measured lightness (dark L .286, light L .936) so the second surface
+   does not stay neutral while every surface around it takes the hue — a derivation from the value
+   already shipping, not a new design value. Flagged rather than silently chosen.
+   --color-ink / --color-muted / --color-link stay fixed: the README's own text and neutral ramps
+   are fixed hex too (README:85), so they are not part of this change. */
+:root[data-theme="dark"] {
+  --color-bg: oklch(0.21 0.006 var(--rwe-hue));
+  --color-panel: oklch(0.25 0.007 var(--rwe-hue));
+  --color-panel2: oklch(0.29 0.008 var(--rwe-hue));
+  --color-line: oklch(0.36 0.01 var(--rwe-hue));
+  /* [v30b, REQ-173] README:83 gives the dark text colour as #e2e6e5. v29 c2's note here justified
+     keeping ink hue-INDEPENDENT; it never justified this particular hex, which appears nowhere in
+     the handoff. */
+  --color-ink: #e2e6e5;
+  /* [v30, REQ-169] Secondary text is the design's own derivation — the text colour at 70% — not a
+     separate hex. `#8e97a3` appears nowhere in the handoff; it made every kicker, description,
+     meta row and table header colder and darker than the design's. README:85 also gives a fixed
+     zinc-teal NEUTRAL ramp, which this pass deliberately does NOT import wholesale: only the one
+     step README actually names by role (neutral-500, the traversed edge) is added below. */
+  --color-muted: color-mix(in srgb, var(--color-ink) 70%, transparent);
+  --neutral-500: #858b85;
+  --color-link: #9fb8d6;
+  --color-accent: oklch(0.72 0.065 var(--rwe-hue));
+  --accent-100: oklch(0.30 0.035 var(--rwe-hue));
+  --accent-200: oklch(0.37 0.045 var(--rwe-hue));
+  --accent-300: oklch(0.45 0.055 var(--rwe-hue));
+  --accent-400: oklch(0.55 0.06 var(--rwe-hue));
+  --accent-500: oklch(0.65 0.065 var(--rwe-hue));
+  --accent-600: oklch(0.72 0.065 var(--rwe-hue));
+  --accent-700: oklch(0.80 0.06 var(--rwe-hue));
+  --accent-800: oklch(0.87 0.05 var(--rwe-hue));
+  --accent-900: oklch(0.93 0.035 var(--rwe-hue));
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
+  --shadow-md: 0 3px 10px rgba(0, 0, 0, .55);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, .65);
+}
+
+:root[data-theme="light"] {
+  --color-bg: oklch(0.955 0.008 var(--rwe-hue));
+  --color-panel: oklch(0.985 0.005 var(--rwe-hue));
+  --color-panel2: oklch(0.936 0.006 var(--rwe-hue));
+  --color-line: oklch(0.82 0.012 var(--rwe-hue));
+  --color-ink: #1e2523;
+  --color-muted: color-mix(in srgb, var(--color-ink) 70%, transparent);
+  --neutral-500: #737b71;
+  --color-link: #3f6488;
+  --color-accent: oklch(0.56 0.065 var(--rwe-hue));
+  --accent-100: oklch(0.93 0.03 var(--rwe-hue));
+  --accent-200: oklch(0.87 0.045 var(--rwe-hue));
+  --accent-300: oklch(0.79 0.06 var(--rwe-hue));
+  --accent-400: oklch(0.68 0.07 var(--rwe-hue));
+  --accent-500: oklch(0.56 0.075 var(--rwe-hue));
+  --accent-600: oklch(0.48 0.07 var(--rwe-hue));
+  --accent-700: oklch(0.40 0.06 var(--rwe-hue));
+  --accent-800: oklch(0.33 0.05 var(--rwe-hue));
+  --accent-900: oklch(0.26 0.04 var(--rwe-hue));
+  --shadow-sm: 0 1px 2px rgba(20, 25, 35, .12);
+  --shadow-md: 0 4px 12px rgba(20, 25, 35, .14);
+  --shadow-lg: 0 16px 40px rgba(20, 25, 35, .22);
+}
+
+/* Vendored web fonts (DES-199) — served from this same origin, no external host (REQ-131/ARCH-123).
+   The embedded family names inside the binaries read "Archivo SemiBold" etc (Google Fonts' static-
+   instance naming) — irrelevant here, since font-weight below is what selects the face and the
+   binaries carry the matching usWeightClass. font-display:swap + a system stack on every @font-face:
+   a missing/slow woff2 degrades to the fallback rather than a blank/blocked paint. */
+@font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-600.woff2') format('woff2'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+
+/* [v30b, REQ-174] README tokens: "Body 14 px / 1.55". The page inherited the browser's 16px with
+   `line-height: normal`, so the chrome (nav, segments, inputs) ran a size large throughout while
+   the card interiors had their own explicit sizes and looked right. */
+body{font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--color-bg);color:var(--color-ink);font-size:14px;line-height:1.55}
+h1{font-size:18px;margin:0}
+/* [v32, REQ-192] README tokens: "Headings cap at 600". Nothing here ever wrote 700 — nothing
+   wrote a weight at all, so every heading element took the UA default `bold`. The cap is
+   declared once, on the elements, rather than per-component where the next new heading
+   would ship uncapped. Sizes are untouched. */
+h1,h2,h3,h4,h5,h6{font-weight:600}
+h2{font-size:20px;margin:0}
+h3{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);margin:0}
+h6{font-size:13px;margin:0;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted)}
+a{color:var(--color-link);text-decoration:none}
+pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--color-line);padding:12px;border-radius:var(--radius-md);max-height:340px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
+
+/* == components — the Classical borrow: .card .tag .btn .table .seg .input .nav .hr + ported utilities == */
+/* [v27 README-fidelity closure] NO fill at rest (measured against the vendored design's own
+   `.card` — Classical's base is `background: transparent`; only `.card.running`/`.card:hover`
+   below carry an accent TINT, and only then). Was `background:var(--color-panel)`, a defect this
+   file's own SPEC_ROW oracle had blessed by being copied from what shipped rather than the design. */
+.card{background:transparent;border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px 14px;font-size:13px;cursor:pointer;display:flex;flex-direction:column;gap:4px}
+/* [v27 README-fidelity closure] README "1. Workflows home": "Hover: 5–6% accent tint" — the
+   REGISTERED/OTHER card's own 5% (the running card's separate 6% is `.card.running:hover` below). */
+.card:hover{border-color:var(--color-link);background:color-mix(in srgb, var(--color-accent) 5%, transparent)}
+/* [v29, REQ-146] The workflow NAME is a title, not an identifier. README §1 gives `.card-title`
+   the heading face at 17px/600; the mono family is reserved there for run ids, PIDs and tool
+   calls. `word-break:break-all` went with the mono face — at 17px Archivo it splits a real
+   word (`hypothesis-researcher`) mid-glyph, so it is replaced by the README's own
+   `text-wrap:pretty`, not merely deleted. */
+.card .t{font-weight:600;font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;font-size:17px;line-height:1.2;text-wrap:pretty}
+/* [v30b, REQ-178] README §1 gives the card description the body size (13 px at 1.55 in the
+   reference) and `text-wrap: pretty`. It shipped at 11.5 px with `line-height:normal` in the muted
+   colour — smaller and greyer than the design, and ragged. */
+.card .s{font-size:13px;line-height:1.55;opacity:.8;text-wrap:pretty}
+.mono{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
+/* [v30b, REQ-175] The handoff names only `--radius-md 3px` / `--radius-sm 2px`; a 100px pill
+   appears nowhere in it. */
+.tag{display:inline-block;padding:1px 8px;border-radius:var(--radius-sm);font-size:11px;border:1px solid var(--color-line);color:var(--color-muted)}
+.tag-outline{background:none;border:1px solid var(--color-line)}
+.tag-accent{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
+.tag-neutral{background:var(--color-panel2);color:var(--color-muted);border-color:transparent}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--radius-md);border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);font:inherit;cursor:pointer}
+.btn:hover{border-color:var(--color-link)}
+.btn-icon{width:32px;height:32px;padding:0;font-size:18px;line-height:1;border-radius:var(--radius-md)}
+.table{width:100%;border-collapse:collapse;font-size:12.5px}
+.table td,.table th{padding:4px 8px;border-bottom:1px solid var(--color-line);text-align:left;vertical-align:top}
+/* [v32, REQ-191] README §4 marks one column right-aligned ("Context (right)"); the hook is set
+   from COLUMNS on both the th and the td, so header and cell cannot drift apart. */
+.table td.is-right,.table th.is-right{text-align:right}
+.table th{color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.seg{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
+.seg button{background:none;border:0;padding:4px 12px;color:var(--color-muted);font:inherit;cursor:pointer}
+.seg button.active{color:var(--color-ink);background:var(--color-panel2)}
+.input{background:var(--color-panel);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:5px 10px;font:inherit;color:var(--color-ink)}
+.nav{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid var(--color-line)}
+.hr{height:1px;background:var(--color-line);border:0;margin:0}
+.sys-table td:first-child{color:var(--color-muted);font-size:11px;width:140px}
+/* [v28, DES-219, TASK-221, REQ-137] README §4: ".table min 960 px, horizontally scrollable" — the
+   modifier carries its own min-width (the class-lock's own value-anchor test reads this exact
+   rule's body); the panel that hosts it (`[data-tab-panel="models"]`, built by app.js for every
+   tab) is the scroll boundary, so no extra wrapper class is needed. */
+/* [v30b, REQ-177] README §2: run history `.table` is min 720 px, horizontally scrollable. */
+[data-history-table]{min-width:720px}
+.models-table{min-width:960px}
+.models-table th{white-space:nowrap;cursor:pointer;user-select:none}
+/* the active sort header (README §4: "active header colored accent-700 with ▲/▼"). */
+.models-table th.sort-active{color:var(--accent-700)}
+[data-tab-panel="models"]{overflow-x:auto}
+.issue-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-line);font-size:13px;cursor:pointer}
+.issue-row:hover{color:var(--color-link)}
+.issue-detail{background:var(--color-panel2);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px;margin-top:10px;font-size:13px}
+.degraded{color:var(--color-muted);font-size:12.5px;font-style:italic}
+.empty{color:var(--color-muted);font-size:12.5px}
+.back{font-size:13px;color:var(--color-link)}
+/* v26 Gate 7.5 round 1 (REQ-129's fit clause): position:relative;z-index:1 is load-bearing — a
+   transformed .zoomable sibling paints in the positioned layer above an in-flow button that merely
+   precedes it in the source, so a drag-pan could otherwise cover this control (VAL-189). [v27c]
+   re-pointed pin (DES-200/208) — this exact substring is asserted against THIS file's bytes now. */
+.fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:var(--radius-md);border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);cursor:pointer;margin:4px 0}
+.fit-btn:hover{border-color:var(--color-link)}
+/* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves the run DAG svg and the
+   swimlane's HTML cell-layer — the wheel/drag transform lives HERE, never on rebuilt children.
+   [v29 c4, REQ-151] The third consumer retired with its surface; the rule stays for the other two.
+   The `-webkit-user-drag`/`user-select` rule that sat below this one went with it — REQ-105 /
+   ADR-048: deleting a surface deletes its CSS. `.fit-btn` above is NOT part of that deletion;
+   `ui/run.js` sets it for the swimlane's own zoom control. */
+.zoomable{transform-origin:0 0;touch-action:none}
+
+/* [v29c, REQ-153/154] the detail page's structural layer.
+   README §2 gives the swimlane a real box: "scrollable box, border 1 px divider, radius 3 px".
+   That box is also what insets the figure — `triggerRect()` puts the trigger cell at x = PAD, but
+   with the frame flush to the viewport that padding had nothing to sit inside, which is how the
+   trigger came to sit against the window edge. */
+[data-graph-box]{border:1px solid var(--color-line);border-radius:var(--radius-md);padding:0 4px;overflow:auto;margin:4px 0 8px}
+.section-head{margin:14px 0 6px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--color-muted);font-weight:600}
+.breadcrumb{font-size:12px;color:var(--color-muted);margin-bottom:2px}
+.breadcrumb a{color:var(--color-link);text-decoration:none}
+.breadcrumb a:hover{text-decoration:underline}
+.wf-header{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+.wf-header-main{flex:1 1 420px;min-width:0}
+.triggers-col{flex:0 0 auto;min-width:140px}
+.triggers-col .section-head{margin-top:0}
+.triggers-col [data-triggers]{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+/* An empty element must not hold a `gap` slot open — the band between the description and the
+   figure was an empty `[data-predicted-label]` plus two 20px gaps (v29c, REQ-154 / B26). */
+[data-predicted-label]:empty{display:none}
+.muted{color:var(--color-muted)}
+/* [v29d, REQ-157] the system page's title row: heading and the sample's timestamp on one line. */
+.page-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+/* [v30, REQ-167] each column lists its own items under a counted heading. */
+.tag-column{display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0}
+.tag-column-head{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--color-muted)}
+.page-head .section-head{margin:0}
+/* [v29d, REQ-158] The model panel had no backdrop while the agent panel did — two slide-in panels
+   in the same build behaving differently. Same element and same keyframe as the agent one. */
+.model-backdrop{position:fixed;inset:0;background:rgba(8,12,9,.5);animation:rweFadeIn .2s ease-out;z-index:8}
+
+/* == REQ-131 shell == */
+.rwe-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--color-line);position:sticky;top:0;background:var(--color-bg);z-index:5}
+/* README "Header / chrome": brand text next to the source tag. */
+.nav-brand{font-weight:600;white-space:nowrap}
+/* README "Header / chrome": "Tabs are underlined links (`aria-current="page"` -> accent-700 text +
+   accent underline)" — replaces the pre-README `button.active` background fill. */
+.rwe-tabs{display:flex;gap:4px}
+.rwe-tabs a{padding:6px 4px;color:var(--color-muted);font:inherit;text-decoration:none;cursor:pointer}
+.rwe-tabs a[aria-current="page"]{color:var(--accent-700);text-decoration:underline;text-decoration-color:var(--color-accent)}
+.rwe-tab-panels{padding:16px 24px;max-width:1440px;margin:0 auto}
+/* [v30b, REQ-175] tag-shaped, so it takes the tag radius; the DOTS below keep `50%` — README
+   names them as dots ("pulsing 8 px accent dot"), which is a shape, not a radius token. */
+.rwe-connection{font-size:11px;padding:1px 8px;border-radius:var(--radius-sm);border:1px solid var(--color-line);color:var(--color-muted)}
+/* [v27 README-fidelity closure] README "Header / chrome": "source tag (`Live` accent tint ·
+   `Offline` red outline · `Demo data` outline)" — `Live` is a TINT (no border), same convention as
+   `.tag-accent`; `is-degraded`/`is-offline` below stay outlines, unchanged. Was border-only. */
+.rwe-connection.is-live{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
+.rwe-connection.is-degraded{border-color:#B08A5B;color:#B08A5B}
+.rwe-connection.is-offline{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}
+.rwe-theme-group,.rwe-lang-group{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
+.rwe-theme-group button,.rwe-lang-group button{background:none;border:0;padding:4px 10px;color:var(--color-muted);font:inherit;cursor:pointer}
+.rwe-theme-group button.active,.rwe-lang-group button.active{color:var(--color-ink);background:var(--color-panel2)}
+/* README "Header / chrome": hue slider — 150px, a gradient track of fixed oklch(0.68 0.07 h) stops
+   (the rainbow track itself, not the current --rwe-hue), a 16px accent thumb with a bg-colored
+   ring, plus a current-degrees readout (`.rwe-hue-value`, textContent, not a style fact — see
+   app.js). `-webkit-appearance:none`/`appearance:none` on the host is required for the gradient
+   background to paint through a default native track. `.rwe-hue-wrap` holds the slider + readout as
+   ONE flex item (they are one README bullet, not two) — measured necessary, not cosmetic: two
+   separate `.rwe-nav` children here cost an extra 16px flex gap over one shared 6px internal gap,
+   which was enough to tip the nav's own `flex-wrap` at a 1100px viewport and regress VAL-197. */
+.rwe-hue-wrap{display:inline-flex;align-items:center;gap:6px}
+/* Dashboard auth spec §A: the signed-in identity cluster (email, role tag, sign-out form). */
+.rwe-user{display:inline-flex;align-items:center;gap:6px}
+.rwe-user form{margin:0}
+.rwe-hue-slider{width:150px;height:8px;border-radius:4px;-webkit-appearance:none;appearance:none;outline:none;cursor:pointer;background:linear-gradient(90deg,oklch(0.68 0.07 0),oklch(0.68 0.07 45),oklch(0.68 0.07 90),oklch(0.68 0.07 135),oklch(0.68 0.07 180),oklch(0.68 0.07 225),oklch(0.68 0.07 270),oklch(0.68 0.07 315),oklch(0.68 0.07 360))}
+.rwe-hue-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--color-accent);border:2px solid var(--color-bg);box-shadow:0 0 0 1px var(--accent-700)}
+.rwe-hue-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--color-accent);border:2px solid var(--color-bg);box-shadow:0 0 0 1px var(--accent-700)}
+.rwe-hue-value{font-size:12px;color:var(--color-muted);font-variant-numeric:tabular-nums}
+.rwe-version{font-size:11px;color:var(--color-muted);font-variant-numeric:tabular-nums}
+/* [v29e, REQ-161] `margin-left:auto` is gone with the reason for it: the panel used to sit in the
+   nav and needed pushing to the end of that row. In the footer it fought `space-between`. Three
+   children now distribute as the design's footer reads — API base left, clock right. */
+.rwe-update-panel{display:flex;align-items:center;gap:10px;font-size:12px}
+.rwe-update-outcome{color:var(--color-muted)}
+.rwe-update-cta{color:var(--color-link)}
+.rwe-config-check{color:var(--color-muted)}
+/* README "Header / chrome": "Footer: API base left, `Updated HH:MM:SS` right, 11.5 px 50 %". */
+.rwe-footer{display:flex;justify-content:space-between;padding:8px 20px;font-size:11.5px;opacity:.5}
+
+/* == REQ-132 home == */
+.card-grid{display:flex;flex-direction:column;gap:24px}
+.card-section{display:flex;flex-direction:column;gap:10px}
+.card-section.other{opacity:.75}
+/* [v30b, REQ-178] README §1: "(tabular figures, `white-space:nowrap` on the success item)". The
+   meta ran as one wrapping text node and took two lines in a 336px card. */
+/* [v32, REQ-187] README §1: nowrap on the SUCCESS ITEM. v29f applied it to the whole row (plus
+   overflow:hidden), which clipped `平均費用 … · N 次執行` off every card at the design width. */
+.card .meta{font-variant-numeric:tabular-nums}
+.card .meta [data-meta-success]{white-space:nowrap}
+/* [v30b, REQ-171] the group headings are `h6` now (README §1); this rule follows them. */
+.card-section h6{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);display:flex;align-items:center;gap:6px}
+/* README "1. Workflows home": the Running section's own heading carries a pulsing 8px accent dot. */
+.running-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-accent);animation:rwePulse 1.6s ease-in-out infinite}
+/* REQ-132's own acceptance numbers (the auto-fill grid, the 16px gap) land on .cards — the actual
+   per-section grid in the landed home.js — not on .card-grid, which is the vertical section stack
+   home.js nests .cards INSIDE (measured: home.js:172 `grid.className = 'card-grid'` is the outer
+   container; home.js:124 `cardsEl.className = 'cards'` is the per-group grid). */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.card.running{border-color:var(--color-accent);position:relative;overflow:hidden}
+.card.running:hover{background:color-mix(in srgb, var(--color-accent) 6%, transparent)}
+.card.running::before{content:'';position:absolute;left:0;top:0;height:2px;width:40%;background:var(--color-accent);animation:rweSweep 2.4s linear infinite}
+.card.other{opacity:.75}
+.kicker{color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.meta{color:var(--color-muted);font-size:11.5px;margin-top:2px}
+.home-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
+/* [v30b, REQ-183] README §1 gives the search box `max-width 320`; it rendered 200px at the
+   inherited 16px. The base type fix (REQ-174) settles the size; this restores the width. */
+/* [v30b, REQ-183] `max-width` alone leaves the input at the UA's default size (~20 characters),
+   which measured 200px — the cap never bound. README §1 gives it max-width 320. */
+.home-search{width:100%;max-width:320px}
+.segment-tabs{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
+.segment-tabs button{background:none;border:0;padding:4px 12px;color:var(--color-muted);font:inherit;cursor:pointer}
+.segment-tabs button.active{color:var(--color-ink);background:var(--color-panel2)}
+
+/* == REQ-133 workflow detail == */
+/* [v29c, REQ-153/154] The detail/run views mount at `#app-view`, NOT inside `.rwe-tab-panels`
+   (`padding:16px 24px`), which is why they alone sat flush against the viewport. The gutter goes
+   on the two views rather than on `#app-view` — the home route mounts the tab panels INSIDE that
+   same node, so padding it there would double the home page's gutter to 48px.
+
+   `gap` drops from 20px to 8px: every child was separated by 20px, which is where the ~100px band
+   between the description and the figure came from, and the section headings added in this pass
+   carry their own margins. */
+.workflow-view{display:flex;flex-direction:column;gap:8px;padding:16px 24px;max-width:1440px;margin:0 auto}
+.run-view{display:flex;flex-direction:column;gap:12px;padding:16px 24px;max-width:1440px;margin:0 auto}
+.wf-desc{max-width:720px;margin:0;opacity:.85}
+.run-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--radius-md);border:1px solid var(--color-line);background:none;color:var(--color-ink);font:inherit;font-size:12px;cursor:pointer}
+.run-chip:hover{background:color-mix(in srgb, var(--color-accent) 10%, transparent)}
+.run-chip.is-selected{border-color:var(--color-accent);background:var(--accent-100)}
+.status-dot{font-size:7px;color:var(--color-muted)}
+.table tr.is-selected{background:var(--row-selected-bg)}
+.usage-cols{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11px}
+.usage-lowerbound{color:var(--accent-700)}
+/* [v27 Gate 6 fix, VAL-208] `#run-usage`'s three spans (total/cols/cost) had no separator and ran
+   together — a class hook, not the frozen `#run-usage` id, carries the fix (DES-209's rule: a style
+   rule may never key on a TEST_ANCHORS id). */
+.usage-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
+
+/* == REQ-134 swimlane == */
+/* [v27c] DES-209 boundary (1): the substrate is a SIBLING <div class="cell-layer"> inside #dag-zoom,
+   absolutely positioned from the same lib/swimlane.js px as the SVG lane hairlines/edges — TASK-210's
+   own migration (deferred, see src/dashboard/ui/run.js's file banner); these rules are declared here
+   ahead of that emitter, same order of operations as the class contract itself. */
+/* [v27c] DES-209 boundary (2): the graph wrapper's own sizing (`run.js`/`workflow.js`'s
+   `buildShell`), relocated off `.style.*` — no handoff spec exists for these px values (the
+   handoff's graph wrapper is `overflow:auto` with dynamic width/height and no pan/zoom at all,
+   predating REQ-129), so the two views' pre-existing heights are kept verbatim, only moved. */
+.graph-frame{overflow:hidden;margin:10px 0}
+.run-view .graph-frame{height:420px}
+.workflow-view .graph-frame{height:340px}
+.run-view .graph-frame .zoomable{min-height:380px}
+.workflow-view .graph-frame .zoomable{min-height:300px}
+.cell-layer{position:absolute;inset:0;pointer-events:none}
+.cell-layer .cell{pointer-events:auto}
+.lane-head{position:absolute;top:0;display:flex;align-items:center;gap:8px;height:48px;padding:0 14px;box-sizing:border-box;border-bottom:1px solid var(--color-line);color:var(--color-muted);font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.lane-head.is-current{border-color:var(--color-accent);color:var(--color-accent)}
+/* [v29c, REQ-154] Three lane states, not two. A COMPLETED run has no current lane, so before this
+   every header fell through to `.lane-head`'s own muted colour and the figure said nothing about
+   how far the run got. `is-walked` = the run reached this lane; `is-unreached` = it never did. */
+.lane-head.is-walked{color:var(--color-ink)}
+.lane-head.is-unreached{color:var(--color-muted);opacity:.62}
+.lane-index{font-variant-numeric:tabular-nums;color:var(--color-muted);font-weight:500;margin-right:2px}
+.lane-head.is-current .lane-index{color:var(--color-accent)}
+.lane-current-tag{font-size:10px;padding:1px 6px}
+/* [v29c, REQ-155] the status key that explains the cells' filled/hollow/dashed dots. */
+.legend-item{display:inline-flex;align-items:center;gap:6px}
+.legend-dot{width:9px;height:9px;border-radius:50%;flex:none;border:1px solid transparent}
+.legend-dot.is-running{background:var(--color-accent)}
+.legend-dot.is-done{background:var(--color-ink)}
+.legend-dot.is-failed{background:oklch(0.55 0.16 25)}
+.legend-dot.is-queued{background:transparent;border-color:var(--color-muted)}
+.legend-dot.is-pending{background:transparent;border-color:var(--color-muted);border-style:dashed}
+.lane-hairline{stroke:var(--color-line);stroke-width:1}
+.edge{fill:none;stroke:var(--color-line);stroke-width:1.2}
+.edge.is-active{stroke:var(--color-accent)}
+/* [v30, REQ-169] README §2 names this edge's colour by role: "neutral-500 when traversed". */
+.edge.is-walked{stroke:var(--neutral-500)}
+.edge.is-pending{stroke-dasharray:4 4}
+/* [v30, REQ-164] README §2 gives the node cell the SURFACE fill, and README's surface is
+   `oklch(.25 .007 h)` — which is this build's own `--color-panel`. `--color-panel2` is one step
+   lighter and belongs to sunken blocks (`pre`), not to the figure's cells. */
+.cell{position:absolute;box-sizing:border-box;width:216px;height:74px;border:1px solid var(--color-line);border-radius:3px;background:var(--color-panel);padding:8px 12px;display:flex;flex-direction:column;justify-content:center;gap:3px;cursor:default}
+.cell:hover{border-color:var(--color-accent)}
+.cell.is-running{border-color:var(--accent-600);background:var(--accent-100);animation:rweGlow 1.8s ease-in-out infinite;cursor:pointer}
+.cell.is-done{cursor:pointer}
+.cell.is-failed{border-color:oklch(0.55 0.16 25);cursor:pointer}
+.cell.is-queued{opacity:.65;border-style:dashed}
+.cell.is-predicted{opacity:.65;border-style:dashed}
+/* [v27 Gate 6 fix, VAL-208] REQ-134 specifies THREE grouped rows (①dot+label ②model+effort
+   ③usage), not five flat `.cell` column siblings — `.cell-label`/`.cell-model` both carry
+   `overflow:hidden`, which resets a flex item's automatic minimum size to 0 (CSS Flexbox §4.5), so
+   with 5 siblings sharing `.cell`'s 58px content box the column-shrink algorithm compressed both to
+   ~30% of their line-height (measured: 5.08px/15.5px and 3.92px/13.2px). Grouping into 3 rows drops
+   the item count the outer column has to fit (~42px of natural height for 3 rows vs ~78px needed
+   for 5) so no shrink is triggered at all; `flex:none` on each row is belt-and-braces against any
+   future content growth reopening the same class of defect. */
+.cell-head{display:flex;align-items:center;gap:7px;min-width:0;flex:none}
+/* [v27 Gate 6 fix, pending item "the status dot is invisible"] `.cell-dot` carried a size/shape
+   but no `background`/`border` in any state but `.is-running` (and that state only added the
+   `rweRing` animation, on a dot with no fill to ring around) — the 9px dot painted nothing in
+   EVERY state, on EVERY node (`req134-node-zoom-hires-AFTER.png`). Per the handoff README's own
+   per-state rules ("2. Workflow detail" -> Node cell): running = accent fill (matching
+   `stColor('running')`/`.edge.is-active`'s own accent), done = text colour, failed = the fixed
+   failure red (matching this same file's `.cell.is-failed` border-color, not hue-derived), queued
+   = a HOLLOW dot (transparent fill, muted border) rather than a fifth invented colour. */
+.cell-dot{width:9px;height:9px;border-radius:50%;flex:none;box-sizing:border-box;background:var(--color-muted)}
+.cell.is-running .cell-dot{background:var(--color-accent);animation:rweRing 1.3s ease-out infinite}
+.cell.is-done .cell-dot{background:var(--color-ink)}
+.cell.is-failed .cell-dot{background:oklch(0.55 0.16 25)}
+.cell.is-queued .cell-dot,.cell.is-predicted .cell-dot{background:transparent;border:1px solid var(--color-muted)}
+.cell-label{font-weight:600;font-size:13.5px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cell-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;min-width:0;flex:none}
+.cell-model{font-size:11px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* [v27 Gate 6 fix] `.tag-neutral`'s background (`--color-panel2`) is IDENTICAL to `.cell`'s own
+   background, so on a swimlane node the "tag" painted no visible pill at all — just bare muted
+   text (screenshot evidence, `req134-node-zoom-hires.png`). `--color-panel` is a distinct existing
+   token in BOTH themes (never an invented value), giving the chip real contrast against the cell. */
+.cell-effort{padding:1px 7px;font-size:10px;flex:none;background:var(--color-panel);border-color:var(--color-line)}
+.cell-usage{font-size:10.5px;opacity:.55;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+/* [v30b, REQ-179] README §2: "Trigger cell: 112x40, TRANSPARENT". It carried the cell fill. */
+.cell-trigger{width:112px;height:40px;background:transparent}
+.lane-head.is-trigger{width:112px;color:var(--color-muted)}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:11.5px;color:var(--color-muted);align-items:center}
+.run-summary{margin-left:auto;font-variant-numeric:tabular-nums}
+
+/* == REQ-135 agent panel == */
+.agent-backdrop{position:fixed;inset:0;z-index:20;background:rgba(8,12,9,.5);animation:rweFadeIn .2s ease-out}
+/* [v30b, REQ-180] README §3: the header is "× , h2 label, state tag, phase tag, mono agentId
+   right-aligned". It was `display:block`, so the id ran straight on from the state tag
+   (`完成agent-1`) with 624 px of slack to its right. */
+.agent-panel > header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.agent-panel > header code{margin-left:auto;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12px}
+.agent-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(760px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:16px;box-sizing:border-box;display:flex;flex-direction:column;gap:16px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
+.agent-panel.from-left{right:auto;left:0;border-left:0;border-right:1px solid var(--color-line);animation:rweSlideInL .28s cubic-bezier(.2,.7,.2,1)}
+.stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+/* [v29, REQ-147] `ui/agent-panel.js:59-70` already emitted `[data-stat-card]` with both spans,
+   and `.stat-cards` was already the README's `auto-fit minmax(150px,1fr)` grid — the attribute
+   selector simply had NO rule, so each cell rendered as two adjacent inline spans
+   (`MODELhaiku — claude-agent-sdk · —`) instead of README §3's six bordered stat cards. */
+[data-stat-card]{border:1px solid var(--color-line);border-radius:var(--radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.stat-label{display:block;color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.stat-value{font-weight:600;font-size:18px}
+/* [v32, REQ-199] README §3 renders each stat card as kicker + value + a sub-line; only the
+   Duration card supplies one today (its start → end stamps). Quieter than the value it sits under. */
+.stat-meta{font-size:11px;color:var(--color-muted);font-variant-numeric:tabular-nums}
+/* [v30b, REQ-176] README §3: "User prompt in <pre> (BODY font 13.5 px / 1.6)". A bare `pre` takes
+   the UA monospace, so the one block that is prose rendered as code. */
+.prompt-pre{margin:0;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md);font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;font-size:13.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
+.tag-columns{display:flex;flex-wrap:wrap;gap:6px}
+.event-list{border:1px solid var(--color-line);border-radius:var(--radius-md);max-height:420px;overflow:auto;font-size:13px}
+.event-row{display:grid;grid-template-columns:64px 84px minmax(0,1fr);gap:10px;padding:8px 12px;border-bottom:1px solid var(--color-line);align-items:baseline}
+.event-kind{font-size:11px;padding:1px 8px;border-radius:var(--radius-sm);border:1px solid var(--color-line)}
+.event-kind.is-tool{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
+.event-kind.is-message{background:var(--color-panel2);color:var(--color-ink);border-color:transparent}
+.event-kind.is-log{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}
+.detail-block{margin:0;padding:10px 12px;border:1px solid oklch(0.55 0.16 25);border-radius:var(--radius-md);font-size:13px;color:oklch(0.45 0.16 25)}
+
+/* == v28 Models (REQ-137, DES-219, TASK-221) — README §4 == */
+.model-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* [v32, REQ-193] README §4 "search (max 280)": `max-width` alone never reaches 280 — the input
+   falls back to its intrinsic size (measured 178px). Same cause and same repair as the ruled
+   REQ-183 fix on the home search. */
+.model-filters .input[type="search"]{width:100%;max-width:280px}
+.model-filters select.input{max-width:200px}
+/* README §4: "right slide-in panel (560 px)" — same recipe as .agent-panel (REQ-135), narrower. */
+.model-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(560px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:20px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
+.model-panel dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 16px;font-size:13px;font-variant-numeric:tabular-nums}
+.model-panel dt{opacity:.74}
+.model-panel dd{margin:0}
+/* README §4: cost level renders as accent dots (●●●○○) — the fixed 5th definition row per DES-213's
+   own defs order (capability, modalities, context, price, cost level, latency, stability, tools,
+   effort); scoped to that one row only, the rest of the list stays the default ink colour. */
+.model-panel dd:nth-of-type(5){letter-spacing:2px;color:var(--color-accent)}
+/* README §4: "Benchmarks ... grid `140px 1fr 48px`" — the label/track/score row; the track/bar
+   themselves reuse .stat-track/.stat-bar (System's own family, same 2px/4px visual language). */
+.bench-row{display:grid;grid-template-columns:140px 1fr 48px;gap:12px;align-items:center;font-size:13px;font-variant-numeric:tabular-nums}
+.bench-row .stat-track{margin:0}
+
+/* == v28 System (REQ-138, DES-219, TASK-221) — README §5 == */
+/* README §5: "34 px / 500 figure" — the big number itself carries this class. */
+.stat-card{font-weight:500;font-size:34px;line-height:1;font-variant-numeric:tabular-nums}
+/* README §5/§4: shared 2px-track/4px-bar meter, reused by both the stat cards and the Models
+   benchmark rows/process CPU bars — one visual language, one pair of rules. */
+.stat-track{height:2px;background:var(--color-line);position:relative}
+/* [v28 Gate 6.5+7, verifier — closes the 9e10453 orchestrator ruling that never reached this file]
+   `right:0` is load-bearing, not decoration: an absolutely-positioned box with only `left` set and
+   `width`/`right` both `auto` shrink-to-fits to its (empty) content, i.e. 0px wide, regardless of
+   `transform-origin` — measured with a real Chromium page before this fix (0px) and after (spans
+   the track, scales from the left edge as `.style.transform=scaleX(pct/100)` intends). `transform`,
+   not `width`, is what changes at runtime (the guard forbids `.style.width`), so that is what
+   transitions. */
+.stat-bar{position:absolute;left:0;right:0;top:-1px;height:4px;background:var(--color-accent);transform-origin:left;transition:transform .6s}
+/* README §5: "Processes .table: PID · Name (mono) · CPU % bar · Memory", the engine's own row
+   marked ★ with an accent bar (.proc-self). Columns fixed by ui/system.js's own row order. */
+.proc-table td:first-child{opacity:.74}
+.proc-table td:nth-child(2){font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
+.proc-table td:nth-child(3){width:40%;display:flex;align-items:center;gap:10px}
+.proc-table td:nth-child(3) .stat-track{flex:1}
+.proc-self td{color:var(--color-accent);font-weight:600}
+.proc-self{border-left:2px solid var(--color-accent)}
+/* README §5: "Engine process <dl> in a bordered box". */
+.engine-dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 18px;font-size:14px;font-variant-numeric:tabular-nums;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md)}
+.engine-dl dt{opacity:.74}
+.engine-dl dd{margin:0}
+
+/* == v28 demo (REQ-143, DES-219, TASK-221) == */
+/* README "Header / chrome": source tag's third state, "`Demo data` outline" — same outline
+   convention as .is-degraded/.is-offline (border + text colour, no fill). */
+.rwe-connection.is-demo{border-color:var(--color-muted);color:var(--color-muted)}
+
+/* == @keyframes ==
+   The first four names and all seven durations/easings come from REQ-132/134/135's own acceptance
+   text; rweSlideIn/rweSlideInL/rweFadeIn are this row's own internal names (REQ-135 states the
+   motion, not an identifier) — no test may key on them beyond animationName equality. rwePulse is
+   reserved for the "Running" section's status-indicator dot (design mockup only, not yet built by
+   any landed ui/*.js — declared here so the class contract does not have to grow again when it is). */
+@keyframes rwePulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+@keyframes rweSweep { from { left: -40%; } to { left: 100%; } }
+@keyframes rweGlow { 0%,100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 30%, transparent), var(--shadow-md); } 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent) 12%, transparent), var(--shadow-md); } }
+@keyframes rweRing { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes rweSlideIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rweSlideInL { from { transform: translateX(-40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rweFadeIn { from { opacity: 0; } to { opacity: 1; } }
