@@ -4,6 +4,11 @@
 // `neverResolves` step settles ONLY when the request's own AbortSignal fires — it never waits on a
 // real timer, so a "timeout" scenario is driven entirely by the test's fake `attemptSignal`, never
 // by the wall clock.
+// v41 (DES-267 delta, TASK-276, "bound (tests only)"): the IT-tier settle tolerance added on top of
+// the formula `(retries+1)×timeoutMs + Σbackoff` — a TEST tolerance, never a runtime timer. The
+// UT tier uses its own smaller literal (250ms) inline; this is the shared IT-tier one.
+export const ATTEMPT_SETTLE_GRACE_MS = 1000;
+
 export interface StubFetchStep {
   status: number;
   body?: unknown;
@@ -14,11 +19,21 @@ export interface StubFetchStep {
   neverResolves?: boolean;
   /** Rejects with a network-level TypeError instead of resolving (no status, no body). */
   networkError?: boolean;
+  /** v41 (DES-267 delta, TASK-276): headers arrive immediately (status resolves), but the BODY
+   *  never enqueues/closes AND ignores the request's own AbortSignal entirely — the exact shape
+   *  the #168 hang reproduced (undici 'readable', one pending read). Unlike `neverResolves` (which
+   *  hangs the fetch() call itself, racing the init signal), this hangs the STREAM returned inside
+   *  an already-resolved Response — only a body-read-level abort race (DES-267 v41's `untilAborted`
+   *  wrapping `reader.read()`) can ever settle it. `cancel()` sets the shared counter below so a
+   *  test can assert the stream was really cancelled, not just abandoned. */
+  holdBody?: true;
 }
 
 export interface StubFetchHandle {
   fetch: typeof fetch;
   calls: { url: string; init: RequestInit | undefined }[];
+  /** Total `cancel()` invocations across every `holdBody` stream this handle has created. */
+  cancelledCount(): number;
 }
 
 function abortError(): Error {
@@ -29,6 +44,7 @@ function abortError(): Error {
 
 export function makeStubFetch(steps: StubFetchStep[]): StubFetchHandle {
   const calls: { url: string; init: RequestInit | undefined }[] = [];
+  let cancelled = 0;
   let i = 0;
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
     const step = steps[Math.min(i, steps.length - 1)]!;
@@ -42,6 +58,14 @@ export function makeStubFetch(steps: StubFetchStep[]): StubFetchHandle {
       });
     }
     if (step.networkError) return Promise.reject(new TypeError('fetch failed'));
+    if (step.holdBody) {
+      const body = new ReadableStream<Uint8Array>({
+        type: 'bytes',
+        pull() { /* never enqueues */ },
+        cancel() { cancelled++; },
+      });
+      return Promise.resolve(new Response(body, { status: step.status, headers: { 'content-type': 'application/json' } }));
+    }
     const bytes = step.bodyBytes ?? new TextEncoder().encode(JSON.stringify(step.body ?? {}));
     // A real provider response declares its content-type; without it the OpenAI SDK (used by
     // pi-ai's openrouter-images codec) can't tell this is JSON and fails to parse the body. Only
@@ -52,5 +76,5 @@ export function makeStubFetch(steps: StubFetchStep[]): StubFetchHandle {
       : step.headers;
     return Promise.resolve(new Response(bytes.slice(), { status: step.status, headers }));
   }) as typeof fetch;
-  return { fetch: fetchImpl, calls };
+  return { fetch: fetchImpl, calls, cancelledCount: () => cancelled };
 }

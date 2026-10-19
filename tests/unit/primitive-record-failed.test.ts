@@ -51,3 +51,41 @@ describe('UT-358: a failed primitive derives as failed after restart (R-6)', () 
     expect(rec).toMatchObject({ agentId: 'a-3', kind: 'decide', state: 'failed', failReason: 'terminal' });
   });
 });
+
+// UT-372 (DES-273/274 v41 delta, ARCH-192, REQ-231, TASK-277): `primitiveFailReasonFrom` is
+// deleted — a failed primitive's `failReason` is now the raw `AttemptReason` word (e.g. `'network'`,
+// not the narrower `'unreachable'`), and `recordPrimitive` additionally carries `detail` (the same
+// string `run_agent_log`/`agentFailures[].message` surface) onto BOTH the live `AgentRecord` and the
+// persisted `kind:'usage'` event's `data.detail` — so a restart-derived record matches the live one
+// on `detail` too, not just `failReason`.
+//
+// Red reason: `AgentTranscriptSink.recordPrimitive` never reads `r.detail` at all today — neither
+// the live record nor the usage event carries it, so every assertion below against a real message
+// string fails (`undefined !== <message>`).
+describe('UT-372: a failed primitive carries `detail` (the script-visible message) live and after restart (v41, REQ-231)', () => {
+  it('recordPrimitive writes `detail` onto the live AgentRecord', async () => {
+    const { sink } = capturingSink();
+    const detail = "decide 'gate' failed: network after 3 attempts";
+    await sink.recordPrimitive('run-1', { ...BASE, agentId: 'a-4', state: 'failed', failReason: 'network', detail });
+    expect(sink.getRecord('a-4')?.detail).toBe(detail);
+  });
+
+  it('recordPrimitive writes `detail` onto the usage event\'s `data.detail`', async () => {
+    const { sink, transcripts } = capturingSink();
+    const detail = "decide 'gate' failed: network after 3 attempts";
+    await sink.recordPrimitive('run-1', { ...BASE, agentId: 'a-5', state: 'failed', failReason: 'network', detail });
+    const usage = transcripts.get('a-5')?.find((e) => e.kind === 'usage');
+    expect((usage?.data as { detail?: string } | undefined)?.detail).toBe(detail);
+  });
+
+  it('a restart-derived record matches the live one on BOTH failReason (the AttemptReason word) and detail', async () => {
+    const { sink, transcripts } = capturingSink();
+    const detail = "generateImage 'hero' failed: network after 3 attempts";
+    await sink.recordPrimitive('run-1', { ...BASE, kind: 'image', agentId: 'a-6', state: 'failed', failReason: 'network', detail });
+    const live = sink.getRecord('a-6');
+    const [rec] = deriveAgentRecords(transcripts, 'failed');
+    expect(rec).toMatchObject({ agentId: 'a-6', kind: 'image', state: 'failed', failReason: 'network', detail });
+    expect(rec?.detail).toBe(live?.detail);
+    expect(rec?.failReason).toBe(live?.failReason);
+  });
+});

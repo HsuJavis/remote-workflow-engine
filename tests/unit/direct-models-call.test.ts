@@ -13,6 +13,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   classifyAttempt, backoffMs, toPiAiModel, makeObservedFetch, runDecide, runImage,
+  defaultDirectDeps,
   BACKOFF_BASE_MS, RETRY_AFTER_CAP_MS, MAX_DECIDE_RESPONSE_BYTES,
   type DirectDeps, type PiClassifierModel, type PiImageModel,
 } from '../../src/direct-models/call.js';
@@ -47,9 +48,13 @@ describe('UT-342: classifyAttempt precedence table (DES-267)', () => {
     expect(r).toMatchObject({ outcome: 'fail', reason: 'http', retryable: false, status });
   });
 
-  it("seam invoked, no status, piStop==='error' -> network, NOT retryable (V40-Q9 names only 429/5xx/timeout)", () => {
+  // v41 (DES-267 delta, REQ-227, TASK-276) SUPERSEDES this row: `network` is now retryable — a
+  // rejection with no status (UND_ERR_SOCKET, ETIMEDOUT, a reset) looks exactly like the transient
+  // wire failures #168 reproduced, and V40-Q9's "only 429/5xx/timeout" carve-out is withdrawn.
+  // Red reason (v41): `classifyAttempt` still returns `retryable:false` for this row.
+  it("seam invoked, no status, piStop==='error' -> network, RETRYABLE (v41 delta: V40-Q9's carve-out is withdrawn)", () => {
     const r = classifyAttempt({ ...base, seam: { invoked: true, truncated: false }, piStop: 'error' });
-    expect(r).toMatchObject({ outcome: 'fail', reason: 'network', retryable: false });
+    expect(r).toMatchObject({ outcome: 'fail', reason: 'network', retryable: true });
   });
 
   it('seam never invoked & piStop error -> malformed (an engine/codec bug), NOT retryable', () => {
@@ -212,10 +217,21 @@ describe('UT-342: runDecide retry loop (DES-267, TASK-263 dod)', () => {
     expect(deps.onAttempt).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
   });
 
-  it('network error -> NOT retried (classified "network", not "http")', async () => {
+  // v41 (DES-267 delta, REQ-227, TASK-276) SUPERSEDES this case: a network error is now retried
+  // like any other transient failure, so it exhausts `retries` (3 attempts here) rather than
+  // failing on the very first one. Red reason (v41): still classified not-retryable, so this
+  // throws "network after 1 attempts" today.
+  it('network error -> retried up to `retries`, then PRIMITIVE_FAILED naming network (v41 delta)', async () => {
     const deps = fakeDeps({ fetchSteps: [{ status: 0, networkError: true }] });
     await expect(runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 1000, retries: 2, runSignal: new AbortController().signal }, deps))
-      .rejects.toThrow(/network after 1 attempts?/);
+      .rejects.toThrow(/network after 3 attempts?/);
+  });
+
+  // v41 (DES-267 delta, TASK-276 dod: "two UND_ERR_SOCKET rejections then 200 -> success, attempts===3").
+  it('v41: two network-error attempts then a 200 -> succeeds, attempts === 3', async () => {
+    const deps = fakeDeps({ fetchSteps: [{ status: 0, networkError: true }, { status: 0, networkError: true }, { status: 200, body: SYSTEMONE_OK }] });
+    const r = await runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 1000, retries: 2, runSignal: new AbortController().signal }, deps);
+    expect(r.attempts).toBe(3);
   });
 
   it('over-cap body -> response_too_large, not retried', async () => {
@@ -269,5 +285,86 @@ describe('UT-342: runImage (DES-267, real openrouter-images codec)', () => {
     const r = await runImage({ model: IMAGE_MODEL, prompt: 'a red dog', inputImages: [], timeoutMs: 1000, retries: 0, runSignal: new AbortController().signal }, deps);
     expect(r.images).toHaveLength(1);
     expect(r.images[0]?.mimeType).toBe('image/png');
+  });
+});
+
+// UT-371 (DES-267 v41 delta, ARCH-183, REQ-227, TASK-276): the attempt deadline must reach every
+// BODY READ, not just the headers — a 200 whose body never enqueues/closes (the exact #168 hang)
+// must still end as `timeout` within the bound, with the stream's own `cancel()` invoked and the
+// attempt timer cleared so nothing leaks past the call. Mock policy (unit): `fetch` is the stub
+// above (pi-ai's own designed seam); `defaultDirectDeps`'s REAL `attemptSignal`/`sleep` are used
+// (not a test fake) so `vi.getTimerCount()`/wall-clock bounds exercise the real timer plumbing.
+//
+// Red reason: `readCapped` (src/direct-models/call.ts) never races `reader.read()` against the
+// attempt's AbortSignal, so a `holdBody` stream hangs forever — none of these settle within the
+// bound today, and the attempt timer is never cleared.
+describe('UT-371: v41 REQ-227 delta (DES-267) — body-read deadline, network retryable, timer clear', () => {
+  const QUESTIONS = { ok: { type: 'bool' as const, instructions: 'is it ready', criteria: { true: 'yes', false: 'no' } } };
+  const DECIDE_MODEL: PiClassifierModel = toPiAiModel({ id: 'openrouter/typesafe/jev-1.13', modelType: 'decision', contextWindow: 16384 }) as PiClassifierModel;
+
+  it('a holdBody response ends PRIMITIVE_FAILED{timeout} within timeoutMs + G, cancelling the stream (not a real hang)', async () => {
+    const stub = makeStubFetch([{ status: 200, holdBody: true }]);
+    const base = defaultDirectDeps({ resolve: () => 'k' } as never);
+    const deps: DirectDeps = { ...base, fetch: stub.fetch, resolveKey: () => 'k' };
+    const timeoutMs = 30;
+    const G = 250; // UT tolerance, DES-267 v41 §"bound (tests only)"
+    const start = Date.now();
+    let settled: { ok?: unknown; err?: unknown } | 'HUNG' = 'HUNG';
+    await Promise.race([
+      runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs, retries: 0, runSignal: new AbortController().signal }, deps)
+        .then((v) => { settled = { ok: v }; }, (e) => { settled = { err: e }; }),
+      new Promise<void>((r) => setTimeout(r, timeoutMs + G)),
+    ]);
+    expect(settled, 'the call never settled within the bound — readCapped is not racing the abort signal').not.toBe('HUNG');
+    expect((settled as { err?: unknown }).err).toMatchObject({ code: 'PRIMITIVE_FAILED', detail: expect.objectContaining({ reason: 'timeout' }) });
+    expect(Date.now() - start).toBeLessThanOrEqual(timeoutMs + G);
+    expect(stub.cancelledCount()).toBeGreaterThanOrEqual(1);
+  }, 5000);
+
+  it('holdBody + retries:2 -> 3 attempts, each one independently bounded and cancelled (not just the first)', async () => {
+    const stub = makeStubFetch([{ status: 200, holdBody: true }]);
+    const base = defaultDirectDeps({ resolve: () => 'k' } as never);
+    const deps: DirectDeps = { ...base, fetch: stub.fetch, resolveKey: () => 'k', sleep: async () => {} };
+    const timeoutMs = 20;
+    const G = 250;
+    const start = Date.now();
+    let settled: { ok?: unknown; err?: unknown } | 'HUNG' = 'HUNG';
+    await Promise.race([
+      runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs, retries: 2, runSignal: new AbortController().signal }, deps)
+        .then((v) => { settled = { ok: v }; }, (e) => { settled = { err: e }; }),
+      new Promise<void>((r) => setTimeout(r, 3 * timeoutMs + G)),
+    ]);
+    expect(settled, 'did not settle within 3 attempts worth of bound').not.toBe('HUNG');
+    expect((settled as { err?: unknown }).err).toMatchObject({ code: 'PRIMITIVE_FAILED', detail: expect.objectContaining({ reason: 'timeout', attempts: 3 }) });
+    expect(Date.now() - start).toBeLessThanOrEqual(3 * timeoutMs + G);
+    expect(stub.cancelledCount()).toBe(3);
+  }, 5000);
+
+  it('attempt timer is cleared on a success (no leaked setTimeout past the call)', async () => {
+    vi.useFakeTimers();
+    try {
+      const stub = makeStubFetch([{ status: 200, body: { answers: { ok: { type: 'noul', noul: 0.8 } } } }]);
+      const base = defaultDirectDeps({ resolve: () => 'k' } as never);
+      const deps: DirectDeps = { ...base, fetch: stub.fetch, resolveKey: () => 'k' };
+      await runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 5000, retries: 0, runSignal: new AbortController().signal }, deps);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('attempt timer is cleared on timeout -> retry -> ok (no leaked setTimeout from the retry\'s OWN attempt)', async () => {
+    // Attempt 1 times out via the PRE-EXISTING, already-correct mechanism (`neverResolves` reacts
+    // to the fetch-level AbortSignal) — this isolates the retry's own timer-leak from the readCapped
+    // bug above. Attempt 2 then succeeds fast, its own attemptSignal timer never firing — exactly the
+    // case `clear()` exists for.
+    vi.useFakeTimers();
+    try {
+      const stub = makeStubFetch([{ status: 200, neverResolves: true }, { status: 200, body: { answers: { ok: { type: 'noul', noul: 0.8 } } } }]);
+      const base = defaultDirectDeps({ resolve: () => 'k' } as never);
+      const deps: DirectDeps = { ...base, fetch: stub.fetch, resolveKey: () => 'k', sleep: async () => {} };
+      const p = runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 10, retries: 1, runSignal: new AbortController().signal }, deps);
+      await vi.advanceTimersByTimeAsync(10); // fires attempt 1's timer -> neverResolves' abort listener rejects -> retry
+      await p;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 });

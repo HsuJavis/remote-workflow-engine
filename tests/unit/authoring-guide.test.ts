@@ -1141,3 +1141,36 @@ describe('v40: decide/generateImage served text (UT-355, DES-276)', () => {
     expect(scripts.some((s) => /\bgenerateImage\s*\(/.test(s))).toBe(true);
   });
 });
+
+// UT-374 (v41, DES-276 delta, ARCH-194, REQ-227/231, TASK-279): served text for the v41 delta —
+// the grammar gains `aborted`, the guide states which failures are retried (including the new
+// connection-level/network class) and which are not, "timed-out" becomes "timed-out or
+// disconnected" for image billing, and run_status's agentFailures sentence names the primitive
+// failure word for a decide()/image entry.
+//
+// Red reason: `PRIMITIVE_FAILED_GRAMMAR` (src/authoring-guide.ts) does not list `aborted` yet, the
+// guide has no "retried up to `retries`" paragraph naming a connection-level failure, the billing
+// sentence still says only "timed-out", and `tool_specs.ts`'s run_status description says nothing
+// about a primitive's own failure word.
+describe('v41: served text for the REQ-227 delta / REQ-231 (UT-374, DES-276)', () => {
+  it('the PRIMITIVE_FAILED grammar names `aborted` (write was already present)', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/response_too_large\|write\|aborted\)/);
+  });
+
+  it('the guide states the retried/not-retried sets, including the connection-level failure class', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/a per-attempt timeout and a connection-level failure/);
+    expect(text).toMatch(/retried up to `retries`/);
+  });
+
+  it('the image billing sentence covers a disconnected call, not only a timed-out one', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/a timed-out or disconnected image call may still be billed/);
+  });
+
+  it("run_status's description names the primitive failure word for a decide()/image agentFailures entry", () => {
+    const runStatus = TOOL_SPECS.find((s) => s.name === 'run_status')!.description;
+    expect(runStatus).toMatch(/for a `decide`\/`image` entry `reason` is the primitive('s| )*failure word/);
+  });
+});
