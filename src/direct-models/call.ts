@@ -39,6 +39,12 @@ export interface AttemptObservation {
   status?: number;
   providerMs: number;
   backoffMs?: number;
+  // v41b (ARCH-183, Gate 8 r1 V41-A1): this attempt's OWN spend — never guessed from the final
+  // attempt — so the handler can price every `retry`/`failed` row it emits, not only the call's
+  // eventual settle. `null`/absent exactly when the seam observed no readable cost for THIS attempt
+  // (a non-2xx body, a timeout, a network failure before any body read completed).
+  wireCostUSD: number | null;
+  tokens?: Tokens;
 }
 
 export interface DirectDeps {
@@ -337,7 +343,11 @@ function reasonWord(reason: AttemptReason, status?: number): string {
 
 /** `label` is NOT on DES-267's `runDecide`/`runImage` signature (the caller — DES-274's handler —
  *  owns the author-chosen label); kept optional here so the grammar still degrades to
- *  `"decide failed: ..."` rather than guessing an identifier this module was never given. */
+ *  `"decide failed: ..."` rather than guessing an identifier this module was never given.
+ *  v41b (ARCH-183/187, Gate 8 r1 V41-A1): `spends` is every attempt dispatched so far, in order —
+ *  not just the one that just failed — so the engine-side catch arm can price and charge each one
+ *  (an earlier 2xx-then-reset or 429 attempt may have cost the provider something this module
+ *  cannot itself read back) rather than silently dropping it. */
 export function primitiveFailedError(
   kind: 'decide' | 'generateImage',
   label: string | undefined,
@@ -345,17 +355,18 @@ export function primitiveFailedError(
   attempts: number,
   status: number | undefined,
   retryable: boolean,
-  spend: FailedSpend,
+  spends: FailedSpend[],
 ): Error & { code: ErrorCode; detail?: Record<string, unknown> } {
   const who = label !== undefined ? ` '${label}'` : '';
   const plural = attempts === 1 ? 'attempt' : 'attempts';
   const message = `${kind}${who} failed: ${reasonWord(reason, status)} after ${attempts} ${plural}`;
-  return codedError('PRIMITIVE_FAILED', message, { reason, status, attempts, retryable, ...spend });
+  return codedError('PRIMITIVE_FAILED', message, { reason, status, attempts, retryable, spends });
 }
 
-/** What the LAST observed attempt of a failed call was billed, as far as the wire/codec said
- *  (ARCH-187 v40b, Gate 8 r1 V40-C2): carried on `PRIMITIVE_FAILED.detail` for the engine-side catch
- *  arm to charge (`guard.addUsage`) — never part of the message body. */
+/** What ONE dispatched attempt was billed, as far as the wire/codec said for THAT attempt
+ *  (ARCH-187, Gate 8 r1 V40-C2/V41-A1): carried, one per attempt, on `PRIMITIVE_FAILED.detail.spends`
+ *  and on the success result's own `spends` — for the engine-side catch/settle arm to price and
+ *  charge — never part of the message body. */
 export interface FailedSpend { wireCostUSD: number | null; tokens?: Tokens }
 
 /** One attempt's outcome, shared by `runDecide`/`runImage`'s retry loop: `malformed` is the
@@ -378,9 +389,14 @@ async function runWithRetry<T>(
   deps: DirectDeps,
   maxBodyBytes: number,
   attempt: (fetchImpl: typeof fetch, signal: AbortSignal) => Promise<AttemptResult<T>>,
-): Promise<{ value: T; seam: SeamRecord | null; attempts: number; providerMsTotal: number; backoffMsTotal: number }> {
+): Promise<{ value: T; seam: SeamRecord | null; attempts: number; providerMsTotal: number; backoffMsTotal: number; spends: FailedSpend[] }> {
   let providerMsTotal = 0;
   let backoffMsTotal = 0;
+  // v41b (ARCH-183, Gate 8 r1 V41-A1): every dispatched attempt's spend, in order — widening the
+  // retry set to `network` and putting the body read under the deadline means an EARLIER attempt
+  // can be billed (200 headers then a mid-body reset/timeout) and then retried past; dropping that
+  // attempt's spend would leave real, observable-to-the-provider cost priced as a known $0.
+  const spends: FailedSpend[] = [];
   for (let a = 1; ; a++) {
     // v41 (DES-267 delta, REQ-227, TASK-276): the signal is built BEFORE the seam (so the seam's
     // fetch and every body read are covered from the start), and the attempt timer is cleared in
@@ -398,6 +414,7 @@ async function runWithRetry<T>(
     const { piStop, hasOutput, malformed, value, tokens } = attemptResult;
     const seam = observed.last();
     const spend: FailedSpend = { wireCostUSD: seam?.wireCostUSD ?? null, ...(tokens !== undefined ? { tokens } : {}) };
+    spends.push(spend);
     providerMsTotal += seam?.providerMs ?? 0;
     let classification = classifyAttempt({
       runAborted: runSignal.aborted,
@@ -410,22 +427,22 @@ async function runWithRetry<T>(
       classification = { outcome: 'fail', reason: 'malformed', retryable: false };
     }
     if (classification.outcome === 'ok') {
-      return { value, seam, attempts: a, providerMsTotal, backoffMsTotal };
+      return { value, seam, attempts: a, providerMsTotal, backoffMsTotal, spends };
     }
     if (classification.reason === 'aborted') {
-      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, false, spend);
+      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, false, spends);
     }
     if (!classification.retryable || a > retries) {
-      deps.onAttempt({ attempt: a, outcome: 'failed', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0 });
-      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, classification.retryable, spend);
+      deps.onAttempt({ attempt: a, outcome: 'failed', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0, wireCostUSD: spend.wireCostUSD, ...(spend.tokens !== undefined ? { tokens: spend.tokens } : {}) });
+      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, classification.retryable, spends);
     }
     const b = backoffMs(a, seam?.retryAfterMs ?? null, deps.random());
     if (b === 'over_cap') {
-      deps.onAttempt({ attempt: a, outcome: 'failed', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0 });
-      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, true, spend);
+      deps.onAttempt({ attempt: a, outcome: 'failed', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0, wireCostUSD: spend.wireCostUSD, ...(spend.tokens !== undefined ? { tokens: spend.tokens } : {}) });
+      throw primitiveFailedError(kind, label, classification.reason, a, classification.status, true, spends);
     }
     backoffMsTotal += b;
-    deps.onAttempt({ attempt: a, outcome: 'retry', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0, backoffMs: b });
+    deps.onAttempt({ attempt: a, outcome: 'retry', reason: classification.reason, status: classification.status, providerMs: seam?.providerMs ?? 0, backoffMs: b, wireCostUSD: spend.wireCostUSD, ...(spend.tokens !== undefined ? { tokens: spend.tokens } : {}) });
     await deps.sleep(b, runSignal);
   }
 }
@@ -446,9 +463,9 @@ export async function runDecide(
     label?: string;
   },
   deps: DirectDeps,
-): Promise<{ answers: Record<string, DecideAnswer>; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number }> {
+): Promise<{ answers: Record<string, DecideAnswer>; attempts: number; providerMsTotal: number; backoffMsTotal: number; spends: FailedSpend[] }> {
   const context: ClassifierContext = { state: req.state as ClassifierContext['state'], questions: req.questions };
-  const { value, seam, attempts, providerMsTotal, backoffMsTotal } = await runWithRetry(
+  const { value, attempts, providerMsTotal, backoffMsTotal, spends } = await runWithRetry(
     'decide',
     req.label,
     req.timeoutMs,
@@ -465,11 +482,10 @@ export async function runDecide(
   );
   return {
     answers: value.answers,
-    tokens: pickTokens(value.usage),
-    wireCostUSD: seam?.wireCostUSD ?? null,
     attempts,
     providerMsTotal,
     backoffMsTotal,
+    spends,
   };
 }
 
@@ -484,13 +500,13 @@ export async function runImage(
     label?: string;
   },
   deps: DirectDeps,
-): Promise<{ images: { data: Buffer; mimeType: string }[]; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number }> {
+): Promise<{ images: { data: Buffer; mimeType: string }[]; attempts: number; providerMsTotal: number; backoffMsTotal: number; spends: FailedSpend[] }> {
   const input: ImagesInputContent[] = [
     { type: 'text', text: req.prompt },
     ...req.inputImages.map((img) => ({ type: 'image' as const, data: img.data.toString('base64'), mimeType: img.mimeType })),
   ];
   const context: ImagesContext = { input };
-  const { value, seam, attempts, providerMsTotal, backoffMsTotal } = await runWithRetry(
+  const { value, attempts, providerMsTotal, backoffMsTotal, spends } = await runWithRetry(
     'generateImage',
     req.label,
     req.timeoutMs,
@@ -515,10 +531,9 @@ export async function runImage(
     .map((o) => ({ data: Buffer.from((o as { data: string }).data, 'base64'), mimeType: (o as { mimeType: string }).mimeType }));
   return {
     images,
-    tokens: pickTokens(value.usage),
-    wireCostUSD: seam?.wireCostUSD ?? null,
     attempts,
     providerMsTotal,
     backoffMsTotal,
+    spends,
   };
 }

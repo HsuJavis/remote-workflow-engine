@@ -320,6 +320,46 @@ describe('UT-342: runImage (DES-267, real openrouter-images codec)', () => {
   });
 });
 
+// UT-378 (ARCH-183 v41b, Gate 8 r1 V41-A1): `runWithRetry` hands the caller every dispatched
+// attempt's spend, in order, on `spends` — not only the final attempt's — both on a success result
+// and on `PRIMITIVE_FAILED.detail.spends`. Each `onAttempt` observation also carries that SAME
+// attempt's own `wireCostUSD`/`tokens`.
+//
+// Red reason: `runDecide`'s success result has no `spends` field yet (only a single top-level
+// `wireCostUSD`), so `r.spends` is `undefined` and every length/shape assertion below fails;
+// `onAttempt`'s observation carries no `wireCostUSD` field at all.
+describe('UT-378: per-attempt spend list (ARCH-183 v41b) — every dispatched attempt, not just the last', () => {
+  it('429 (no readable cost) then 200 (reported cost) -> spends has 2 entries: [null, 0.5]', async () => {
+    const deps = fakeDeps({ fetchSteps: [{ status: 429 }, { status: 200, body: { ...SYSTEMONE_OK, usage: { cost: 0.5 } } }] });
+    const r = await runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 1000, retries: 2, runSignal: new AbortController().signal }, deps);
+    expect(r.spends).toEqual([{ wireCostUSD: null }, { wireCostUSD: 0.5 }]);
+  });
+
+  it('a FAILED call (retries exhausted) carries every attempt\'s spend on PRIMITIVE_FAILED.detail.spends, not only the last', async () => {
+    const deps = fakeDeps({ fetchSteps: [{ status: 429 }, { status: 429 }] });
+    let caught: unknown;
+    try {
+      await runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 1000, retries: 1, runSignal: new AbortController().signal }, deps);
+    } catch (e) { caught = e; }
+    expect((caught as { detail?: { spends?: unknown[] } } | undefined)?.detail?.spends).toEqual([{ wireCostUSD: null }, { wireCostUSD: null }]);
+  });
+
+  it('onAttempt carries THAT attempt\'s own wireCostUSD (a billed-but-malformed 200, not retryable)', async () => {
+    const deps = fakeDeps({ fetchSteps: [{ status: 200, body: { answers: { wrong: { type: 'noul', noul: 0.8 } }, usage: { cost: 0.3 } } }] });
+    await expect(runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 1000, retries: 1, runSignal: new AbortController().signal }, deps))
+      .rejects.toThrow();
+    // malformed (200 body named an unasked question) -> retryable:false -> NOT retried, so only
+    // ONE onAttempt('failed') call fires, carrying that attempt's own reported cost.
+    expect(deps.onAttempt).toHaveBeenCalledWith(expect.objectContaining({ attempt: 1, outcome: 'failed', wireCostUSD: 0.3 }));
+  });
+
+  it('network error retried to a 200 success -> spends preserves both attempts in order', async () => {
+    const deps = fakeDeps({ fetchSteps: [{ status: 0, networkError: true }, { status: 200, body: { ...SYSTEMONE_OK, usage: { cost: 0.1 } } }] });
+    const r = await runDecide({ model: DECIDE_MODEL, state: {}, questions: QUESTIONS, timeoutMs: 1000, retries: 1, runSignal: new AbortController().signal }, deps);
+    expect(r.spends).toEqual([{ wireCostUSD: null }, { wireCostUSD: 0.1 }]);
+  });
+});
+
 // UT-371 (DES-267 v41 delta, ARCH-183, REQ-227, TASK-276): the attempt deadline must reach every
 // BODY READ, not just the headers — a 200 whose body never enqueues/closes (the exact #168 hang)
 // must still end as `timeout` within the bound, with the stream's own `cancel()` invoked and the

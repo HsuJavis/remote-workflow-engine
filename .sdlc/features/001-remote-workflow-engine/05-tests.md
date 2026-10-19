@@ -17841,3 +17841,87 @@ CLI's path; the real p99/max event-loop measurement is Gate 7.5-only). This entr
 has a VAL-tagged item per the Gate-5 exit check ("each REQ has a VAL") without duplicating IT-325's
 own mechanism under a different tier label. Red confirmed: by reference to IT-325's own red result
 above (same red reason: `cliExecutable` not wired).
+
+## v41 Gate 8 r1 send-back repair (2026-10-19) — new items
+
+Scope: the two blocking findings only (V41-A1 / INV-V40-5 per-attempt charging; V41-A2/R-1
+`ATTEMPT_REASONS` provenance). Architecture amended in place as v41b (02-architecture.md:
+ARCH-183/187/192/194, INV-V40-5); these four items are its test-first lock, written RED-first
+against the pre-repair tree (confirmed below) and GREEN against the repair.
+
+### UT-377 — `foldPrimitiveSpend` (ARCH-187 v41b): per-attempt pricing, summed/ORed over the whole call
+- **status:** green
+- **traces:** DES-273, ARCH-187, REQ-225
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v41b
+
+File: `tests/unit/primitive-pricing.test.ts` (new describe block, same file as UT-351). Six cases:
+a single reported attempt (no regression vs. the old single-spend `pricePrimitiveCall`); an absent
+attempt (429, unreadable) then a reported success → `unpriced:true`, `costUSD` is only the priced
+sum; a reported + an estimated attempt → `costSource` prefers `'reported'` (the tier any attempt
+reached), `costUSD` sums both; tokens sum across every attempt, priced or not; three absent
+attempts → `unpriced:true, costUSD:0, costSource:'absent'`, never a known `$0`; an empty/missing
+list (`[]` and `undefined`) folds as exactly one absent attempt. Red confirmed: `foldPrimitiveSpend`
+is not exported by `run-guard.ts` on the pre-repair tree — `TypeError: foldPrimitiveSpend is not a
+function`, 6/6 failing for that reason (verified via `git apply -R`/`git apply` against the repair
+diff, not by checking out a prior commit).
+
+### UT-378 — per-attempt spend list (ARCH-183 v41b): `runWithRetry` hands the caller every dispatched attempt's spend, not only the last
+- **status:** green
+- **traces:** DES-267, ARCH-183, REQ-227
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v41b
+
+File: `tests/unit/direct-models-call.test.ts` (new describe block, after the existing `UT-342:
+runImage` block). Four cases: a 429 (no readable cost) then a 200 (reported cost) → `r.spends`
+equals `[{wireCostUSD:null}, {wireCostUSD:0.5}]`; a call that exhausts retries carries EVERY
+attempt's spend on `PRIMITIVE_FAILED.detail.spends`, not only the last; `onAttempt`'s `failed`
+observation carries that one attempt's own `wireCostUSD` (a billed-but-malformed 200, not
+retryable); a `network` error retried to a 200 success preserves both attempts, in order, on
+`spends`. Red confirmed (git apply -R / apply against the repair diff): the success result has no
+`spends` field (`undefined`), and `onAttempt`'s observation carries no `wireCostUSD` field at all —
+4/4 failing for that reason.
+
+### UT-379 — `ATTEMPT_REASONS` provenance (ARCH-192/194 v41b, Gate 8 r1 V41-A2/R-1): every served copy names EXACTLY the one runtime set
+- **status:** green
+- **traces:** DES-276, ARCH-192, ARCH-194, REQ-227, REQ-231
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v41b
+
+File: `tests/unit/attempt-reason-provenance.test.ts` (new). Source-text regex extraction (the same
+pattern `sandbox-refusal-provenance.test.ts`'s own DRIFT GUARD case uses for the unrelated
+`ENGINE_REFUSAL_CODES`/`RECORDED_REFUSAL_CODES` pair) against `ATTEMPT_REASONS` (event-log.ts, now
+a value export, ARCH-192 v41b): `src/errors.ts`'s `PRIMITIVE_FAILED` hint ("detail.reason carries
+..."), `src/tool-specs.ts`'s `run_status` description ("the primitive's failure word (...)"),
+`src/authoring-guide.ts`'s `PRIMITIVE_FAILED_GRAMMAR` literal, and the generated `docs/
+AUTHORING.md` on disk — set equality (membership, not order; `http` mapped from the grammar's
+`HTTP \d{3}`), not substring presence, so a re-hardcoded OR a dropped word in any one of the four
+fails. This is a drift-guard LOCK, not a red-first behaviour proof — written after
+`ATTEMPT_REASONS` already existed as the one runtime value and all four served copies were already
+correct text (no served wording changed in this amendment); it passes immediately. Verified it
+actually catches drift: a manual one-word deletion from `errors.ts`'s hint (restored immediately
+after) turned this red with the missing word named in the diff.
+
+### IT-326 — a call that retries past an unobservable attempt then succeeds settles `unpriced:true` (Gate 8 r1 V41-A1)
+- **status:** green
+- **traces:** DES-274, ARCH-187, REQ-225, REQ-227
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v41b
+
+File: `tests/integration/primitive-spend-on-failure.test.ts` (new describe block, same harness as
+IT-322: real RunManager/InMemoryRunStore/sandbox fork, stubbed OpenRouter fetch, a real priced
+`ModelBook`). `decide()` with `retries:1`: a network error (no readable cost) then a 200 with a
+reported `usage.cost:0.4`. Asserts the run COMPLETES (the retry succeeded), `view.usage.costUSD ≈
+0.4` (only the one priced attempt, never doubled or zeroed), and the record is `state:'done'` with
+`unpriced:true` — the core V41-A1 claim: a successful call can still be `unpriced` because an
+EARLIER attempt's cost was never observable. Red confirmed (git apply -R / apply against the
+repair diff): the pre-repair handler priced only the final (successful) attempt, so this case
+read `unpriced:false` — the exact "unknown cost reads as zero" defect INV-V40-5 forbids.

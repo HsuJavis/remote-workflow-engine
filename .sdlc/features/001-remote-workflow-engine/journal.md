@@ -10594,3 +10594,79 @@ orchestrator 實測確認(裸名 FAIL、`<pkg>/claude` 子路徑 OK)。**裁決*
 
 validator 回報 REQ-227 v41 增補的「連線層失敗」子條款無法對真實 OpenRouter 可控觸發,改以 IT-323(本機 http server + 真實 undici,30/30)為機制證明。
 比照 v40 擁有者裁決(V40:「接受 stub 驗證」,同類的 live 429 無法觸發)先行接受;已在對話中告知擁有者,如有異議再改。
+
+## 2026-10-19 — v41 Gate 8 round 1 (reviewer) — SEND-BACK
+
+`send_back=[architecture, impl]`。trace --check 2316/101(15 high/36 mid/50 low)——high/mid 與 v40 r2 收尾基線
+（2290/77 = 15/36/26）逐項比對成員一致，+24 low 全是 Gate 4 自己已揭露的「預期測試落後」（v40 期 UT/IT 對照
+被 v41 升版的 DES-267/273/274/276），非隱藏回歸。dashboard_check 5/8/1、solid_check 3/0/10 與基線逐位元相同；
+module_check 休眠；v41 觸碰的檔案無一出現在三個工具的輸出中。
+
+consolidate 兩份已預跑的 panel 報告（adversarial、quality-dimensions，未重跑）後，逐條對照 02-architecture.md
+與 src 原文（不只採信 panel 自己的嚴重度標籤——兩份報告都自稱「nothing HIGH / nothing blocking」），把其中
+兩條（合計 8 條發現裡的 2 條）升級為阻斷：(1) V41-A1——ARCH-183 v41 把 `network` 設為可重試後，call.ts 的
+`spend` 仍按單次 attempt 計、重試時整筆捨棄（:400），一次「200 headers 後中途斷線」的真實已產生花費可能
+完全未入帳也未標記 unpriced，違反 INV-V40-5（「未知不等於零」）——v40 Gate 8 r1 當時的理由（「可重試結果都
+觀察不到花費」）在 v41 把 network 變可重試後已不成立，且本輪沒有任何 Decision rationale 重新檢視這個互動；
+(2) V41-A2/R-1——ARCH-192 v41 增補文字「AttemptReason imported, not re-listed」與 run-manager.ts:656 的實際
+程式碼（手抄一份 `ATTEMPT_REASONS` Set）互相矛盾，與 v40 Gate 8 r1 擋下的 ARCH-185/INV-V40-7 文字自相矛盾
+同一類；八處失敗詞彙手抄五份、僅一道正則鎖，新詞彙加入會靜默退回 `'error'`，重現 REQ-231 本來要關掉的
+「兩個名字」缺陷且無紅測試。其餘 7 條（O-1/O-2/O-3/C-1/C-2/C-3/C-4/A3/A4）逐條重新核對後列為已記錄技術債
+（皆一行/一句可修、未碰任何具名不變量）。`arch_consistent: false`。
+
+驗證/交付：REQ-227/231/232 皆 real:true（VAL-293/294/295，以 trace.analyze() 直接確認非僅看列印清單）；
+08-validation.md/README.md/DEPLOY.md 齊全、現狀、逐步、DEPLOY.md §0 就是 Gate 7.5 真跑過的一鍵部署指令；
+README/DEPLOY 重新 grep 無過時 primitive/retry 說法。owner_decision 機械掃描（固定 key）僅 1 筆命中，在
+07-review.md:11976 內為引用舊發現的歷史散文，非活標記——`owner_decisions=[]`；ADR-095 先前 v40 r2 標記的
+「owner_decision 待決」過時句已不存在（已自行解決，非新發現）。本輪未觸碰 CLAUDE.md/AGENTS.md/SKILL.md。
+
+記錄技術債：package-lock.json 有未提交的工作樹差異（純粹重排 ece9387 還原的 6 筆非 linux-x64 條目 + npm 自帶
+engines 鏡射，幾乎可確定來自 Gate 7.5 自己跑的 npm install，內容無變化，下次提交即可）；evidence/v28 PNG
+依舊因測試而改動（既有已接受債）；02-architecture.md:6895「v41 candidates (NOT actioned in v40)」標題本輪
+已成過時（v41 跑完卻一項都沒動），下次碰架構文件時改標「v42 candidates」。
+
+`.panel/` 保留（send_back 非空，下一輪 repair + re-review 還要用）。完整記錄見 07-review.md「v41 GATE 8」節。
+
+- 2026-10-19 v41 Gate 2 send-back repair (architect, panel pre-ran r1+r2, not re-spawned): fixed only V41-A1 and V41-A2/R-1 in 02-architecture.md (ARCH-183/187/192/194 + INV-V40-5, v41b amendments). A1: every dispatched attempt priced by ARCH-191 precedence, Σ cost / OR unpriced, one addUsage at settle, retry set unchanged; v40 rationale (2) superseded with date. A2: ATTEMPT_REASONS exported from event-log.ts as the one runtime source, run-manager imports it, set-based provenance UT on the 4 served copies. Known-zero / O-2 / A3 / REQ-232 row filed as v42 candidates. Trace 2316/101 gap set identical. → design (impl repair next).
+- 2026-10-19 v41b Gate 6 send-back repair (implementer), IMPL-420, TDD (RED confirmed via `git diff` → `git apply -R`/`git apply` against the repair patch, never a commit checkout, per CLAUDE.md): fixed only V41-A1/INV-V40-5 and V41-A2/R-1 in code, matching the architect's v41b amendments. `src/direct-models/call.ts`: `runWithRetry` now returns/throws every dispatched attempt's own `{wireCostUSD, tokens?}` as `spends: FailedSpend[]` (was the last attempt only); `onAttempt` observations carry that same per-attempt spend; `primitiveFailedError`'s last param is `spends: FailedSpend[]`, not one `FailedSpend`. `src/run-guard.ts`: new pure `foldPrimitiveSpend` prices each attempt via the unchanged `pricePrimitiveCall` precedence and folds `costUSD=Σ(priced)`, `unpriced=OR(any absent)`, `tokens=Σ`, `costSource=` best tier reached; an empty/missing list folds as one `absent` attempt, never a known `$0`. `src/run-manager.ts`: `_chargeFailedPrimitive` replaced by `_priceAndChargePrimitive` — the one `addUsage` settle point for both success and failure in both `_handleDecideRequest`/`_handleImageRequest`; each handler's `onAttempt` now also prices its own attempt purely for the `primitive.call` retry/failed events. `src/event-log.ts`: `ATTEMPT_REASONS` is now a value export (`as const` tuple), `AttemptReason` derived from it; `run-manager.ts` deleted its own hand-copied Set and value-imports the one source instead (`call.ts`/`types.ts` stay `import type`, unaffected). New tests: UT-377 (foldPrimitiveSpend, 6 cases), UT-378 (call.ts per-attempt spend list, 4 cases), UT-379 (ATTEMPT_REASONS provenance lock over errors.ts/tool-specs.ts/authoring-guide.ts/docs/AUTHORING.md, set equality not substring), IT-326 (end-to-end: a decide() that retries past an unobservable `network` attempt then succeeds settles `unpriced:true` with the one priced attempt's real cost — the core V41-A1 claim). 11/11 new cases red on the pre-repair tree for the right reason; every pre-existing targeted test (IT-322, UT-342, UT-351, UT-358, IT-324, sandbox-refusal-provenance, observed-stats-primitive, primitive-budget-auth-refusals) re-ran green with zero assertion changes. Both tsc configs clean. Full `npx vitest run` re-run (whole suite, not just the targeted subset): 707 files passed / 5 skipped (712), 6342 tests passed / 44 skipped (6386), 0 failed, exit code 0 — zero regressions anywhere in the repo. `sh .sdlc/trace` 2316/101 → 2321/101 (only the 5 new work items — UT-377/378/379, IT-326, IMPL-420 — gap set byte-identical, no new broken links). 04-design.md DES-267/273/274/276 given matching v41b delta paragraphs (iter stays v41, same convention as the architecture doc). No re-decomposition, no new ARCH/ADR/DES/TASK ids. owner_decisions=[]. → review (send_back=[architecture, impl], both now repaired; neither verification nor validation was named, so per house convention this routes straight back to review, not forward).
+
+## 2026-10-19 — v41 Gate 8 RE-REVIEW #1 (reviewer) — CLOSE
+
+`send_back=[]`。重審範圍依前言限定：只驗證 round 1 兩條阻斷項是否真的修好，不重開全範圍。
+
+V41-A1（INV-V40-5）：直接 `git diff` 讀 `call.ts`/`run-guard.ts`/`run-manager.ts`——`runWithRetry` 現在累積
+`spends: FailedSpend[]`（每個已發出的 attempt 一筆，分類前就 push）、`primitiveFailedError` 最後一個參數改成整份
+清單；新的純函式 `foldPrimitiveSpend` 用不變的 `pricePrimitiveCall`/ARCH-191 順序逐 attempt 計價，`costUSD=Sigma`、
+`unpriced=OR(任一 absent)`、`tokens=Sigma`、`costSource=`達到的最佳檔位，缺清單時折成一筆 absent（絕不是已知的
+$0）；`_priceAndChargePrimitive`（取代 `_chargeFailedPrimitive`）是 decide/image 兩個 handler 成功與失敗共用的
+唯一 `addUsage` 結算點。親自跑 4 份目標測試檔：`attempt-reason-provenance.test.ts`、`direct-models-call.test.ts`、
+`primitive-pricing.test.ts`、`primitive-spend-on-failure.test.ts`——71/71 綠燈，其中 IT-326 正是 V41-A1 點名的
+場景（network 錯誤無法讀出花費,重試後 200 真有花費成功收尾)——實測輸出確認 retry 列 `costUSD:null,
+costSource:"absent"`，終局 `ok` 事件 `costUSD:0.4`（唯一已計價 attempt 的真實花費，不是拿猜測的 $0 去加總)。
+
+V41-A2/R-1（ARCH-192 自稱「imported, not re-listed」與程式碼矛盾）：`event-log.ts` 現在把 `ATTEMPT_REASONS` 匯出
+成 `as const` tuple（唯一執行期真值），`AttemptReason` 由它衍生；`run-manager.ts` 刪除自己手抄的模組私有 Set、
+改成值匯入同一來源（它本來就已經值匯入同模組的 `createEventSink`，非新邊）；`call.ts`/`types.ts` 正確維持只
+`import type`（沙箱子行程 `.js→.ts` 值匯入限制）。新測試 `attempt-reason-provenance.test.ts`（UT-379，全文讀過)
+是對四份served copy（`errors.ts` 提示、`tool-specs.ts` run_status 說明、`authoring-guide.ts` 語法、產生的
+`docs/AUTHORING.md`）做原始文字正則鎖、斷言與 `ATTEMPT_REASONS` 集合相等——親自執行，4/4 綠燈。
+`02-architecture.md:6807-6808` 的錯誤句子未刪除（本帳本慣例：原地訂正、標日期)，緊接著一段 v41b 修正段落
+陳述真正缺陷與修法——重新 grep 該錯誤字串，僅此一處命中，且就在已訂正的上下文裡。
+
+兩份 tsconfig 皆重新 `tsc --noEmit`，exit 0。親自重跑 `sh .sdlc/trace --check`（確認這份帳本權威依據是本倉庫
+自帶的 vendored trace.py，而非 plugin 較新版本——以 `--help` 輸出差異驗證過）：2321/101，與修復輪自報的
+2316→2321 一致（只多 5 個新工作項，缺口集合其餘不變）；直接 grep REQ-227/REQ-231/REQ-232——零命中，確認三者
+皆未落入 未驗證/未真實驗證 缺口列。dashboard_check 5/8/1、solid_check 3/0/10（plugin 2.4.3，依本帳本既有慣例
+配對使用）皆與既有基線逐位元相同，v41b 觸碰的檔案一個都沒出現在三工具輸出裡。owner_decision 機械掃描
+（固定 key)重跑：僅 1 筆命中（07-review.md:11976），再次確認是引用舊發現的歷史散文，非活標記——
+`owner_decisions=[]`。本輪未觸碰 CLAUDE.md/AGENTS.md/SKILL.md。驗證/交付文件（08-validation.md/README.md/
+DEPLOY.md）自上輪以來位元不變（`git diff --stat` 確認），未重開、無新發現。
+
+`arch_consistent: false` 維持不變——不是因為任一阻斷項還在（兩條都已關閉，上述驗證過），而是因為 round 1 的
+7 條非阻斷 panel 發現（O-1/O-2/O-3/C-1/C-2/C-3/C-4/A3/A4，皆未碰任何具名不變量）仍在程式碼上，採用本帳本
+v36 已用過的同一慣例記錄。技術債原樣延續：既有 77 缺口基線 + 24 筆 low 測試版本落後列；dashboard_check/
+solid_check 既有列；上述 7 條 panel 發現；package-lock.json 未提交的純重排差異（下次提交即可）；
+evidence/v28 PNG（既有、測試會重生）；02-architecture.md:6895「v41 candidates」標題已過時（下次碰架構文件時
+改標 v42 candidates）。
+
+`.panel/` 已移除（send_back 為空，迭代關閉）。完整記錄見 07-review.md「v41 GATE 8 RE-REVIEW #1」節。

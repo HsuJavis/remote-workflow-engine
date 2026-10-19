@@ -36,7 +36,7 @@ import { InMemoryRunStore } from './run-store.js';
 import type { WorkflowMetrics } from './dashboard.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
-import { RunGuard, parseBudget, foldUsage, sumTokens, primitivePriceKnowable, pricePrimitiveCall, ZERO_TOKENS } from './run-guard.js';
+import { RunGuard, parseBudget, foldUsage, sumTokens, primitivePriceKnowable, pricePrimitiveCall, foldPrimitiveSpend, type FoldedPrimitiveSpend } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
 // v40 (DES-274, ARCH-187, TASK-271): decide()/generateImage() handler collaborators.
@@ -58,7 +58,7 @@ import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FR
 import { defaultRunParams, mergeRunParams, resolvePrimitiveParams, type RunParams } from './params/resolve.js';
 import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
 import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
-import { createEventSink, type EventSink, type AttemptReason } from './event-log.js';
+import { createEventSink, ATTEMPT_REASONS, type EventSink, type AttemptReason } from './event-log.js';
 import { scanAgentCalls, expectedAgentOptsByLabel } from './workflow-meta.js';
 import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
 import { assertPositiveInteger } from './config-numeric.js';
@@ -648,12 +648,11 @@ function failureReason(a: AgentRecord): AgentFailureSummary['reason'] {
   // `'terminal'` fallback (no `detail.reason` at all — an uncoded/internal throw) is not one of the
   // vocabulary any surface documents, so it still falls through to the generic `'error'` bucket,
   // same as an agent record's unnamed failure. Agent records (`kind` absent) are unaffected (INV-V40-1).
-  if (a.kind !== undefined && a.failReason !== undefined && ATTEMPT_REASONS.has(a.failReason)) return a.failReason as AttemptReason;
+  if (a.kind !== undefined && a.failReason !== undefined && (ATTEMPT_REASONS as readonly string[]).includes(a.failReason)) return a.failReason as AttemptReason;
   if (a.failReason === 'timeout') return 'timeout';
   if (a.failReason === 'aborted') return 'aborted';
   return 'error';
 }
-const ATTEMPT_REASONS: ReadonlySet<string> = new Set(['http', 'timeout', 'aborted', 'network', 'no_output', 'malformed', 'response_too_large', 'write']);
 /** verify-i LOW-5: the summary is not the diagnostic dump. The gateway folds a short CLI stderr
  *  tail into `detail` after the marker below (`claude-agent-sdk-client.ts` `withStderrDiagnostics`)
  *  — it can name the auth env var in use — and an SDK error result can carry its result subtype as
@@ -3120,18 +3119,16 @@ export class RunManager {
     }
   }
 
-  /** ARCH-187 v40b (Gate 8 r1 V40-C2): a FAILED primitive call is still charged — whatever the last
-   *  attempt was billed (`PRIMITIVE_FAILED.detail`'s `FailedSpend`) is priced by the same
-   *  precedence as a success (ARCH-191: reported, else estimated, else absent → unpriced) and added
-   *  to the live guard BEFORE the failed state is recorded, so `assertBudget` sees it. */
-  private _chargeFailedPrimitive(entry: RunEntry, err: unknown, pinEntry: Parameters<typeof pricePrimitiveCall>[0]['entry'], kind: 'decide' | 'image'): { tokens?: Tokens; costUSD: number; unpriced: boolean; costSource: 'reported' | 'estimated' | 'absent' } {
-    const spend = (err as { detail?: Partial<FailedSpend> }).detail;
-    const tokens = spend?.tokens;
-    const priced = pricePrimitiveCall({ wireCostUSD: spend?.wireCostUSD ?? null, tokens, entry: pinEntry, kind });
-    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
-    const unpriced = 'absent' in priced;
-    entry.guard.addUsage(tokens ?? ZERO_TOKENS, costUSD, unpriced);
-    return { ...(tokens !== undefined ? { tokens } : {}), costUSD, unpriced, costSource: 'absent' in priced ? 'absent' : priced.source };
+  /** ARCH-187 v41b (Gate 8 r1 V41-A1 — replaces `_chargeFailedPrimitive` AND both handlers' inline
+   *  success pricing, so success and failure settle through this ONE `addUsage` per call): prices
+   *  EVERY attempt `runWithRetry` dispatched (on a throw, `PRIMITIVE_FAILED.detail.spends`; on
+   *  success, the result's own `spends`) via `foldPrimitiveSpend` — same ARCH-191 precedence as
+   *  before, summed/ORed over attempts rather than read off the last one — and charges the live
+   *  guard with the fold BEFORE the record is written, so `assertBudget` sees it either way. */
+  private _priceAndChargePrimitive(entry: RunEntry, spends: FailedSpend[] | undefined, pinEntry: Parameters<typeof foldPrimitiveSpend>[1], kind: 'decide' | 'image'): FoldedPrimitiveSpend {
+    const folded = foldPrimitiveSpend(spends, pinEntry, kind);
+    entry.guard.addUsage(folded.tokens, folded.costUSD, folded.unpriced);
+    return folded;
   }
 
   /** v40 (DES-264, TASK-260/271): one `kind:'primitive.call'` operational-event line per
@@ -3222,7 +3219,7 @@ export class RunManager {
     let attempt = 0;
     let providerMsTotal = 0;
     let backoffMsTotal = 0;
-    let outcome: { answers: Record<string, DecideAnswer>; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number };
+    let outcome: { answers: Record<string, DecideAnswer>; attempts: number; providerMsTotal: number; backoffMsTotal: number; spends: FailedSpend[] };
     try {
       // step (8): the slot is held across every retry; `assertBudget` repeats here (the v25
       // load-bearing position), `markRunning` flips once the slot is actually acquired.
@@ -3238,10 +3235,15 @@ export class RunManager {
               attempt = o.attempt;
               providerMsTotal += o.providerMs;
               backoffMsTotal += o.backoffMs ?? 0;
+              // v41b (ARCH-187, Gate 8 r1 V41-A1): price THIS attempt alone, purely — never
+              // `addUsage` here (the call settles, and charges, exactly once, at the end).
+              const attemptPrice = pricePrimitiveCall({ wireCostUSD: o.wireCostUSD, tokens: o.tokens, entry: pinEntry, kind: 'decide' });
               this._emitPrimitiveCall({
                 runId, agentId, callSeq, primitive: 'decide', label, model, attempt: o.attempt, outcome: o.outcome,
                 ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
                 providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+                costUSD: 'absent' in attemptPrice ? null : attemptPrice.costUSD, costSource: 'absent' in attemptPrice ? 'absent' : attemptPrice.source,
+                ...(o.tokens !== undefined ? { tokens: o.tokens } : {}),
               });
             },
           },
@@ -3257,14 +3259,14 @@ export class RunManager {
         this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'decide', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
         throw err;
       }
-      // failure path: price what the wire reported (nothing, on a throw) and record 'failed' —
+      // failure path: price every dispatched attempt (ARCH-187 v41b) and record 'failed' —
       // no journal row, so a resumed run re-runs this call (and every later one) live.
       const endedAt = this._clock.isoNow();
-      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number; spends?: FailedSpend[] } }).detail;
       const primFailure = primitiveFailure('decide', label, err, entry.abortController.signal.aborted);
-      const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'decide');
+      const charged = this._priceAndChargePrimitive(entry, detail?.spends, pinEntry, 'decide');
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, tokens: charged.tokens, costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
@@ -3279,12 +3281,9 @@ export class RunManager {
     // `onAttempt` — this handler's local accumulator above only covers retry/failed attempts).
     const endedAt = this._clock.isoNow();
     const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
-    const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'decide' });
-    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
-    const unpriced = 'absent' in priced;
-    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    const priced = this._priceAndChargePrimitive(entry, outcome.spends, pinEntry, 'decide');
     if (entry.spawner instanceof AgentExecutor) {
-      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'decide', label, model: resolvedModel.model, phase, frame: framePath, tokens: priced.tokens, costUSD: priced.costUSD, unpriced: priced.unpriced, state: 'done', startedAt, endedAt });
     }
     // step (11): journal push, exactly as agent()'s own success path.
     const value = { answers: outcome.answers };
@@ -3294,8 +3293,8 @@ export class RunManager {
     await this._store.appendJournal(runId, journalToStore);
     // step (12): the terminal 'ok' event.
     this._emitPrimitiveCall({
-      runId, agentId, callSeq, primitive: 'decide', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs, costUSD,
-      costSource: 'absent' in priced ? 'absent' : priced.source, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      runId, agentId, callSeq, primitive: 'decide', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs,
+      costUSD: priced.costUSD, costSource: priced.costSource, tokens: priced.tokens,
       answers: outcome.answers,
     });
     return value;
@@ -3399,7 +3398,7 @@ export class RunManager {
     let attempt = 0;
     let providerMsTotal = 0;
     let backoffMsTotal = 0;
-    let outcome: { images: { data: Buffer; mimeType: string }[]; tokens?: Tokens; wireCostUSD: number | null; attempts: number; providerMsTotal: number; backoffMsTotal: number };
+    let outcome: { images: { data: Buffer; mimeType: string }[]; attempts: number; providerMsTotal: number; backoffMsTotal: number; spends: FailedSpend[] };
     try {
       outcome = await this._imageSemaphore.withSlot(async () => {
         entry.guard.assertBudget();
@@ -3413,10 +3412,15 @@ export class RunManager {
               attempt = o.attempt;
               providerMsTotal += o.providerMs;
               backoffMsTotal += o.backoffMs ?? 0;
+              // v41b (ARCH-187, Gate 8 r1 V41-A1): price THIS attempt alone, purely — never
+              // `addUsage` here (the call settles, and charges, exactly once, at the end).
+              const attemptPrice = pricePrimitiveCall({ wireCostUSD: o.wireCostUSD, tokens: o.tokens, entry: pinEntry, kind: 'image' });
               this._emitPrimitiveCall({
                 runId, agentId, callSeq, primitive: 'image', label, model, attempt: o.attempt, outcome: o.outcome,
                 ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
                 providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+                costUSD: 'absent' in attemptPrice ? null : attemptPrice.costUSD, costSource: 'absent' in attemptPrice ? 'absent' : attemptPrice.source,
+                ...(o.tokens !== undefined ? { tokens: o.tokens } : {}),
               });
             },
           },
@@ -3432,11 +3436,11 @@ export class RunManager {
         throw err;
       }
       const endedAt = this._clock.isoNow();
-      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number } }).detail;
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number; spends?: FailedSpend[] } }).detail;
       const primFailure = primitiveFailure('generateImage', label, err, entry.abortController.signal.aborted);
-      const charged = this._chargeFailedPrimitive(entry, err, pinEntry, 'image');
+      const charged = this._priceAndChargePrimitive(entry, detail?.spends, pinEntry, 'image');
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(charged.tokens !== undefined ? { tokens: charged.tokens } : {}), costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, tokens: charged.tokens, costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
       this._emitPrimitiveCall({
@@ -3446,12 +3450,9 @@ export class RunManager {
       });
       throw err;
     }
-    // ARCH-187 v40b (Gate 8 r1 V40-C2): the provider has billed — price and charge FIRST, before
-    // any fallible local step, so nothing below can lose the spend.
-    const priced = pricePrimitiveCall({ wireCostUSD: outcome.wireCostUSD, tokens: outcome.tokens, entry: pinEntry, kind: 'image' });
-    const costUSD = 'absent' in priced ? 0 : priced.costUSD;
-    const unpriced = 'absent' in priced;
-    entry.guard.addUsage(outcome.tokens ?? ZERO_TOKENS, costUSD, unpriced);
+    // ARCH-187 v41b (Gate 8 r1 V41-A1): the provider has billed — price EVERY dispatched attempt
+    // and charge FIRST, before any fallible local step, so nothing below can lose the spend.
+    const priced = this._priceAndChargePrimitive(entry, outcome.spends, pinEntry, 'image');
     // step (9): write images under the resolved outDir — zero written is still priced, still a
     // failure. `outcome.providerMsTotal`/`.backoffMsTotal`/`.attempts` are `runWithRetry`'s own
     // complete sums (including the successful final attempt, which never fires `onAttempt`).
@@ -3465,14 +3466,14 @@ export class RunManager {
     } catch {
       const endedAt = this._clock.isoNow();
       const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal);
-      const writeErr = primitiveFailedError('generateImage', label, 'write', outcome.attempts, undefined, false, { wireCostUSD: outcome.wireCostUSD, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}) });
+      const writeErr = primitiveFailedError('generateImage', label, 'write', outcome.attempts, undefined, false, outcome.spends);
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'write', detail: writeErr.message, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, tokens: priced.tokens, costUSD: priced.costUSD, unpriced: priced.unpriced, state: 'failed', failReason: 'write', detail: writeErr.message, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, writeErr);
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'write', errorCode: 'PRIMITIVE_FAILED',
-        engineMs, costUSD, costSource: 'absent' in priced ? 'absent' : priced.source,
+        engineMs, costUSD: priced.costUSD, costSource: priced.costSource,
       });
       throw writeErr;
     }
@@ -3482,20 +3483,20 @@ export class RunManager {
       // v41 (DES-274 delta, REQ-231, TASK-277): the grammar-matching message (DES-267) — replaces
       // the hand-built "produced N dropped" text, which never matched the three-surface word
       // `expectedReasonWord` other callers (the script, `run_agent_log`, `agentFailures`) agree on.
-      // Spend was already charged above; `wireCostUSD: null` here is metadata only, not a re-charge.
-      const noOutputErr = primitiveFailedError('generateImage', label, 'no_output', outcome.attempts, undefined, false, { wireCostUSD: null });
+      // Spend was already charged above; passing `outcome.spends` here is metadata only, not a re-charge.
+      const noOutputErr = primitiveFailedError('generateImage', label, 'no_output', outcome.attempts, undefined, false, outcome.spends);
       if (entry.spawner instanceof AgentExecutor) {
-        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'failed', failReason: 'no_output', detail: noOutputErr.message, startedAt, endedAt });
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, tokens: priced.tokens, costUSD: priced.costUSD, unpriced: priced.unpriced, state: 'failed', failReason: 'no_output', detail: noOutputErr.message, startedAt, endedAt });
       }
       this._recordPrimitiveRefusal(entry, framePath, callSeq, noOutputErr);
       this._emitPrimitiveCall({
         runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'failed', reason: 'no_output', errorCode: 'PRIMITIVE_FAILED',
-        engineMs, costUSD, costSource: 'absent' in priced ? 'absent' : priced.source,
+        engineMs, costUSD: priced.costUSD, costSource: priced.costSource,
       });
       throw noOutputErr;
     }
     if (entry.spawner instanceof AgentExecutor) {
-      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}), costUSD, unpriced, state: 'done', startedAt, endedAt });
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'image', label, model: resolvedModel.model, phase, frame: framePath, tokens: priced.tokens, costUSD: priced.costUSD, unpriced: priced.unpriced, state: 'done', startedAt, endedAt });
     }
     const value = { files: written.files };
     const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };
@@ -3503,8 +3504,8 @@ export class RunManager {
     const journalToStore = this._secretValueProvider ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry) : journalEntry;
     await this._store.appendJournal(runId, journalToStore);
     this._emitPrimitiveCall({
-      runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs, costUSD,
-      costSource: 'absent' in priced ? 'absent' : priced.source, ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+      runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs,
+      costUSD: priced.costUSD, costSource: priced.costSource, tokens: priced.tokens,
       files: written.files, ...(written.dropped > 0 ? { droppedImages: written.dropped } : {}),
     });
     return value;

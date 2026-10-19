@@ -68,8 +68,17 @@ export type EngineEvent =
       tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number };
 
 /** v40 (DES-264, TASK-260): why a `primitive.call` attempt did not reach `ok` — carried only on
- *  `retry`/`failed` outcomes. `write`: generateImage()'s post-provider file write failed. */
-export type AttemptReason = 'http' | 'timeout' | 'aborted' | 'network' | 'no_output' | 'malformed' | 'response_too_large' | 'write';
+ *  `retry`/`failed` outcomes. `write`: generateImage()'s post-provider file write failed.
+ *  v41b (ARCH-192, Gate 8 r1 V41-A2/R-1): this `as const` tuple is the ONE runtime source of truth
+ *  for the vocabulary — `run-manager.ts` value-imports it (it already value-imports
+ *  `createEventSink` from this same module, so this is not a new host/sandbox edge; `call.ts` and
+ *  `types.ts` keep `import type` only, since a sandbox-child-loaded file must not gain a `.js→.ts`
+ *  value import). Before this, `run-manager.ts` hand-copied the 8 words into its own
+ *  module-private `ATTEMPT_REASONS` Set — a 9th word added to this type compiled clean and
+ *  `failureReason()` silently fell through to `'error'` (the exact "two names" defect REQ-231 was
+ *  opened to close). `AttemptReason` is now DERIVED from the value, so the two can never drift. */
+export const ATTEMPT_REASONS = ['http', 'timeout', 'aborted', 'network', 'no_output', 'malformed', 'response_too_large', 'write'] as const;
+export type AttemptReason = (typeof ATTEMPT_REASONS)[number];
 
 export type EventSink = (event: EngineEvent) => void;
 

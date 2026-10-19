@@ -112,3 +112,38 @@ describe('IT-322: a billed-but-failed primitive call is counted, not dropped (V4
     }
   });
 });
+
+// IT-326 (Gate 8 r1 V41-A1, ARCH-187 v41b, INV-V40-5 realization): widening the retry set to
+// `network` (ARCH-183 v41) means an EARLIER attempt can be billed-but-unobservable and then
+// retried past to a successful attempt — the call must settle `unpriced:true` (never a quiet known
+// $0 just because the FINAL attempt happened to price), while still charging the real, observed
+// cost of whichever attempt DID report one.
+//
+// Mock policy (integration): same harness as IT-322 — real RunManager/InMemoryRunStore/sandbox
+// fork, a stubbed OpenRouter fetch, a priced real ModelBook.
+//
+// Red reason: before this repair, `runWithRetry` discarded every attempt but the last, so a
+// network-then-success call priced ONLY the successful attempt's own reported cost as `reported`/
+// `unpriced:false` — the exact "unknown cost reads as zero" defect INV-V40-5 forbids.
+const DECIDE_META_RETRY1 = `export const meta = { phases: [], params: { decisions: { gate: { model: { type: 'string', default: 'openrouter/typesafe/jev-1.13' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 1 } } } } };`;
+
+describe('IT-326: a call that retries past an unobservable attempt then succeeds settles unpriced:true (Gate 8 r1 V41-A1)', () => {
+  it('decide(): network error (no readable cost) then a 200 with a reported cost -> unpriced:true, costUSD is the one priced attempt\'s cost (never summed against a guessed $0)', async () => {
+    const stub = makeStubFetch([{ status: 0, networkError: true }, { status: 200, body: { answers: { ok: { type: 'noul', noul: 0.8 } }, usage: { cost: 0.4 } } }]);
+    const store = new InMemoryRunStore(new FixedClock(new Date('2026-10-01T00:00:00Z')));
+    const mgr = new RunManager({ store, modelBook: pricedBook(), directDeps: { fetch: stub.fetch, resolveKey: () => 'sk-test' } } as any);
+    const runId = await startScript(mgr, `
+      ${DECIDE_META_RETRY1}
+      const r = await decide('gate', { state: {}, questions: ${QUESTIONS} });
+      return r;
+    `, {});
+    const view = await pollStatus(mgr, runId);
+    expect(view.status, JSON.stringify(view.error ?? null)).toBe('completed');
+    expect(stub.calls).toHaveLength(2);
+    expect(view.usage?.costUSD).toBeCloseTo(0.4, 6);
+    const rec = (view.agents ?? []).find((a: any) => a.kind === 'decide');
+    expect(rec?.state).toBe('done');
+    expect(rec?.costUSD).toBeCloseTo(0.4, 6);
+    expect(rec?.unpriced).toBe(true);
+  });
+});

@@ -1,6 +1,7 @@
 ---
 stage: review
-status: close   # v36 GATE 8 RE-REVIEW #2 AND CLOSE (2026-09-22, reviewer): send_back=[], CLOSED. Verified all 3 of round 1's blocking findings CLOSED on disk (not log-trusted): (1) ARCH-174/ADR-081 + rtm.md REQ-217 row added; (2) the false "bounded by concurrency, not history" doc comment corrected in src/run-store.ts + src/dashboard.ts, a real runs_status index landed (sqlite-run-store.ts:99), and a red-before/green-after EXPLAIN QUERY PLAN guard added (active-runs-store-agreement.test.ts:177-192); (3) README.md:446-453's pagination claim corrected + a dedicated real-boot Gate-7.5 acceptance item (VAL-252, real:true) added. trace 2027/77 gaps, all pre-existing (0 in REQ-211..217 closure), 0 未真實驗證, 0 待業主決策. dashboard_check 0 high/7 mid (accepted FP)/1 low (accepted) when paired with this repo's vendored trace.py. solid_check 0 mid/10 low unchanged (paired with the plugin's bundled trace.py, since this repo's own predates module:/deps: parsing). owner_decisions=[]. arch_consistent=false, carried entirely by the SAME non-blocking debt round 1 already recorded (F1-F6/O-1-O-3/R-1..5/C-1..3/S-1-2) — the two .panel/review/*.md reports' F4/O-3/S-2 findings are STALE (pre-date this round's fixes) and independently disproven on disk. 1 new LOW recorded (DEBT-D, ARCH-174's own "reachable via filters" sentence now measured false by VAL-252). Full detail: "v36 GATE 8 — RE-REVIEW #2 AND CLOSE" section at the end of this file. Below (frontmatter + v28 section) is a HISTORICAL record superseded by every dated section after it — see the last section of this file for the live verdict.
+status: close   # v41 GATE 8 RE-REVIEW #1 (2026-10-19, reviewer): send_back=[], CLOSED. Both round-1 blocking findings (V41-A1 INV-V40-5 money-undercounting on a retried-past-unobservable-attempt call; V41-A2/R-1 ARCH-192's false "imported, not re-listed" claim / 5 hand-copied AttemptReason vocabularies with 1 lock) independently verified fixed on disk: 71/71 targeted tests green (incl. IT-326, the exact V41-A1 scenario, and UT-379, the new ATTEMPT_REASONS provenance lock), both tsc configs clean, trace 2321/101 (gap set unchanged apart from 5 new work items, REQ-227/231/232 grep-confirmed absent from the gap list), dashboard_check 5/8/1 + solid_check 3/0/10 byte-identical to the established baseline, owner_decisions=[]. arch_consistent=false carried by the 7 non-blocking panel findings (O-1/O-2/O-3/C-1/C-2/C-3/C-4/A3/A4), none touching a named invariant. Full detail: "v41 GATE 8 RE-REVIEW #1" section at the end of this file. Everything above this line (frontmatter note aside) is a HISTORICAL record superseded by every dated section after it — see the last section of this file for the live verdict.
+# PRIOR status: close   # v36 GATE 8 RE-REVIEW #2 AND CLOSE (2026-09-22, reviewer): send_back=[], CLOSED. Verified all 3 of round 1's blocking findings CLOSED on disk (not log-trusted): (1) ARCH-174/ADR-081 + rtm.md REQ-217 row added; (2) the false "bounded by concurrency, not history" doc comment corrected in src/run-store.ts + src/dashboard.ts, a real runs_status index landed (sqlite-run-store.ts:99), and a red-before/green-after EXPLAIN QUERY PLAN guard added (active-runs-store-agreement.test.ts:177-192); (3) README.md:446-453's pagination claim corrected + a dedicated real-boot Gate-7.5 acceptance item (VAL-252, real:true) added. trace 2027/77 gaps, all pre-existing (0 in REQ-211..217 closure), 0 未真實驗證, 0 待業主決策. dashboard_check 0 high/7 mid (accepted FP)/1 low (accepted) when paired with this repo's vendored trace.py. solid_check 0 mid/10 low unchanged (paired with the plugin's bundled trace.py, since this repo's own predates module:/deps: parsing). owner_decisions=[]. arch_consistent=false, carried entirely by the SAME non-blocking debt round 1 already recorded (F1-F6/O-1-O-3/R-1..5/C-1..3/S-1-2) — the two .panel/review/*.md reports' F4/O-3/S-2 findings are STALE (pre-date this round's fixes) and independently disproven on disk. 1 new LOW recorded (DEBT-D, ARCH-174's own "reachable via filters" sentence now measured false by VAL-252). Full detail: "v36 GATE 8 — RE-REVIEW #2 AND CLOSE" section at the end of this file. Below (frontmatter + v28 section) is a HISTORICAL record superseded by every dated section after it — see the last section of this file for the live verdict.
 ---
 # 07 Review & Retro — Gate 8
 
@@ -15846,3 +15847,333 @@ debate files for condition-compliance). Regression suite only partially re-run t
 above as degraded, not hidden); relied additionally on tsc + the implementer's own full-run account.
 No `git checkout`/`restore`/`stash` used. Edited only `07-review.md`/`state.yaml`/`journal.md` plus
 regenerating `dashboard.html`; removed `.panel/` as the last step, after this section was written.*
+
+---
+
+## v41 GATE 8 (2026-10-19, reviewer) — issue #168 delta: REQ-227 (delta), REQ-231, REQ-232
+
+Scope: IMPL-416..419 (TASK-276..279), the two pre-run Gate-8 panel reports under `.panel/review/`
+(`adversarial.md`, `quality-dimensions.md`, not re-spawned), Gate 7.5's VAL-293..295, and the whole
+ledger's mechanical checks.
+
+### 1. Traceability / gap consistency
+
+`sh .sdlc/trace` → 2316 items / 101 gaps (15 high / 36 mid / 50 low). Compared against v40 r2's
+closing baseline (2290/77 = 15/36/26): **high and mid are byte-identical in count and membership**
+(same 15 `斷鏈` rows on `REQ-144..152/186`/`IMPL-303..311/323`/`UT-264/265`; same 36 mid = 17
+`REQ-153..169` 未驗證 + 19 `IMPL-305..323` TDD, both pre-existing, dated v6–v28). **+24 low** are all
+`漂移` rows pairing v40-era tests (UT-343/351/352/353/355/356/358/359/365, IT-309..315/317..322)
+against the four DES rows (DES-267/273/274/276) Gate 4 bumped to `iter: v41` — Gate 4's own note
+explicitly flagged this as "expected low-sev test drift"; Gate 5/6 superseded the one directly
+affected case (UT-342) in place and added new tests (UT-371..374, IT-323..325) but did not re-stamp
+the old tests' `iter`. Not a hidden regression — recorded as this round's named debt below (fold a
+one-line iter bump into the next touch of these 22 tests). REQ-227/231/232 are absent from both the
+`未驗證` and `未真實驗證` gap classes (confirmed directly via `trace.analyze()`, not just by absence
+from the printed list).
+
+`dashboard_check.py`: 5 high / 8 mid / 1 low — byte-identical to v40 r2's cited baseline (REQ-211..215
+SoT-file-missing artifact; 8 `02-architecture.md` erDiagram bracket-balance false positives at the
+dated v21–v40 data-architecture diagrams; 1 low = no offline-mermaid-fallback, pre-dates this trace.py
+version). `solid_check.py`: 3 high / 0 mid / 10 low — byte-identical to the same baseline (undeclared
+`src/gateway` deps on `workflow-meta.ts`/`errors.ts`/`mcp-facade.ts`; 10 unclaimed files, none touched
+by v41). `module_check.py`: dormant (no `build:` key declared on any ARCH row). None of the v41-touched
+files (`call.ts`, `run-manager.ts`, `agent-executor.ts`, `types.ts`,
+`gateway/claude-agent-sdk-client.ts`, `authoring-guide.ts`, `tool-specs.ts`) appear in any of the three
+tools' output — this iteration introduced zero new module-boundary or dashboard-link regressions.
+Playwright browser tools are not present in this session — dashboard QA is the script check only
+(degraded, noted per contract; not a finding on its own since the script check is clean).
+
+### 2. Architecture consistency — consolidated from the two pre-run panel reports
+
+Both panels independently verdict **`consistent: no`**, both say **nothing HIGH**: adversarial = 1
+MEDIUM + 3 LOW; quality-dimensions = 1 MEDIUM + 7 LOW. Reconciling the two MEDIUMs against the actual
+invariant/amendment text (not just the panels' own blocking/non-blocking labels) surfaces two that
+this review escalates to blocking — both match a defect class this exact ledger has blocked on
+before (v40 Gate 8 r1: V40-C2 money-undercounting, and the `ARCH-185`/`INV-V40-7` self-contradicting
+text):
+
+- **V41-A1 (adversarial, MEDIUM) — `INV-V40-5` ("unknown is not zero") is breached by the v41 retry
+  widening.** `ARCH-183`'s v41 amendment makes `network` retryable and extends the attempt deadline
+  over the body read (`call.ts:235-236,269,280`); `spend` stays per-attempt and is discarded on
+  `retry` (`call.ts:400`) — only the final attempt's cost reaches `PRIMITIVE_FAILED.detail` /
+  `pricePrimitiveCall` (`run-manager.ts:3451`). A 200-headers-then-reset-mid-body attempt (real
+  provider cost already incurred, confirmed billable per the guide's own new line,
+  `authoring-guide.ts:974-976`) that is then retried and succeeds leaves attempt 1's cost neither
+  priced nor flagged `unpriced` — effectively `$0` under a USD `budget`, which `INV-V40-5` forbids by
+  name. This interaction did not exist before v41 (network was not retryable at v40); the v40 Gate 8
+  r1 rationale this review checked it against (02-architecture.md:6914, "the only retryable outcomes
+  … carry no readable cost, so no earlier attempt has an observable charge to add") is the premise
+  v41's own change falsified, and no v41 decision-rationale text re-examined it (`02-architecture.md`
+  has no "Decision rationale — v41" section at all; the only v41 architecture text is the four
+  amendment paragraphs themselves). The panel's own recommended fix is accounting-only (mark the
+  earlier attempt's spend `unpriced`, no retry-policy change) — this is why the review treats it as a
+  contained, single-pass repair rather than a redesign, while still treating a named-invariant money
+  breach as blocking per house precedent.
+- **V41-A2 / R-1 (adversarial LOW + quality-dimensions MEDIUM, same underlying defect, converged) —
+  `ARCH-192`'s own v41 amendment text is false against the code it describes, and the vocabulary it
+  describes has no lock.** `02-architecture.md:6805` ("`AttemptReason` imported, not re-listed")
+  contradicts `run-manager.ts:656`, which hand-copies the 8-word vocabulary into a module-private
+  `ATTEMPT_REASONS` Set — not an import of a value `event-log.ts` doesn't even export. The same 8
+  words are separately hand-maintained in 5 places total (`event-log.ts:72` type union,
+  `run-manager.ts:656` Set, `authoring-guide.ts:908` `PRIMITIVE_FAILED_GRAMMAR`, `tool-specs.ts:797`
+  `run_status` description, `errors.ts:249` hint list) with exactly one regex lock (on the guide text
+  only). A 9th word added to the type compiles clean, every existing test stays green, and
+  `failureReason()` silently falls through to `'error'` — reproducing, with no red test, the exact
+  "two names" defect REQ-231 was opened to close. This is the same self-contradicting-architecture-
+  text class v40 Gate 8 r1 blocked on (`ARCH-185`/`INV-V40-7`), now on `ARCH-192`'s own v41 amendment,
+  plus a missing provenance test of the shape `ARCH-194` already prescribes (and already has, for
+  `ENGINE_REFUSAL_CODES`) for exactly this kind of closed-vocabulary-in-sync requirement.
+
+Both panels' remaining findings are genuine but each independently rated LOW, each a one-line/one-
+clause fix, none touching a named invariant: **O-1** (the non-`PRIMITIVE_FAILED` throw path's catch
+arm emits `errorCode:'PRIMITIVE_FAILED'` with no `reason`, three-surfaces-three-stories on an
+uncoded-throw edge only — `run-manager.ts:3272,3444`); **O-2** (a hung body forgets the `status`/
+`retry-after` it already had before classifying as `timeout` — `call.ts:235-236,251-254`); **O-3**
+(the `RWE_CLI_PATH_UNRESOLVED` import-time warning fires unconditionally, including on a
+`gateway:"pi"` host that never spawns the SDK CLI, and is undocumented in any operator doc —
+`claude-agent-sdk-client.ts:104-110`, `main.ts:30`); **C-1** (`run_agent_log`'s served text doesn't
+mention `failReason`/`detail`/`kind` although REQ-231 names it a surface — `tool-specs.ts:910-912`);
+**C-2** (a code comment advertises a `cliExecutable` "operator override" that `composeConfig()` does
+not wire — `claude-agent-sdk-client.ts:207`); **C-3** (`ARCH-187`/`DES-274` v41 text says
+`agentFailures.reason` is `failReason` verbatim; the code correctly excludes the inferred `'terminal'`
+— the doc is the stale side, `run-manager.ts:651`); **C-4** (`DES-267`'s classify table says an
+aborted attempt produces "no `failed` event"; the handler emits one and the v41 grammar now promises
+the script an `aborted` message nobody has shown actually reaching it — `call.ts:415-417`,
+`run-manager.ts:3272`, design-text + one unverified served claim); **A3** (adversarial LOW: a run stop
+during backoff throws an uncoded `AbortError` instead of a `primitiveFailedError('aborted', …)`, so
+the catch arm infers `'terminal'`/"internal error" instead of the one grammar word —
+`call.ts:429`,`57-61`; `run-manager.ts:268-269`); **A4** (no ARCH row owns the new gateway
+import-time/resolver behaviour — `ARCH-176` unchanged although
+`gateway/claude-agent-sdk-client.ts:53-110,208,1534` gained a resolver, a config field and an
+`options` key; acknowledged in 03-tasks.md/04-design.md as "no Gate 2 ran", recorded only in
+DES-280/IMPL-418). All seven routed to recorded debt (table below), not send-back — each independently
+re-checked against the actual code/text this round, not copied from the panel verdicts unexamined.
+
+**`arch_consistent: false`** (both panels said so, and this review's own escalation confirms two of
+the eight combined findings as blocking; the schema answer tracks the true "no", not the small size
+of the fix).
+
+### 3. Validation & handover
+
+Gate 7.5 (2026-10-19, validator) real-tier evidence confirmed independently: `REQ-227 in real`,
+`REQ-231 in real`, `REQ-232 in real` all `True` via `trace.analyze()` directly (not the printed gap
+list alone) — VAL-293/294/295 in `08-validation.md` (§"v41 Gate 7.5"), against a genuinely live
+OpenRouter (600+ real `decide()`/`agent()` primitive calls, 0 failures, plus a separate forced-timeout
+run producing 8 real deterministic timeouts and 8 matching real `retry`+`failed` event-log lines).
+`08-validation.md` present with full evidence. `README.md` + `DEPLOY.md` present, step-by-step,
+Traditional Chinese, `DEPLOY.md` §0 leads with the one-command `./deploy.sh --background` Gate 7.5
+actually ran (confirmed by the validator's own note: booted verbatim against a scratch workRoot
+outside the repo, production 8899 untouched). Config keys: DES-280 "no new config key" confirmed by
+Gate 7.5's own grep; this review independently re-grepped `README.md`/`DEPLOY.md` for
+`PRIMITIVE_FAILED`/`generateImage`/`decide(`/`RWE_CLI_PATH_UNRESOLVED` — no stale/superseded retry or
+primitive-grammar claims found (the existing `decide()`/`generateImage()` section predates v41 and is
+unchanged; `RWE_CLI_PATH_UNRESOLVED` has zero hits anywhere in the docs, which is O-3 above, not a new
+finding here). No history/changelog content found in the areas this iteration touches. **No
+REQ closes on mock-only evidence; no finding against Gate 7.5 this round.**
+
+### 4. Owner-deferral ledger sweep (issue #15)
+
+Mechanical sweep, fixed metadata key only:
+`grep -rnE "^[[:space:]]*-?[[:space:]]*\*{0,2}owner_decision\*{0,2}:\*{0,2}[[:space:]]*pending" .sdlc/features/001-remote-workflow-engine`
+→ **one hit, `07-review.md:11976`**, inside a quoted historical finding's own prose (`'DES-230's own
+marker … has read "answered 2026-09-21"'` — a citation, not a live marker). **Zero live pending
+markers. `owner_decisions: []`.** Spot-checked `02-architecture.md`'s v41 text for unmarked
+decision-shaped hedging ("product decision"/"not taken here" in any language, no `owner_decision`
+key): the "v41 candidates" list (`:6895`) is explicitly filed as candidates with reasons ("near the
+no-uptime/recommend ruling; need an owner ask before any build"), not a disguised deferral — no
+violation. Confirmed ADR-095 (the last live owner question, from v40) now reads
+`owner_decision: decided (2026-10-16, owner, OD-1 …)` — the stale "One owner_decision is pending:
+ADR-095" sentence v40 r2 flagged is no longer present in `02-architecture.md` (grep-confirmed zero
+hits); already resolved, not a new finding.
+
+### 5. Special-file review (3b)
+
+`06-impl-log.md`'s `files:` for IMPL-416..419 and `git status` both checked: no `CLAUDE.md`,
+`AGENTS.md` or `SKILL.md` touched this iteration. N/A, not degraded.
+
+### Known tech debt carried forward (recorded, not blocking)
+
+- The full pre-existing 77-gap baseline (15 HIGH `斷鏈` on `REQ-144..152/186`; 36 MID on
+  `REQ-153..169`/TDD-order; 26 LOW drift, dated v6–v28) — unchanged, byte-identical by type.
+- **NEW this round:** +24 LOW `漂移` rows (UT-343/351/352/353/355/356/358/359/365,
+  IT-309..315/317..322 vs. DES-267/273/274/276 bumped to `iter: v41`) — Gate 4's own disclosed,
+  expected test-drift; fold an iter re-stamp into the next touch of these 22 tests.
+- The 3 pre-existing `solid_check` HIGH + 10 LOW; the 5 `dashboard_check` HIGH SoT-link artifact + 8
+  MID erDiagram false positives + 1 LOW offline-fallback — all byte-identical to the v40 r2 baseline.
+- O-1, O-2, O-3, C-1, C-2, C-3, C-4, A3, A4 (see §2 above) — seven of nine remaining panel findings,
+  each a one-line/one-clause fix, none touching a named invariant.
+- O-3's twin: `DEPLOY.md` has zero mention of `RWE_CLI_PATH_UNRESOLVED` — add one line naming the code
+  and its meaning (fail-open to per-call `getReport`) next time this area is touched.
+- The "v41 candidates (filed so the next round starts from evidence, NOT actioned in v40)" heading at
+  `02-architecture.md:6895` is now itself stale — v41 ran and did not action any of them (breaker,
+  decision probe, per-run fairness, image+text output, Cloudflare/llama.cpp classifiers, fd-anchored
+  walk). Re-file as "v42 candidates" on next architecture touch.
+- `package-lock.json` carries an **uncommitted** working-tree diff against HEAD (pure reordering of
+  the 6 non-linux-x64 `@anthropic-ai/claude-agent-sdk-*` entries `ece9387` restored, plus npm's
+  `engines` mirror of `package.json`'s existing field) — confirmed by diffing the `node_modules/` keys
+  touched on each side (same 6 keys removed and re-added, same version/integrity). Almost certainly
+  produced by Gate 7.5's own `./deploy.sh` step-1 `npm install`. Not a content regression (no
+  package/version/integrity actually changed) — commit it (or re-run `npm install` once more and
+  commit the result) so the tree isn't left dirty across the close.
+- `evidence/v28/val215-issues-{dark,light}.png` modified in the working tree — pre-existing, a test
+  regenerates them (named debt since v37's closure).
+
+### Send-back
+
+**`send_back: ["architecture", "impl"]`.** Two findings escalated to blocking (V41-A1, V41-A2/R-1 —
+see §2 for full reasoning); the owning gates are architecture (reconcile `ARCH-183`/`ARCH-187` v41's
+"charge the last attempt only" rationale now that `network` is retryable; correct or retire
+`ARCH-192`'s "imported, not re-listed" claim) and impl (mark the unobservable earlier-attempt spend
+`unpriced` rather than silently dropped; export `ATTEMPT_REASONS` as the one runtime source of truth
+from `event-log.ts`, import the value in `run-manager.ts` only, add a provenance test of the
+`ENGINE_REFUSAL_CODES` shape). `arch_consistent: false`. `.panel/` is **left in place** (send_back is
+non-empty) for the repair round and the re-review.
+
+*Reviewer: Gate 8, 2026-10-19. Verified independently via `trace.py` as a library (not just the
+printed summary), `dashboard_check.py`/`solid_check.py`/`module_check.py` re-run fresh, both panel
+reports read in full and cross-checked against the actual `02-architecture.md`/`06-impl-log.md`/
+`src/*.ts` text they cite (not taken on their verdict alone — this is why two of their combined eight
+findings were escalated beyond the panels' own "nothing blocking" characterization), the mechanical
+`owner_decision` sweep re-run with the fixed-key regex, `git status`/`git diff` for blast-radius
+(package-lock.json, evidence PNGs, dashboard.html — all accounted for above), and a direct grep of
+`README.md`/`DEPLOY.md` for stale primitive/retry claims. Playwright browser tools are not present in
+this session — dashboard QA relied on the script check only (degraded, noted once per contract). No
+`git checkout`/`restore`/`stash` used. Edited only `07-review.md`/`state.yaml`/`journal.md` plus
+regenerating `dashboard.html`; `.panel/` left in place because `send_back` is non-empty.*
+
+## v41 GATE 8 RE-REVIEW #1 (2026-10-19, reviewer) — CLOSE, `send_back = []`, both round-1 blockers verified closed
+
+**Scope, per the re-review preamble: verify V41-A1 and V41-A2/R-1 are actually fixed on disk, not
+re-open the full Gate 8 scope.** The auto re-run executed `architecture` then `impl` once, per
+round 1's `send_back`. Both gates' own commits/notes are in `journal.md` ("2026-10-19 v41 Gate 2
+send-back repair" / "2026-10-19 v41b Gate 6 send-back repair"); verified independently below, not
+taken on the log's word.
+
+### 1. V41-A1 (INV-V40-5 money-undercounting on a retried-past-unobservable-attempt call) — CLOSED
+
+Read `src/direct-models/call.ts`, `src/run-guard.ts`, `src/run-manager.ts` diffs directly (`git diff`
+against the working tree, nothing checked out/restored/stashed). `runWithRetry` now accumulates
+`spends: FailedSpend[]` — one entry per DISPATCHED attempt, pushed before classification each loop
+iteration (`call.ts:~417`) — and returns/throws the whole list (`call.ts` success return, and
+`primitiveFailedError`'s last parameter is now `spends: FailedSpend[]`, not one `FailedSpend`). New
+pure fold `foldPrimitiveSpend` (`run-guard.ts`) prices EACH attempt via the unchanged
+`pricePrimitiveCall` ARCH-191 precedence and returns `costUSD = Σ(priced)`, `unpriced = OR(any
+absent)`, `tokens = Σ`, `costSource` = best tier reached; a missing/empty list folds as one `absent`
+attempt (`costUSD:0, unpriced:true`), never a known `$0`. `RunManager._priceAndChargePrimitive`
+(replaces `_chargeFailedPrimitive`) is now the ONE `addUsage` settle point for both success and
+failure in both `_handleDecideRequest`/`_handleImageRequest`.
+
+Ran the new/targeted tests myself (not trusted from the log): `npx vitest run
+tests/unit/attempt-reason-provenance.test.ts tests/unit/direct-models-call.test.ts
+tests/unit/primitive-pricing.test.ts tests/integration/primitive-spend-on-failure.test.ts` →
+**4 files / 71 tests, all green.** The load-bearing case is **IT-326** ("a call that retries past an
+unobservable attempt then succeeds settles `unpriced:true`") — network error with no readable cost,
+then a 200 with a reported cost: observed output confirms `attempt 1` emits `outcome:"retry"`,
+`reason:"network"`, `costUSD:null`, `costSource:"absent"`, and the terminal `outcome:"ok"` event
+carries `costUSD:0.4` (the one priced attempt's own cost, not summed against a guessed `$0`) — this is
+exactly the scenario V41-A1 named as silently dropped before the fix. `foldPrimitiveSpend`'s 6-case
+unit table (UT-377) and `call.ts`'s 4-case per-attempt-list test (UT-378) also green.
+
+`02-architecture.md`: ARCH-183/187 each carry a dated `amendment (v41b, 2026-10-19, Gate 8 r1
+V41-A1)` superseding the v40b "charge the last attempt only" rationale (the premise it rested on —
+"the only retryable outcomes carry no readable cost" — is explicitly named as falsified by v41's own
+`network`-retryable widening). `INV-V40-5`'s realization note is updated to read per-attempt. A new
+"Decision rationale — v41 Gate 8 r1 send-back repair" section records why the two-class rule (not
+quality-dimensions' proposed three-class split) was chosen, with the "known zero for a fully-read
+non-2xx" refinement correctly filed as a v42 candidate (needs an owner ask on V40-Q12), not snuck in.
+04-design.md's DES-267/273/274/276 carry matching v41b delta paragraphs. **Verified closed.**
+
+### 2. V41-A2/R-1 (ARCH-192's "imported, not re-listed" claim false; 5 hand-copies, 1 lock) — CLOSED
+
+`src/event-log.ts` now exports `ATTEMPT_REASONS` as an `as const` tuple (the one runtime value) and
+derives `AttemptReason` from it (`(typeof ATTEMPT_REASONS)[number]`) — confirmed by `git diff`.
+`run-manager.ts` deleted its module-private `ATTEMPT_REASONS` Set and value-imports the one from
+`event-log.ts` (an existing edge — it already value-imports `createEventSink` from the same module;
+`call.ts`/`types.ts` correctly keep `import type` only, per the sandbox-child `.js→.ts` value-import
+constraint this ledger has hit before). New `tests/unit/attempt-reason-provenance.test.ts` (UT-379,
+read in full) is a source-text regex lock over the four served copies — `errors.ts`'s
+`PRIMITIVE_FAILED` hint, `tool-specs.ts`'s `run_status` description, `authoring-guide.ts`'s
+`PRIMITIVE_FAILED_GRAMMAR`, and the generated `docs/AUTHORING.md` — asserting exact set equality
+(membership, not order) against `ATTEMPT_REASONS`. Ran it directly: **4/4 green.** This is the same
+shape as the pre-existing `ENGINE_REFUSAL_CODES ≡ RECORDED_REFUSAL_CODES` drift guard
+(`sandbox-refusal-provenance.test.ts`), now covering the attempt-reason vocabulary too.
+
+`02-architecture.md:6807-6808`: the false v41 sentence ("imported, not re-listed") is NOT deleted
+(this ledger's convention is to correct in place, dated) — it is immediately followed by a dated
+`amendment (v41b, 2026-10-19, Gate 8 r1 V41-A2/R-1 — corrects the line above, which was false as
+shipped)` that states the actual defect and the fix. Re-grepped for the literal string
+`"imported, not re-listed"` — exactly the one hit, inside the now-corrected context (confirmed above,
+not a second stale copy elsewhere). **Verified closed.**
+
+### 3. Re-ran every mechanical check myself (not re-opening the rest of the scope)
+
+- **`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`** (the repo's own vendored
+  trace.py — the authoritative one for this ledger, confirmed by diffing its `--help` against the
+  plugin's bundled copy; the plugin's newer trace.py parses this ledger's markers differently and is
+  NOT what gates close against): **2321 items / 101 gaps**, matching the repair round's own claimed
+  2316→2321 (only the 5 new work items — UT-377/378/379, IT-326, IMPL-420 — added; gap set otherwise
+  unchanged). Directly grepped the output for `REQ-227`/`REQ-231`/`REQ-232` — **zero hits**, confirming
+  none of the three fell into a 未驗證/未真實驗證 gap row after the repair.
+- **`dashboard_check.py`** (plugin 2.4.3, paired per this ledger's established practice since no local
+  copy exists): 5 high / 8 mid / 1 low — byte-identical to the v40 r2 / v41 r1 baseline (REQ-211..215
+  SoT-file-missing; 8 pre-dated `02-architecture.md` erDiagram bracket false positives; 1 low
+  no-offline-fallback). None of the v41b-touched files/lines appear.
+- **`solid_check.py`** (same plugin): 3 high / 0 mid / 10 low — byte-identical to the same baseline
+  (pre-existing `src/gateway` tool/declaration mismatches, 10 unclaimed files). None of
+  `call.ts`/`run-guard.ts`/`run-manager.ts`/`event-log.ts` appear.
+- **`npx tsc --noEmit` and `npx tsc --noEmit -p tsconfig.server.json`**: both exit 0, clean.
+- **Owner-deferral sweep**, re-run with the fixed-key regex: one substring hit, `07-review.md:11976`,
+  confirmed (again) to be quoted historical prose inside an old finding, not a live marker.
+  `owner_decisions: []`.
+- **Special-file review**: `git status` + `06-impl-log.md`'s IMPL-420 `files:` — no `CLAUDE.md`,
+  `AGENTS.md`, or `SKILL.md` touched this round (unchanged from round 1). N/A.
+- Playwright browser tools still not present in this session — dashboard QA is the script check only
+  (degraded, noted once per contract, same as round 1; not a finding on its own since the script check
+  is clean and unchanged).
+
+### 4. Not re-opened (per the re-review preamble)
+
+The seven round-1 recorded-debt items (O-1/O-2/O-3/C-1/C-2/C-3/C-4/A3/A4), the pre-existing 77-gap
+baseline, the `package-lock.json` working-tree diff, and the `evidence/v28` PNGs are **unchanged from
+round 1** — not re-verified line-by-line this pass (round 1 already did, and none of them bear on the
+two blockers this round closes). Carried forward as recorded debt, listed again below for continuity.
+
+**`arch_consistent: false`** — not because either blocker survived (both are closed, confirmed above),
+but because the 7 non-blocking panel findings from round 1 (none touching a named invariant, each a
+one-line/one-clause fix) are still live on disk, same convention this ledger used at v36 (non-blocking
+debt alone keeps the flag honest rather than letting a "nothing HIGH" read round up to "consistent").
+
+### 5. Validation & handover — unchanged, re-confirmed not stale
+
+`08-validation.md`, `README.md`, `DEPLOY.md` byte-unchanged since round 1 (confirmed: none appear in
+this round's `git diff --stat`). REQ-227/231/232 still `real:true` (re-confirmed via the gap-free grep
+above). No finding against Gate 7.5.
+
+### Recorded tech debt (not blocking, carried from round 1, unchanged)
+
+- The pre-existing 77-gap baseline (15 high `斷鏈` / 36 mid `未驗證`+TDD-order / 26 low, dated v6–v28)
+  plus the 24 low test-iter-drift rows (v40-era UT/IT vs DES-267/273/274/276 bumped to v41) — both
+  byte-identical to round 1.
+- `dashboard_check`/`solid_check`'s pre-existing high/mid/low rows — byte-identical to round 1.
+- O-1, O-2, O-3, C-1, C-2, C-3, C-4, A3, A4 — the seven round-1 non-blocking panel findings, unchanged.
+- `package-lock.json`'s uncommitted working-tree diff (pure reorder, almost certainly from Gate 7.5's
+  `npm install`) — still present; commit it next touch.
+- `evidence/v28/val215-issues-{dark,light}.png` — still modified in the working tree (pre-existing,
+  test-regenerated).
+- `02-architecture.md:6895`'s "v41 candidates" heading is stale (v41 did not action any of them) — fold
+  the rename to "v42 candidates" into the next architecture touch.
+
+### Conclusion
+
+**`send_back: []` — the iteration closes.** Both round-1 blocking findings (V41-A1, V41-A2/R-1) are
+verified closed on disk, with real passing tests exercising the exact scenario each named, both tsc
+configs clean, and the gap/dashboard/solid-check baselines byte-identical apart from the 5 new
+accounted-for work items. `blocking_findings: []`. `.panel/` removed below (send_back is empty).
+
+*Reviewer: Gate 8 re-review #1, 2026-10-19. Verified via direct `git diff` reads of every touched
+file (never trusting the journal's prose alone), running the 4 targeted test files myself (71/71
+green, including the exact IT-326 scenario V41-A1 named), both `tsc --noEmit` configs, the repo's own
+`sh .sdlc/trace --check` (2321/101, REQ-227/231/232 grep-confirmed absent from the gap list), and the
+plugin's `dashboard_check.py`/`solid_check.py` (byte-identical to the established baseline, paired per
+this ledger's precedent). No `git checkout`/`restore`/`stash` used. Edited only `07-review.md`/
+`state.yaml`/`journal.md`, regenerated `dashboard.html`, and removed `.panel/` (send_back is empty).*

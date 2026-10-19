@@ -57,6 +57,54 @@ export function pricePrimitiveCall(i: { wireCostUSD: number | null; tokens?: Tok
   return { absent: true };
 }
 
+export interface FoldedPrimitiveSpend { costUSD: number; unpriced: boolean; tokens: Tokens; costSource: 'reported' | 'estimated' | 'absent' }
+
+/** v41b (ARCH-187, Gate 8 r1 V41-A1, INV-V40-5 realization): the ONE pure fold a settling
+ *  decide()/generateImage() call runs through, win or fail — prices EACH dispatched attempt with
+ *  the SAME `pricePrimitiveCall` precedence a single call used to get once, and sums/ORs the
+ *  results: `costUSD` = Σ over the attempts that priced; `unpriced` = true iff ANY attempt priced
+ *  `absent` (one unobservable attempt makes the whole call's number a floor, never a quiet zero);
+ *  `tokens` = Σ; `costSource` is the best tier any attempt reached (`'reported'` if any did, else
+ *  `'estimated'` if any did, else `'absent'`) — note `unpriced`/`costSource` can now disagree: a
+ *  call that retried past an unobservable 429 and then succeeded is `unpriced:true` with
+ *  `costSource:'reported'|'estimated'` (the successful attempt's own tier), which is the correct,
+ *  deliberately conservative reading (ARCH-187 v41b's own "consequences" note).
+ *  A missing/empty attempt list — an uncoded throw that carries no `detail.spends` at all (e.g. a
+ *  run-stop abort during a backoff sleep) — folds as exactly ONE `absent` attempt: `{costUSD: 0,
+ *  unpriced: true, costSource: 'absent'}`, never a known `$0`. */
+export function foldPrimitiveSpend(
+  spends: { wireCostUSD: number | null; tokens?: Tokens }[] | undefined,
+  entry: BookEntry | undefined,
+  kind: PrimitiveKind,
+): FoldedPrimitiveSpend {
+  if (spends === undefined || spends.length === 0) {
+    return { costUSD: 0, unpriced: true, tokens: ZERO_TOKENS, costSource: 'absent' };
+  }
+  let costUSD = 0;
+  let unpriced = false;
+  let sawReported = false;
+  let sawEstimated = false;
+  const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const s of spends) {
+    const priced = pricePrimitiveCall({ wireCostUSD: s.wireCostUSD, tokens: s.tokens, entry, kind });
+    if ('absent' in priced) {
+      unpriced = true;
+    } else {
+      costUSD += priced.costUSD;
+      if (priced.source === 'reported') sawReported = true;
+      else sawEstimated = true;
+    }
+    if (s.tokens !== undefined) {
+      tokens.input += s.tokens.input;
+      tokens.output += s.tokens.output;
+      tokens.cacheRead += s.tokens.cacheRead;
+      tokens.cacheWrite += s.tokens.cacheWrite;
+    }
+  }
+  const costSource: FoldedPrimitiveSpend['costSource'] = sawReported ? 'reported' : sawEstimated ? 'estimated' : 'absent';
+  return { costUSD, unpriced, tokens, costSource };
+}
+
 /** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): pure — the "at rest" `RunUsage`
  *  producer, folded over one run's PERSISTED transcript events (every agent's, flattened). Never
  *  throws. Two column groups, two rules — the SAME split the LIVE fold (`foldUsageFromRecords`,
