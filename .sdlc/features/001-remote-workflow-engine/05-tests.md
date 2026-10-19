@@ -16717,11 +16717,11 @@ dod), `out/ig`≡`out/ig/`≡`./out/ig` key equivalence, key-order-independent `
 confirmed: module-not-found.
 
 ### UT-342 — `src/direct-models/call.ts`: fetch seam, classifyAttempt, backoffMs, toPiAiModel, runDecide/runImage
-- **status:** red
+- **status:** green
 - **traces:** DES-267, ARCH-183, ADR-087, ADR-088, ADR-089, ADR-093, TASK-263
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/unit/direct-models-call.test.ts` (new) + `tests/helpers/stub-fetch.ts` (new helper,
@@ -16744,13 +16744,16 @@ Red confirmed: module-not-found.
   New boundary-table/timer-clear/holdBody cases for this same delta are tracked separately as
   UT-371 (same file). Red confirmed: 2/2 edited cases fail for the stated reason (`retryable:false`/
   `"network after 1 attempt"` today).
+  - **Gate 6.5+7 (verifier):** GREEN. IMPL-416 landed; `classifyAttempt` now returns `retryable:true`
+    for `network`, confirmed by the full-suite own re-run (6368/6368 pass, 0 fail — includes this
+    file's full ~35-case set, not just the 2 edited cases).
 
 ### UT-371 — v41 REQ-227 delta (DES-267): body-read deadline reaches every body read, not just the headers; attempt timer cleared
-- **status:** red
+- **status:** green
 - **traces:** DES-267, ARCH-183, REQ-227, TASK-276
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/unit/direct-models-call.test.ts` (same file as UT-342, new describe block) +
@@ -16767,11 +16770,11 @@ AbortSignal (every `holdBody` case hangs past its own bound) and `attemptSignal`
 (both timer-leak cases see `vi.getTimerCount()===1`, not `0`).
 
 ### IT-323 — real undici abort-after-trailers race (#168 repro)
-- **status:** red
+- **status:** green
 - **traces:** DES-267, ARCH-183, REQ-227, TASK-276
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/integration/primitive-undici-abort-race.test.ts` (new). A real local `http.createServer`
@@ -17638,11 +17641,11 @@ RED on 80140b2:
 UT-371/IT-323 (TASK-276) are recorded above, directly beside the UT-342 delta they amend.
 
 ### UT-372 — a failed primitive carries `detail` (the script-visible message) live and after restart
-- **status:** red
+- **status:** green
 - **traces:** DES-273, DES-274, ARCH-192, REQ-231, TASK-277
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/unit/primitive-record-failed.test.ts` (same file as UT-358, new describe block).
@@ -17656,11 +17659,11 @@ never reads `r.detail` at all today, so it is `undefined` on both the live recor
 event, and the restart-derived record's `detail` likewise never matches the live one.
 
 ### IT-324 — decide()/generateImage() failure classes: script, run_agent_log, and agentFailures all name the same word+text
-- **status:** red
+- **status:** green
 - **traces:** DES-273, DES-274, ARCH-187, ARCH-192, REQ-231, TASK-277
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/integration/primitive-failure-surfaces.test.ts` (new). Traces REQ-231 DIRECTLY (not
@@ -17679,11 +17682,11 @@ non-aborted `failReason` to the generic `'error'`, and `recordPrimitive` never c
 `agentFailures[].message`/`.reason` never match the script's own `e.message`/word.
 
 ### UT-373 — `resolveCliExecutable` candidate table + `cliExecutable` config wiring
-- **status:** red
+- **status:** green
 - **traces:** DES-280, REQ-232, TASK-278
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/unit/claude-agent-sdk-gateway-cli-path.test.ts` (new). Pure `resolveCliExecutable`
@@ -17698,13 +17701,18 @@ call and have no stable identity to compare). Red confirmed: 7/8 fail — `resol
 not exist (module import fails for the 5 pure-table cases) and `cliExecutable` has no effect on
 `options` today (the "explicit string wins" case); the `cliExecutable:null` control case already
 passes (no-op today, as expected).
+- **Gate 6 delta (ruling R-v41-1, IMPL-418):** `seen` assertions edited to expect the `<pkg>/claude`
+  subpath (not the bare package name), the fall-through case's throw predicate changed to
+  `-x64/claude`, and one new case added that injects no fake resolver and asserts `CLI_EXECUTABLE`
+  resolves to an existing file under this repo's real `node_modules` — call-shape edits authorised
+  by the ruling, no assertion weakened. GREEN (full-suite own re-run, Gate 6.5+7).
 
 ### IT-325 — the SDK's own `process.report.getReport()` fallback is skipped once the CLI path is wired
-- **status:** red
+- **status:** green
 - **traces:** DES-280, REQ-232, TASK-278
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/integration/sdk-getreport-off-hot-path.test.ts` (new). The REAL `sdkQuery` export and
@@ -17720,11 +17728,11 @@ real-tier only (DES-280's own "mock policy"). Red confirmed: the "path set" case
 `cliExecutable:null` control case already passes (that path already exists today).
 
 ### UT-374 — v41 served text: grammar gains `aborted`, retried/not-retried sets, disconnected-image billing, run_status primitive-failure wording
-- **status:** red
+- **status:** green
 - **traces:** DES-276, ARCH-194, REQ-227, REQ-231, TASK-279
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/unit/authoring-guide.test.ts` (same file as UT-355, new describe block; also reads
@@ -17736,12 +17744,51 @@ the image billing sentence covers "timed-out OR disconnected" (not only timed-ou
 tool description names the primitive failure word for a `decide`/`image` `agentFailures` entry. Red
 confirmed: 4/4 fail — none of this text exists yet.
 
+### UT-375 — v41 Gate 6.5+7 coverage-gap closure: `readCapped`'s no-body branch + `untilAborted`'s entry-abort branch
+- **status:** green
+- **traces:** DES-267, ARCH-183, REQ-227, TASK-276
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v41
+
+File: `tests/unit/direct-models-call.test.ts` (new cases, `UT-342: makeObservedFetch` describe
+block). Written at Gate 6.5+7 after the coverage run found two genuine, reachable gaps in v41-new
+code: `readCapped`'s `!res.body` arm (a real no-body `Response`, e.g. a 204/HEAD-shaped reply — the
+`res.body === null` behaviour confirmed empirically against this repo's real Node first, not
+assumed) had 0 hits (every other case here has a stream body), and `untilAborted`'s own
+already-aborted-on-entry branch had 0 hits (every other case races a signal that is still live when
+`untilAborted` is invoked). Both deterministic, no timing/flake risk: the no-body case feeds
+`makeObservedFetch` a stub `fetch` resolving `new Response(null, ...)`; the entry-abort case's stub
+`fetch` aborts the SAME `AbortController` synchronously inside its own async-function body, before
+returning, so by the time `untilAborted(deps.fetch(...), signal)` runs its own `if (signal.aborted)`
+check it is already true. Confirmed green and confirmed to close the exact lines (coverage-final.json
+re-measured pre/post this pair: `readCapped` 90.9%→100%, `untilAborted` 87.0%→100%).
+
+### UT-376 — v41 Gate 6.5+7 coverage-gap closure: `detectMusl`'s catch arm
+- **status:** green
+- **traces:** DES-280, REQ-232, TASK-278
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v41
+
+File: `tests/unit/claude-agent-sdk-gateway-cli-path.test.ts` (new describe block). `detectMusl()`'s
+own `catch { return false; }` arm (`process.report.getReport()` disabled/throwing) had 0/2 lines hit
+— nothing in UT-373's pure candidate-table cases (which fake `musl` directly) or IT-325 (real host,
+real glibc, never throws) exercises it. `detectMusl` was module-private; exported for this one case
+only (pure testability export, no behaviour change — `04-design.md` DES-280 amended in place to
+match). `vi.spyOn(process.report!, 'getReport')` mocked to throw, `detectMusl()` called directly on
+this real (linux) host; the `platform !== 'linux'` early-return line was already covered by the real
+`CLI_EXECUTABLE` module-load path (this host IS linux), so only the catch arm needed a dedicated
+case. Confirmed green and confirmed to close the gap (77.8%→100%).
+
 ### VAL-290 — REQ-227 (v41 delta): network is retried; a hung body read still ends within bound
-- **status:** red
+- **status:** green
 - **traces:** REQ-227
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/acceptance/val-v41-nfr.test.ts` (new). Real MCP HTTP (`createServer`), exactly
@@ -17757,11 +17804,11 @@ of completing clean; (b) the run never settles (polling exhausts its budget) —
 own gap.
 
 ### VAL-291 — REQ-231: one failure word across the script, run_agent_log, and agentFailures (real MCP HTTP)
-- **status:** red
+- **status:** green
 - **traces:** REQ-231
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 File: `tests/acceptance/val-v41-nfr.test.ts` (same file as VAL-290). A network-exhausted `decide()`
@@ -17769,13 +17816,19 @@ over real MCP HTTP: the script's own caught `e.message`, `run_agent_log`'s retur
 `.failReason`, and `run_status.agentFailures[].message`/`.reason` must all agree. Red confirmed:
 `run_agent_log`'s `record.detail` is `undefined` (same gap as UT-372/IT-324, now proven over the
 real tool surface).
+- **Gate 5 test defect, fixed at Gate 6 (orchestrator, commit daa87e3):** the case read
+  `view.agentFailures`, but `run_status` nests the view under the `ResultEnvelope.result` key
+  (confirmed: `mcp-facade.ts`'s `runStatus` returns `ResultEnvelope<RunStatusView>`) — fixed to
+  `view.result.agentFailures`, matched by `label` (the entry's own `agentId` field was also
+  available and would have worked identically here; `label` reads more directly off the fixture).
+  No assertion weakened — confirmed by reading the diff. GREEN (full-suite own re-run, Gate 6.5+7).
 
 ### VAL-292 — REQ-232: native CLI path resolved once, passed on every query(); no other engine surface changes
-- **status:** red
+- **status:** green
 - **traces:** REQ-232
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v41
 
 REQ-232 has no ARCH row in this closure (TASK-278's own note: "no Gate 2 this iteration"), and its

@@ -86,7 +86,7 @@ export function resolveCliExecutable(d: {
 /** v41 (DES-280, REQ-232, TASK-278): mirrors the SDK's own `D6`/musl-detection — linux only;
  *  glibc's runtime report always carries `header.glibcVersionRuntime`, a musl runtime never does.
  *  Any throw (e.g. `process.report` disabled) reads as "not musl", never a crash at import time. */
-function detectMusl(): boolean {
+export function detectMusl(): boolean {
   if (process.platform !== 'linux') return false;
   try {
     const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: unknown } } | null;

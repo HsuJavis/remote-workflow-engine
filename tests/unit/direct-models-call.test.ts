@@ -153,6 +153,38 @@ describe('UT-342: makeObservedFetch (DES-267)', () => {
     await observed('https://openrouter.ai/api/v1/systemone').catch(() => {});
     expect(last()?.wireCostUSD).toBeNull();
   });
+
+  // Gate 6.5+7 (verifier, coverage-gap closure): `readCapped`'s `!res.body` branch (a real
+  // no-body `Response`, e.g. a 204 or a HEAD-shaped reply) had 0 hits — every other case here goes
+  // through the `res.body.getReader()` path. Confirmed empirically first (`new Response(null,
+  // ...)`'s own `.body` really is `null` under this repo's real Node version, not assumed).
+  it('a 2xx response with no body stream (res.body === null) still completes via arrayBuffer()', async () => {
+    const noBodyFetch = (async () => new Response(null, { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const { fetch: observed, last } = makeObservedFetch({ fetch: noBodyFetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES, new AbortController().signal);
+    await observed('https://openrouter.ai/api/v1/systemone');
+    expect(last()?.invoked).toBe(true);
+    expect(last()?.truncated).toBe(false);
+  });
+
+  // Gate 6.5+7 (verifier, coverage-gap closure): `untilAborted`'s own already-aborted-on-entry
+  // branch (`if (signal.aborted) { onAbort?.(); return Promise.reject(...); }`) had 0 hits — every
+  // other case races a signal that is still live when `untilAborted` is called. Deterministic, not
+  // timing-dependent: the stub `fetch` aborts the SAME AbortController `makeObservedFetch` was given
+  // synchronously, inside its own async-function body, before returning — by the time
+  // `untilAborted(deps.fetch(...), signal)` runs its own `if (signal.aborted)` check, it is already
+  // true, so the response the stub resolves to is never read at all (`status` stays `undefined` on
+  // the recorded seam — the same shape an entirely-failed fetch leaves, per this function's own
+  // `catch` arm, confirmed by reading it rather than assumed).
+  it('a signal aborted synchronously inside fetch() rejects without ever reading the response (untilAborted entry-abort branch)', async () => {
+    const ctrl = new AbortController();
+    const abortingFetch = (async () => {
+      ctrl.abort();
+      return new Response(new TextEncoder().encode('{}'), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const { fetch: observed, last } = makeObservedFetch({ fetch: abortingFetch, now: () => Date.now() }, MAX_DECIDE_RESPONSE_BYTES, ctrl.signal);
+    await expect(observed('https://openrouter.ai/api/v1/systemone')).rejects.toThrow(/aborted/i);
+    expect(last()?.status).toBeUndefined();
+  });
 });
 
 // --- runDecide/runImage integration cases (real pi-ai codec), exactly TASK-263's dod enumeration ---

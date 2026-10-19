@@ -139,3 +139,24 @@ describe('UT-373: CLI_EXECUTABLE resolves for real on this host (DES-280, R-v41-
     expect(existsSync(CLI_EXECUTABLE!)).toBe(true);
   });
 });
+
+// Gate 6.5+7 (verifier, coverage-gap closure): `detectMusl()`'s own `catch { return false; }` arm
+// (process.report.getReport() disabled/throwing) had 0/2 lines hit — nothing in UT-373's pure
+// candidate-table cases (which fake `musl` directly) or IT-325 (real host, real glibc, never
+// throws) ever exercises it. Mocks `process.report.getReport` to throw, calls the now-exported
+// `detectMusl()` directly on this real (linux) host — the `platform !== 'linux'` early-return line
+// is already covered by the real CLI_EXECUTABLE module-load path above (this host IS linux), so
+// only the catch arm needed a dedicated case.
+describe('UT-373: detectMusl() catch arm (DES-280, Gate 6.5+7)', () => {
+  it('process.report.getReport() throwing reads as "not musl", never a crash', async () => {
+    const { detectMusl } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const spy = vi.spyOn(process.report!, 'getReport').mockImplementation(() => {
+      throw new Error('simulated — process.report disabled');
+    });
+    try {
+      expect(detectMusl()).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

@@ -10952,13 +10952,14 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **commit:** 8a340f1
 - **iter:** v41
 - **note:** REQ-231 sits on this IMPL, not on TASK-277: TASK-277 leaves it off on purpose so v40 IMPLs that share DES-274 do not count as REQ-231 coverage, and this IMPL is v41-only code. Open test defect, not fixed here because it is outside the authorised edit list: VAL-291 (tests/acceptance/val-v41-nfr.test.ts:96) reads `view.agentFailures`, but MCP `run_status` returns the run under `result` (precedent: val-234-agent-failure-health.test.ts:69 reads `statusView.result?.failedAgentCount`). A debug copy of the test printed `result.agentFailures=[{label:'gate',agentId:'agent-1',reason:'network',message:"decide 'gate' failed: network after 1 attempt"}]`. That message equals the script's `e.message` and `run_agent_log.record.detail`, so the code meets REQ-231. Fix: read `view.result.agentFailures`. IT-324 reads `RunManager.status()` directly, with no envelope, so it is correct as written.
+- **v41 Gate 6.5+7 amendment (2026-10-19, verifier):** VAL-291 fixed by the orchestrator in the same Gate-6 commit (daa87e3) — read-path only (`view.agentFailures` -> `view.result.agentFailures`), no assertion weakened; confirmed by diff. gates.impl flipped to `passed:true`. No longer an open defect.
 
 ### IMPL-418 — v41 TASK-278: SDK gateway resolves the native CLI path once and passes `pathToClaudeCodeExecutable` on every query(); subpath resolution per R-v41-1
 - **status:** done
 - **traces:** TASK-278, DES-280
 - **greens:** UT-373, IT-325
 - **files:** src/gateway/claude-agent-sdk-client.ts, tests/unit/claude-agent-sdk-gateway-cli-path.test.ts
-- **commit:** 8a340f1 + (uncommitted at write time)
+- **commit:** 8a340f1, daa87e3
 - **iter:** v41
 - **note:** Integrator fix per ruling R-v41-1: `resolveCliExecutable` hands `resolve` the subpath spec `<pkg>/claude[.exe]` and uses its return as the candidate. The bare-package form threw MODULE_NOT_FOUND on every real host, so the constant was always `undefined` and the fix was inert. `CLI_EXECUTABLE` is exported. UT-373 edits, as authorised: the `seen` assertions now expect the subpath, and the fall-through case's throw predicate is `-x64/claude`. One new case injects no fake resolver and asserts that `CLI_EXECUTABLE` is an existing file under the repo's `node_modules`. On this host it resolves to `node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude`. DES-280 has a v41 Gate 6 delta line. IT-325's committed edit is type-only (`MockInstance`).
 
@@ -10967,5 +10968,5 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **traces:** TASK-279, DES-276
 - **greens:** UT-374
 - **files:** src/authoring-guide.ts, src/tool-specs.ts, docs/AUTHORING.md
-- **commit:** 8a340f1 + (uncommitted docs/AUTHORING.md, regenerated via `npm run gen:authoring`)
+- **commit:** 8a340f1, daa87e3 (docs/AUTHORING.md regenerated via `npm run gen:authoring`, committed in daa87e3)
 - **iter:** v41

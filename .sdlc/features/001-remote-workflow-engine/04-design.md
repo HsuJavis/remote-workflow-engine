@@ -10958,7 +10958,10 @@ Gate 7.5 engine (attempt count in the `primitive.call` lines); OD-1 → a real `
   // module scope, beside SDK_VERSION (one getReport at most, at import, never per call)
   const CLI_EXECUTABLE: string | undefined = resolveCliExecutable({ platform: process.platform, arch: process.arch,
     musl: detectMusl(), resolve: createRequire(<resolved SDK main entry, as resolveSdkVersion>).resolve, exists: existsSync });
-  function detectMusl(): boolean;   // linux only: process.report.getReport().header.glibcVersionRuntime === undefined; other platforms false; any throw → false
+  export function detectMusl(): boolean;   // linux only: process.report.getReport().header.glibcVersionRuntime === undefined; other platforms false; any throw → false
+  // v41 Gate 6.5+7 delta (verifier, coverage-gap closure): exported (was module-private) so a UT can
+  // drive the catch arm directly (mocking `process.report.getReport` to throw) without resetModules —
+  // no behaviour change, pure testability export, same precedent as `resolveCliExecutable`.
   ClaudeAgentSdkGatewayConfig.cliExecutable?: string | null;   // undefined → CLI_EXECUTABLE; string → it; null → leave the SDK's own lookup
   ```
 - **candidates (the SDK 0.3.199 `lI` order, `P = '@anthropic-ai/claude-agent-sdk'`, `x = platform==='win32' ? '.exe' : ''`):** android → `P-linux-<arch>-android`; linux & musl → `P-linux-<arch>-musl`, `P-linux-<arch>`; linux & !musl → `P-linux-<arch>`, `P-linux-<arch>-musl`; else `P-<platform>-<arch>`; each `+ '/claude' + x`. First candidate whose `resolve()` does not throw AND `exists()` is true wins; none → `undefined`. `detectMusl` is only evaluated on linux.
