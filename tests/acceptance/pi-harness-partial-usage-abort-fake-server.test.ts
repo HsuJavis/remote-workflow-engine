@@ -73,8 +73,10 @@ describe('pi harness v1 — a real child aborted mid-turn after an early provide
       signal: ac.signal,
       onUsage: (t) => liveUsage.push(t),
     });
-    // Give the real child time to actually receive and parse the early usage chunk before suspending.
-    await new Promise((r) => setTimeout(r, 2000));
+    // Abort only once the real child has received and forwarded the early usage chunk. A fixed wait
+    // (it was 2 s) is shorter than a cold child's pi import on a loaded host, and the abort then
+    // landed before any usage existed.
+    for (let i = 0; i < 300 && liveUsage.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
     ac.abort();
     const result = await promise;
 
