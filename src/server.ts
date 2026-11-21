@@ -1786,6 +1786,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // self-update rescue path. Loopback-bound servers are excluded (no non-loopback peers possible).
     // Tunnel/forwarded headers → NEVER exempt (D-AUTH-3 cloudflared-on-loopback hole).
     const dbindExempt = isLoopbackPeer(req.socket?.remoteAddress, req.headers) && !isLoopback(bind);
+    // A loopback peer that PRESENTS a bearer on /mcp asked to be identified, so it goes through the
+    // ordinary auth gate and gets its own id-bearing principal (a co-located worker's service account
+    // can then own, read and watch its runs). Only a loopback peer with NO Authorization header keeps
+    // the identity-less rescue path. A bad bearer is a 401, never a silent fall back to the exemption.
+    const mcpExempt = dbindExempt && req.headers.authorization === undefined;
     // v37 (DES-262, ARCH-181, REQ-218): "remote" for the confinement door is the caller's raw socket
     // peer, period — NOT `dbindExempt` (which additionally requires a non-loopback `bind` and is
     // false on a loopback bind even though the peer genuinely IS loopback) and NOT `Principal.kind`
@@ -2224,7 +2229,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         return;
       }
       // Auth gate for /mcp (DES-096: headers-only before readBodyDecoded)
-      if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
+      if (!mcpExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
           if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res, p.principal, 'POST /mcp'); return; }
