@@ -29,6 +29,12 @@ import { WebhookRegistry, WEBHOOK_HEADERS } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace, casNamespaceFor } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
+import {
+  ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, META_SUBSCRIPTION_ID, MODERN_PROTOCOL_VERSIONS, LEGACY_PROTOCOL_VERSIONS, SSE_KEEPALIVE, TASK_POLL_INTERVAL_MS, TOOLS_LIST_CACHE,
+  clientDeclaresTasks, completeResult, discoverResult, isModernRequest, isTerminalTask, missingTasksCapability, negotiateLegacyVersion,
+  requestedTaskIds, sseEvent, taskOfRun, validateModernRequest, wantsRunAsTask,
+} from './mcp-modern.js';
+import type { McpRefusal, RunStatusLike, TaskView } from './mcp-modern.js';
 import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
 import { deriveExpectedGraph } from './skeleton-graph.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
@@ -271,7 +277,7 @@ interface JsonRpcRequest {
   jsonrpc: '2.0';
   id: unknown;
   method: string;
-  params?: { name?: string; arguments?: Record<string, unknown> };
+  params?: { name?: string; arguments?: Record<string, unknown>; taskId?: unknown; protocolVersion?: unknown; _meta?: unknown; notifications?: unknown };
 }
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -1225,6 +1231,151 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     const bytes = Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(guideResult) }] }));
     return `${ENVELOPE_NOTE} workflow_authoring_guide is ~${bytes} bytes.`;
   }
+  // MCP 2026-07-28 (stateless revision), dual-era: ONE dispatcher for both /mcp entry points (the
+  // auth-gated one and the auth-disabled / loopback-exempt one), which used to carry two copies of
+  // the same method ladder. A handshake-era client (`initialize`, no per-request version) gets
+  // exactly the answers it got before; a modern client (protocol version in `params._meta`) gets
+  // the rules in mcp-modern.ts. `principal` is a thunk because building it has a side effect (the
+  // known-principals ledger) that a bare notification never triggered.
+  /** How often an open `subscriptions/listen` stream looks at its runs. In-process, so cheap. */
+  const LISTEN_CHECK_MS = 100;
+  const LISTEN_KEEPALIVE_MS = 15_000;
+  async function handleMcpRpc(req: IncomingMessage, res: ServerResponse, rpc: JsonRpcRequest, principal: () => Principal, isRemoteSubmission: boolean): Promise<void> {
+    const serverInfo = { name: 'remote-workflow-engine', version: ENGINE_VERSION };
+    const modern = isModernRequest(req.headers, rpc);
+    const refuse = (r: McpRefusal): void => sendJson(res, r.status, { jsonrpc: '2.0', id: rpc.id ?? null, error: r.error });
+    if (modern) {
+      const bad = validateModernRequest(req.headers, rpc);
+      if (bad) { refuse(bad); return; }
+    }
+    const ok = (result: Record<string, unknown>): void =>
+      sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: modern ? completeResult(result, serverInfo) : result });
+    const webhookBaseUrl = resolvePublicBaseUrl(req);
+    const method = typeof rpc.method === 'string' ? rpc.method : '';
+
+    if (method === 'initialize') {
+      const instructions = await buildInitializeInstructions(webhookBaseUrl, principal());
+      // The reply names a handshake-era revision this server really speaks. It used to echo
+      // whatever the client sent, which claimed support for revisions (2026-07-28 included) whose
+      // rules this handshake path does not follow.
+      sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: negotiateLegacyVersion(rpc.params?.protocolVersion), capabilities: { tools: {} }, serverInfo, instructions } });
+      return;
+    }
+    if (method.startsWith('notifications/')) { res.writeHead(202).end(); return; }
+    if (method === 'server/discover') {
+      ok(discoverResult(await buildInitializeInstructions(webhookBaseUrl, principal())));
+      return;
+    }
+    // `ping` left the protocol in 2026-07-28; a handshake-era client still gets its answer.
+    if (method === 'ping' && !modern) { sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: {} }); return; }
+    if (method === 'tools/list') {
+      ok(modern ? { tools: projectToolsList(), ...TOOLS_LIST_CACHE } : { tools: projectToolsList() });
+      return;
+    }
+    if (method === 'tools/call') {
+      const name = rpc.params?.name ?? '';
+      const args = rpc.params?.arguments ?? {};
+      const result = await callTool(buildToolDeps(webhookBaseUrl, isRemoteSubmission), name, args, principal());
+      // v24 (DES-140): the ONE case that lifts to a top-level JSON-RPC `error` — every other
+      // outcome (schema/authz refusal, a handler's own envelope) is wrapped in `result.content`.
+      if (result && typeof result === 'object' && 'error' in result && typeof (result as { error?: { code?: unknown } }).error?.code === 'number') {
+        sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: (result as { error: { code: number; message: string } }).error }); return;
+      }
+      // Tasks extension: a started run IS the task (its id is the run id). Only for a client that
+      // declared the extension AND asked for it on this call; everyone else gets the envelope.
+      if (modern && name === 'run_start' && wantsRunAsTask(rpc)) {
+        const env = result as { runId?: unknown; error?: unknown; result?: { runId?: unknown } } | null;
+        const runId = env?.result?.runId ?? env?.runId;
+        if (typeof runId === 'string' && runId !== '' && !env?.error) {
+          const now = new Date().toISOString();
+          ok({ resultType: 'task', taskId: runId, status: 'working', createdAt: now, lastUpdatedAt: now, ttlMs: null, pollIntervalMs: TASK_POLL_INTERVAL_MS });
+          return;
+        }
+      }
+      ok({ content: [{ type: 'text', text: JSON.stringify(result) }] });
+      return;
+    }
+
+    if (modern && (method === 'tasks/get' || method === 'tasks/cancel' || method === 'tasks/update' || method === 'subscriptions/listen')) {
+      const who = principal();
+      const deps = buildToolDeps(webhookBaseUrl, isRemoteSubmission);
+      // Every task read goes through the SAME run_status / run_result tools a plain client calls,
+      // so the authorization decision is theirs: a run the caller may not see is "not found".
+      const readTask = async (taskId: string): Promise<TaskView | null> => {
+        const st = await callTool(deps, 'run_status', { runId: taskId }, who) as { error?: unknown; result?: RunStatusLike } | null;
+        if (!st || st.error || !st.result) return null;
+        const ended = st.result.status === 'completed' || st.result.status === 'failed';
+        return taskOfRun(taskId, st.result, new Date(), ended ? await callTool(deps, 'run_result', { runId: taskId }, who) : undefined);
+      };
+      const taskId = typeof rpc.params?.taskId === 'string' ? rpc.params.taskId : '';
+      const notFound = (verb: string): void => refuse({ status: 200, error: { code: ERR_INVALID_PARAMS, message: `Failed to ${verb} task: Task not found` } });
+
+      if (method !== 'subscriptions/listen' && !clientDeclaresTasks(rpc)) { refuse(missingTasksCapability()); return; }
+      if (method === 'tasks/get') {
+        const task = await readTask(taskId);
+        if (!task) { notFound('retrieve'); return; }
+        ok({ ...task });
+        return;
+      }
+      if (method === 'tasks/cancel') {
+        if (!(await readTask(taskId))) { notFound('cancel'); return; }
+        // Cooperative, as the extension says: an already-ended run answers ILLEGAL_TRANSITION, which is not the caller's problem.
+        await callTool(deps, 'run_stop', { runId: taskId }, who);
+        ok({});
+        return;
+      }
+      if (method === 'tasks/update') {
+        // A run never asks its starter for input, so there is nothing to update; an existing task acknowledges.
+        if (!(await readTask(taskId))) { notFound('update'); return; }
+        ok({});
+        return;
+      }
+
+      // subscriptions/listen: the only notifications this server has are task (run) status changes.
+      const wanted = requestedTaskIds(rpc);
+      if (wanted.length > 0 && !clientDeclaresTasks(rpc)) { refuse(missingTasksCapability()); return; }
+      const pending = new Set<string>();
+      for (const id of wanted) if (await readTask(id)) pending.add(id);
+      const subscription = { [META_SUBSCRIPTION_ID]: rpc.id };
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      // MUST be the first message; it names only what this server agreed to deliver.
+      res.write(sseEvent({ jsonrpc: '2.0', method: 'notifications/subscriptions/acknowledged', params: { _meta: subscription, notifications: pending.size > 0 ? { taskIds: [...pending] } : {} } }));
+      let closed = false;
+      const keepalive = setInterval(() => { if (!closed) res.write(SSE_KEEPALIVE); }, LISTEN_KEEPALIVE_MS);
+      keepalive.unref();
+      req.on('close', () => { closed = true; });
+      res.on('close', () => { closed = true; });
+      try {
+        while (!closed && pending.size > 0) {
+          for (const id of [...pending]) {
+            const task = await readTask(id);
+            // A run that disappeared (deleted, access revoked) ends its part of the subscription silently.
+            if (!task) { pending.delete(id); continue; }
+            if (!isTerminalTask(task.status)) continue;
+            pending.delete(id);
+            if (!closed) res.write(sseEvent({ jsonrpc: '2.0', method: 'notifications/tasks', params: { ...task, _meta: subscription } }));
+          }
+          if (pending.size > 0) await new Promise((resolve) => setTimeout(resolve, LISTEN_CHECK_MS));
+        }
+        // Nothing left to say: a successful response is the graceful end of the stream.
+        if (!closed) res.write(sseEvent({ jsonrpc: '2.0', id: rpc.id, result: completeResult({ _meta: subscription }, serverInfo) }));
+      } catch {
+        // The stream is already open, so there is no JSON error left to send: ending it without the
+        // final response is what the spec calls an unexpected disconnect, and the client may listen again.
+      } finally {
+        clearInterval(keepalive);
+        if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
+    if (modern) {
+      // 2026-07-28: an unimplemented method is HTTP 404 with -32601. `initialize` never gets here (it is always the handshake era).
+      refuse({ status: 404, error: { code: ERR_METHOD_NOT_FOUND, message: `Method not found: ${method}`, data: { supported: [...MODERN_PROTOCOL_VERSIONS, ...LEGACY_PROTOCOL_VERSIONS] } } });
+      return;
+    }
+    sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
+  }
   // v24 (DES-140, ARCH-089): `Principal` built ONCE per request from `resolvePrincipal` +
   // `authEnabled` + `isLoopbackPeer` — the three shapes ARCH-088 defines.
   // Dashboard auth spec §A2: the role is read from the role store on EVERY request (config admin
@@ -2086,35 +2237,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
               return;
             }
             try {
-              if (rpc.method === 'initialize') {
-                const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
-                const webhookBaseUrl = resolvePublicBaseUrl(req);
-                const instructions = await buildInitializeInstructions(webhookBaseUrl, principalFor(p.principal));
-                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: clientProto ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION }, instructions } });
-                return;
-              }
-              if (rpc.method === 'notifications/initialized' || rpc.method?.startsWith('notifications/')) {
-                res.writeHead(202).end(); return;
-              }
-              if (rpc.method === 'ping') { sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: {} }); return; }
-              if (rpc.method === 'tools/list') {
-                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { tools: projectToolsList() } }); return;
-              }
-              if (rpc.method === 'tools/call') {
-                const name = rpc.params?.name ?? '';
-                const args = rpc.params?.arguments ?? {};
-                const webhookBaseUrl = resolvePublicBaseUrl(req);
-                const principal: Principal = principalFor(p.principal);
-                const result = await callTool(buildToolDeps(webhookBaseUrl, isRemoteSubmission), name, args, principal);
-                // v24 (DES-140): the ONE case that lifts to a top-level JSON-RPC `error` — every
-                // other outcome (schema/authz refusal, a handler's own envelope) is wrapped in
-                // `result.content` like before.
-                if (result && typeof result === 'object' && 'error' in result && typeof (result as { error?: { code?: unknown } }).error?.code === 'number') {
-                  sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: (result as { error: { code: number; message: string } }).error }); return;
-                }
-                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }); return;
-              }
-              sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
+              await handleMcpRpc(req, res, rpc, () => principalFor(p.principal), isRemoteSubmission);
             } catch (err) {
               // Issue #166 decision 3: this is the OUTER catch around the whole `callTool(...)`
               // dispatch — every tool handler already scrubs its OWN uncoded/INTERNAL_ERROR
@@ -2308,6 +2431,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       });
       return;
     }
+    // MCP 2026-07-28: there is no GET stream and no session to DELETE; both are 405 (it was a 404).
+    if ((req.method === 'GET' || req.method === 'DELETE') && (req.url ?? '').split('?')[0] === '/mcp') {
+      res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'POST' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Method Not Allowed: this endpoint takes POST only' } }));
+      return;
+    }
     if (req.method !== 'POST' || !req.url?.startsWith('/mcp')) {
       sendJson(res, 404, { jsonrpc: '2.0', id: null, error: { code: -32601, message: 'Not found' } });
       return;
@@ -2321,54 +2450,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         return;
       }
       try {
-        // MCP lifecycle handshake (spec-required before a compliant client will call tools).
-        if (rpc.method === 'initialize') {
-          const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
-          const initWebhookBaseUrl = resolvePublicBaseUrl(req);
-          const initPrincipal: Principal = authCfg ? { kind: 'loopback-exempt' } : { kind: 'auth-disabled' };
-          const instructions = await buildInitializeInstructions(initWebhookBaseUrl, initPrincipal);
-          sendJson(res, 200, {
-            jsonrpc: '2.0',
-            id: rpc.id,
-            result: {
-              protocolVersion: clientProto ?? '2025-06-18',
-              capabilities: { tools: {} },
-              serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION },
-              instructions,
-            },
-          });
-          return;
-        }
-        // Notifications carry no id and expect no JSON-RPC response body — just ack the POST.
-        if (rpc.method === 'notifications/initialized' || rpc.method?.startsWith('notifications/')) {
-          res.writeHead(202).end();
-          return;
-        }
-        if (rpc.method === 'ping') {
-          sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: {} });
-          return;
-        }
-        if (rpc.method === 'tools/list') {
-          sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { tools: projectToolsList() } });
-          return;
-        }
-        if (rpc.method === 'tools/call') {
-          const name = rpc.params?.name ?? '';
-          const args = rpc.params?.arguments ?? {};
-          const webhookBaseUrl = resolvePublicBaseUrl(req);
-          // v24 (ARCH-088): this fallback handler serves BOTH auth-disabled AND a loopback-exempt
-          // peer on an auth-ENABLED server (dbindExempt skipped the auth-gated block above) — the
-          // two are distinct Principal kinds even though neither carries an id.
-          const principal: Principal = authCfg ? { kind: 'loopback-exempt' } : { kind: 'auth-disabled' };
-          const result = await callTool(buildToolDeps(webhookBaseUrl, isRemoteSubmission), name, args, principal);
-          if (result && typeof result === 'object' && 'error' in result && typeof (result as { error?: { code?: unknown } }).error?.code === 'number') {
-            sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: (result as { error: { code: number; message: string } }).error });
-            return;
-          }
-          sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
-          return;
-        }
-        sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
+        // v24 (ARCH-088): this fallback handler serves BOTH auth-disabled AND a loopback-exempt
+        // peer on an auth-ENABLED server (dbindExempt skipped the auth-gated block above) — the
+        // two are distinct Principal kinds even though neither carries an id.
+        await handleMcpRpc(req, res, rpc, () => (authCfg ? { kind: 'loopback-exempt' } : { kind: 'auth-disabled' }), isRemoteSubmission);
       } catch (err) {
         // Issue #166 decision 3: the auth-disabled/loopback-exempt twin of the outer catch above —
         // same reasoning, same central scrub.

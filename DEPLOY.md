@@ -20,6 +20,17 @@ RFC 7591 動態用戶端註冊、authorization-code + PKCE、OAuth2 `state`/`iss
 per-run principal attribution、D-BIND fail-closed（非 loopback 來源無有效 bearer → 401）。
 完整鍵值見下方 §1b 設定總表。
 
+MCP 協定版本：`/mcp` 同時服務兩代客戶端。以 `initialize` 開場的客戶端走握手版協定（2025-11-25、
+2025-06-18、2025-03-26、2024-11-05；要求其他版本時回 2025-11-25）。每個請求在 `params._meta` 自帶
+協定版本的客戶端走 **2026-07-28（無狀態版）**：不需握手、沒有 session；提供 `server/discover`；
+`MCP-Protocol-Version`／`Mcp-Method`／`Mcp-Name` 標頭必須與 body 一致（不一致回 HTTP 400 `-32020`，
+版本不支援回 HTTP 400 `-32022`，未實作的方法回 HTTP 404 `-32601`）；`GET`／`DELETE /mcp` 回 405。
+2026-07-28 另提供 tasks 擴充（`io.modelcontextprotocol/tasks`）：客戶端宣告該擴充、並在
+`run_start` 呼叫的 `_meta` 帶 `com.remote-workflow-engine/runAsTask: true` 時，回傳的是 task
+（task id 即 run id），可用 `tasks/get`／`tasks/cancel` 操作，或用 `subscriptions/listen`
+（`notifications.taskIds`）開一條 SSE 串流，run 結束時引擎主動推送 `notifications/tasks`
+（含 `run_result` 的內容與 `run_status` 的檢視），不必輪詢。實作在 `src/mcp-modern.ts`。
+
 
 ## §0 一鍵部署 One-command Deploy
 
