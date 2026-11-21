@@ -51,7 +51,7 @@ afterEach(async () => {
   for (const f of cleanup.splice(0).reverse()) await f();
 });
 
-async function setup(extra: { timeoutMs?: number } = {}) {
+async function setup(extra: { timeoutMs?: number; maxKeptSessions?: number } = {}) {
   const fake = await startServer();
   cleanup.push(() => new Promise((r) => fake.server.close(() => r())));
   const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-keep-'));
@@ -66,6 +66,7 @@ async function setup(extra: { timeoutMs?: number } = {}) {
   const gw = new PiGatewayClient({
     secretSource: { resolve: () => 'fake-key' }, timeoutMs: extra.timeoutMs ?? 30_000, retries: 0,
     openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`, spawnChild: spawnSpy,
+    ...(extra.maxKeptSessions !== undefined ? { maxKeptSessions: extra.maxKeptSessions } : {}),
   });
   gw.bindEventSink((e) => events.push(e));
   cleanup.push(() => gw.stop());
@@ -171,6 +172,22 @@ describe('pi gateway keepSession', () => {
     expect(after.r.ok).toBe(true);
     expect(t.fake.bodies.at(-1)).not.toContain('FIRST-PROMPT');
     expect(after.harness[0]?.keptSession).toEqual({ turn: 1 });
+  }, 60_000);
+
+  it('beyond the cap a keepSession call runs on its own, and the open ones carry on', async () => {
+    const t = await setup({ maxKeptSessions: 2 });
+    await t.call('A-FIRST', { label: 'a' });
+    await t.call('B-FIRST', { label: 'b' });
+    const c = await t.call('C-FIRST', { label: 'c' });
+    expect(c.r.ok).toBe(true);
+    expect(c.harness[0]?.keptSession).toBeUndefined();
+    expect(t.sessionEvents().at(-1)).toMatchObject({ outcome: 'bypassed', label: 'c' });
+    await t.call('A-SECOND', { label: 'a' });
+    expect(t.fake.bodies.at(-1)).toContain('A-FIRST');
+    // Ending the run frees the slots.
+    t.gw.endRun('run-1');
+    const again = await t.call('C-AGAIN', { label: 'c' });
+    expect(again.harness[0]?.keptSession).toEqual({ turn: 1 });
   }, 60_000);
 
   it('the direct gateway refuses keepSession instead of answering without the earlier turns', async () => {

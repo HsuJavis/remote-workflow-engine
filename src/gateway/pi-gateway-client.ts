@@ -526,6 +526,8 @@ export interface PiGatewayConfig {
    *  topped up after every take), never at construction. Omitted or 0 -> every dispatch spawns its
    *  own child, as before. */
   warmPool?: number;
+  /** How many `keepSession` conversations may be open at once; omitted -> MAX_KEPT_SESSIONS. */
+  maxKeptSessions?: number;
 }
 
 /** One spawned pi child plus what was fixed at its spawn. `agentDir` is the child's own: pi freezes
@@ -543,6 +545,9 @@ interface PiChildHandle {
 /** How long a kept conversation may sit idle before it is closed even though its run has not ended
  *  (a backstop: the run's own end is what normally closes it). */
 const KEPT_SESSION_IDLE_MS = 10 * 60_000;
+/** At most this many `keepSession` conversations stay open at once (each is an idle node process,
+ *  outside the agent concurrency limit). Beyond it a `keepSession` call runs on its own. */
+const MAX_KEPT_SESSIONS = 16;
 /** After stdin closes, how long a kept child gets to dispose and exit before it is killed. */
 const KEPT_SESSION_EXIT_GRACE_MS = 5_000;
 
@@ -643,6 +648,9 @@ export class PiGatewayClient implements GatewayClient {
       }
     });
     child.once('error', () => { handle.exited = true; });
+    // A child that dies before (or while) we write to it turns that write into an EPIPE 'error' on
+    // its stdin; unhandled, that would take this whole process down. The exit is what reports it.
+    child.stdin?.on('error', () => { handle.exited = true; });
     return handle;
   }
 
@@ -734,8 +742,10 @@ export class PiGatewayClient implements GatewayClient {
       const key = `${req.runId}\u0000${keepLabel}`;
       const fingerprint = keepFingerprint(req, workspace);
       const open = this._sessions.get(key);
-      if (this._opening.has(key) || open?.busy === true) {
-        this._eventSink({ kind: 'agent.pi_session', runId: req.runId, agentId: req.agentId, label: keepLabel, outcome: 'bypassed', turn: open?.turns ?? 0 });
+      const cap = this._config.maxKeptSessions ?? MAX_KEPT_SESSIONS;
+      const full = open === undefined && this._sessions.size + this._opening.size >= cap;
+      if (this._opening.has(key) || open?.busy === true || full) {
+        this._eventSink({ kind: 'agent.pi_session', runId: req.runId, agentId: req.agentId, label: keepLabel, outcome: 'bypassed', turn: open?.turns ?? 0, reason: full ? `${cap} conversations are already open` : 'the conversation is busy' });
       } else {
         if (open !== undefined && (open.fingerprint !== fingerprint || open.handle.exited)) {
           this._closeSession(open, 'dropped', open.handle.exited ? 'its child exited' : 'this call has different settings');

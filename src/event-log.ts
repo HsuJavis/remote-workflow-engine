@@ -63,7 +63,7 @@ export type EngineEvent =
   // `keepSession`: a label's kept pi conversation was opened, continued, dropped (its turn failed,
   // timed out or was aborted, or its settings changed — the next call starts afresh) or closed (the
   // run ended or was suspended, it sat idle too long, or the engine stopped). `turn` is how many
-  // turns it had completed. `bypassed`: it was busy, so this call ran on its own.
+  // turns it had completed. `bypassed`: it was busy, or too many were open, so this call ran on its own.
   | { kind: 'agent.pi_session'; runId: string; agentId?: string; label: string; outcome: 'opened' | 'continued' | 'dropped' | 'closed' | 'bypassed'; turn: number; reason?: string }
   // v40 (DES-264, ARCH-194/192/190, TASK-260): one line per decide()/generateImage() attempt — the
   // engine's own retry-loop record, never the provider body/prompt/questions/state (INV-V40-3; no
