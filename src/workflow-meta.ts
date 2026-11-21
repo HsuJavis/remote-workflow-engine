@@ -16,6 +16,12 @@ export interface WorkflowMeta {
   phases: Array<{ title: string }>;
 }
 
+/** Wall-clock bound on evaluating a meta object literal. The literal is already proven pure by
+ *  `checkMeta`, so this is only a backstop; it must be generous, because the clock also counts time
+ *  the process spends descheduled. At 50 ms a busy host timed out here and a valid script was refused
+ *  as if it declared no meta (PHASES_REQUIRED on a script that does declare phases). */
+const META_EVAL_TIMEOUT_MS = 1000;
+
 /** Extracts {description, phases} from a script's `export const meta = {…}` block. The meta object is
  *  already a validated PURE LITERAL (checkMeta.pureLiteral) — no calls/vars/spreads/templates — so
  *  evaluating it in an empty, timeout-bounded VM context is side-effect-free. Missing/impure/odd meta
@@ -26,7 +32,7 @@ export function parseMeta(script: string): WorkflowMeta {
   if (!m.found || !m.pureLiteral || !m.objectText) return empty;
   let obj: unknown;
   try {
-    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: META_EVAL_TIMEOUT_MS });
   } catch {
     return empty;
   }
@@ -58,7 +64,7 @@ function rawMetaPhases(script: string):
   if (!m.found || !m.pureLiteral || m.objectText === undefined) return { declared: false };
   let obj: unknown;
   try {
-    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: META_EVAL_TIMEOUT_MS });
   } catch {
     return { declared: false };
   }
@@ -194,7 +200,7 @@ export function parseMetaParams(
   }
   let obj: unknown;
   try {
-    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: META_EVAL_TIMEOUT_MS });
   } catch {
     return parseParamContract(undefined, labels, catalog, primitiveLabels);
   }

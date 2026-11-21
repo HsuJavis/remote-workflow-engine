@@ -349,8 +349,15 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
 // never up to 20.
 describe('v28: GET /api/system serves up to 20 process rows, not 5 (IT-171, ARCH-135)', () => {
   it('process.topN.length can exceed 5 (bounded at 20), and the source carries no ?topN= derivation', async () => {
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);
-    const body = await res.json() as { process: { topN: unknown[] } };
+    // The sampler gives /proc 150 ms and serves an EMPTY topN when that runs out (degraded:
+    // 'timeout') — by design, and it does happen while the full suite loads the host. That answer
+    // says nothing about the slice size, so ask again until a real process table comes back.
+    let body = { process: { topN: [] as unknown[] } };
+    for (let attempt = 0; attempt < 40 && body.process.topN.length === 0; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 250));
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);
+      body = await res.json() as { process: { topN: unknown[] } };
+    }
     expect(body.process.topN.length).toBeLessThanOrEqual(20);
     // This host must genuinely have more than 5 processes for the assertion above to be
     // non-vacuous — true of any real dev/CI machine (measured: this environment reports 300+).
