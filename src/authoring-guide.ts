@@ -1056,6 +1056,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'literal booleans `true`/`false` (valid JSON Schema on their own) are both accepted here, and ' +
         'a NON-literal `schema` value — a variable, a function call building the schema at runtime ' +
         '— registers successfully and is left entirely to that same dispatch-time ajv check.\n' +
+        '  `keepSession: true` (pi harness only) keeps that label\'s conversation open until the run ' +
+        'ends: a later call with the SAME label, also `keepSession: true`, and the same model, ' +
+        'effort, tools, bash mode, MCP servers and skills, continues it, its prompt arriving as the ' +
+        'next user turn with the earlier turns still in context. A call made while that ' +
+        'conversation is busy (a `parallel()` sibling) runs on its own; a turn that fails, times ' +
+        'out or is aborted drops the conversation; suspend or resume starts afresh. Earlier turns ' +
+        'are re-sent every turn, so input tokens grow. Other gateways refuse it ' +
+        '(`SESSION_KEEP_UNSUPPORTED_BY_HARNESS`).\n' +
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +

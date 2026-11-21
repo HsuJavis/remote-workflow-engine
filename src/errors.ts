@@ -128,6 +128,9 @@ export const ERROR_CATALOG = {
   // pi harness v1 (spec "Tool mapping"): an agent declares a tool the pi harness has no mapping for
   // (WebFetch, WebSearch, Task, NotebookEdit, or any other name outside Read/Write/Edit/Bash/Grep/
   // Glob/LS) — refused at registration AND dispatch, never silently dropped from the tool surface.
+  // `keepSession` (AgentOpts): only the pi gateway can keep a conversation open between calls; the
+  // others refuse it at dispatch rather than answer without the earlier turns.
+  SESSION_KEEP_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'keepSession needs the pi harness (gateway:"pi"); on this engine drop keepSession and pass what the agent needs from earlier calls in its prompt' },
   TOOL_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this tool has no mapping under the pi harness (gateway:"pi") — only Read/Write/Edit/Bash/Grep/Glob/LS are supported; declare a supported tool or switch this engine back to gateway:"sdk"' },
   // pi harness v1 (spec "Skills"): pi only lists a skill in its system prompt when the tool set
   // includes `read` or `bash` (pi's own system-prompt.js: skillFileReadTool = ["read","bash"].find(...)

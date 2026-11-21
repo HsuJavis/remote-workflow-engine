@@ -35,6 +35,11 @@ export interface PiChildConfig {
    *  is never used this dispatch — computing it costs one cheap mkdir and keeps this field
    *  unconditional, matching `agentDir`'s own shape. */
   tmpDir: string;
+  /** `keepSession`: after the first prompt's `final`/`error`, stay up with the SAME session and keep
+   *  reading stdin — each further line is a `PiChildPromptLine`, run as the next user turn with the
+   *  earlier turns in context; stdin EOF ends the session and the child exits. Absent -> one prompt,
+   *  then exit (unchanged). */
+  keep?: boolean;
   /** Full-control ResourceLoader's system prompt — the engine supplies it; pi's own default/context-
    *  file discovery is never reached. */
   systemPrompt: string;
@@ -126,6 +131,12 @@ export interface PiChildSandboxConfig {
  *  map directly onto `message.role === 'assistant'` events from pi's own `session.subscribe()` —
  *  filtered to assistant-only here (pi-spike-report.md design change 8: `message_end` fires for
  *  EVERY message role, not just assistant). */
+/** A later turn of a kept session (`PiChildConfig.keep`), one JSON line on stdin. */
+export interface PiChildPromptLine {
+  t: 'prompt';
+  prompt: string;
+}
+
 export type PiChildEvent =
   | { t: 'ready' }
   | { t: 'message_end'; seq: number; text: string; usage: Tokens; stopReason: string }

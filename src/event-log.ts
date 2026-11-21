@@ -57,6 +57,14 @@ export type EngineEvent =
   // closed, so both gateways share one event shape (`host-shared-tmpdir.ts`'s
   // `hostSharedTmpdirPresent()`), not a pi-only line any more.
   | { kind: 'agent.host_shared_tmpdir_present'; runId: string; agentId: string; attempt: number; path: string }
+  // One line per pi dispatch attempt: whether it got a child started ahead of time (`warm`, already
+  // past pi's import) or had to spawn its own. Lets an operator read the warm pool's hit rate.
+  | { kind: 'agent.pi_child'; runId: string; agentId: string; attempt: number; warm: boolean }
+  // `keepSession`: a label's kept pi conversation was opened, continued, dropped (its turn failed,
+  // timed out or was aborted, or its settings changed — the next call starts afresh) or closed (the
+  // run ended or was suspended, it sat idle too long, or the engine stopped). `turn` is how many
+  // turns it had completed. `bypassed`: it was busy, so this call ran on its own.
+  | { kind: 'agent.pi_session'; runId: string; agentId?: string; label: string; outcome: 'opened' | 'continued' | 'dropped' | 'closed' | 'bypassed'; turn: number; reason?: string }
   // v40 (DES-264, ARCH-194/192/190, TASK-260): one line per decide()/generateImage() attempt — the
   // engine's own retry-loop record, never the provider body/prompt/questions/state (INV-V40-3; no
   // field here may hold any of those). `attempt` is 0 only on a pre-flight refusal (no dispatch).

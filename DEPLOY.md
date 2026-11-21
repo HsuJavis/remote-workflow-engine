@@ -31,6 +31,12 @@ MCP 協定版本：`/mcp` 同時服務兩代客戶端。以 `initialize` 開場�
 （`notifications.taskIds`）開一條 SSE 串流，run 結束時引擎主動推送 `notifications/tasks`
 （含 `run_result` 的內容與 `run_status` 的檢視），不必輪詢。實作在 `src/mcp-modern.ts`。
 
+pi 預熱池（`gateway: "pi"`）：引擎事先啟動幾個 pi 子行程，讓它們先載入 pi（每個約 1.1 秒），派工時直接
+拿一個用，不必等載入。預設 4 個；環境變數 `RWE_PI_WARM_POOL` 可改（0–16，0 為關閉）。每次派工在事件
+日誌留一行 `agent.pi_child`（`warm: true` 表示用到預熱的子行程）。agent 選項 `keepSession: true` 讓同一
+個 run、同一個 label 的對話延續到 run 結束（事件 `agent.pi_session`）；其他 gateway 會拒絕
+（`SESSION_KEEP_UNSUPPORTED_BY_HARNESS`）。
+
 
 ## §0 一鍵部署 One-command Deploy
 

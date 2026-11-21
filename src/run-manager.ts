@@ -2200,6 +2200,11 @@ export class RunManager {
     const from = entry.status;
     entry.status = to;
     await this._store.recordTransition(runId, from, to, this._clock.isoNow());
+    // Conversations a gateway keeps open across this run's calls (`keepSession`) end with the run,
+    // and with a suspend too: a resumed run starts them afresh.
+    if (TERMINAL.includes(to) || to === 'suspended') {
+      try { this._gateway.endRun?.(runId); } catch { /* releasing is best-effort; never blocks a transition */ }
+    }
     // v8 REQ-055: persist a one-shot DAG snapshot at the terminal transition (covers failed/stopped,
     // not only completed) so a composite run's nested tree/phases/agent-frames survive a restart.
     if (TERMINAL.includes(to)) {

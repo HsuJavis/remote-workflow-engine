@@ -383,7 +383,7 @@ const LOCKED_PARAM_KEYS = new Set<string>(TUNABLE_KEYS);
  *  reason: this ledger has now recorded one-directional vocabulary drift four times. */
 const AGENT_OPT_KEYS: Record<keyof AgentOpts | 'prompt', true> = {
   prompt: true, label: true, phase: true, schema: true, model: true, effort: true,
-  timeoutMs: true, isolation: true, mcp: true, allowedTools: true, bash: true,
+  timeoutMs: true, isolation: true, mcp: true, allowedTools: true, bash: true, keepSession: true,
 };
 
 /** v34 (DES-224, ARCH-138, TASK-229, REQ-203): agent() options keys that USED to work and now

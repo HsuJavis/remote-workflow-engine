@@ -965,6 +965,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
      *  model (ARCH-116) — threaded by the executor when it wires the pin (out of this task's scope);
      *  absent -> UNKNOWN_CAPS, `wireEffort`'s documented fail-safe branch. */
     caps?: Caps }): Promise<GatewayResult> {
+    // `keepSession` promises the earlier turns of this label are in context; this gateway starts a
+    // fresh CLI session per call, so it refuses rather than answer without them.
+    if (req.opts.keepSession === true) {
+      return { ok: false, provider: 'claude-agent-sdk', transport: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: 'SESSION_KEEP_UNSUPPORTED_BY_HARNESS: keepSession needs the pi harness (gateway:"pi"); this engine dispatches through the Claude Agent SDK, which starts every call afresh' };
+    }
     // D-F7: bounded race only when a timeout is in effect — otherwise unchanged legacy behavior (a
     // single unbounded attempt). issue #24/#22: a per-call AgentOpts.timeoutMs counts as "in effect"
     // even when the gateway has no configured default, so a config-less gateway still bounds+retries

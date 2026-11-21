@@ -599,7 +599,14 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
  *  abort). Never throws for a provider/session failure — those become `{t:'error'}`/`{t:'fatal'}`
  *  events so entry.ts's wire protocol stays uniform; a thrown error here means a programming defect,
  *  not a dispatch failure. */
-export async function runPiChildSession(config: PiChildConfig, emit: (event: PiChildEvent) => void, deps: SessionDeps): Promise<void> {
+export async function runPiChildSession(
+  config: PiChildConfig,
+  emit: (event: PiChildEvent) => void,
+  deps: SessionDeps,
+  /** A kept session's next prompt (`config.keep`), or undefined when the session should end. Absent
+   *  -> one prompt, as before. */
+  nextPrompt?: () => Promise<string | undefined>,
+): Promise<void> {
   // review B4: `PI_CODING_AGENT_DIR` (which redirects pi's OWN `getAgentDir()`/`getBinDir()`, used by
   // `ensureTool` — independently of the `agentDir` SDK option passed to `createAgentSession` further
   // down; the two are not the same seam) is set on the CHILD'S ENV AT SPAWN TIME
@@ -753,29 +760,34 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     emit({ t: 'message_end', seq, text, usage, stopReason: msg.stopReason });
   });
 
-  try {
-    await session.prompt(config.prompt);
-  } catch (err) {
-    emit({ t: 'error', message: err instanceof Error ? err.message : String(err) });
-    session.dispose();
-    await resetSandboxManager();
-    return;
-  }
+  // One user turn: ends in exactly one `error` or one `final` event. Returns whether it succeeded.
+  const runTurn = async (prompt: string): Promise<boolean> => {
+    erroredOut = false;
+    try {
+      await session.prompt(prompt);
+    } catch (err) {
+      emit({ t: 'error', message: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+    if (erroredOut) return false;
+    const last = session.getLastAssistantText?.();
+    emit({
+      t: 'final',
+      seq,
+      text: last ?? '',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, // the parent sums message_end usage; this is a text-only convenience field
+      stopReason: 'stop',
+    });
+    return true;
+  };
 
-  if (erroredOut) {
-    session.dispose();
-    await resetSandboxManager();
-    return;
+  // A failed turn ends a kept session too: the parent drops a conversation whose turn failed, so
+  // there is nothing left to wait for.
+  if ((await runTurn(config.prompt)) && nextPrompt !== undefined) {
+    for (let next = await nextPrompt(); next !== undefined; next = await nextPrompt()) {
+      if (!(await runTurn(next))) break;
+    }
   }
-
-  const last = session.getLastAssistantText?.();
-  emit({
-    t: 'final',
-    seq,
-    text: last ?? '',
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, // the parent sums message_end usage; this is a text-only convenience field
-    stopReason: 'stop',
-  });
   session.dispose();
   await resetSandboxManager();
 }

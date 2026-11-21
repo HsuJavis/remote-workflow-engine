@@ -268,6 +268,17 @@ export interface AgentOpts {
    *  (`BASH_READONLY_UNENFORCEABLE`) instead of running a writable shell. Absent = the normal
    *  (workspace-writable) Bash. Author-locked: registration checks the literal, `LOCKED_KEYS` has it. */
   bash?: 'readonly';
+  /** Keep this agent's conversation open until the run ends. A later `agent()` call in the SAME run
+   *  with the SAME label, also carrying `keepSession: true`, and the same model, effort, tools, bash
+   *  mode, MCP servers and skills, continues that conversation: its prompt arrives as the next user
+   *  turn with every earlier turn of that label still in context, in the same already-started pi
+   *  child. A call made while that conversation is busy (a `parallel()` sibling) runs on its own; a
+   *  conversation whose turn failed, timed out or was aborted is dropped, and the next call starts a
+   *  new one. Every conversation ends with the run (completed, failed, stopped or suspended), so a
+   *  resumed run starts afresh. Earlier turns are re-sent each turn: input tokens grow per turn.
+   *  pi harness only; the other gateways refuse it (SESSION_KEEP_UNSUPPORTED_BY_HARNESS) rather than
+   *  silently answering without the earlier turns. */
+  keepSession?: boolean;
 }
 
 /** v40 (DES-264, ARCH-194/192/190, TASK-260): the two engine-owned primitives alongside agent() —
@@ -923,6 +934,10 @@ export interface HarnessDescriptor {
    *  a declared MCP server was not `connected` at init, or none of its tools were in the init tool
    *  list (the model could not use it on turn 1). Absent when there are none. */
   warnings?: HarnessWarning[];
+  /** `keepSession`: which turn of this label's kept conversation this call was (1 = it opened the
+   *  conversation; 2+ = it continued one, with the earlier turns in context). Absent on an ordinary
+   *  call, and on a `keepSession` call that had to run on its own. */
+  keptSession?: { turn: number };
 }
 
 /** Issue #106: see `HarnessDescriptor.mcpStatus`. */

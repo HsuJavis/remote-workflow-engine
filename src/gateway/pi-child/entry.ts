@@ -16,7 +16,7 @@ import { isPathContained, resolveLanding } from '../../path-containment.ts';
 import { resolveRipgrepOverride } from './ripgrep-override.ts';
 import { runPiPathProbe } from './pi-path-probe.ts';
 import { createStdoutFlusher } from './stdout-flusher.ts';
-import type { PiChildConfig, PiChildEvent } from './protocol.ts';
+import type { PiChildConfig, PiChildEvent, PiChildPromptLine } from './protocol.ts';
 
 // Composition, per the "rwe sandbox child .ts imports" memory note: session-runner.ts (which gets
 // full tsc coverage, unlike this file) cannot import these two directly — each is reached through a
@@ -99,12 +99,20 @@ async function main(): Promise<void> {
     await runProbe();
     return;
   }
+  // Lines are queued as they arrive: the first is the config; a kept session (`config.keep`) reads
+  // one more line per turn until stdin closes.
   const rl = createInterface({ input: process.stdin });
-  const firstLine = await new Promise<string | undefined>((resolve) => {
-    rl.once('line', (line) => resolve(line));
-    rl.once('close', () => resolve(undefined));
-  });
-  rl.close();
+  const queued: string[] = [];
+  let stdinClosed = false;
+  let wake: (() => void) | undefined;
+  rl.on('line', (line) => { queued.push(line); wake?.(); });
+  rl.once('close', () => { stdinClosed = true; wake?.(); });
+  const nextLine = async (): Promise<string | undefined> => {
+    while (queued.length === 0 && !stdinClosed) await new Promise<void>((resolve) => { wake = resolve; });
+    wake = undefined;
+    return queued.shift();
+  };
+  const firstLine = await nextLine();
   if (firstLine === undefined) {
     await emitAndFlush({ t: 'fatal', message: 'INTERNAL_ERROR: pi child received no config on stdin' });
     process.exit(1);
@@ -116,9 +124,31 @@ async function main(): Promise<void> {
     await emitAndFlush({ t: 'fatal', message: `INTERNAL_ERROR: pi child could not parse its own config: ${err instanceof Error ? err.message : String(err)}` });
     process.exit(1);
   }
+  if (config.keep !== true) rl.close();
+  // A child started ahead of its dispatch (the gateway's warm pool) was spawned in its own agentDir,
+  // not in the run workspace; enter the workspace now, so it runs exactly where a child spawned for
+  // this dispatch would have (for a child that was, this is a no-op).
+  try {
+    process.chdir(config.cwd);
+  } catch (err) {
+    await emitAndFlush({ t: 'fatal', message: `INTERNAL_ERROR: pi child cannot enter its workspace: ${err instanceof Error ? err.message : String(err)}` });
+    process.exit(1);
+  }
+  // A kept session's later turns: each stdin line `{t:'prompt', prompt}`; EOF (or a malformed line)
+  // ends the session.
+  const nextPrompt = async (): Promise<string | undefined> => {
+    const line = await nextLine();
+    if (line === undefined) return undefined;
+    try {
+      const msg = JSON.parse(line) as Partial<PiChildPromptLine>;
+      return msg.t === 'prompt' && typeof msg.prompt === 'string' ? msg.prompt : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   emit({ t: 'ready' });
   try {
-    await runPiChildSession(config, emit, deps);
+    await runPiChildSession(config, emit, deps, config.keep === true ? nextPrompt : undefined);
   } catch (err) {
     // A throw here is a programming defect inside session-runner.ts (it is documented to convert
     // every dispatch-shaped failure into an {t:'error'} event itself) — surfaced as 'fatal' so the

@@ -48,6 +48,13 @@ import { normalizeSeedRefAllowlist, assertHttpsAllowlist } from './seedref-egres
 import { assertPositiveInteger } from './config-numeric.js';
 import { isEffort } from './params/contract.js';
 
+/** Size of the pi gateway's warm pool: `RWE_PI_WARM_POOL` when it is a whole number 0-16, else 4. */
+export function piWarmPoolSize(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return 4;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 16 ? n : 4;
+}
+
 // pi harness v1 owner decision 2: the closed provider set the pi harness supports — never
 // 'anthropic' (no Anthropic subscription token/API key is used under pi). Exported so the wiring
 // test and any other reader can assert against the SAME literal rather than a re-typed copy.
@@ -735,6 +742,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // the sdk path's nested-bwrap probe. Every existing test call site omits it, so this gateway
       // falls back to its own 'unconfined'-shaped default (no `confinementPosture` set at all).
       ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
+      // pi children started ahead of demand (~1.1 s of pi import each, paid before a dispatch needs
+      // it). RWE_PI_WARM_POOL overrides the size; 0 turns it off.
+      warmPool: piWarmPoolSize(process.env['RWE_PI_WARM_POOL']),
     });
   } else if (gatewayChoice === 'sdk') {
     // Same managed LiteLLM proxy subprocess the direct-fetch path can opt into (D-R1) — started

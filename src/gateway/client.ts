@@ -257,6 +257,10 @@ export interface GatewayClient {
    *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model.
    *  `applied` (DES-106 / TASK-102): the same `EffortApplied` object `wireEffort` computed, when any
    *  effort directive was requested — recorded ≡ applied by object identity, never a re-lookup. */
+  /** The run has ended (completed, failed, stopped) or was suspended: release anything held for it
+   *  across calls (the pi gateway's `keepSession` conversations). Optional; a gateway that holds
+   *  nothing between calls does not implement it. */
+  endRun?(runId: string): void;
   invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
     /** v24 (ARCH-103/DES-154, TASK-145): this label's declared skill/mcp asset names + the asset
      *  store's two scope roots — only `ClaudeAgentSdkGatewayClient` consumes it (selective
@@ -563,6 +567,10 @@ export class LiteLLMGatewayClient implements GatewayClient {
      *  dropped in silence by structural typing: `AgentExecutor` always sent it). Absent -> `wireEffort`'s
      *  fail-safe (`UNKNOWN_CAPS`), same as the SDK transport. */
     caps?: Caps }): Promise<GatewayResult> {
+    // `keepSession` promises the earlier turns of this label are in context; a direct call has none.
+    if (req.opts.keepSession === true) {
+      return { ok: false, provider: 'unknown', transport: 'direct-fetch', reason: 'terminal', retryable: false, detail: 'SESSION_KEEP_UNSUPPORTED_BY_HARNESS: keepSession needs the pi harness (gateway:"pi"); this gateway sends every call on its own' };
+    }
     // 2026-09-26 (alias mechanism removed, rule 3): no `?? 'default'` fallback — `req.opts.model` is
     // the run's admission-resolved full ref and is never absent by the time a call reaches here
     // (admission refuses any label with no resolved model); an absent one at THIS point is an

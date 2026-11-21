@@ -14,7 +14,9 @@
 // in this iteration's evidence. Not supported at all (refused, never silently dropped): WebFetch/
 // WebSearch/Task/NotebookEdit tools, anthropic/* models, a Claude subscription token.
 import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import type { Interface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { readFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync, lstatSync } from 'node:fs';
@@ -29,7 +31,7 @@ import { buildBashConfinement, readonlyBashRefusal, HOST_SHARED_TMPDIR, sharedCl
 import { hostSharedTmpdirPresent } from './host-shared-tmpdir.js';
 import { sweepSrtMuxSockets } from './srt-mux-sweep.js';
 import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
-import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-child/protocol.js';
+import type { PiChildConfig, PiChildEvent, PiChildPromptLine, PiChildSandboxConfig } from './pi-child/protocol.js';
 import type { EventSink } from '../event-log.js';
 import { PI_HARNESS_VERSION } from '../harness-info.js';
 import { materializeAssets, summarizeMcpInit } from './claude-agent-sdk-client.js';
@@ -518,6 +520,77 @@ export interface PiGatewayConfig {
    *  `https://openrouter.ai/api/v1` so the request shape (model id, tools, `reasoning.effort`) can
    *  be verified with no real OpenRouter key. Omitted -> the real OpenRouter endpoint. */
   openrouterBaseUrl?: string;
+  /** How many pi children to keep started ahead of demand. A child spends ~1.1 s importing pi before
+   *  it can read its config, and that import does not depend on the dispatch, so a child started
+   *  early has already paid it when a dispatch takes it. Filled lazily (on the first dispatch, then
+   *  topped up after every take), never at construction. Omitted or 0 -> every dispatch spawns its
+   *  own child, as before. */
+  warmPool?: number;
+}
+
+/** One spawned pi child plus what was fixed at its spawn. `agentDir` is the child's own: pi freezes
+ *  `PI_CODING_AGENT_DIR` when its modules load (see `buildChildEnv`), so a child started ahead of its
+ *  dispatch must carry the directory it was born with, and that dispatch uses it. */
+interface PiChildHandle {
+  child: ChildProcess;
+  agentDir: string;
+  /** Last 4 KiB of stderr since spawn (a warm child may have written some while it waited). */
+  stderr: { tail: string };
+  exited: boolean;
+  taken: boolean;
+}
+
+/** How long a kept conversation may sit idle before it is closed even though its run has not ended
+ *  (a backstop: the run's own end is what normally closes it). */
+const KEPT_SESSION_IDLE_MS = 10 * 60_000;
+/** After stdin closes, how long a kept child gets to dispose and exit before it is killed. */
+const KEPT_SESSION_EXIT_GRACE_MS = 5_000;
+
+/** One `keepSession` conversation: a pi child kept running between calls of the same run + label. */
+interface PiKeptSession {
+  key: string;
+  runId: string;
+  label: string;
+  /** What a later call must match to continue it (model, effort, tools, bash, assets, workspace). */
+  fingerprint: string;
+  handle: PiChildHandle;
+  rl: Interface;
+  /** Routes the child's stdout lines to the turn in flight; unset between turns. */
+  onLine?: (line: string) => void;
+  /** Called by the turn in flight once it has its `final`/`error`. */
+  turnDone?: () => void;
+  /** The opening config without its key, for the runner's details. */
+  childConfig: PiChildConfig;
+  /** Directories this conversation owns (agentDir, tmpDir, skill dir), removed when it closes. */
+  dirs: string[];
+  descriptor: HarnessDescriptor;
+  descriptorFor: (prompt: string) => HarnessDescriptor;
+  effortApplied?: EffortApplied;
+  /** Completed turns. */
+  turns: number;
+  /** The child's running assistant-message counter (`seq`), across every turn. */
+  seq: number;
+  busy: boolean;
+  closed: boolean;
+  idleTimer?: NodeJS.Timeout;
+}
+
+/** What `invoke()` hands down when this call should open a kept conversation. */
+interface KeepRequest {
+  key: string;
+  label: string;
+  fingerprint: string;
+  /** Directories a successfully opened conversation took over; `invoke()` must not remove them. */
+  adopted: Set<string>;
+  descriptorFor?: (prompt: string) => HarnessDescriptor;
+  effortApplied?: EffortApplied;
+}
+
+function keepFingerprint(req: { opts: AgentOpts; assets?: { declared: { skills: string[]; mcp: string[] } }; caps?: Caps }, workspace: string): string {
+  return JSON.stringify([
+    req.opts.model ?? null, req.opts.effort ?? null, req.opts.allowedTools ?? null, req.opts.bash ?? null,
+    req.opts.mcp ?? null, req.assets?.declared ?? null, req.caps?.reasoning ?? null, workspace,
+  ]);
 }
 
 /** `tool_call`/`tool_result` events carry their args/result JSON-stringified by the child (protocol.ts's
@@ -540,8 +613,80 @@ export class PiGatewayClient implements GatewayClient {
   // late-bound by server.ts's existing structural `BindableGateway` check (`bindable?.bindEventSink?.`),
   // which already calls this method on ANY gateway that implements it — no server.ts change needed.
   private _eventSink: EventSink = () => {};
+  /** Started children nobody has taken yet; see `PiGatewayConfig.warmPool`. */
+  private readonly _warm: PiChildHandle[] = [];
+  private _stopped = false;
+  /** `keepSession` conversations by run + label; `_opening` reserves a key while its first turn runs. */
+  private readonly _sessions = new Map<string, PiKeptSession>();
+  private readonly _opening = new Set<string>();
 
   constructor(private readonly _config: PiGatewayConfig) {}
+
+  private _spawnPiChild(agentDir: string, cwd: string): PiChildHandle {
+    const spawnImpl = this._config.spawnChild ?? spawn;
+    const entryPath = this._config.entryPath ?? ENTRY_PATH;
+    const child = spawnImpl('node', ['--experimental-transform-types', '--disable-warning=ExperimentalWarning', entryPath], {
+      cwd,
+      env: buildChildEnv(agentDir),
+      detached: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const handle: PiChildHandle = { child, agentDir, stderr: { tail: '' }, exited: false, taken: false };
+    child.stderr?.on('data', (d: Buffer) => { handle.stderr.tail = (handle.stderr.tail + d.toString()).slice(-4096); });
+    child.once('exit', () => {
+      handle.exited = true;
+      if (!handle.taken) {
+        // A warm child that died before anyone took it (or was stopped): drop it and its directory.
+        const at = this._warm.indexOf(handle);
+        if (at >= 0) this._warm.splice(at, 1);
+        removePiAgentDir(agentDir);
+      }
+    });
+    child.once('error', () => { handle.exited = true; });
+    return handle;
+  }
+
+  /** Tops the warm pool up to `warmPool`. A warm child is born with the same allowlisted env as any
+   *  other and no dispatch data at all (config, prompt and key only ever arrive on its stdin), in its
+   *  own fresh agentDir under the same verified parent, so it is denied to every other dispatch's
+   *  confined Bash exactly like a per-dispatch agentDir. It is unref'd while idle so it never keeps
+   *  this process alive; if this process dies its stdin closes and the child exits by itself. */
+  private _refillWarm(): void {
+    const size = this._config.warmPool ?? 0;
+    if (size <= 0 || this._stopped) return;
+    while (this._warm.length < size) {
+      let agentDir: string;
+      try {
+        agentDir = buildPiAgentDirIn(piAgentDirParent(this._config.confinement?.workRoot));
+      } catch {
+        return; // no warm child today; dispatches keep spawning their own, which report the error
+      }
+      let handle: PiChildHandle;
+      try {
+        handle = this._spawnPiChild(agentDir, agentDir);
+      } catch {
+        removePiAgentDir(agentDir);
+        return;
+      }
+      const c = handle.child as ChildProcess & { unref?: () => void };
+      c.unref?.();
+      for (const stream of [c.stdin, c.stdout, c.stderr] as Array<{ unref?: () => void } | null | undefined>) stream?.unref?.();
+      this._warm.push(handle);
+    }
+  }
+
+  private _takeWarm(): PiChildHandle | undefined {
+    while (this._warm.length > 0) {
+      const handle = this._warm.shift()!;
+      const c = handle.child;
+      if (handle.exited || c.exitCode !== null || c.signalCode !== null) continue;
+      handle.taken = true;
+      (c as ChildProcess & { ref?: () => void }).ref?.();
+      for (const stream of [c.stdin, c.stdout, c.stderr] as Array<{ ref?: () => void } | null | undefined>) stream?.ref?.();
+      return handle;
+    }
+    return undefined;
+  }
 
   /** Same shape/reason as `ClaudeAgentSdkGatewayClient.bindEventSink` — see that method's own doc. */
   bindEventSink(sink: EventSink): void {
@@ -580,6 +725,41 @@ export class PiGatewayClient implements GatewayClient {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: 'aborted by caller before dispatch (run suspended or stopped)' };
     }
     const workspace = req.workspace ?? process.cwd();
+
+    // `keepSession`: continue this run + label's conversation when one is open and idle with the same
+    // settings; otherwise this call opens one (or, while one is busy, runs on its own).
+    let keep: KeepRequest | undefined;
+    const keepLabel = req.opts.keepSession === true && typeof req.opts.label === 'string' && req.opts.label !== '' ? req.opts.label : undefined;
+    if (keepLabel !== undefined) {
+      const key = `${req.runId}\u0000${keepLabel}`;
+      const fingerprint = keepFingerprint(req, workspace);
+      const open = this._sessions.get(key);
+      if (this._opening.has(key) || open?.busy === true) {
+        this._eventSink({ kind: 'agent.pi_session', runId: req.runId, agentId: req.agentId, label: keepLabel, outcome: 'bypassed', turn: open?.turns ?? 0 });
+      } else {
+        if (open !== undefined && (open.fingerprint !== fingerprint || open.handle.exited)) {
+          this._closeSession(open, 'dropped', open.handle.exited ? 'its child exited' : 'this call has different settings');
+        } else if (open !== undefined) {
+          const continued = await this._continueSession(open, req, parsed);
+          if (continued !== undefined) return continued;
+        }
+        keep = { key, label: keepLabel, fingerprint, adopted: new Set() };
+        this._opening.add(key);
+      }
+    }
+    try {
+      return await this._invokeFresh(req, parsed, workspace, keep);
+    } finally {
+      if (keep) this._opening.delete(keep.key);
+    }
+  }
+
+  private async _invokeFresh(
+    req: Parameters<PiGatewayClient['invoke']>[0],
+    parsed: NonNullable<ReturnType<typeof parseModelRef>>,
+    workspace: string,
+    keep: KeepRequest | undefined,
+  ): Promise<GatewayResult> {
     // review R2-1: the WHOLE agentDir-parent-plus-per-dispatch-dir build is wrapped here — a prior
     // iteration called `buildPiAgentDir()` with no try/catch at all, so any mkdir/chmod/lstat/mkdtemp
     // failure (e.g. AGENTDIR_UNAVAILABLE from `verifyPrivateDir`) escaped `invoke()` as a rejected
@@ -625,11 +805,12 @@ export class PiGatewayClient implements GatewayClient {
       }
     }
     try {
-      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent, tmpDir, tmpDirParent, skillDir, skillDirParent);
+      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent, tmpDir, tmpDirParent, skillDir, skillDirParent, keep);
     } finally {
-      removePiAgentDir(agentDir);
-      removePiAgentDir(tmpDir);
-      if (skillDir !== undefined) removePiAgentDir(skillDir);
+      // A kept conversation that opened took its directories over; it removes them when it closes.
+      if (!keep?.adopted.has(agentDir)) removePiAgentDir(agentDir);
+      if (!keep?.adopted.has(tmpDir)) removePiAgentDir(tmpDir);
+      if (skillDir !== undefined && !keep?.adopted.has(skillDir)) removePiAgentDir(skillDir);
     }
   }
 
@@ -653,6 +834,7 @@ export class PiGatewayClient implements GatewayClient {
     tmpDirParent: string,
     skillDir: string | undefined,
     skillDirParent: string | undefined,
+    keep?: KeepRequest,
   ): Promise<GatewayResult> {
     // Project configuration another agent (or Bash on an unconfined host) left in the workspace is
     // removed before this child can ever be spawned — the SAME `sweepPlantedConfig`/
@@ -929,6 +1111,19 @@ export class PiGatewayClient implements GatewayClient {
         ? { effortApplied: effortApplied.applied ? { param: effortApplied.param, value: effortApplied.value } : { reason: effortApplied.reason } }
         : {}),
     };
+    if (keep) {
+      baseDescriptor.keptSession = { turn: 1 };
+      // A later turn reports the same harness with its own prompt.
+      keep.descriptorFor = (prompt: string): HarnessDescriptor => ({
+        ...baseDescriptor,
+        ...redactHarness({
+          surfaceType: 'curated', modelName: parsed.model, provider: parsed.provider, prompt, curatedTools: requestedTools,
+          mergedMcp: Object.keys(mcpConfigs).map((name) => ({ name })),
+          skills: materialized?.skills ?? [],
+        }),
+      });
+      if (effortApplied !== undefined) keep.effortApplied = effortApplied;
+    }
     if (req.onHarness) {
       await req.onHarness(baseDescriptor, effortApplied);
     }
@@ -1004,7 +1199,7 @@ export class PiGatewayClient implements GatewayClient {
           req.onUsage!(addTokens(base, cum));
         },
       };
-      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout, { attempt: i + 1, attempts, baseDescriptor });
+      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout, { attempt: i + 1, attempts, baseDescriptor }, keep);
       settledThisAttempt = true;
       if (last.ok) {
         const total = addTokens(carried, normalizeTokens(last.tokens));
@@ -1038,31 +1233,212 @@ export class PiGatewayClient implements GatewayClient {
     // one real call site in `_invokeWithWorkspace`'s loop) names "N/M" in the timeout/abort detail
     // below — `attempt` alone could not say whether this was the LAST attempt or one of several.
     mcpCtx?: { attempt: number; attempts: number; baseDescriptor: HarnessDescriptor },
+    keep?: KeepRequest,
   ): Promise<GatewayResult> {
-    const spawnImpl = this._config.spawnChild ?? spawn;
-    const entryPath = this._config.entryPath ?? ENTRY_PATH;
-    const child = spawnImpl('node', ['--experimental-transform-types', '--disable-warning=ExperimentalWarning', entryPath], {
-      cwd: childConfig.cwd,
-      env: buildChildEnv(childConfig.agentDir),
-      detached: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
+    // A warm child (already past pi's ~1.1 s import) when one is ready, else a child of our own. A
+    // warm child runs in the agentDir it was born with (see `PiChildHandle`), removed when this
+    // attempt ends; the dispatch's own agentDir is then simply unused (`invoke()` still removes it).
+    const warm = this._takeWarm();
+    const handle = warm ?? this._spawnPiChild(childConfig.agentDir, childConfig.cwd);
+    if (warm) childConfig = { ...childConfig, agentDir: warm.agentDir };
+    if ((this._config.warmPool ?? 0) > 0) {
+      this._eventSink({ kind: 'agent.pi_child', runId: req.runId, agentId: req.agentId, attempt: mcpCtx?.attempt ?? 1, warm: warm !== undefined });
+    }
+    this._refillWarm();
+    try {
+      if (keep) return await this._openSession(handle, childConfig, provider, req, timeoutMs, mcpCtx, keep);
+      return await this._runPiChild(handle, childConfig, provider, req, timeoutMs, mcpCtx);
+    } finally {
+      if (warm && !keep?.adopted.has(warm.agentDir)) removePiAgentDir(warm.agentDir);
+    }
+  }
+
+  /** The opening turn of a `keepSession` conversation: the child gets `keep:true` and is left
+   *  running after a successful turn, registered under its run + label. A failed opening turn closes
+   *  it again (the caller's retry loop may open another). */
+  private async _openSession(
+    handle: PiChildHandle,
+    childConfig: PiChildConfig,
+    provider: string,
+    req: Parameters<PiGatewayClient['_runPiChild']>[3],
+    timeoutMs: number | undefined,
+    mcpCtx: { attempt: number; attempts: number; baseDescriptor: HarnessDescriptor } | undefined,
+    keep: KeepRequest,
+  ): Promise<GatewayResult> {
+    const config: PiChildConfig = { ...childConfig, keep: true };
+    const { apiKey: _key, ...withoutKey } = config;
+    const child = handle.child;
+    const session: PiKeptSession = {
+      key: keep.key, runId: req.runId, label: keep.label, fingerprint: keep.fingerprint, handle,
+      rl: createInterface({ input: child.stdout! }),
+      childConfig: withoutKey,
+      dirs: [config.agentDir, config.tmpDir, ...(config.skillReadRoots ?? [])],
+      descriptor: mcpCtx?.baseDescriptor ?? ({} as HarnessDescriptor),
+      descriptorFor: keep.descriptorFor ?? (() => mcpCtx?.baseDescriptor ?? ({} as HarnessDescriptor)),
+      ...(keep.effortApplied !== undefined ? { effortApplied: keep.effortApplied } : {}),
+      turns: 0, seq: 0, busy: true, closed: false,
+    };
+    session.rl.on('line', (line) => session.onLine?.(line));
+    child.once('exit', () => {
+      if (child.pid !== undefined) {
+        try { this._cliLifecycle.killGroup({ pid: child.pid }); } catch { /* group already gone */ }
+      }
     });
+    // Registered while its first turn runs, so the run's end can find and close it.
+    const replaced = this._sessions.get(keep.key);
+    if (replaced !== undefined) this._closeSession(replaced, 'dropped', 'replaced by a new conversation');
+    this._sessions.set(keep.key, session);
+    const result = await this._runPiChild(handle, config, provider, req, timeoutMs, mcpCtx, { session, line: JSON.stringify(config) });
+    session.busy = false;
+    if (result.ok && !session.closed) {
+      session.turns = 1;
+      for (const dir of session.dirs) keep.adopted.add(dir);
+      this._eventSink({ kind: 'agent.pi_session', runId: req.runId, agentId: req.agentId, label: keep.label, outcome: 'opened', turn: 1 });
+      this._armIdle(session);
+      return result;
+    }
+    if (session.closed) {
+      // The run ended while the opening turn ran: finish closing (its directories go with the child).
+      for (const dir of session.dirs) keep.adopted.add(dir);
+      this._finishClose(session);
+      return result;
+    }
+    // Not adopted: `invoke()` removes its directories as for any other call.
+    this._closeSession(session, 'dropped', `the opening turn did not succeed (${result.ok ? 'closed' : result.reason})`, { keepDirs: true });
+    return result;
+  }
+
+  /** A later turn of an open, idle conversation. Returns undefined when the turn failed in a way the
+   *  caller should answer with a fresh conversation instead (the old one is dropped either way). */
+  private async _continueSession(
+    session: PiKeptSession,
+    req: Parameters<PiGatewayClient['invoke']>[0],
+    parsed: NonNullable<ReturnType<typeof parseModelRef>>,
+  ): Promise<GatewayResult | undefined> {
+    session.busy = true;
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    const turn = session.turns + 1;
+    const descriptor: HarnessDescriptor = { ...session.descriptorFor(req.prompt), keptSession: { turn } };
+    if (req.onHarness) await req.onHarness(descriptor, session.effortApplied);
+    const timeoutMs = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
+    const line = JSON.stringify({ t: 'prompt', prompt: req.prompt } satisfies PiChildPromptLine);
+    const result = await this._runPiChild(session.handle, session.childConfig, parsed.provider, req, timeoutMs, { attempt: 1, attempts: 1, baseDescriptor: descriptor }, { session, line });
+    session.busy = false;
+    if (session.closed) {
+      this._finishClose(session);
+      return result;
+    }
+    if (result.ok) {
+      session.turns = turn;
+      this._eventSink({ kind: 'agent.pi_session', runId: req.runId, agentId: req.agentId, label: session.label, outcome: 'continued', turn });
+      this._armIdle(session);
+      return result;
+    }
+    this._closeSession(session, 'dropped', `turn ${turn} did not succeed (${result.reason})`);
+    // Same rule as the ordinary retry loop: only a retryable failure of a call that may retry gets a
+    // second try, here as a fresh conversation (without the earlier turns, which the event records).
+    if (req.signal?.aborted || result.retryable === false || attemptsFor(this._config.retries, timeoutMs) <= 1) return result;
+    return undefined;
+  }
+
+  private _armIdle(session: PiKeptSession): void {
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    session.idleTimer = setTimeout(() => this._closeSession(session, 'closed', 'idle'), KEPT_SESSION_IDLE_MS);
+    session.idleTimer.unref?.();
+  }
+
+  /** Ends a kept conversation. An idle one is finished at once; one whose turn is in flight is
+   *  finished by that turn when it returns. */
+  private _closeSession(session: PiKeptSession, outcome: 'dropped' | 'closed', reason: string, opts: { keepDirs?: boolean } = {}): void {
+    if (session.closed) return;
+    session.closed = true;
+    if (this._sessions.get(session.key) === session) this._sessions.delete(session.key);
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    this._eventSink({ kind: 'agent.pi_session', runId: session.runId, label: session.label, outcome, turn: session.turns, reason });
+    if (opts.keepDirs) session.dirs = [];
+    if (!session.busy) this._finishClose(session);
+  }
+
+  /** Closes stdin (the child disposes its session and exits), kills it if it does not, and removes
+   *  its directories once it is gone. */
+  private _finishClose(session: PiKeptSession): void {
+    session.rl.close();
+    const child = session.handle.child;
+    const pid = child.pid;
+    const cleanup = (): void => {
+      for (const dir of session.dirs) removePiAgentDir(dir);
+      if (pid !== undefined) sweepSrtMuxSockets(pid);
+    };
+    if (session.handle.exited || child.exitCode !== null || child.signalCode !== null) {
+      cleanup();
+      return;
+    }
+    child.once('exit', cleanup);
+    try { child.stdin?.end(); } catch { /* already closed */ }
+    const kill = setTimeout(() => {
+      killDescendantsBestEffort(pid);
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, KEPT_SESSION_EXIT_GRACE_MS);
+    kill.unref?.();
+    child.once('exit', () => clearTimeout(kill));
+  }
+
+  /** Waits for a kept turn to end: its `final`/`error` (reported through `session.turnDone`), or the
+   *  child exiting (killed on timeout/abort, or crashed). */
+  private _awaitKeptTurn(session: PiKeptSession, settled: () => boolean): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+    return new Promise((resolve) => {
+      const child = session.handle.child;
+      const onExit = (code: number | null, signal: NodeJS.Signals | null): void => finish({ code, signal });
+      const finish = (r: { code: number | null; signal: NodeJS.Signals | null }): void => {
+        session.turnDone = undefined;
+        child.removeListener('exit', onExit);
+        resolve(r);
+      };
+      if (settled()) { resolve({ code: null, signal: null }); return; }
+      if (session.handle.exited) { resolve({ code: child.exitCode, signal: child.signalCode }); return; }
+      session.turnDone = () => finish({ code: null, signal: null });
+      child.once('exit', onExit);
+    });
+  }
+
+  endRun(runId: string): void {
+    for (const session of [...this._sessions.values()]) {
+      if (session.runId === runId) this._closeSession(session, 'closed', 'the run ended or was suspended');
+    }
+  }
+
+  private async _runPiChild(
+    handle: PiChildHandle,
+    childConfig: PiChildConfig,
+    provider: string,
+    req: { runId: string; agentId: string; signal?: AbortSignal; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; onUsage?: (cumulative: Tokens) => void; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void> },
+    timeoutMs: number | undefined,
+    mcpCtx?: { attempt: number; attempts: number; baseDescriptor: HarnessDescriptor },
+    // `keepSession`: run ONE turn of a kept conversation instead of a whole one-shot child. `line` is
+    // what this turn writes (the config for the opening turn, `{t:'prompt'}` after that); stdin
+    // stays open, the session's own reader routes lines here, and the turn ends at its own
+    // `final`/`error` rather than at the child's exit.
+    turn?: { session: PiKeptSession; line: string },
+  ): Promise<GatewayResult> {
+    const child = handle.child;
     // Captured now (not read off `child` again later): some fake-process test doubles clear `.pid`
     // after 'exit' fires, and the real node ChildProcess keeps it, but the sweep below must work
     // identically either way.
     const childPid = child.pid;
-    let stderrTail = '';
-    child.stderr?.on('data', (d: Buffer) => { stderrTail = (stderrTail + d.toString()).slice(-4096); });
     const reap = (): void => {
       if (child.pid === undefined) return;
       try { this._cliLifecycle.killGroup({ pid: child.pid }); } catch { /* group already gone */ }
     };
-    child.once('exit', reap);
+    if (turn === undefined) child.once('exit', reap);
     // The child's whole config (including a secret API key, when present) rides on stdin, never a
     // CLI arg (argv is visible to every other process on the host via /proc) and never an env var
     // (bash-env.ts's allowlist has no provider-key entry at all — the two must never meet).
-    child.stdin?.write(JSON.stringify(childConfig) + '\n');
-    child.stdin?.end();
+    if (turn === undefined) {
+      child.stdin?.write(JSON.stringify(childConfig) + '\n');
+      child.stdin?.end();
+    } else {
+      child.stdin?.write(turn.line + '\n');
+    }
 
     let timedOut = false;
     const timer = timeoutMs !== undefined
@@ -1075,7 +1451,7 @@ export class PiGatewayClient implements GatewayClient {
           reap();
         }, timeoutMs)
       : undefined;
-    child.once('exit', () => { if (timer) clearTimeout(timer); });
+    if (turn === undefined) child.once('exit', () => { if (timer) clearTimeout(timer); });
     const onAbort = (): void => {
       killDescendantsBestEffort(child.pid);
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
@@ -1102,9 +1478,11 @@ export class PiGatewayClient implements GatewayClient {
     // got, instead of a blanket "no response from model" that is simply false once even one turn
     // completed. The highest `seq` seen IS the completed-turn count; never recomputed from scratch.
     let completedTurns = 0;
+    // A kept conversation's `seq` counts every turn since it opened; this turn's own count starts here.
+    const seqBase = turn?.session.seq ?? 0;
 
-    const rl = createInterface({ input: child.stdout! });
-    rl.on('line', (line) => {
+    const rl = turn === undefined ? createInterface({ input: child.stdout! }) : undefined;
+    const onLine = (line: string): void => {
       let event: PiChildEvent;
       try { event = JSON.parse(line) as PiChildEvent; } catch { return; }
       if (event.t === 'usage_update') {
@@ -1114,7 +1492,8 @@ export class PiGatewayClient implements GatewayClient {
         liveInFlightUsage = event.usage;
         req.onUsage?.(addTokens(cumulative, liveInFlightUsage));
       } else if (event.t === 'message_end') {
-        completedTurns = event.seq;
+        completedTurns = event.seq - seqBase;
+        if (turn) turn.session.seq = event.seq;
         cumulative = {
           input: cumulative.input + event.usage.input,
           output: cumulative.output + event.usage.output,
@@ -1193,7 +1572,10 @@ export class PiGatewayClient implements GatewayClient {
           this._eventSink({ kind: 'agent.mcp_not_connected', runId: req.runId, agentId: req.agentId, attempt: mcpCtx.attempt, server: w.server, status: w.status, tools });
         }
       }
-    });
+      if (turn && settled) turn.session.turnDone?.();
+    };
+    if (rl) rl.on('line', onLine);
+    else if (turn) turn.session.onLine = onLine;
 
     // issue #158 F4 (TDD, deterministic repro confirmed): the child's 'exit' event (SIGCHLD-driven)
     // and its own already-written stdout data (delivered to `rl` as the pipe drains) are two
@@ -1207,7 +1589,7 @@ export class PiGatewayClient implements GatewayClient {
     // wait would hang this dispatch on an otherwise-successful exit with a lingering descendant.
     let exitSeen: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let stdoutEnded = false;
-    const exitCode: { code: number | null; signal: NodeJS.Signals | null } = await new Promise((resolve) => {
+    const exitCode: { code: number | null; signal: NodeJS.Signals | null } = turn !== undefined ? await this._awaitKeptTurn(turn.session, () => settled !== undefined) : await new Promise((resolve) => {
       let graceTimer: NodeJS.Timeout | undefined;
       const finish = (): void => {
         if (graceTimer) clearTimeout(graceTimer);
@@ -1222,12 +1604,17 @@ export class PiGatewayClient implements GatewayClient {
       child.once('exit', (code, signal) => { exitSeen = { code, signal }; if (stdoutEnded) finish(); else armGrace(); });
       child.once('error', () => resolve({ code: null, signal: null }));
     });
-    rl.close();
+    rl?.close();
+    if (turn) {
+      turn.session.onLine = undefined;
+      if (timer) clearTimeout(timer);
+    }
     req.signal?.removeEventListener('abort', onAbort);
     // residual fix (srt-mux socket leak): unconditional, before any branch below returns — every
     // path through this dispatch (settled ok, settled error, aborted, timed out, or a bare exit with
-    // no event at all) may have initialized srt's mux proxy inside the child.
-    if (childPid !== undefined) sweepSrtMuxSockets(childPid);
+    // no event at all) may have initialized srt's mux proxy inside the child. A kept conversation's
+    // child is still running here; it is swept when the conversation closes (`_closeSession`).
+    if (childPid !== undefined && turn === undefined) sweepSrtMuxSockets(childPid);
 
     if (settled) return settled;
     // issue #152: BOTH branches below used to omit `detail` entirely and only set `partial:true` when
@@ -1289,13 +1676,21 @@ export class PiGatewayClient implements GatewayClient {
     }
     return {
       ok: false, provider, reason: 'terminal', transport: 'pi', retryable: false,
-      detail: `pi child exited before reporting a result (code ${exitCode.code ?? 'null'}, signal ${exitCode.signal ?? 'null'})` + (stderrTail.trim() ? `\n--- child stderr (tail) ---\n${stderrTail.trim()}` : ''),
+      detail: `pi child exited before reporting a result (code ${exitCode.code ?? 'null'}, signal ${exitCode.signal ?? 'null'})` + (handle.stderr.tail.trim() ? `\n--- child stderr (tail) ---\n${handle.stderr.tail.trim()}` : ''),
       tokens: addTokens(cumulative, liveInFlightUsage),
     };
   }
 
   async stop(): Promise<void> {
-    // No managed subprocess owned at the gateway level — each dispatch's child is reaped per-call
-    // above (group-killed on exit/timeout/abort), never held past its own invoke() call.
+    this._stopped = true;
+    for (const session of [...this._sessions.values()]) this._closeSession(session, 'closed', 'the engine stopped');
+    for (const handle of this._warm.splice(0)) {
+      if (handle.child.pid !== undefined) {
+        try { this._cliLifecycle.killGroup({ pid: handle.child.pid }); } catch { /* already gone */ }
+      }
+      removePiAgentDir(handle.agentDir);
+    }
+    // Beyond the warm pool above, nothing is owned at the gateway level — each dispatch's child is
+    // reaped per-call (group-killed on exit/timeout/abort), never held past its own invoke() call.
   }
 }
