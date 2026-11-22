@@ -31,7 +31,7 @@ import { buildBashConfinement, readonlyBashRefusal, HOST_SHARED_TMPDIR, sharedCl
 import { hostSharedTmpdirPresent } from './host-shared-tmpdir.js';
 import { sweepSrtMuxSockets } from './srt-mux-sweep.js';
 import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
-import type { PiChildConfig, PiChildEvent, PiChildPromptLine, PiChildSandboxConfig } from './pi-child/protocol.js';
+import type { PiChildConfig, PiChildEvent, PiChildPromptLine, PiChildSandboxConfig, PiTurnTiming } from './pi-child/protocol.js';
 import type { EventSink } from '../event-log.js';
 import { PI_HARNESS_VERSION } from '../harness-info.js';
 import { materializeAssets, summarizeMcpInit } from './claude-agent-sdk-client.js';
@@ -1513,7 +1513,9 @@ export class PiGatewayClient implements GatewayClient {
         // This turn ended — its own usage is now committed into `cumulative`; nothing in-flight.
         liveInFlightUsage = { ...ZERO_TOKENS };
         req.onUsage?.(cumulative);
-        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'message', data: { text: event.text, role: 'assistant' } });
+        const timing = piTurnTimingSummary(event.timing);
+        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'message', data: { text: event.text, role: 'assistant', ...(timing ? { timing } : {}) } });
+        if (timing) this._eventSink({ kind: 'agent.pi_turn', runId: req.runId, agentId: req.agentId, seq: event.seq, kept: seqBase > 0, stopReason: event.stopReason, outputTokens: event.usage.output, ...timing });
       } else if (event.t === 'final') {
         settled = { ok: true, provider, model: childConfig.model.model, transport: 'pi', tokens: cumulative, content: event.text };
       } else if (event.t === 'error' || event.t === 'fatal') {
@@ -1526,6 +1528,10 @@ export class PiGatewayClient implements GatewayClient {
         // `stopReason:'error'` assistant message — spike S4 confirms usage is real even then) is
         // folded into `cumulative` BEFORE this attempt settles, same as every `message_end` above —
         // never silently dropped. A `fatal` event carries no usage field at all (nothing to fold).
+        if (event.t === 'error') {
+          const timing = piTurnTimingSummary(event.timing);
+          if (timing) this._eventSink({ kind: 'agent.pi_turn', runId: req.runId, agentId: req.agentId, seq: completedTurns + seqBase + 1, kept: seqBase > 0, stopReason: 'error', outputTokens: event.usage?.output ?? 0, ...timing });
+        }
         if (event.t === 'error' && event.usage !== undefined) {
           cumulative = {
             input: cumulative.input + event.usage.input,
@@ -1703,4 +1709,18 @@ export class PiGatewayClient implements GatewayClient {
     // Beyond the warm pool above, nothing is owned at the gateway level — each dispatch's child is
     // reaped per-call (group-killed on exit/timeout/abort), never held past its own invoke() call.
   }
+}
+
+/** Per-model-turn latency split from the child's own timestamps (one clock, so no skew):
+ *  ttftMs = request start → first streamed delta (thinking included); ttfoMs = → first visible
+ *  text/tool-call delta; openMs = → provider stream opened; streamMs = first delta → message end;
+ *  totalMs = request start → message end. A missing stage stays absent, never a made-up zero. */
+export function piTurnTimingSummary(t: PiTurnTiming | undefined): { totalMs: number; openMs?: number; ttftMs?: number; ttfoMs?: number; streamMs?: number } | undefined {
+  if (!t || typeof t.turnAt !== 'number' || typeof t.endAt !== 'number') return undefined;
+  const d = (x: number | undefined): number | undefined => (typeof x === 'number' ? Math.max(0, x - t.turnAt) : undefined);
+  const out: { totalMs: number; openMs?: number; ttftMs?: number; ttfoMs?: number; streamMs?: number } = { totalMs: Math.max(0, t.endAt - t.turnAt) };
+  const open = d(t.openAt); if (open !== undefined) out.openMs = open;
+  const ttft = d(t.firstAt); if (ttft !== undefined) { out.ttftMs = ttft; out.streamMs = Math.max(0, t.endAt - (t.firstAt as number)); }
+  const ttfo = d(t.firstOutAt); if (ttfo !== undefined) out.ttfoMs = ttfo;
+  return out;
 }

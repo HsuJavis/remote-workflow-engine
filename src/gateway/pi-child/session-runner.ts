@@ -40,7 +40,7 @@ function srtInstallDir(): string | null {
     return null;
   }
 }
-import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './protocol.js';
+import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig, PiTurnTiming } from './protocol.js';
 
 export interface SessionDeps {
   isPathContained: (path: string, root: string) => boolean;
@@ -706,7 +706,38 @@ export async function runPiChildSession(
   // eventual `message_end`/`error` for this SAME turn is still the one real, complete figure.
   // Reset to 'none seen yet' on every message_end/error (a fresh turn starts with nothing known).
   let lastInFlightUsage: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
+  // Per-model-turn timing (epoch ms, this child's clock): when pi started the turn (`turn_start`, right
+  // before it builds and sends the request), when the provider's stream opened (assistant
+  // `message_start`), the first streamed delta of any kind (thinking included), the first visible
+  // text/tool-call delta, and `message_end`. Reset on every assistant message_end/error.
+  let tTurn: number | undefined;
+  let tOpen: number | undefined;
+  let tFirst: number | undefined;
+  let tFirstOut: number | undefined;
+  const takeTiming = (): PiTurnTiming | undefined => {
+    const end = Date.now();
+    const t = tTurn === undefined ? undefined : { turnAt: tTurn, openAt: tOpen, firstAt: tFirst, firstOutAt: tFirstOut, endAt: end };
+    tTurn = tOpen = tFirst = tFirstOut = undefined;
+    return t;
+  };
   session.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      tTurn = Date.now();
+      tOpen = tFirst = tFirstOut = undefined;
+      return;
+    }
+    if (event.type === 'message_start' && event.message.role === 'assistant') {
+      tOpen ??= Date.now();
+      return;
+    }
+    if (event.type === 'message_update' && event.message.role === 'assistant') {
+      const k = event.assistantMessageEvent.type;
+      if (k.endsWith('_delta') || k.endsWith('_start')) {
+        const now = Date.now();
+        tFirst ??= now;
+        if (k === 'text_delta' || k === 'toolcall_start') tFirstOut ??= now;
+      }
+    }
     if (event.type === 'tool_execution_start') {
       emit({ t: 'tool_call', toolCallId: event.toolCallId, toolName: event.toolName, argsJson: safeJson(event.args) });
       return;
@@ -754,10 +785,10 @@ export async function runPiChildSession(
       // residual fix (#127): `usage` was computed above (same as the message_end branch below) and
       // is real even on an errored message (spike S4) — forwarded here so the parent folds it into
       // cumulative instead of silently dropping a mid-stream 429/5xx attempt's own tokens.
-      emit({ t: 'error', message: msg.errorMessage ?? 'pi reported stopReason:"error" with no errorMessage', stopReason: msg.stopReason, usage });
+      emit({ t: 'error', message: msg.errorMessage ?? 'pi reported stopReason:"error" with no errorMessage', stopReason: msg.stopReason, usage, timing: takeTiming() });
       return;
     }
-    emit({ t: 'message_end', seq, text, usage, stopReason: msg.stopReason });
+    emit({ t: 'message_end', seq, text, usage, stopReason: msg.stopReason, timing: takeTiming() });
   });
 
   // One user turn: ends in exactly one `error` or one `final` event. Returns whether it succeeded.

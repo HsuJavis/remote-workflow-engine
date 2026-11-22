@@ -84,7 +84,8 @@ async function setup(extra: { timeoutMs?: number; maxKeptSessions?: number } = {
     return { r, harness };
   };
   const sessionEvents = () => events.filter((e): e is Extract<EngineEvent, { kind: 'agent.pi_session' }> => e.kind === 'agent.pi_session');
-  return { fake, gw, call, spawned, sessionEvents };
+  const turnEvents = () => events.filter((e): e is Extract<EngineEvent, { kind: 'agent.pi_turn' }> => e.kind === 'agent.pi_turn');
+  return { fake, gw, call, spawned, sessionEvents, turnEvents };
 }
 
 const alive = (pid: number | undefined): boolean => {
@@ -110,6 +111,15 @@ describe('pi gateway keepSession', () => {
     expect(first.harness[0]?.keptSession).toEqual({ turn: 1 });
     expect(second.harness[0]?.keptSession).toEqual({ turn: 2 });
     expect(t.sessionEvents().map((e) => e.outcome)).toEqual(['opened', 'continued']);
+    // Every model turn reports its latency split, on the child's own clock.
+    const turns = t.turnEvents();
+    expect(turns.map((e) => [e.seq, e.kept])).toEqual([[1, false], [2, true]]);
+    for (const e of turns) {
+      expect(e.ttftMs).toBeGreaterThanOrEqual(0);
+      expect(e.ttfoMs).toBeGreaterThanOrEqual(e.ttftMs!);
+      expect(e.totalMs).toBeGreaterThanOrEqual(e.ttfoMs!);
+      expect(e.streamMs).toBe(e.totalMs - e.ttftMs!);
+    }
   }, 60_000);
 
   it('another label, another run, or no keepSession never sees the conversation', async () => {
