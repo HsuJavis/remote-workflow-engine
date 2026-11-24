@@ -38,6 +38,21 @@ describe('tools/list over real MCP HTTP — the v24 surface (IT-106, DES-140)', 
     expect(names).not.toContain('blob_put');
   });
 
+  // MCP spec (tools, structured content): a tool that declares an outputSchema MUST return
+  // structuredContent. Claude Code enforces it and fails every call otherwise, so tools/list
+  // must not advertise an outputSchema that tools/call does not honour.
+  it('no tool advertises an outputSchema that tools/call leaves without structuredContent', async () => {
+    const served = (await fetchTools()) as Array<{ name: string; outputSchema?: unknown }>;
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'system_info', arguments: {} } }),
+    });
+    const body = (await res.json()) as { result?: { structuredContent?: unknown } };
+    const declaring = served.filter((t) => t.outputSchema !== undefined).map((t) => t.name);
+    if (body.result?.structuredContent === undefined) expect(declaring).toEqual([]);
+  });
+
   it('calling the retired workflow_run resolves to an unknown-tool JSON-RPC error', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST',

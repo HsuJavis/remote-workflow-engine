@@ -2006,17 +2006,17 @@ function buildDescription(spec: ToolSpec): string {
   return text;
 }
 
-/** Deterministic: pure projection over static data, no I/O, no Date.now(). // det:allow — a doc comment naming the API, not a call */
+/** Deterministic: pure projection over static data, no I/O, no Date.now(). // det:allow — a doc comment naming the API, not a call
+ *  `outputSchema` stays a test oracle and is not served: MCP requires a tool that declares one to
+ *  return `structuredContent`, and tools/call answers with `content` text only. */
 export function projectToolsList(): Array<{
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  outputSchema: Record<string, unknown>;
 }> {
   return TOOL_SPECS.map((spec) => ({
     name: spec.name,
     description: buildDescription(spec),
     inputSchema: spec.inputSchema,
-    outputSchema: spec.outputSchema,
   }));
 }
