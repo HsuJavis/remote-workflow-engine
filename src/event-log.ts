@@ -3,7 +3,7 @@
 // run-manager.ts) share one audited path. The union is closed on purpose: exactly the four kinds
 // v36 emits; a v37 kind is a v37 edit.
 import { redact, type SecretValueProvider } from './secret-resolver.js';
-import type { PrimitiveKind, DecideAnswer, ImageFile, Tokens } from './types.js';
+import type { PrimitiveKind, DecideAnswer, ImageFile, AudioFile, Tokens } from './types.js';
 
 export type AuditActor = { id: string | null; bypass: boolean; idSource: 'authenticated' | 'claimed' | 'none' };
 
@@ -68,7 +68,7 @@ export type EngineEvent =
    *  `piTurnTimingSummary`). `kept` = this dispatch continued a kept conversation. */
   | { kind: 'agent.pi_turn'; runId: string; agentId?: string; seq: number; kept: boolean; stopReason: string; outputTokens: number; totalMs: number; openMs?: number; ttftMs?: number; ttfoMs?: number; streamMs?: number }
   | { kind: 'agent.pi_session'; runId: string; agentId?: string; label: string; outcome: 'opened' | 'continued' | 'dropped' | 'closed' | 'bypassed'; turn: number; reason?: string }
-  // v40 (DES-264, ARCH-194/192/190, TASK-260): one line per decide()/generateImage() attempt — the
+  // v40 (DES-264, ARCH-194/192/190, TASK-260): one line per decide()/generateImage()/(#169) generateAudio() attempt — the
   // engine's own retry-loop record, never the provider body/prompt/questions/state (INV-V40-3; no
   // field here may hold any of those). `attempt` is 0 only on a pre-flight refusal (no dispatch).
   | { kind: 'primitive.call'; runId: string; agentId?: string; callSeq: number; primitive: PrimitiveKind;
@@ -76,10 +76,10 @@ export type EngineEvent =
       outcome: 'ok' | 'retry' | 'failed' | 'refused'; reason?: AttemptReason; status?: number;
       errorCode?: string; providerMs?: number; backoffMs?: number;
       engineMs?: number; costUSD?: number | null; costSource?: 'reported' | 'estimated' | 'absent';
-      tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number };
+      tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[] | AudioFile[]; droppedImages?: number };
 
 /** v40 (DES-264, TASK-260): why a `primitive.call` attempt did not reach `ok` — carried only on
- *  `retry`/`failed` outcomes. `write`: generateImage()'s post-provider file write failed.
+ *  `retry`/`failed` outcomes. `write`: generateImage()'s/generateAudio()'s post-provider file write failed.
  *  v41b (ARCH-192, Gate 8 r1 V41-A2/R-1): this `as const` tuple is the ONE runtime source of truth
  *  for the vocabulary — `run-manager.ts` value-imports it (it already value-imports
  *  `createEventSink` from this same module, so this is not a new host/sandbox edge; `call.ts` and

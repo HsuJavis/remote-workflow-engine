@@ -1,10 +1,14 @@
 // v40 (DES-267, ARCH-183, ADR-087/088/089/093, TASK-263): the ONE file that imports pi-ai's
 // `/api/*` entrypoints directly (enforced by tests/unit/direct-models-import-boundary.test.ts). This
 // module owns the engine-side fetch seam, outcome classification, backoff, and retry loop for
-// decide()/generateImage() — pi-ai's own request is always made with `maxRetries: 0` and no
+// decide()/generateImage()/generateAudio() — pi-ai's own request is always made with `maxRetries: 0` and no
 // `timeoutMs`/`maxRetryDelayMs`/`headers`, so this loop is the ONLY retry/timeout authority; pi-ai
 // itself never throws (`classify`/`generateImages` both catch everything into `stopReason`), so the
 // loop reads `res.stopReason`, never a try/catch around the provider call.
+// #169: generateAudio() has no pi-ai codec (pi-ai has no audio API), so `runAudio` below makes the
+// OpenRouter streaming chat-completions request and parses its SSE body itself — through the SAME
+// observed fetch seam and retry loop, and it never throws out of an attempt either (every failure
+// becomes a `piStop`, exactly the pi-ai contract the loop relies on).
 import { classify } from '@earendil-works/pi-ai/api/typesafe-system-one';
 import { generateImages } from '@earendil-works/pi-ai/api/openrouter-images';
 import type {
@@ -30,6 +34,8 @@ export const BACKOFF_BASE_MS = 250;
 export const RETRY_AFTER_CAP_MS = 10_000;
 export const MAX_DECIDE_RESPONSE_BYTES = 1_048_576;
 export const MAX_IMAGE_RESPONSE_BYTES = 33_554_432;
+/** #169: a 30 s Lyria clip is ~1 MB of base64 in one SSE chunk; the image cap leaves ample room. */
+export const MAX_AUDIO_RESPONSE_BYTES = 33_554_432;
 export const IMAGE_USAGE_INCLUDE = true; // Gate 7.5 may flip; not a key
 
 export interface AttemptObservation {
@@ -203,16 +209,48 @@ async function readCapped(res: Response, maxBytes: number, signal: AbortSignal):
   return { buf, truncated };
 }
 
+function usageCostOf(parsed: unknown): number | null {
+  const cost = (parsed as { usage?: { cost?: unknown } } | null)?.usage?.cost;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : null;
+}
+
+/** #169: the JSON payload of every `data:` line of a Server-Sent-Events body, in order — comment
+ *  lines (`: ...`), blank lines, other fields and the `[DONE]` terminator skipped, CRLF tolerated.
+ *  `null` when any `data:` payload is not valid JSON (a truncated/garbled stream is never half-read). */
+function sseDataPayloads(text: string): unknown[] | null {
+  const out: unknown[] = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (payload === '' || payload === '[DONE]') continue;
+    try {
+      out.push(JSON.parse(payload));
+    } catch {
+      return null;
+    }
+  }
+  return out;
+}
+
+/** A 2xx body's `usage.cost` — a JSON body's own, or (#169: generateAudio()'s streaming response)
+ *  the LAST SSE chunk that carries one. Anything else -> `null`, never guessed. */
 function readWireCostUSD(status: number, buf: Uint8Array): number | null {
   if (status < 200 || status >= 300) return null;
+  const text = Buffer.from(buf).toString('utf8');
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(buf).toString('utf8'));
-    const cost = (parsed as { usage?: { cost?: unknown } } | null)?.usage?.cost;
-    if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) return cost;
+    return usageCostOf(JSON.parse(text));
   } catch {
-    // not JSON / no usage.cost — wireCostUSD stays null, never guessed.
+    // not a JSON body — try it as an SSE stream below.
   }
-  return null;
+  const payloads = sseDataPayloads(text);
+  if (payloads === null) return null;
+  let cost: number | null = null;
+  for (const p of payloads) {
+    const c = usageCostOf(p);
+    if (c !== null) cost = c;
+  }
+  return cost;
 }
 
 /** Wraps `deps.fetch` so every call it makes is OBSERVED: `invoked` is set before the underlying
@@ -349,7 +387,7 @@ function reasonWord(reason: AttemptReason, status?: number): string {
  *  (an earlier 2xx-then-reset or 429 attempt may have cost the provider something this module
  *  cannot itself read back) rather than silently dropping it. */
 export function primitiveFailedError(
-  kind: 'decide' | 'generateImage',
+  kind: 'decide' | 'generateImage' | 'generateAudio',
   label: string | undefined,
   reason: AttemptReason,
   attempts: number,
@@ -381,7 +419,7 @@ interface AttemptResult<T> {
 }
 
 async function runWithRetry<T>(
-  kind: 'decide' | 'generateImage',
+  kind: 'decide' | 'generateImage' | 'generateAudio',
   label: string | undefined,
   timeoutMs: number,
   retries: number,
@@ -536,4 +574,106 @@ export async function runImage(
     backoffMsTotal,
     spends,
   };
+}
+
+/** #169: one parsed generateAudio() stream — every `choices[0].delta.audio.data` piece decoded and
+ *  concatenated in order, every `delta.content` string concatenated as `text`, and the LAST chunk's
+ *  `usage` object. `ok:false` for a stream that cannot be trusted: an unparseable `data:` line, or a
+ *  chunk carrying a top-level `error` (OpenRouter reports a mid-stream upstream failure that way,
+ *  on an HTTP 200). */
+export function parseAudioSse(text: string):
+  | { ok: true; audio: Buffer; text: string; usage?: Record<string, unknown> }
+  | { ok: false } {
+  const payloads = sseDataPayloads(text);
+  if (payloads === null) return { ok: false };
+  const pieces: string[] = [];
+  let out = '';
+  let usage: Record<string, unknown> | undefined;
+  for (const p of payloads) {
+    if (p === null || typeof p !== 'object' || Array.isArray(p)) return { ok: false };
+    const obj = p as { error?: unknown; usage?: unknown; choices?: unknown };
+    if (obj.error !== undefined) return { ok: false };
+    if (obj.usage !== null && typeof obj.usage === 'object' && !Array.isArray(obj.usage)) usage = obj.usage as Record<string, unknown>;
+    const choice = Array.isArray(obj.choices) ? (obj.choices[0] as { delta?: { content?: unknown; audio?: { data?: unknown } } } | undefined) : undefined;
+    const delta = choice?.delta;
+    if (typeof delta?.content === 'string') out += delta.content;
+    if (typeof delta?.audio?.data === 'string' && delta.audio.data.length > 0) pieces.push(delta.audio.data);
+  }
+  // Pieces that are each whole base64 quanta (length % 4 === 0, padding included) decode
+  // independently; otherwise the stream split one encoding mid-quantum, so join first.
+  const audio = pieces.every((x) => x.length % 4 === 0)
+    ? Buffer.concat(pieces.map((x) => Buffer.from(x, 'base64')))
+    : Buffer.from(pieces.join(''), 'base64');
+  return { ok: true, audio, text: out, ...(usage !== undefined ? { usage } : {}) };
+}
+
+function finiteCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+function usageTokens(usage: Record<string, unknown> | undefined): Tokens | undefined {
+  if (usage === undefined) return undefined;
+  if (usage['prompt_tokens'] === undefined && usage['completion_tokens'] === undefined) return undefined;
+  return { input: finiteCount(usage['prompt_tokens']), output: finiteCount(usage['completion_tokens']), cacheRead: 0, cacheWrite: 0 };
+}
+
+/** #169: generateAudio()'s provider call — OpenRouter's chat-completions endpoint with
+ *  `modalities:["audio","text"]`, which refuses a non-streaming request (HTTP 400 "Audio output
+ *  requires stream: true"), so the request always streams and the whole SSE body is read through
+ *  the observed seam (byte cap, attempt deadline, wire cost) before it is parsed. `model` is the
+ *  OpenRouter model id (no `openrouter/` prefix). */
+export async function runAudio(
+  req: {
+    model: string;
+    prompt: string;
+    timeoutMs: number;
+    retries: number;
+    runSignal: AbortSignal;
+    label?: string;
+  },
+  deps: DirectDeps,
+): Promise<{ audio: Buffer; text: string; attempts: number; providerMsTotal: number; backoffMsTotal: number; spends: FailedSpend[] }> {
+  const body = JSON.stringify({
+    model: req.model,
+    modalities: ['audio', 'text'],
+    messages: [{ role: 'user', content: req.prompt }],
+    stream: true,
+    usage: { include: true },
+  });
+  const empty = { audio: Buffer.alloc(0), text: '' };
+  const { value, attempts, providerMsTotal, backoffMsTotal, spends } = await runWithRetry(
+    'generateAudio',
+    req.label,
+    req.timeoutMs,
+    req.retries,
+    req.runSignal,
+    deps,
+    MAX_AUDIO_RESPONSE_BYTES,
+    async (fetchImpl, signal) => {
+      try {
+        const res = await fetchImpl(`${OPENROUTER_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${deps.resolveKey() ?? ''}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+          body,
+          signal,
+        });
+        if (!res.ok) return { piStop: 'error', hasOutput: false, malformed: false, value: empty };
+        const parsed = parseAudioSse(await res.text());
+        if (!parsed.ok) return { piStop: 'error', hasOutput: false, malformed: false, value: empty };
+        const tokens = usageTokens(parsed.usage);
+        return {
+          piStop: 'stop',
+          hasOutput: parsed.audio.length > 0,
+          malformed: false,
+          value: { audio: parsed.audio, text: parsed.text },
+          ...(tokens !== undefined ? { tokens } : {}),
+        };
+      } catch {
+        // network failure / abort / byte cap — the seam has already recorded what it observed;
+        // `classifyAttempt` reads that (status, truncated, timeout), never this error's text.
+        return { piStop: 'error', hasOutput: false, malformed: false, value: empty };
+      }
+    },
+  );
+  return { audio: value.audio, text: value.text, attempts, providerMsTotal, backoffMsTotal, spends };
 }

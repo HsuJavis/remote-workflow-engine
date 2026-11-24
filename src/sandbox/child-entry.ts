@@ -288,6 +288,18 @@ async function main(msg: StartMsg): Promise<void> {
       }
       return result;
     },
+    // #169: generateAudio() — same shared callSeq counter and pending map as generateImage().
+    async generateAudio(label: string, opts?: unknown): Promise<unknown> {
+      const callSeq = nextCallSeq++;
+      const result = new Promise<unknown>((resolve, reject) => pendingAgent.set(callSeq, { resolve, reject }));
+      const o = (opts ?? {}) as { prompt?: unknown; outDir?: unknown };
+      const sent = trySend({ t: 'audio', runId: msg.runId, callSeq, label, prompt: o.prompt, outDir: o.outDir });
+      if (sent !== true) {
+        pendingAgent.delete(callSeq);
+        throw Object.assign(new Error(sent.message), { name: sent.code, code: sent.code });
+      }
+      return result;
+    },
     // Issue #161 B2: `msg.args` crossed host.ts's own 'start' send, which re-encoded any true
     // own-key `undefined` the host side had just decoded from a nested workflow() request (or, for
     // a top-level run, args that were never an issue in the first place — decode is a no-op then).

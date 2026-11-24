@@ -235,14 +235,23 @@ export function checkModelRef(ref: unknown, catalog: ModelCatalogSnapshot = EMPT
  *  entry's `modalities.out`): ok iff it includes `'image'`, whatever `modelType` says. A hand-built
  *  row from before this delta carries no `modalitiesOut` at all — falls back to the pre-delta
  *  `modelType === 'image-gen'` rule so no pre-existing caller/test changes. */
-const REQUIRED_MODEL_TYPE: Record<'agent' | 'decision' | 'image', ModelType> = {
+const REQUIRED_MODEL_TYPE: Record<'agent' | 'decision', ModelType> = {
   agent: 'chat',
   decision: 'decision',
-  image: 'image-gen',
 };
 
+/** #169: catalog output modalities agent() cannot return — agent() hands the script text only, so
+ *  a model whose output includes one of these would have that output silently dropped. */
+const NON_TEXT_AGENT_OUTPUTS: readonly string[] = ['audio', 'video'];
+
+/** #169: `audio.<label>` (generateAudio()) mirrors the `images` rule — ok iff the row's catalog
+ *  output modalities include 'audio', whatever `modelType` says (Lyria is catalogued 'chat' with
+ *  output ["audio","text"]). A row with no `modalitiesOut` falls back to `modelType === 'tts'`.
+ *  `agent` additionally refuses any row whose output modalities include audio or video (required
+ *  'text-output'), checked BEFORE the unverified-modelType warning arm: the modalities are catalog
+ *  evidence even when the modelType itself is only a guess. */
 export function checkPrimitiveModelType(
-  kind: 'agent' | 'decision' | 'image',
+  kind: 'agent' | 'decision' | 'image' | 'audio',
   label: string,
   model: string,
   row: { modelType: ModelType; modelTypeSource: ModelTypeSource; modalitiesOut?: readonly string[] } | undefined,
@@ -250,8 +259,11 @@ export function checkPrimitiveModelType(
 ):
   | { ok: true }
   | { ok: true; warning: { code: 'MODEL_TYPE_UNVERIFIED'; label: string; model: string; modelTypeSource: string } }
-  | { ok: false; code: 'MODEL_TYPE_MISMATCH'; label: string; model: string; actual: ModelType; required: ModelType | 'image-output' } {
+  | { ok: false; code: 'MODEL_TYPE_MISMATCH'; label: string; model: string; actual: ModelType; required: ModelType | 'image-output' | 'audio-output' | 'text-output' } {
   if (!catalogAvailable || row === undefined) return { ok: true };
+  if (kind === 'agent' && row.modalitiesOut !== undefined && row.modalitiesOut.some((m) => NON_TEXT_AGENT_OUTPUTS.includes(m))) {
+    return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required: 'text-output' };
+  }
   if (row.modelType === 'unknown' || row.modelTypeSource === 'id-heuristic') {
     return { ok: true, warning: { code: 'MODEL_TYPE_UNVERIFIED', label, model, modelTypeSource: row.modelTypeSource } };
   }
@@ -264,6 +276,10 @@ export function checkPrimitiveModelType(
       return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required: 'image-gen' };
     }
     return { ok: true };
+  }
+  if (kind === 'audio') {
+    if (row.modalitiesOut !== undefined ? row.modalitiesOut.includes('audio') : row.modelType === 'tts') return { ok: true };
+    return { ok: false, code: 'MODEL_TYPE_MISMATCH', label, model, actual: row.modelType, required: 'audio-output' };
   }
   const required = REQUIRED_MODEL_TYPE[kind];
   if (row.modelType !== required) {

@@ -79,6 +79,8 @@ export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: numb
 // handler below, not inside it).
 export type DecideRequestHandler = (msg: { runId: string; callSeq: number; label: string; state: unknown; questions: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 export type ImageRequestHandler = (msg: { runId: string; callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
+// #169: generateAudio()'s `{t:'audio', ...}` child message — same shape rules as the image one.
+export type AudioRequestHandler = (msg: { runId: string; callSeq: number; label: string; prompt: unknown; outDir?: unknown }, phase?: { title: string; index: number }) => Promise<unknown> | unknown;
 
 /** C-2 (review finding): carry the underlying error's OWN code across the sandbox IPC boundary
  *  instead of flattening every agent()/workflow() failure to one of two generic codes — so a caller
@@ -144,6 +146,8 @@ export interface SandboxHostConfig {
    *  (RunManager) always supplies both. */
   onDecideRequest?: DecideRequestHandler;
   onImageRequest?: ImageRequestHandler;
+  /** #169: handles a child's generateAudio() call — same contract as `onImageRequest`. */
+  onAudioRequest?: AudioRequestHandler;
   /** Handles a child's phase(title) notification (DES-006/DES-008 observability). */
   onPhase?: (title: string) => void;
   /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the run's two independent limits — `undefined`
@@ -492,6 +496,24 @@ export class SandboxHost {
             const phase = this._config.currentPhase?.();
             Promise.resolve()
               .then(() => this._config.onImageRequest!(msg, phase))
+              .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
+              .catch((err: unknown) =>
+                child.send({
+                  t: 'agentThrow',
+                  callSeq: msg.callSeq,
+                  error: { code: ipcErrorCode(err, 'INTERNAL_ERROR'), message: err instanceof Error ? err.message : String(err) },
+                }),
+              );
+            break;
+          }
+          case 'audio': {
+            if (!this._config.onAudioRequest) {
+              child.send({ t: 'agentThrow', callSeq: msg.callSeq, error: { code: 'INTERNAL_ERROR', message: 'no generateAudio() handler is wired on this host' } });
+              break;
+            }
+            const phase = this._config.currentPhase?.();
+            Promise.resolve()
+              .then(() => this._config.onAudioRequest!(msg, phase))
               .then((value) => child.send({ t: 'agentResult', callSeq: msg.callSeq, value, spent: this._config.onBudgetSnapshot?.() }))
               .catch((err: unknown) =>
                 child.send({

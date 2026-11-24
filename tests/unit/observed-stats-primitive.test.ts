@@ -91,3 +91,18 @@ describe('UT-359: aggregateFacts decide/image buckets (R-7; characterization)', 
     expect(b?.decide).toBeNull();
   });
 });
+
+// #169: a generateAudio() usage event lands in its own 'audio' bucket — never prose/tools/image.
+describe('#169: loadFacts/aggregateFacts audio bucket', () => {
+  it('an audio usage event produces kind:"audio" and aggregates into the audio bucket only', () => {
+    const events: TranscriptEvent[] = [
+      { ts: '2026-10-01T00:00:01Z', kind: 'usage', data: { primitive: 'audio', label: 'song', agentKey: 'song', provider: 'openrouter', model: 'google/lyria-3-clip-preview', startedAt: '2026-10-01T00:00:00Z', costUSD: 0.04, unpriced: false } },
+    ];
+    const facts = loadFacts(fakeSource(new Map([['agent-9', events]])), '2026-10-01T00:00:00Z');
+    expect(facts[0]?.kind).toBe('audio');
+    const agg = aggregateFacts(facts).get('openrouter/google/lyria-3-clip-preview');
+    expect(agg?.audio).not.toBeNull();
+    expect(agg?.image).toBeNull();
+    expect(agg?.prose).toBeNull();
+  });
+});

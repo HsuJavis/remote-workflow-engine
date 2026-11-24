@@ -70,6 +70,8 @@ export interface RunParams {
    *  Absent when the workflow declares neither block. */
   decisions?: Record<string, { model: string; timeoutMs: number; retries: number }>;
   images?: Record<string, { model: string; timeoutMs: number; retries: number }>;
+  /** #169: generateAudio()'s per-label slice, same shape as `images`. */
+  audio?: Record<string, { model: string; timeoutMs: number; retries: number }>;
 }
 
 export interface EffectiveCallParams extends Omit<RunParams, 'provenance' | 'args'> {

@@ -8,10 +8,13 @@ import { codedError } from '../errors.js';
 import type { CallKey, DecideAnswer, DecideQuestion, PrimitiveKind } from '../types.js';
 
 type JsonObject = Record<string, unknown>;
+type KindWord = 'decide' | 'generateImage' | 'generateAudio';
 
 export const MAX_DECIDE_QUESTIONS = 32;
 export const MAX_DECIDE_STATE_BYTES = 131_072;
 export const MAX_IMAGE_PROMPT_BYTES = 16_384;
+/** #169: generateAudio()'s prompt cap — lyrics go in the prompt, so the same cap as an image prompt. */
+export const MAX_AUDIO_PROMPT_BYTES = 16_384;
 export const MAX_INPUT_IMAGES = 4;
 export const MAX_OUTDIR_BYTES = 255;
 
@@ -19,19 +22,19 @@ const QUESTION_ID_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 
 /** Structural-only field path (never a value, never a key drawn from `state`) — the one thing every
  *  `PRIMITIVE_INPUT_INVALID` message is allowed to name beyond the fixed `fieldPath`/`rule` shape. */
-function invalid(kindWord: 'decide' | 'generateImage', label: string, fieldPath: string, rule: string): never {
+function invalid(kindWord: KindWord, label: string, fieldPath: string, rule: string): never {
   throw codedError('PRIMITIVE_INPUT_INVALID', `PRIMITIVE_INPUT_INVALID: ${kindWord} '${label}': ${fieldPath} ${rule}`);
 }
 
-function pathRefused(reason: 'escape' | 'not_regular' | 'too_large' | 'unsupported_type', detail: string): never {
-  throw codedError('IMAGE_PATH_REFUSED', `IMAGE_PATH_REFUSED: generateImage: ${detail} ${reason}`, { reason });
+function pathRefused(reason: 'escape' | 'not_regular' | 'too_large' | 'unsupported_type', detail: string, kindWord: KindWord = 'generateImage'): never {
+  throw codedError('IMAGE_PATH_REFUSED', `IMAGE_PATH_REFUSED: ${kindWord}: ${detail} ${reason}`, { reason });
 }
 
 function isPlainObject(v: unknown): v is JsonObject {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-function assertClosedKeys(label: string, kindWord: 'decide' | 'generateImage', opts: JsonObject, allowed: readonly string[]): void {
+function assertClosedKeys(label: string, kindWord: KindWord, opts: JsonObject, allowed: readonly string[]): void {
   for (const k of Object.keys(opts)) {
     if (!allowed.includes(k)) invalid(kindWord, label, k, 'is not a recognized argument');
   }
@@ -117,14 +120,33 @@ export function validateImageInput(label: string, opts: unknown): { prompt: stri
   return { prompt, inputImages, outDir };
 }
 
+/** #169: generateAudio()'s closed `{prompt, outDir?}` — same prompt/outDir rules as generateImage
+ *  (no input files: audio models here take a text prompt only). */
+export function validateAudioInput(label: string, opts: unknown): { prompt: string; outDir: string | undefined } {
+  if (!isPlainObject(opts)) invalid('generateAudio', label, 'opts', 'must be an object');
+  assertClosedKeys(label, 'generateAudio', opts, ['prompt', 'outDir']);
+  const prompt = opts['prompt'];
+  if (typeof prompt !== 'string' || prompt.length === 0) invalid('generateAudio', label, 'prompt', 'must be a non-empty string');
+  if (Buffer.byteLength(prompt) > MAX_AUDIO_PROMPT_BYTES) invalid('generateAudio', label, 'prompt', `exceeds ${MAX_AUDIO_PROMPT_BYTES} bytes`);
+  const outDirRaw = opts['outDir'];
+  let outDir: string | undefined;
+  if (outDirRaw !== undefined) {
+    if (typeof outDirRaw !== 'string' || outDirRaw.length === 0) invalid('generateAudio', label, 'outDir', 'must be a non-empty string');
+    if (Buffer.byteLength(outDirRaw) > MAX_OUTDIR_BYTES) invalid('generateAudio', label, 'outDir', `exceeds ${MAX_OUTDIR_BYTES} bytes`);
+    assertOutDirContained(outDirRaw, 'generateAudio');
+    outDir = outDirRaw;
+  }
+  return { prompt, outDir };
+}
+
 /** Rejects (IMAGE_PATH_REFUSED, reason 'escape') any outDir that could resolve outside the
  *  workspace — checked on the RAW string (never `path.normalize`d first: `normalize('a/../b')`
  *  collapses to `'b'`, which would silently hide the escape). A lone `'.'` segment (anywhere,
  *  including the whole string) is the one allowed dot-form. */
-function assertOutDirContained(outDir: string): void {
-  if (outDir.startsWith('/')) pathRefused('escape', 'outDir');
+function assertOutDirContained(outDir: string, kindWord: KindWord = 'generateImage'): void {
+  if (outDir.startsWith('/')) pathRefused('escape', 'outDir', kindWord);
   for (const segment of outDir.split('/')) {
-    if (segment !== '.' && segment.startsWith('.')) pathRefused('escape', 'outDir');
+    if (segment !== '.' && segment.startsWith('.')) pathRefused('escape', 'outDir', kindWord);
   }
 }
 
@@ -152,12 +174,12 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(sortKeysDeep(v));
 }
 
-/** Resume/replay key for a decide()/generateImage() call — kind-prefixed so the two primitives
- *  never collide on the same label/model/inputs. For `kind:'image'`, `outDir` is normalized BEFORE
- *  hashing so equivalent outDir spellings produce the same key. */
+/** Resume/replay key for a decide()/generateImage()/generateAudio() call — kind-prefixed so the
+ *  primitives never collide on the same label/model/inputs. For `kind:'image'`/`'audio'`, `outDir`
+ *  is normalized BEFORE hashing so equivalent outDir spellings produce the same key. */
 export function primitiveCallKey(kind: PrimitiveKind, label: string, model: string, inputs: unknown): CallKey {
   let toHash = inputs;
-  if (kind === 'image' && isPlainObject(inputs) && 'outDir' in inputs) {
+  if ((kind === 'image' || kind === 'audio') && isPlainObject(inputs) && 'outDir' in inputs) {
     const raw = inputs['outDir'];
     const normalized = typeof raw === 'string' || raw === undefined ? normalizeOutDir(raw) ?? null : raw;
     toHash = { ...inputs, outDir: normalized };

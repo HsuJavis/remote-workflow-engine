@@ -13,7 +13,7 @@
 // live fetch — the caller (an async function, e.g. `WorkflowCatalog.validateRegistration`) resolves
 // the live/last-good/static snapshot itself and hands the resolved value in.
 import type { ErrorCode } from '../errors.js';
-import { checkModelRef, EMPTY_MODEL_CATALOG as EMPTY_CATALOG, type ModelCatalogSnapshot } from '../providers.js';
+import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG as EMPTY_CATALOG, type ModelCatalogSnapshot } from '../providers.js';
 export type { ModelCatalogSnapshot } from '../providers.js';
 
 // v25 (issue #55, adjudication #9 I-1.2): the second member was spelled `tools` while the pipeline
@@ -90,6 +90,8 @@ export interface ParamContract {
    *  `parseParamContract`'s zero-primitive result byte-identical to its pre-v40 shape). */
   decisions?: Record<string, PrimitiveParamSpec>;
   images?: Record<string, PrimitiveParamSpec>;
+  /** #169: `meta.params.audio.<label>` for generateAudio() — same shape and presence rule as `images`. */
+  audio?: Record<string, PrimitiveParamSpec>;
 }
 
 // closed: a locked key is UNREPRESENTABLE inside an agent override block (ADR-001)
@@ -99,6 +101,7 @@ export interface UserOverrides {
   agents?: Record<string, Partial<{ model: string; effort: Effort; timeoutMs: number; appendPrompt: string }>>;
   decisions?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
   images?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
+  audio?: Record<string, Partial<{ model: string; timeoutMs: number; retries: number }>>;
 }
 
 export interface Ceilings {
@@ -139,7 +142,10 @@ export type Err = {
     | 'DECISION_DECLARED_NOT_IN_SCRIPT'
     | 'IMAGE_UNDECLARED'
     | 'IMAGE_DECLARED_NOT_IN_SCRIPT'
+    | 'AUDIO_UNDECLARED'
+    | 'AUDIO_DECLARED_NOT_IN_SCRIPT'
     | 'PRIMITIVE_PROVIDER_UNSUPPORTED'
+    | 'MODEL_TYPE_MISMATCH'
   >;
   message: string;
   detail: Record<string, unknown>;
@@ -490,7 +496,7 @@ function validateOneAgentSpec(
  *  ref is refused by NAME, never by whatever `checkModelRef` would say about it against an
  *  unrelated provider's rules. */
 function validateOnePrimitiveSpec(
-  kind: 'decisions' | 'images',
+  kind: 'decisions' | 'images' | 'audio',
   label: string,
   raw: unknown,
   catalog: ModelCatalogSnapshot,
@@ -508,7 +514,7 @@ function validateOnePrimitiveSpec(
   if (typeof model.default === 'string' && !model.default.startsWith('openrouter/')) {
     return invalid(
       `${param}.model`,
-      `default must be an "openrouter/<model-id>" ref — decide()/generateImage() only dispatch through the openrouter gateway`,
+      `default must be an "openrouter/<model-id>" ref — decide()/generateImage()/generateAudio() only dispatch through the openrouter gateway`,
       'PRIMITIVE_PROVIDER_UNSUPPORTED',
     );
   }
@@ -556,10 +562,12 @@ export function parseParamContract(
   metaParams: unknown,
   scriptLabels: string[],
   catalog: ModelCatalogSnapshot = EMPTY_CATALOG,
-  primitiveLabels: { decide: string[]; generateImage: string[] } = { decide: [], generateImage: [] },
+  primitiveLabels: { decide: string[]; generateImage: string[]; generateAudio?: string[] } = { decide: [], generateImage: [] },
 ): { ok: true; value: ParamContract; warnings?: ModelRefWarning[] } | Err {
+  // #169: optional so every pre-existing two-key caller is unchanged.
+  const audioLabels = primitiveLabels.generateAudio ?? [];
   if (metaParams === undefined) {
-    if (scriptLabels.length === 0 && primitiveLabels.decide.length === 0 && primitiveLabels.generateImage.length === 0) {
+    if (scriptLabels.length === 0 && primitiveLabels.decide.length === 0 && primitiveLabels.generateImage.length === 0 && audioLabels.length === 0) {
       return { ok: true, value: { agents: {}, args: {} } };
     }
     if (scriptLabels.length > 0) {
@@ -573,13 +581,16 @@ export function parseParamContract(
     if (primitiveLabels.decide.length > 0) {
       return { ok: false, code: 'DECISION_UNDECLARED', message: `decide label "${primitiveLabels.decide[0]}" has no params.decisions.${primitiveLabels.decide[0]} declaration`, detail: { label: primitiveLabels.decide[0] } };
     }
-    return { ok: false, code: 'IMAGE_UNDECLARED', message: `generateImage label "${primitiveLabels.generateImage[0]}" has no params.images.${primitiveLabels.generateImage[0]} declaration`, detail: { label: primitiveLabels.generateImage[0] } };
+    if (primitiveLabels.generateImage.length > 0) {
+      return { ok: false, code: 'IMAGE_UNDECLARED', message: `generateImage label "${primitiveLabels.generateImage[0]}" has no params.images.${primitiveLabels.generateImage[0]} declaration`, detail: { label: primitiveLabels.generateImage[0] } };
+    }
+    return { ok: false, code: 'AUDIO_UNDECLARED', message: `generateAudio label "${audioLabels[0]}" has no params.audio.${audioLabels[0]} declaration`, detail: { label: audioLabels[0] } };
   }
   if (typeof metaParams !== 'object' || metaParams === null || Array.isArray(metaParams)) {
     return invalid('root', 'meta.params must be an object');
   }
 
-  const raw = metaParams as { agents?: unknown; args?: unknown; knobs?: unknown; defaults?: unknown; decisions?: unknown; images?: unknown };
+  const raw = metaParams as { agents?: unknown; args?: unknown; knobs?: unknown; defaults?: unknown; decisions?: unknown; images?: unknown; audio?: unknown };
   // v24 (ADR-035): both retired sites refused BY NAME, before anything else is parsed.
   if (raw.knobs !== undefined) return retiredDefaults('meta.params.knobs');
   if (raw.defaults !== undefined) return retiredDefaults('meta.defaults');
@@ -650,8 +661,12 @@ export function parseParamContract(
   if (raw.images !== undefined && (typeof raw.images !== 'object' || raw.images === null || Array.isArray(raw.images))) {
     return invalid('images', 'params.images must be an object');
   }
+  if (raw.audio !== undefined && (typeof raw.audio !== 'object' || raw.audio === null || Array.isArray(raw.audio))) {
+    return invalid('audio', 'params.audio must be an object');
+  }
   const decisionsIn = (raw.decisions ?? {}) as Record<string, unknown>;
   const imagesIn = (raw.images ?? {}) as Record<string, unknown>;
+  const audioIn = (raw.audio ?? {}) as Record<string, unknown>;
 
   const decideSet = new Set(primitiveLabels.decide);
   for (const label of primitiveLabels.decide) {
@@ -675,6 +690,17 @@ export function parseParamContract(
       return { ok: false, code: 'IMAGE_DECLARED_NOT_IN_SCRIPT', message: `params.images.${label} is declared but no generateImage() call in the script uses it`, detail: { label } };
     }
   }
+  const audioSet = new Set(audioLabels);
+  for (const label of audioLabels) {
+    if (!Object.hasOwn(audioIn, label)) {
+      return { ok: false, code: 'AUDIO_UNDECLARED', message: `generateAudio label "${label}" has no params.audio.${label} declaration`, detail: { label } };
+    }
+  }
+  for (const label of Object.keys(audioIn)) {
+    if (!audioSet.has(label)) {
+      return { ok: false, code: 'AUDIO_DECLARED_NOT_IN_SCRIPT', message: `params.audio.${label} is declared but no generateAudio() call in the script uses it`, detail: { label } };
+    }
+  }
 
   const decisions: Record<string, PrimitiveParamSpec> = {};
   for (const [label, spec] of Object.entries(decisionsIn)) {
@@ -688,6 +714,12 @@ export function parseParamContract(
     if (specErr) return specErr;
     images[label] = spec as PrimitiveParamSpec;
   }
+  const audio: Record<string, PrimitiveParamSpec> = {};
+  for (const [label, spec] of Object.entries(audioIn)) {
+    const specErr = validateOnePrimitiveSpec('audio', label, spec, catalog, (w) => warnings.push(w));
+    if (specErr) return specErr;
+    audio[label] = spec as PrimitiveParamSpec;
+  }
 
   return {
     ok: true,
@@ -696,6 +728,7 @@ export function parseParamContract(
       args,
       ...(raw.decisions !== undefined ? { decisions } : {}),
       ...(raw.images !== undefined ? { images } : {}),
+      ...(raw.audio !== undefined ? { audio } : {}),
     },
     ...(warnings.length > 0 ? { warnings } : {}),
   };
@@ -921,10 +954,31 @@ function validateOneAgentOverride(
       }
       if (verdict.warning) warn({ code: 'MODEL_CATALOG_UNVERIFIED', label, model: val, message: verdict.warning });
     }
+    // #169: agent() returns text only, so a run-time model choice (free string or enum member) whose
+    // catalogued output includes audio or video is refused here, the same as the registration gate
+    // refuses such a declared default — never run with its media silently dropped.
+    if (key === 'model' && typeof val === 'string') {
+      const mediaErr = agentMediaOutputErr(label, val, catalog);
+      if (mediaErr) return mediaErr;
+    }
 
     value[key] = val;
   }
   return { ok: true, value };
+}
+
+export function agentMediaOutputErr(label: string, ref: string, catalog: ModelCatalogSnapshot): Err | null {
+  const parsed = parseModelRef(ref);
+  if (!parsed) return null;
+  const entry = catalog.entries.find((e) => e.provider === parsed.provider && e.model === parsed.model);
+  const media = entry?.modalities?.out.filter((m) => m === 'audio' || m === 'video') ?? [];
+  if (media.length === 0) return null;
+  return {
+    ok: false,
+    code: 'MODEL_TYPE_MISMATCH',
+    message: `MODEL_TYPE_MISMATCH: agent '${label}' cannot use model '${ref}': its output includes ${media.join(' and ')}, which agent() cannot return${media.includes('audio') ? ' — declare it under meta.params.audio.<label> and call generateAudio() instead' : ''}`,
+    detail: { param: 'model', agent: label, model: ref, actual: entry?.modelType, required: 'text-output' },
+  };
 }
 
 /** v40 Gate 6 delta (DES-277, ARCH-188/189, R-13, TASK-274): the per-label rejection table for ONE
@@ -937,7 +991,7 @@ function validateOneAgentOverride(
  *  existence/warning path (`checkModelRefOrErr`) an `agents` override already goes through. No
  *  model-type gate here — ADMISSION never re-checks `modelType` (V40-Q6, DES-276). */
 function validatePrimitiveOverride(
-  block: 'decisions' | 'images',
+  block: 'decisions' | 'images' | 'audio',
   label: string,
   raw: unknown,
   ceilings: Ceilings,
@@ -997,7 +1051,7 @@ function validatePrimitiveOverride(
       return {
         ok: false,
         code: 'PRIMITIVE_PROVIDER_UNSUPPORTED',
-        message: `"${block}.${label}.model" must be an "openrouter/<model-id>" ref — decide()/generateImage() only dispatch through the openrouter gateway`,
+        message: `"${block}.${label}.model" must be an "openrouter/<model-id>" ref — decide()/generateImage()/generateAudio() only dispatch through the openrouter gateway`,
         detail: { param: `${block}.${label}.model`, ...truncatedSupplied(val) },
       };
     }
@@ -1025,6 +1079,7 @@ export function validateUserOverrides(
     agents?: Record<string, Record<string, unknown>>;
     decisions?: Record<string, Record<string, unknown>>;
     images?: Record<string, Record<string, unknown>>;
+    audio?: Record<string, Record<string, unknown>>;
   };
   // v24 (integrator; DES-145/ADR-001): the TOP level of `overrides` is closed to `{agents}`. It
   // used to be unread — every key other than `agents` was silently dropped, so the whole v21 FLAT
@@ -1035,7 +1090,7 @@ export function validateUserOverrides(
   // where it matters. Locked keys keep their own code because it is the actionable one.
   // v40 Gate 6 delta (DES-277, TASK-274): closed set widened to `{agents, decisions, images}`.
   for (const key of Object.keys(obj)) {
-    if (key === 'agents' || key === 'decisions' || key === 'images') continue;
+    if (key === 'agents' || key === 'decisions' || key === 'images' || key === 'audio') continue;
     if ((LOCKED_KEYS as readonly string[]).includes(key)) {
       return {
         ok: false,
@@ -1049,7 +1104,7 @@ export function validateUserOverrides(
       code: 'PARAM_UNKNOWN',
       message: (TUNABLE_KEYS as readonly string[]).includes(key)
         ? `"${key}" is a per-agent override in v24 — spell it as overrides.agents.<label>.${key}`
-        : `"${key}" is not a recognized override; overrides has exactly {agents, decisions, images}`,
+        : `"${key}" is not a recognized override; overrides has exactly {agents, decisions, images, audio}`,
       detail: { param: key, tunable: [...TUNABLE_KEYS] },
     };
   }
@@ -1091,8 +1146,8 @@ export function validateUserOverrides(
 
   // v40 Gate 6 delta (DES-277, R-13, TASK-274): same shape as `agents` above, once per block, each
   // against its OWN declared label set (`c.decisions`/`c.images`) and its OWN result slice.
-  const resultByBlock: { decisions?: Record<string, Record<string, unknown>>; images?: Record<string, Record<string, unknown>> } = {};
-  for (const block of ['decisions', 'images'] as const) {
+  const resultByBlock: { decisions?: Record<string, Record<string, unknown>>; images?: Record<string, Record<string, unknown>>; audio?: Record<string, Record<string, unknown>> } = {};
+  for (const block of ['decisions', 'images', 'audio'] as const) {
     const blockIn = obj[block];
     if (blockIn === undefined) continue;
     if (!isPlainObject(blockIn)) {

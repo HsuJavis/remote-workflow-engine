@@ -73,3 +73,12 @@ describe('UT-364: workflow_describe projects decisions/images (R-16, DES-278)', 
     expect(Object.keys(view.params).sort()).toEqual(['agents', 'args']);
   });
 });
+
+// #169: workflow_describe projects a declared params.audio block the same way as images.
+describe('#169: workflow_describe projects audio', () => {
+  it('a declared audio block is projected per label with defaults and bounds', () => {
+    const view = projectWorkflowDescribe(owner({ agents: {}, args: {}, audio: { song: PRIM('openrouter/google/lyria-3-clip-preview', 180000, 1) } }), { triggers: [] });
+    const p = view.params as unknown as { audio?: Record<string, Record<string, unknown>> };
+    expect(p.audio?.['song']).toMatchObject({ model: { default: 'openrouter/google/lyria-3-clip-preview' }, timeoutMs: { default: 180000 }, retries: { default: 1, range: { min: 0, max: 5 } } });
+  });
+});

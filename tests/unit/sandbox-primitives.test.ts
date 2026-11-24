@@ -53,3 +53,23 @@ describe('UT-350: evaluateScript wires decide()/generateImage() (DES-272)', () =
     expect(r.kind).toBe('done');
   });
 });
+
+// #169: generateAudio() is a sandbox global built on the same template as generateImage().
+describe('#169: evaluateScript wires generateAudio()', () => {
+  it('SANDBOX_GLOBALS contains generateAudio', () => {
+    expect(SANDBOX_GLOBALS).toContain('generateAudio');
+  });
+
+  it("a script calling generateAudio() resolves with the handler's return value", async () => {
+    const api = fakeApi({ generateAudio: async () => ({ files: [{ path: 'generated/song-1-0.mp3' }], text: '<instrumental>' }) } as never);
+    const r = await evaluateScript(`const a = await generateAudio('song', {prompt:'x'}); return { n: a.files.length, text: a.text };`, api);
+    expect(r.kind).toBe('done');
+    expect(r.value).toEqual({ n: 1, text: '<instrumental>' });
+  });
+
+  it('a coded handler failure keeps its own code across the boundary', async () => {
+    const api = fakeApi({ generateAudio: async () => { throw Object.assign(new Error("generateAudio 'song' failed: no_output after 1 attempt"), { code: 'PRIMITIVE_FAILED' }); } } as never);
+    const r = await evaluateScript(`try { await generateAudio('song', {prompt:'x'}); return 'no'; } catch (e) { return e.code; }`, api);
+    expect(r.value).toBe('PRIMITIVE_FAILED');
+  });
+});

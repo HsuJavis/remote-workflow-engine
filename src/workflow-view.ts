@@ -131,6 +131,7 @@ export interface WorkflowDescribeView {
     // only `params`'s own inner shape grows).
     decisions?: Record<string, DescribePrimitiveParams>;
     images?: Record<string, DescribePrimitiveParams>;
+    audio?: Record<string, DescribePrimitiveParams>; // #169: generateAudio() labels, same rule
   };
   lockedKeys: readonly string[]; // === LOCKED_KEYS from src/params/contract.ts — imported, never re-typed
   owner: string | null;
@@ -309,7 +310,7 @@ export function projectWorkflowDescribe(
   const attempts = ctx.attempts ?? DEFAULT_ATTEMPTS;
   const paramsRaw = full.params as {
     agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec>;
-    decisions?: Record<string, PrimitiveParamSpec>; images?: Record<string, PrimitiveParamSpec>;
+    decisions?: Record<string, PrimitiveParamSpec>; images?: Record<string, PrimitiveParamSpec>; audio?: Record<string, PrimitiveParamSpec>;
   } | undefined;
   const legacy = isLegacyParamsShape(full.params);
   // #98 item 6: an explicit `version` selector (`full.resolvedBy === 'version'`) is what
@@ -373,6 +374,7 @@ export function projectWorkflowDescribe(
       args: (!legacy && paramsRaw?.args) || {},
       ...(!legacy && paramsRaw?.decisions ? { decisions: projectPrimitiveParams(paramsRaw.decisions) } : {}),
       ...(!legacy && paramsRaw?.images ? { images: projectPrimitiveParams(paramsRaw.images) } : {}),
+      ...(!legacy && paramsRaw?.audio ? { audio: projectPrimitiveParams(paramsRaw.audio) } : {}),
     },
     lockedKeys: LOCKED_KEYS,
     owner: full.owner,

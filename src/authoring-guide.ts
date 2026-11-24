@@ -129,6 +129,9 @@ export const EXAMPLE_MODEL_PI = 'openrouter/anthropic/claude-haiku-4.5';
 // literal string.
 export const EXAMPLE_DECISION_MODEL = 'openrouter/typesafe/jev-1.13';
 export const EXAMPLE_IMAGE_MODEL = 'openrouter/google/gemini-2.5-flash-image';
+// #169: generateAudio()'s example ref — OpenRouter's Lyria clip model (output ["audio","text"]),
+// verified live against the streaming chat-completions endpoint generateAudio() calls.
+export const EXAMPLE_AUDIO_MODEL = 'openrouter/google/lyria-3-clip-preview';
 
 /** issue #154 B4 + #153 L2: picks the example model ref for the harness actually in scope at render
  *  time — `undefined` (the static `docs/AUTHORING.md`, built once before any host boots, same "can't
@@ -906,16 +909,17 @@ function roleAssetMatrixRows(): string {
 // v41 (DES-276, ARCH-194, TASK-279): adds `aborted` (a run_suspend/run_stop cutoff mid-attempt);
 // `write` was already present.
 const PRIMITIVE_FAILED_GRAMMAR =
-  "`^(decide|generateImage) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large|write|aborted) after \\d+ attempts?$`";
+  "`^(decide|generateImage|generateAudio) '[A-Za-z_][\\w-]*' failed: (HTTP \\d{3}|timeout|network|no_output|malformed|response_too_large|write|aborted) after \\d+ attempts?$`";
 
 /** v40 (DES-276, ARCH-194, TASK-273): decide()/generateImage() — declaration shape, call
  *  signature/return shape, the v40 error codes (one cause + one fix line each), the
  *  PRIMITIVE_FAILED grammar, the bool idiom, the wall-time bound, and suggested defaults. */
 function decideImageSectionBody(): string {
   return (
-    'Two more sandbox globals dispatch a single OpenRouter call each, outside the `agent()` harness ' +
-      'loop (no tools, no conversation turns) — a yes/no or structured judgment (`decide`), or an ' +
-      'image from a prompt and optional input images (`generateImage`):\n\n' +
+    'Three more sandbox globals dispatch a single OpenRouter call each, outside the `agent()` harness ' +
+      'loop (no tools, no conversation turns) — a yes/no or structured judgment (`decide`), an ' +
+      'image from a prompt and optional input images (`generateImage`), or an audio clip from a ' +
+      'prompt (`generateAudio`):\n\n' +
       "- `await decide(label, { state, questions })` → `{ answers }` — `state` is a plain JSON object " +
       "(your context); `questions` is `{ <id>: { type: 'bool'|'choice'|'score', instructions, criteria } }` " +
       "(bool: `criteria: {true, false}`; choice: `criteria` a map of option -> description; score: " +
@@ -926,49 +930,67 @@ function decideImageSectionBody(): string {
       "- `await generateImage(label, { prompt, inputImages?, outDir? })` → `{ files }` — `inputImages` " +
       "(≤ 4) and `files[].path` are workspace-relative paths; `outDir` defaults to `'generated'`. A " +
       "changed or missing image file on resume regenerates that call and every later one (same " +
-      'resume semantics as a changed input anywhere else in this engine).\n\n' +
+      'resume semantics as a changed input anywhere else in this engine).\n' +
+      "- `await generateAudio(label, { prompt, outDir? })` → `{ files, text }` — `prompt` (≤ 16384 " +
+      'bytes) is everything the model hears, lyrics included; `files` is exactly one ' +
+      "`{ path, mimeType, bytes, sha256 }` (an `.mp3`/`.wav`/`.ogg`/`.flac`, typed by its own bytes) " +
+      "under `outDir` (default `'generated'`); `text` is the model's own text output (e.g. the lyrics " +
+      "it sang, or `<instrumental>`). Same resume rule as `generateImage()`. A model whose output " +
+      "modalities include `'audio'` must be called through `generateAudio()` — declaring it for " +
+      '`agent()` is refused `MODEL_TYPE_MISMATCH` at registration, because `agent()` returns text ' +
+      'only and the audio would be lost.\n\n' +
       'Each needs its OWN declaration block — `meta.params.decisions.<label>` for `decide()`, ' +
-      '`meta.params.images.<label>` for `generateImage()` — the SAME "no implicit engine default" ' +
+      '`meta.params.images.<label>` for `generateImage()`, `meta.params.audio.<label>` for ' +
+      '`generateAudio()` — the SAME "no implicit engine default" ' +
       "shape as `meta.params.agents.<label>`: `model`/`timeoutMs`/`retries` all REQUIRED with a " +
-      '`.default` (no `effort`; decide/generateImage never take one):\n\n' +
+      '`.default` (no `effort`; none of the three takes one):\n\n' +
       '```js\n' +
       'params: {\n' +
       `  decisions: { ready: { model: { type: 'string', default: '${EXAMPLE_DECISION_MODEL}' }, timeoutMs: { type: 'number', default: 5000 }, retries: { type: 'number', default: 2 } } },\n` +
       `  images: { poster: { model: { type: 'string', default: '${EXAMPLE_IMAGE_MODEL}' }, timeoutMs: { type: 'number', default: 120000 }, retries: { type: 'number', default: 0 } } },\n` +
+      `  audio: { jingle: { model: { type: 'string', default: '${EXAMPLE_AUDIO_MODEL}' }, timeoutMs: { type: 'number', default: 180000 }, retries: { type: 'number', default: 0 } } },\n` +
       '}\n' +
       '```\n\n' +
       // declared<=>used + provider gate.
-      'Every `decide()`/`generateImage()` label must have a matching `decisions`/`images` entry and ' +
+      'Every `decide()`/`generateImage()`/`generateAudio()` label must have a matching ' +
+      '`decisions`/`images`/`audio` entry and ' +
       'vice versa, the SAME shape as `agents`. `retries` is an integer ' +
       `0..${MAX_PRIMITIVE_RETRIES} (declared and any run override). The codes:\n\n` +
-      "- `DECISION_UNDECLARED`/`IMAGE_UNDECLARED` — a `decide()`/`generateImage()` call uses a label " +
-      "with no `decisions`/`images` entry → fix: add `meta.params.decisions.<label>`/" +
-      '`meta.params.images.<label>`.\n' +
-      "- `DECISION_DECLARED_NOT_IN_SCRIPT`/`IMAGE_DECLARED_NOT_IN_SCRIPT` — a declared label is never " +
+      "- `DECISION_UNDECLARED`/`IMAGE_UNDECLARED`/`AUDIO_UNDECLARED` — a `decide()`/`generateImage()`/" +
+      "`generateAudio()` call uses a label with no `decisions`/`images`/`audio` entry → fix: add " +
+      '`meta.params.decisions.<label>`/`meta.params.images.<label>`/`meta.params.audio.<label>`.\n' +
+      "- `DECISION_DECLARED_NOT_IN_SCRIPT`/`IMAGE_DECLARED_NOT_IN_SCRIPT`/`AUDIO_DECLARED_NOT_IN_SCRIPT` — a declared label is never " +
       'called → fix: call it, or delete the declaration.\n' +
       "- `PRIMITIVE_PROVIDER_UNSUPPORTED` — `model.default` does not start `openrouter/` (decide()/" +
-      'generateImage() only ever dispatch through the openrouter gateway, under either ' +
+      'generateImage()/generateAudio() only ever dispatch through the openrouter gateway, under either ' +
       '`gateway:"sdk"` or `gateway:"pi"`) → fix: use an `openrouter/<model-id>` ref.\n' +
       "- `PRIMITIVE_INPUT_INVALID` — AT DISPATCH: the call's own options object carries an " +
       "unrecognized key (`decide()` accepts only `state`/`questions`; `generateImage()` only " +
-      "`prompt`/`inputImages`/`outDir` — a literal `model`/`timeoutMs`/`retries` there is this " +
+      "`prompt`/`inputImages`/`outDir`; `generateAudio()` only `prompt`/`outDir` — a literal `model`/`timeoutMs`/`retries` there is this " +
       "error, not a registration-time one) or a malformed `state`/`questions`/`prompt`/" +
       "`inputImages`/`outDir` shape → fix: move `model`/`timeoutMs`/`retries` to the label's " +
       'declaration; fix the argument shape.\n' +
-      "- `IMAGE_PATH_REFUSED` — an `inputImages` entry or `outDir` resolves outside the run/asset " +
+      "- `IMAGE_PATH_REFUSED` — an `inputImages` entry or a `generateImage()`/`generateAudio()` `outDir` resolves outside the run/asset " +
       'workspace, or is not a plain regular file of an accepted type/size → fix: use a workspace-' +
       'relative path to a real small image file.\n' +
       "- `MODEL_TYPE_MISMATCH` — the declared model IS verifiable against a live catalog but is " +
       "catalogued the wrong way for the primitive (`decide()` needs `modelType:'decision'`; " +
       "`generateImage()` needs a model whose output modalities include `'image'`, e.g. a " +
-      "`modelType:'chat'` image-and-text model, not only a dedicated `'image-gen'` one) → fix: " +
-      'pick a model models_list reports with the right modelType/output modalities.\n' +
+      "`modelType:'chat'` image-and-text model, not only a dedicated `'image-gen'` one; " +
+      "`generateAudio()` needs output modalities including `'audio'`; `agent()` refuses a model " +
+      "whose output modalities include `'audio'` or `'video'` — use `generateAudio()` for an " +
+      'audio-output model) → fix: pick a model models_list reports with the right modelType/output ' +
+      'modalities, or move the label to the primitive that matches its output.\n' +
       '- `MODEL_TYPE_UNVERIFIED` (a non-fatal registration warning, not a refusal) — the catalog ' +
       'could not verify the declared model (unknown, or an id-heuristic guess) — same "warn, never ' +
       "block, when the catalog cannot say\" posture `agent()`'s own MODEL_CATALOG_UNVERIFIED " +
       'warning already has → fix: none required; double-check the id against models_list if unsure.\n' +
-      '- `PRICE_UNKNOWN` — a USD budget is armed and the declared model has no catalogued price → ' +
-      'fix: arm a token budget instead, or pick a priced model.\n' +
+      '- `PRICE_UNKNOWN` — a USD budget is armed and the declared `decide()`/`generateImage()` model ' +
+      'has no catalogued price → fix: arm a token budget instead, or pick a priced model. ' +
+      "`generateAudio()` is never refused this way: audio models bill per clip, so each call is " +
+      "charged the provider's own reported cost; a call whose cost the provider did not report " +
+      'counts in `unpricedCalls` (and `budgetEnforceable.usd` turns false), never as $0. A USD budget ' +
+      'still stops new generateAudio() calls once the run has reached it.\n' +
       '- `OPENROUTER_AUTH_MISSING` — no OpenRouter key is configured on this engine (checked before ' +
       'anything is spent) → fix: have the operator set `RWE_SECRET_OPENROUTER_API_KEY` (or ' +
       '`OPENROUTER_API_KEY`).\n' +
@@ -979,12 +1001,13 @@ function decideImageSectionBody(): string {
       'connection-level failure (no HTTP status: connect timeout, reset, dead keep-alive) are ' +
       'retried up to `retries`; any other 4xx, `malformed`, `no_output`, `response_too_large` and ' +
       '`write` are not.\n\n' +
-      'decide()/generateImage() calls count toward the SAME run budget and the same ' +
+      'decide()/generateImage()/generateAudio() calls count toward the SAME run budget and the same ' +
       '1000-model-calls-per-run ceiling as every `agent()` call. Worst-case wall time for one call ' +
       `(every attempt timing out) is bounded by \`(retries+1) × timeoutMs + retries × ` +
       `${RETRY_AFTER_CAP_MS / 1000}s\` (the per-retry backoff cap); a timed-out or disconnected image ` +
-      'call may still be billed if the provider had already started rendering. Suggested starting ' +
-      'defaults: `decide` `timeoutMs: 5000, retries: 2`; `generateImage` `timeoutMs: 120000, retries: 0`.'
+      'call may still be billed if the provider had already started rendering, and so may an audio call. Suggested starting ' +
+      'defaults: `decide` `timeoutMs: 5000, retries: 2`; `generateImage` `timeoutMs: 120000, retries: 0`; ' +
+      '`generateAudio` `timeoutMs: 180000, retries: 0`.'
   );
 }
 
@@ -1355,7 +1378,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
 
   parts.push(
     section(
-      'Decisions and image generation (decide(), generateImage())',
+      'Decisions, image and audio generation (decide(), generateImage(), generateAudio())',
       decideImageSectionBody(),
     ),
   );

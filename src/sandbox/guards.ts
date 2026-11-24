@@ -96,6 +96,8 @@ export interface SandboxApi {
    *  supplies both, exactly as it always supplies `agent`. */
   decide?(label: string, opts?: unknown): Promise<unknown>;
   generateImage?(label: string, opts?: unknown): Promise<unknown>;
+  /** #169: generateAudio() — same marshalling as generateImage() (`{t:'audio'}`). */
+  generateAudio?(label: string, opts?: unknown): Promise<unknown>;
   /** Optional: forwards phase(title) calls to the parent for observability (DES-006/DES-008). */
   phase?(title: string): void;
 }
@@ -110,7 +112,8 @@ const MAX_ITEMS = 4096;
 // note at the top: it does not resolve `.js`→`.ts` for value imports).
 // v40 (DES-272, ARCH-186, TASK-269): `decide`/`generateImage` join the exposed globals — the two
 // engine-owned primitives alongside `agent`.
-export const SANDBOX_GLOBALS = ['agent', 'decide', 'generateImage', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math', 'Intl'] as const;
+// #169: `generateAudio` joins them, the audio counterpart of `generateImage`.
+export const SANDBOX_GLOBALS = ['agent', 'decide', 'generateImage', 'generateAudio', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math', 'Intl'] as const;
 
 /** One of the three calls `guardedDate`/`guardedMath` above refuse, plus the guide-facing reasoning
  *  DES-187 asks for: WHY it is refused (the resume-replay hazard both guards share) and INSTEAD
@@ -125,7 +128,7 @@ export interface DeterminismGuard {
 export const DETERMINISM_GUARDED: readonly DeterminismGuard[] = [
   {
     call: 'Date.now()', // det:allow — the guard TABLE names the API it blocks inside a script; this file calls none of them
-    why: "resume replays agent()/decide()/generateImage() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call.",
+    why: "resume replays agent()/decide()/generateImage()/generateAudio() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call.",
     instead: 'read a timestamp off run_status/run_result, or pass one in via args.',
   },
   {
@@ -687,6 +690,22 @@ function makeGenerateImage(api: SandboxApi, CtxError: ErrorConstructor, reRealm:
     );
 }
 
+/** #169: `generateAudio()` — the same template as `makeGenerateImage`. */
+function makeGenerateAudio(api: SandboxApi, CtxError: ErrorConstructor, reRealm: (value: unknown) => unknown, CtxPromise: PromiseConstructor) {
+  return (label: string, opts?: unknown): Promise<unknown> =>
+    toCtxPromise(
+      CtxPromise,
+      (async () => {
+        try {
+          const raw = await api.generateAudio!(label, opts);
+          return reRealm(raw);
+        } catch (err) {
+          throw sanitizeThrownError(CtxError, err);
+        }
+      })(),
+    );
+}
+
 /** #157 B1: rebuilds the script-visible `budget` object natively in `CtxObject`'s realm. `spent`/
  *  `remaining`/`tokens` stay LIVE closures over the real `api.budget` (so mid-script accounting
  *  updates are still observed exactly as before — this is NOT a one-time snapshot), each with its
@@ -796,6 +815,7 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   const agentFn = makeAgent(api, CtxError, reRealm, CtxPromise);
   const decideFn = makeDecide(api, CtxError, reRealm, CtxPromise);
   const generateImageFn = makeGenerateImage(api, CtxError, reRealm, CtxPromise);
+  const generateAudioFn = makeGenerateAudio(api, CtxError, reRealm, CtxPromise);
   const parallelFn = makeParallel(CtxError, reRealm, CtxPromise);
   const pipelineFn = makePipeline(CtxError, reRealm, CtxPromise);
   const workflowFn = makeWorkflow(api, CtxError, reRealm, CtxPromise);
@@ -819,6 +839,7 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     agent: wrap(agentFn),
     decide: wrap(decideFn),
     generateImage: wrap(generateImageFn),
+    generateAudio: wrap(generateAudioFn),
     parallel: wrap(parallelFn),
     pipeline: wrap(pipelineFn),
     phase: wrap(phaseFn),

@@ -96,7 +96,7 @@ function parseErrorFor(script: string, err: unknown): ScriptCheckError {
 // v40 (DES-271, ARCH-188/189, TASK-268): `decide`/`generateImage` join the closed set — a renamed
 // alias (`const d = decide; d(...)`) hides the call from `scanPrimitiveCalls` exactly the way it
 // hides an `agent()` call from `scanAgentCalls`.
-const CALLABLE_API_NAMES = new Set(['agent', 'phase', 'parallel', 'pipeline', 'workflow', 'decide', 'generateImage']);
+const CALLABLE_API_NAMES = new Set(['agent', 'phase', 'parallel', 'pipeline', 'workflow', 'decide', 'generateImage', 'generateAudio']);
 
 /** Minimal estree walk that also hands the visitor the PARENT node and the property key the current
  *  node was reached through (e.g. `'callee'`, `'params'`, `'id'`) — `script-spans.ts`'s own walker

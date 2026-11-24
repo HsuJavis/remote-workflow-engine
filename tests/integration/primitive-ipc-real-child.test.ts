@@ -77,3 +77,48 @@ describe('IT-308: real-child callSeq sharing and IPC routing for decide/generate
     }
   });
 });
+
+// #169: generateAudio() over the real child IPC — same shared callSeq counter, own `{t:'audio'}`
+// message routed to `onAudioRequest`, the same INTERNAL_ERROR fallback when no handler is wired.
+describe('#169: real-child IPC routing for generateAudio', () => {
+  it('generateAudio draws the next shared callSeq and reaches onAudioRequest with {label, prompt, outDir}', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'rwe-audio-ipc-'));
+    const seen: unknown[] = [];
+    try {
+      const host = new SandboxHost({
+        workspaceRoot,
+        onImageRequest: async (msg: { callSeq: number }) => { seen.push({ kind: 'image', callSeq: msg.callSeq }); return { files: [] }; },
+        onAudioRequest: async (msg: { callSeq: number; label: string; prompt: unknown; outDir?: unknown }) => {
+          seen.push({ kind: 'audio', callSeq: msg.callSeq, label: msg.label, prompt: msg.prompt, outDir: msg.outDir });
+          return { files: [{ path: 'out/song-2-0.mp3' }], text: '<instrumental>' };
+        },
+      } as never);
+      const r = await host.run('run-audio-ipc', `
+        await generateImage('hero', {prompt:'p'});
+        const a = await generateAudio('song', {prompt:'la la', outDir:'out'});
+        return a.text;
+      `, undefined, null);
+      expect(r).toMatchObject({ result: '<instrumental>' });
+      expect(seen).toEqual([
+        { kind: 'image', callSeq: expect.any(Number) },
+        { kind: 'audio', callSeq: (seen[0] as { callSeq: number }).callSeq + 1, label: 'song', prompt: 'la la', outDir: 'out' },
+      ]);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('absent onAudioRequest -> INTERNAL_ERROR, no dispatch', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'rwe-audio-ipc-none-'));
+    try {
+      const host = new SandboxHost({ workspaceRoot } as never);
+      const r = await host.run('run-audio-none', `
+        try { await generateAudio('song', {prompt:'p'}); return 'no-throw'; }
+        catch (e) { return { code: e.code }; }
+      `, undefined, null);
+      expect((r as { result: unknown }).result).toEqual({ code: 'INTERNAL_ERROR' });
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});

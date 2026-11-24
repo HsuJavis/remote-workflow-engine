@@ -23,7 +23,7 @@ export const OBSERVED_NONE: ObservedForRef = { window: '30d', source: 'none', pr
 
 /** Issue #104: what KIND of model a row is — an embedding model listed as text->text chat was the
  *  reported failure. */
-export type ModelType = 'chat' | 'embedding' | 'rerank' | 'image-gen' | 'tts' | 'stt' | 'moderation' | 'decision' | 'unknown';
+export type ModelType = 'chat' | 'embedding' | 'rerank' | 'image-gen' | 'video-gen' | 'tts' | 'stt' | 'moderation' | 'decision' | 'unknown';
 /** Where `modelType` came from: the provider's own declaration, the static anthropic table, or —
  *  last resort, only when the provider said nothing — a model-id heuristic. */
 export type ModelTypeSource = 'ollama-capabilities' | 'openrouter-modalities' | 'static' | 'id-heuristic' | 'unknown';
@@ -387,6 +387,11 @@ function openRouterModelType(m: OpenRouterRow): { modelType: ModelType; modelTyp
     if (out.includes('embeddings') || out.includes('embedding')) return { modelType: 'embedding', modelTypeSource: 'openrouter-modalities' };
     if (out.length === 1 && out[0] === 'image') return { modelType: 'image-gen', modelTypeSource: 'openrouter-modalities' };
     if (out.length === 1 && out[0] === 'audio') return { modelType: 'tts', modelTypeSource: 'openrouter-modalities' };
+    // #169: OpenRouter's own names for these output kinds.
+    if (out.includes('speech')) return { modelType: 'tts', modelTypeSource: 'openrouter-modalities' };
+    if (out.includes('transcription')) return { modelType: 'stt', modelTypeSource: 'openrouter-modalities' };
+    if (out.includes('rerank')) return { modelType: 'rerank', modelTypeSource: 'openrouter-modalities' };
+    if (out.includes('video')) return { modelType: 'video-gen', modelTypeSource: 'openrouter-modalities' };
   }
   const guess = modelTypeFromId(m.id ?? '');
   return guess ? { modelType: guess, modelTypeSource: 'id-heuristic' } : { modelType: 'unknown', modelTypeSource: 'unknown' };

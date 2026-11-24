@@ -29,6 +29,9 @@ export function priceCall(tokens: Tokens, rates: FourRates | null): number | nul
  *  decide()/generateImage() call for `kind` — decide needs finite `in` AND `out` rates; image needs
  *  a finite `in` rate and EITHER a finite `imageOutPerM` or (falling back) a finite `out` rate. */
 export function primitivePriceKnowable(entry: BookEntry | undefined, kind: PrimitiveKind): boolean {
+  // #169: generateAudio() is priced by the wire's own `usage.cost` only — the catalog prices audio
+  // models at 0/0 tokens (they bill per clip), so no catalog rate can ever price one.
+  if (kind === 'audio') return false;
   const rates = entry?.price;
   if (rates === null || rates === undefined || !Number.isFinite(rates.in)) return false;
   if (kind === 'decide') return Number.isFinite(rates.out);
@@ -43,6 +46,8 @@ export type PrimitivePriceResult = { costUSD: number; source: 'reported' | 'esti
  *  to `out` when the catalog carries no per-image rate) instead of `priceCall`'s plain `out` term. */
 export function pricePrimitiveCall(i: { wireCostUSD: number | null; tokens?: Tokens; entry?: BookEntry; kind: PrimitiveKind }): PrimitivePriceResult {
   if (i.wireCostUSD !== null) return { costUSD: i.wireCostUSD, source: 'reported' };
+  // #169: an audio attempt with no readable wire cost is absent (unpriced), never estimated — its
+  // catalog rates are a zero the provider does not actually charge (`primitivePriceKnowable`).
   if (i.tokens !== undefined && primitivePriceKnowable(i.entry, i.kind)) {
     const rates = i.entry!.price!;
     // v40 Gate 6 delta (DES-279, R-4): `imageOutPerM` is USD per 1M image-output tokens (the

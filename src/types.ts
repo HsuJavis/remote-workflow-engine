@@ -281,9 +281,10 @@ export interface AgentOpts {
   keepSession?: boolean;
 }
 
-/** v40 (DES-264, ARCH-194/192/190, TASK-260): the two engine-owned primitives alongside agent() —
- *  decide() (a structured-answer question) and generateImage() (a file-producing call). */
-export type PrimitiveKind = 'decide' | 'image';
+/** v40 (DES-264, ARCH-194/192/190, TASK-260): the engine-owned primitives alongside agent() —
+ *  decide() (a structured-answer question), generateImage() and (#169) generateAudio() (the two
+ *  file-producing calls). */
+export type PrimitiveKind = 'decide' | 'image' | 'audio';
 
 /** v40 (DES-264, TASK-260): one decide() question, closed on its own `type` (bool/choice/score) —
  *  `criteria` names the allowed answer shape per type. */
@@ -306,6 +307,17 @@ export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
 export interface ImageFile {
   path: string;
   mimeType: ImageMime;
+  bytes: number;
+  sha256: string;
+}
+
+/** #169: the accepted output audio mime types for generateAudio() — decided by magic bytes only. */
+export type AudioMime = 'audio/mpeg' | 'audio/wav' | 'audio/ogg' | 'audio/flac';
+
+/** #169: one file generateAudio() wrote to the run/asset workspace — same shape as `ImageFile`. */
+export interface AudioFile {
+  path: string;
+  mimeType: AudioMime;
   bytes: number;
   sha256: string;
 }

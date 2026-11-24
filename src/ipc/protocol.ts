@@ -9,6 +9,8 @@ export type ChildMsg =
   // reply type.
   | { t: 'decide';   runId: string; callSeq: number; label: string; state: unknown; questions: unknown }
   | { t: 'image';    runId: string; callSeq: number; label: string; prompt: unknown; inputImages?: unknown; outDir?: unknown }
+  // #169: generateAudio() — same reply path as 'image'.
+  | { t: 'audio';    runId: string; callSeq: number; label: string; prompt: unknown; outDir?: unknown }
   | { t: 'workflow'; runId: string; callSeq: number; ref: string | { scriptPath: string }; args: unknown }
   | { t: 'phase';    runId: string; title: string }
   | { t: 'log';      runId: string; message: string }

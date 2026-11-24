@@ -241,6 +241,12 @@
   1000 次模型呼叫上限；失敗時丟 `PRIMITIVE_FAILED`（訊息永不含供應商原文）。並行上限各自獨立設定
   （`decideSlots` 預設 16、`imageSlots` 預設 2、`imageInputMaxBytes` 預設 4.5 MiB）。完整規則見
   `workflow_authoring_guide`／DEPLOY.md §1b。
+- **generateAudio()**：腳本內 `generateAudio(label, {prompt, outDir?})` → `{files, text}`，用會輸出音訊的模型
+  （例如 `openrouter/google/lyria-3-clip-preview`）產生音樂，檔案寫進 workspace（預設 `generated/`，依內容判斷
+  mp3／wav／ogg／flac），`text` 是模型附帶的文字（例如實際唱的歌詞）。要宣告 `meta.params.audio.<label>`
+  （規則同 `images`）。花費以 OpenRouter 回報的實際金額為準，拿不到時記為 unpriced（`budgetEnforceable.usd`
+  變 false），不會當成 $0。並行與 `generateImage()` 共用 `imageSlots`。輸出含 audio／video 的模型不能給
+  `agent()` 用，在註冊、`overrides` 與 run 啟動時都會以 `MODEL_TYPE_MISMATCH` 拒絕。
 
 共 **48 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 

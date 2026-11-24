@@ -29,7 +29,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, AgentWarningSummary, RunListFilter, DecideAnswer, ImageFile, PrimitiveKind } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, AgentWarningSummary, RunListFilter, DecideAnswer, ImageFile, AudioFile, PrimitiveKind } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 // v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
@@ -40,9 +40,9 @@ import { RunGuard, parseBudget, foldUsage, sumTokens, primitivePriceKnowable, pr
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost, sandboxChildRegistryDir } from './sandbox/host.js';
 // v40 (DES-274, ARCH-187, TASK-271): decide()/generateImage() handler collaborators.
-import { validateDecideInput, validateImageInput, primitiveCallKey } from './direct-models/inputs.js';
-import { readContainedInput, resolveOutDir, writeImages, verifyFiles } from './direct-models/image-files.js';
-import { runDecide, runImage, toPiAiModel, defaultDirectDeps, primitiveFailedError, type DirectDeps, type FailedSpend, type PiClassifierModel, type PiImageModel } from './direct-models/call.js';
+import { validateDecideInput, validateImageInput, validateAudioInput, primitiveCallKey } from './direct-models/inputs.js';
+import { readContainedInput, resolveOutDir, writeImages, writeAudio, verifyFiles } from './direct-models/image-files.js';
+import { runDecide, runImage, runAudio, toPiAiModel, defaultDirectDeps, primitiveFailedError, type DirectDeps, type FailedSpend, type PiClassifierModel, type PiImageModel } from './direct-models/call.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { decodeExplicitUndefined } from './sandbox/ipc-sentinel.js';
 import type { AgentSpawner } from './agent-executor.js';
@@ -54,7 +54,7 @@ import { WorkflowCatalog, actorFromPrincipal, type Actor } from './workflow-cata
 import { assetRootsFor, defaultAssetRoot, globalAssetRoot, type AssetSyncService } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
-import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, agentMediaOutputErr, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, resolvePrimitiveParams, type RunParams } from './params/resolve.js';
 import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
 import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
@@ -259,7 +259,7 @@ function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: 
  *  (REQ-229: an error message never contains the provider's response, and an uncoded throw is an
  *  engine bug whose message is not vetted against that rule). */
 function primitiveFailure(
-  kind: 'decide' | 'generateImage',
+  kind: 'decide' | 'generateImage' | 'generateAudio',
   label: string,
   err: unknown,
   runAborted: boolean,
@@ -1300,6 +1300,7 @@ export class RunManager {
     // reads these two keys, TASK-267) sees the OVERRIDDEN model, same as every agent() label's.
     if (contract.decisions) effectiveParams.decisions = resolvePrimitiveParams(contract.decisions, overridesResult.value.decisions);
     if (contract.images) effectiveParams.images = resolvePrimitiveParams(contract.images, overridesResult.value.images);
+    if (contract.audio) effectiveParams.audio = resolvePrimitiveParams(contract.audio, overridesResult.value.audio); // #169
     // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
@@ -2370,6 +2371,7 @@ export class RunManager {
       // no callSeq offset, no `frameParams` (reads the run's own `entry.effectiveParams`).
       onDecideRequest: (msg, phase) => this._handleDecideRequest(runId, msg, msg.callSeq, '', phase),
       onImageRequest: (msg, phase) => this._handleImageRequest(runId, msg, msg.callSeq, '', phase),
+      onAudioRequest: (msg, phase) => this._handleAudioRequest(runId, msg, msg.callSeq, '', phase),
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
       onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
       currentPhase: () => this._currentPhaseFor(runId),
@@ -2424,6 +2426,14 @@ export class RunManager {
         });
       }
       if (verdict.warning) warnings.push({ code: 'MODEL_CATALOG_UNVERIFIED', label: labelOf(m), model: m, message: verdict.warning });
+    }
+    // #169: agent() returns text only — an effective agent model whose catalogued output includes
+    // audio/video is refused here too, so a version stored before (or without) the registration
+    // gate cannot run and silently drop the media.
+    for (const [label, a] of Object.entries(params.agents ?? {})) {
+      if (typeof a.model !== 'string') continue;
+      const mediaErr = agentMediaOutputErr(label, a.model, catalog);
+      if (mediaErr) throw paramCodedError(mediaErr);
     }
     const appendPrompts = [params.appendPrompt, ...Object.values(params.agents ?? {}).map((a) => a.appendPrompt)];
     for (const ap of appendPrompts) {
@@ -2689,6 +2699,7 @@ export class RunManager {
     // follow; DES-277's delta keeps this call with no `overrides` argument).
     if (childContract.decisions) childParams.decisions = resolvePrimitiveParams(childContract.decisions);
     if (childContract.images) childParams.images = resolvePrimitiveParams(childContract.images);
+    if (childContract.audio) childParams.audio = resolvePrimitiveParams(childContract.audio); // #169
     // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
     // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
     // already is (`frameParams`), below. Before this, a nested dispatch built `AgentReq.assets`
@@ -2767,6 +2778,10 @@ export class RunManager {
       onImageRequest: (msg, phase) => {
         if (generation.aborted) throw new Error(`run ${runId}: generateImage() from a suspended/stopped nested workflow() frame`);
         return this._handleImageRequest(runId, msg, frameBase + msg.callSeq, framePathKey, phase, childParams);
+      },
+      onAudioRequest: (msg, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: generateAudio() from a suspended/stopped nested workflow() frame`);
+        return this._handleAudioRequest(runId, msg, frameBase + msg.callSeq, framePathKey, phase, childParams);
       },
       // v26 (DES-175): a nested frame with no phase() of its own inherits the PARENT's lane — same
       // closure, same runId, as the top-level host (`_newSandbox`) gets.
@@ -3130,7 +3145,7 @@ export class RunManager {
    *  success, the result's own `spends`) via `foldPrimitiveSpend` — same ARCH-191 precedence as
    *  before, summed/ORed over attempts rather than read off the last one — and charges the live
    *  guard with the fold BEFORE the record is written, so `assertBudget` sees it either way. */
-  private _priceAndChargePrimitive(entry: RunEntry, spends: FailedSpend[] | undefined, pinEntry: Parameters<typeof foldPrimitiveSpend>[1], kind: 'decide' | 'image'): FoldedPrimitiveSpend {
+  private _priceAndChargePrimitive(entry: RunEntry, spends: FailedSpend[] | undefined, pinEntry: Parameters<typeof foldPrimitiveSpend>[1], kind: PrimitiveKind): FoldedPrimitiveSpend {
     const folded = foldPrimitiveSpend(spends, pinEntry, kind);
     entry.guard.addUsage(folded.tokens, folded.costUSD, folded.unpriced);
     return folded;
@@ -3143,7 +3158,7 @@ export class RunManager {
     runId: string; agentId?: string; callSeq: number; primitive: PrimitiveKind; label: string; model: string; attempt: number;
     outcome: 'ok' | 'retry' | 'failed' | 'refused'; reason?: AttemptReason; status?: number; errorCode?: string;
     providerMs?: number; backoffMs?: number; engineMs?: number; costUSD?: number | null; costSource?: 'reported' | 'estimated' | 'absent';
-    tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[]; droppedImages?: number;
+    tokens?: Tokens; answers?: Record<string, DecideAnswer>; files?: ImageFile[] | AudioFile[]; droppedImages?: number;
   }): void {
     this._eventSink({ kind: 'primitive.call', ...fields });
   }
@@ -3512,6 +3527,181 @@ export class RunManager {
       runId, agentId, callSeq, primitive: 'image', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs,
       costUSD: priced.costUSD, costSource: priced.costSource, tokens: priced.tokens,
       files: written.files, ...(written.dropped > 0 ? { droppedImages: written.dropped } : {}),
+    });
+    return value;
+  }
+
+  /** #169: `generateAudio()`'s handler — `_handleImageRequest`'s order and failure surfaces, with
+   *  three differences. (1) No input files (prompt + outDir only). (2) No PRICE_UNKNOWN pre-flight:
+   *  an audio model is billed per clip and its catalog token rates are a zero the provider does not
+   *  charge, so the wire's own reported `usage.cost` is the price — an attempt that reports none is
+   *  recorded unpriced (never a known $0); both `assertBudget()` doors still refuse to START a call
+   *  once the run is at/over a USD budget. (3) ONE output file, sniffed by magic bytes; bytes of no
+   *  known audio type are a `no_output` failure (spend kept). Shares the generateImage() slots. */
+  private async _handleAudioRequest(
+    runId: string,
+    msg: { callSeq: number; label: string; prompt: unknown; outDir?: unknown },
+    callSeq: number,
+    framePath = '',
+    phase?: { title: string; index: number },
+    frameParams?: RunParams,
+  ): Promise<{ files: AudioFile[]; text: string }> {
+    const entry = this._runs.get(runId);
+    if (!entry) throw new Error(`Unknown run: ${runId}`);
+    const label = msg.label;
+    const baseParams = frameParams ?? entry.effectiveParams;
+    const spec = baseParams.audio?.[label];
+    if (!spec) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: generateAudio('${label}') has no params.audio.${label} declaration at admission`, { label });
+    const { model, timeoutMs, retries } = spec;
+    const resolvedModel = parseModelRef(model);
+    if (!resolvedModel) throw codedError('PARAM_UNKNOWN', `PARAM_UNKNOWN: generateAudio('${label}') model '${model}' is not a valid <provider>/<model-id> ref`, { label, model });
+    let prompt: string;
+    let outDirRaw: string | undefined;
+    try {
+      const validated = validateAudioInput(label, { prompt: msg.prompt, outDir: msg.outDir });
+      prompt = validated.prompt;
+      outDirRaw = validated.outDir;
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'audio', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'PRIMITIVE_INPUT_INVALID' });
+      throw err;
+    }
+    const root = entry.workspace;
+    let absDir: string;
+    let absDirReal: string;
+    try {
+      absDir = await resolveOutDir(root, outDirRaw, 'generateAudio');
+      absDirReal = realpathSync(absDir);
+    } catch (err) {
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'audio', label, model, attempt: 0, outcome: 'refused', errorCode: (err as { code?: string }).code ?? 'IMAGE_PATH_REFUSED' });
+      throw err;
+    }
+    // resume replay — a hit whose file no longer verifies re-runs live and poisons every later
+    // callSeq (same rule as generateImage()).
+    const key = primitiveCallKey('audio', label, model, { prompt, outDir: outDirRaw });
+    if (entry.cachePlan) {
+      const cached = entry.cachePlan.replay(callSeq, key);
+      if (cached !== MISS) {
+        const v = cached as { files: AudioFile[]; text: string };
+        if (await verifyFiles(root, v.files)) return v;
+        entry.cachePlan.invalidate();
+      }
+    }
+    if (this._directDeps.resolveKey() === undefined) {
+      const err = codedError('OPENROUTER_AUTH_MISSING', 'OPENROUTER_AUTH_MISSING: no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or OPENROUTER_API_KEY before dispatching decide()/generateImage()/generateAudio()', { label });
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, callSeq, primitive: 'audio', label, model, attempt: 0, outcome: 'refused', errorCode: 'OPENROUTER_AUTH_MISSING' });
+      throw err;
+    }
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      entry.spawner.markQueued(agentId, { label, agentKey: label, phase, frame: framePath });
+    }
+    const pinEntry = entry.priceBook?.pinned[`${resolvedModel.provider}/${resolvedModel.model}`];
+    try {
+      entry.guard.assertBudget();
+    } catch (err) {
+      if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'audio', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+      throw err;
+    }
+    const startedAt = this._clock.isoNow();
+    const t0 = this._directDeps.now();
+    let attempt = 0;
+    let providerMsTotal = 0;
+    let backoffMsTotal = 0;
+    let outcome: Awaited<ReturnType<typeof runAudio>>;
+    try {
+      outcome = await this._imageSemaphore.withSlot(async () => {
+        entry.guard.assertBudget();
+        if (entry.spawner instanceof AgentExecutor) entry.spawner.markRunning(agentId, startedAt);
+        return runAudio(
+          { model: resolvedModel.model, prompt, timeoutMs, retries, runSignal: entry.abortController.signal, label },
+          {
+            ...this._directDeps,
+            onAttempt: (o) => {
+              attempt = o.attempt;
+              providerMsTotal += o.providerMs;
+              backoffMsTotal += o.backoffMs ?? 0;
+              const attemptPrice = pricePrimitiveCall({ wireCostUSD: o.wireCostUSD, tokens: o.tokens, entry: pinEntry, kind: 'audio' });
+              this._emitPrimitiveCall({
+                runId, agentId, callSeq, primitive: 'audio', label, model, attempt: o.attempt, outcome: o.outcome,
+                ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.status !== undefined ? { status: o.status } : {}),
+                providerMs: o.providerMs, ...(o.backoffMs !== undefined ? { backoffMs: o.backoffMs } : {}),
+                costUSD: 'absent' in attemptPrice ? null : attemptPrice.costUSD, costSource: 'absent' in attemptPrice ? 'absent' : attemptPrice.source,
+                ...(o.tokens !== undefined ? { tokens: o.tokens } : {}),
+              });
+            },
+          },
+        );
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BUDGET_EXCEEDED') {
+        if (entry.spawner instanceof AgentExecutor) await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+        this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+        this._emitPrimitiveCall({ runId, agentId, callSeq, primitive: 'audio', label, model, attempt: 0, outcome: 'refused', errorCode: 'BUDGET_EXCEEDED' });
+        throw err;
+      }
+      const endedAt = this._clock.isoNow();
+      const detail = (err as { detail?: { reason?: AttemptReason; attempts?: number; spends?: FailedSpend[] } }).detail;
+      const primFailure = primitiveFailure('generateAudio', label, err, entry.abortController.signal.aborted);
+      const charged = this._priceAndChargePrimitive(entry, detail?.spends, pinEntry, 'audio');
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'audio', label, model: resolvedModel.model, phase, frame: framePath, tokens: charged.tokens, costUSD: charged.costUSD, unpriced: charged.unpriced, state: 'failed', failReason: primFailure.reason, detail: primFailure.detail, startedAt, endedAt });
+      }
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, err);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'audio', label, model, attempt: detail?.attempts ?? attempt, outcome: 'failed',
+        ...(detail?.reason !== undefined ? { reason: detail.reason } : {}), errorCode: 'PRIMITIVE_FAILED',
+        engineMs: Math.max(0, this._directDeps.now() - t0 - providerMsTotal - backoffMsTotal), costUSD: charged.costUSD, costSource: charged.costSource,
+      });
+      throw err;
+    }
+    // the provider has billed — price every dispatched attempt and charge FIRST, before any
+    // fallible local step, so nothing below can lose the spend.
+    const priced = this._priceAndChargePrimitive(entry, outcome.spends, pinEntry, 'audio');
+    const failAfterCall = async (reason: 'write' | 'no_output'): Promise<never> => {
+      const endedAt = this._clock.isoNow();
+      const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal);
+      const failErr = primitiveFailedError('generateAudio', label, reason, outcome.attempts, undefined, false, outcome.spends);
+      if (entry.spawner instanceof AgentExecutor) {
+        await entry.spawner.recordPrimitive(runId, { agentId, kind: 'audio', label, model: resolvedModel.model, phase, frame: framePath, tokens: priced.tokens, costUSD: priced.costUSD, unpriced: priced.unpriced, state: 'failed', failReason: reason, detail: failErr.message, startedAt, endedAt });
+      }
+      this._recordPrimitiveRefusal(entry, framePath, callSeq, failErr);
+      this._emitPrimitiveCall({
+        runId, agentId, callSeq, primitive: 'audio', label, model, attempt: outcome.attempts, outcome: 'failed', reason, errorCode: 'PRIMITIVE_FAILED',
+        engineMs, costUSD: priced.costUSD, costSource: priced.costSource,
+      });
+      throw failErr;
+    };
+    // the dir must still realpath to what was checked before the provider call; any fs failure
+    // surfaces a CONSTRUCTED PRIMITIVE_FAILED{write} — never the fs error's text/path.
+    let written: AudioFile | null;
+    try {
+      if (realpathSync(absDir) !== absDirReal) throw new Error('outDir moved since it was checked');
+      written = await writeAudio(root, absDir, label, callSeq, outcome.audio);
+    } catch {
+      return failAfterCall('write');
+    }
+    if (written === null) return failAfterCall('no_output');
+    const endedAt = this._clock.isoNow();
+    const engineMs = Math.max(0, this._directDeps.now() - t0 - outcome.providerMsTotal - outcome.backoffMsTotal); // R-30: clamp at 0
+    if (entry.spawner instanceof AgentExecutor) {
+      await entry.spawner.recordPrimitive(runId, { agentId, kind: 'audio', label, model: resolvedModel.model, phase, frame: framePath, tokens: priced.tokens, costUSD: priced.costUSD, unpriced: priced.unpriced, state: 'done', startedAt, endedAt });
+    }
+    const value = { files: [written], text: outcome.text };
+    const journalEntry: JournalEntry = { callSeq, key, value, ts: endedAt, scriptVersion: `v${entry.scriptVersion}`, aborted: false };
+    entry.journal.push(journalEntry);
+    const journalToStore = this._secretValueProvider ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry) : journalEntry;
+    await this._store.appendJournal(runId, journalToStore);
+    // the model's own text output rides the return value/journal only — never this event (it is
+    // provider body).
+    this._emitPrimitiveCall({
+      runId, agentId, callSeq, primitive: 'audio', label, model, attempt: outcome.attempts, outcome: 'ok', engineMs,
+      costUSD: priced.costUSD, costSource: priced.costSource, tokens: priced.tokens,
+      files: value.files,
     });
     return value;
   }

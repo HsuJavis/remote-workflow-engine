@@ -218,12 +218,14 @@ export function reachableModels(params: RunParams): string[] {
   const wide = params as RunParams & {
     decisions?: Record<string, { model?: string }>;
     images?: Record<string, { model?: string }>;
+    audio?: Record<string, { model?: string }>;
   };
   const raw = [
     params.model,
     ...Object.values(params.agents ?? {}).map((a) => a.model),
     ...Object.values(wide.decisions ?? {}).map((d) => d.model),
     ...Object.values(wide.images ?? {}).map((i) => i.model),
+    ...Object.values(wide.audio ?? {}).map((a) => a.model),
   ];
   return [...new Set(raw.filter((m): m is string => m !== undefined))];
 }

@@ -764,15 +764,18 @@ export class WorkflowCatalog {
     // admission) — this call site is it.
     const catalogAvailableFor = (provider: string): boolean =>
       catalog.source !== 'static' && catalog.entries.some((e) => e.provider === provider);
-    const primitiveTypeChecks: Array<{ kind: 'agent' | 'decision' | 'image'; specs: Record<string, { model: { default?: unknown } }> | undefined }> = [
+    const primitiveTypeChecks: Array<{ kind: 'agent' | 'decision' | 'image' | 'audio'; specs: Record<string, { model: { default?: unknown; enum?: unknown } }> | undefined }> = [
       { kind: 'agent', specs: paramsResult.value.agents },
       { kind: 'decision', specs: paramsResult.value.decisions },
       { kind: 'image', specs: paramsResult.value.images },
+      { kind: 'audio', specs: paramsResult.value.audio }, // #169
     ];
     for (const { kind, specs } of primitiveTypeChecks) {
       for (const [label, spec] of Object.entries(specs ?? {})) {
-        const model = spec.model.default;
-        if (typeof model !== 'string') continue; // no literal default — nothing to check here
+        // #169: an agent's enum members are run-time choices too — each one is gated like the default.
+        const candidates = [spec.model.default, ...(kind === 'agent' && Array.isArray(spec.model.enum) ? spec.model.enum : [])];
+        for (const model of candidates) {
+        if (typeof model !== 'string') continue; // no literal ref — nothing to check here
         const parsed = parseModelRef(model);
         if (!parsed) continue; // malformed ref — checkModelRef (inside parseMetaParams) already refused it
         const entry = catalog.entries.find((e) => e.provider === parsed.provider && e.model === parsed.model);
@@ -781,11 +784,12 @@ export class WorkflowCatalog {
           : undefined;
         const verdict = checkPrimitiveModelType(kind, label, model, row, catalogAvailableFor(parsed.provider));
         if (!verdict.ok) {
-          throw codedError(
-            'MODEL_TYPE_MISMATCH',
-            `MODEL_TYPE_MISMATCH: ${kind} '${label}' declares model '${model}', catalogued as '${verdict.actual}', not '${verdict.required}'`,
-            { label, model, actual: verdict.actual, required: verdict.required },
-          );
+          // #169: an audio/video-output model declared for agent() — agent() returns text only, so
+          // the model's real output would be silently dropped; name the primitive that keeps it.
+          const message = verdict.required === 'text-output'
+            ? `MODEL_TYPE_MISMATCH: agent '${label}' declares model '${model}', whose catalog output modalities include audio or video — agent() returns text only; declare an audio-output model under meta.params.audio.<label> and call generateAudio() instead`
+            : `MODEL_TYPE_MISMATCH: ${kind} '${label}' declares model '${model}', catalogued as '${verdict.actual}', not '${verdict.required}'`;
+          throw codedError('MODEL_TYPE_MISMATCH', message, { label, model, actual: verdict.actual, required: verdict.required });
         }
         if ('warning' in verdict) {
           paramsResult.warnings = [
@@ -797,6 +801,7 @@ export class WorkflowCatalog {
               message: `${kind} '${label}' model '${model}' could not be confirmed as the right primitive type (modelTypeSource: ${verdict.warning.modelTypeSource}) — accepted unverified`,
             },
           ];
+        }
         }
       }
     }
@@ -888,7 +893,7 @@ export class WorkflowCatalog {
     }
     // v40 Gate 6 delta (DES-271, R-12, TASK-268): a decide()/generateImage() label may be drawn as
     // a stadium node too — accepted, never required (`checkMermaid`'s own v2.primitiveLabels).
-    const primitiveLabels = [...primitives.decide, ...primitives.generateImage];
+    const primitiveLabels = [...primitives.decide, ...primitives.generateImage, ...primitives.generateAudio];
     const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS, { expected: derived.graph, primitiveLabels });
     if (!diagramCheck.ok) {
       // v26 (DES-184, TASK-189): RULE_CODE replaces the old two-way ternary — every `ok:false`

@@ -185,7 +185,7 @@ export function parseMetaParams(
   // v40 (DES-271, ARCH-188/189, TASK-268): the script's own decide()/generateImage() labels, same
   // role for `decisions`/`images` that `labels` (above) plays for `agents`.
   const primitives = scanPrimitiveCalls(script);
-  const primitiveLabels = { decide: primitives.decide, generateImage: primitives.generateImage };
+  const primitiveLabels = { decide: primitives.decide, generateImage: primitives.generateImage, generateAudio: primitives.generateAudio };
   const m = checkMeta(script);
   if (!m.found || !m.pureLiteral || m.objectText === undefined) {
     return parseParamContract(undefined, labels, catalog, primitiveLabels);
@@ -930,6 +930,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
 // separately, at `validateScriptEntry`'s `checkSandboxApiAliasing`, not here).
 const DECIDE_CALL_RE = /(?<!\.)\bdecide\s*\(/g;
 const IMAGE_CALL_RE = /(?<!\.)\bgenerateImage\s*\(/g;
+const AUDIO_CALL_RE = /(?<!\.)\bgenerateAudio\s*\(/g; // #169
 
 // v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): the tunables a `decide()`/`generateImage()`
 // options literal may NOT carry (they belong in `meta.params.decisions/images.<label>.<key>.default`
@@ -938,9 +939,15 @@ const IMAGE_CALL_RE = /(?<!\.)\bgenerateImage\s*\(/g;
 // DOES accept at the call site (its own runtime data — DES-266's `validateDecideInput`/
 // `validateImageInput` closed sets).
 const PRIMITIVE_TUNABLE_KEYS = new Set<string>(['model', 'timeoutMs', 'retries']);
-const PRIMITIVE_DATA_KEYS: Record<'decide' | 'generateImage', Record<string, true>> = {
+const PRIMITIVE_DATA_KEYS: Record<'decide' | 'generateImage' | 'generateAudio', Record<string, true>> = {
   decide: { state: true, questions: true },
   generateImage: { prompt: true, inputImages: true, outDir: true },
+  generateAudio: { prompt: true, outDir: true },
+};
+const PRIMITIVE_PARAMS_BLOCK: Record<'decide' | 'generateImage' | 'generateAudio', 'decisions' | 'images' | 'audio'> = {
+  decide: 'decisions',
+  generateImage: 'images',
+  generateAudio: 'audio',
 };
 
 /** v40 Gate 6 delta (DES-271, R-10 option (a), TASK-268): one `decide`/`generateImage` scan — same
@@ -951,14 +958,14 @@ const PRIMITIVE_DATA_KEYS: Record<'decide' | 'generateImage', Record<string, tru
 function scanOnePrimitive(
   script: string,
   re: RegExp,
-  kind: 'decide' | 'generateImage',
+  kind: 'decide' | 'generateImage' | 'generateAudio',
   inNonCode: (idx: number) => boolean,
   lineAt: (idx: number) => number,
   violations: AgentCallViolation[],
 ): string[] {
   const labels: string[] = [];
   const callName = `${kind}()`;
-  const paramsKind = kind === 'decide' ? 'decisions' : 'images';
+  const paramsKind = PRIMITIVE_PARAMS_BLOCK[kind];
   const dataKeys = PRIMITIVE_DATA_KEYS[kind];
   re.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -1032,10 +1039,10 @@ function scanOnePrimitive(
  *  with the simpler DES-271 return shape (no groups/allowedTools/bash — primitives carry none of
  *  those). `violations` is `AgentCallViolation`-shaped (same codes, no new vocabulary) — renamed
  *  from the pre-delta `errors` field, which no longer exists. */
-export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; violations: AgentCallViolation[] } {
+export function scanPrimitiveCalls(script: string): { decide: string[]; generateImage: string[]; generateAudio: string[]; violations: AgentCallViolation[] } {
   const oracle = nonCodeOracle(script);
   if (oracle && !oracle.ok) {
-    return { decide: [], generateImage: [], violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }] };
+    return { decide: [], generateImage: [], generateAudio: [], violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }] };
   }
   script = scanText(script, oracle);
   const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
@@ -1043,7 +1050,8 @@ export function scanPrimitiveCalls(script: string): { decide: string[]; generate
   const violations: AgentCallViolation[] = [];
   const decide = scanOnePrimitive(script, DECIDE_CALL_RE, 'decide', inNonCode, lineAt, violations);
   const generateImage = scanOnePrimitive(script, IMAGE_CALL_RE, 'generateImage', inNonCode, lineAt, violations);
-  return { decide, generateImage, violations };
+  const generateAudio = scanOnePrimitive(script, AUDIO_CALL_RE, 'generateAudio', inNonCode, lineAt, violations);
+  return { decide, generateImage, generateAudio, violations };
 }
 
 /** Issue #154 NEW HIGH (blocker): the per-label expectation `run-manager.ts`'s dispatch-time

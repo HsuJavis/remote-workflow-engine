@@ -1132,13 +1132,45 @@ describe('v40: decide/generateImage served text (UT-355, DES-276)', () => {
 
   it('the guide states the PRIMITIVE_FAILED message grammar matching DES-267\'s own regex', () => {
     const text = buildAuthoringGuide(CEILINGS);
-    expect(text).toMatch(/\(decide\|generateImage\) '.*' failed:/);
+    expect(text).toMatch(/\(decide\|generateImage\|generateAudio\) '.*' failed:/);
   });
 
   it('at least one GUIDE_EXAMPLES entry calls decide(...), at least one calls generateImage(...)', () => {
     const scripts = (GUIDE_EXAMPLES as Array<{ script: string }>).map((e) => e.script);
     expect(scripts.some((s) => /\bdecide\s*\(/.test(s))).toBe(true);
     expect(scripts.some((s) => /\bgenerateImage\s*\(/.test(s))).toBe(true);
+  });
+});
+
+// #169: generateAudio() is documented next to generateImage() — signature, return shape, its own
+// declaration block and codes, the wire-priced cost rule, and that an audio-output model belongs to
+// generateAudio(), never agent().
+describe('#169: generateAudio served text', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('documents the signature, return shape and meta.params.audio.<label>', () => {
+    expect(text).toContain('`await generateAudio(label, { prompt, outDir? })` → `{ files, text }`');
+    expect(text).toMatch(/meta\.params\.audio\.<label>/);
+    expect(text).toContain('openrouter/google/lyria-3-clip-preview');
+    expect(text).toMatch(/AUDIO_UNDECLARED/);
+    expect(text).toMatch(/AUDIO_DECLARED_NOT_IN_SCRIPT/);
+  });
+
+  it('says an audio-output model must use generateAudio(), not agent()', () => {
+    expect(text).toMatch(/must be called through `generateAudio\(\)` — declaring it for `agent\(\)` is refused `MODEL_TYPE_MISMATCH`/);
+  });
+
+  it('states the cost rule: never PRICE_UNKNOWN, reported cost charged, missing cost unpriced', () => {
+    expect(text).toMatch(/`generateAudio\(\)` is never refused this way/);
+    expect(text).toMatch(/counts in `unpricedCalls`/);
+  });
+
+  it('carries no history markers in the new text', () => {
+    const start = text.indexOf('## Decisions, image and audio generation');
+    const end = text.indexOf('\n## ', start + 5);
+    const sectionText = text.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(sectionText).not.toMatch(/#169|v4\d\b|REQ-|DES-|issue/);
   });
 });
 
@@ -1171,6 +1203,6 @@ describe('v41: served text for the REQ-227 delta / REQ-231 (UT-374, DES-276)', (
 
   it("run_status's description names the primitive failure word for a decide()/image agentFailures entry", () => {
     const runStatus = TOOL_SPECS.find((s) => s.name === 'run_status')!.description;
-    expect(runStatus).toMatch(/for a `decide`\/`image` entry `reason` is the primitive('s| )*failure word/);
+    expect(runStatus).toMatch(/for a `decide`\/`image`(\/`audio`)? entry `reason` is the primitive('s| )*failure word/);
   });
 });

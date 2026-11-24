@@ -105,3 +105,59 @@ describe('UT-361: OD-1 — images accept any image-output row (DES-270 delta)', 
     expect(checkPrimitiveModelType('agent', 'x', 'openrouter/google/gemini-2.5-flash-image', GEMINI as never, true)).toEqual({ ok: true });
   });
 });
+
+// #169: an audio-output chat model (Lyria: output ["audio","text"], modelType 'chat') must not pass
+// as an agent() model — agent() only returns text, so the audio would be silently dropped. Audio
+// models are dispatched by generateAudio() instead, gated on output modalities including 'audio'.
+describe('#169: audio/video-output rows vs agent() and generateAudio()', () => {
+  const LYRIA = { modelType: 'chat' as const, modelTypeSource: 'openrouter-modalities' as const, modalitiesOut: ['audio', 'text'] };
+  const VIDEO = { modelType: 'chat' as const, modelTypeSource: 'openrouter-modalities' as const, modalitiesOut: ['video'] };
+  const TEXT = { modelType: 'chat' as const, modelTypeSource: 'openrouter-modalities' as const, modalitiesOut: ['text'] };
+  const GEMINI_IMG = { modelType: 'chat' as const, modelTypeSource: 'openrouter-modalities' as const, modalitiesOut: ['text', 'image'] };
+
+  it('agent: an audio-output chat row is refused MODEL_TYPE_MISMATCH required text-output', () => {
+    expect(checkPrimitiveModelType('agent', 'song', 'openrouter/google/lyria-3-clip-preview', LYRIA, true))
+      .toMatchObject({ ok: false, code: 'MODEL_TYPE_MISMATCH', label: 'song', actual: 'chat', required: 'text-output' });
+  });
+
+  it('agent: a video-output row is refused the same way', () => {
+    expect(checkPrimitiveModelType('agent', 'clip', 'openrouter/acme/video-1', VIDEO, true))
+      .toMatchObject({ ok: false, code: 'MODEL_TYPE_MISMATCH', required: 'text-output' });
+  });
+
+  it('agent: an audio-output row is refused even when its modelType is only id-heuristic (modalities are catalog evidence)', () => {
+    expect(checkPrimitiveModelType('agent', 'song', 'openrouter/google/lyria-3-clip-preview', { ...LYRIA, modelTypeSource: 'id-heuristic' as const }, true))
+      .toMatchObject({ ok: false, required: 'text-output' });
+  });
+
+  it('agent: image+text and text-only chat rows stay accepted', () => {
+    expect(checkPrimitiveModelType('agent', 'x', 'openrouter/google/gemini-2.5-flash-image', GEMINI_IMG, true)).toEqual({ ok: true });
+    expect(checkPrimitiveModelType('agent', 'x', 'openrouter/openai/gpt-4.1', TEXT, true)).toEqual({ ok: true });
+  });
+
+  it('agent: catalog unavailable / unknown row still never refuses', () => {
+    expect(checkPrimitiveModelType('agent', 'x', 'openrouter/google/lyria-3-clip-preview', undefined, true)).toEqual({ ok: true });
+    expect(checkPrimitiveModelType('agent', 'x', 'openrouter/google/lyria-3-clip-preview', LYRIA, false)).toEqual({ ok: true });
+  });
+
+  it('audio: an audio-output row is ok', () => {
+    expect(checkPrimitiveModelType('audio', 'song', 'openrouter/google/lyria-3-clip-preview', LYRIA, true)).toEqual({ ok: true });
+  });
+
+  it('audio: a text-only chat row is refused MODEL_TYPE_MISMATCH required audio-output', () => {
+    expect(checkPrimitiveModelType('audio', 'song', 'openrouter/openai/gpt-4.1', TEXT, true))
+      .toMatchObject({ ok: false, code: 'MODEL_TYPE_MISMATCH', label: 'song', actual: 'chat', required: 'audio-output' });
+  });
+
+  it('audio: unknown/unverified/unavailable posture matches image', () => {
+    const unverified = checkPrimitiveModelType('audio', 'song', 'openrouter/x/y', { modelType: 'unknown', modelTypeSource: 'unknown' }, true);
+    expect((unverified as { warning?: { code: string } }).warning?.code).toBe('MODEL_TYPE_UNVERIFIED');
+    expect(checkPrimitiveModelType('audio', 'song', 'openrouter/x/y', undefined, true)).toEqual({ ok: true });
+    expect(checkPrimitiveModelType('audio', 'song', 'openrouter/x/y', TEXT, false)).toEqual({ ok: true });
+  });
+
+  it('audio: a row with no modalitiesOut at all cannot be confirmed -> refused unless catalogued tts', () => {
+    expect(checkPrimitiveModelType('audio', 'song', 'openrouter/x/y', { modelType: 'chat', modelTypeSource: 'openrouter-modalities' }, true))
+      .toMatchObject({ ok: false, required: 'audio-output' });
+  });
+});
